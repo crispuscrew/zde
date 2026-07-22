@@ -17,7 +17,9 @@ in
     # Rootless podman: what zcr runs apps with.
     virtualisation.podman.enable = true;
 
-    # Audio: PipeWire with the usual compatibility layers.
+    # Audio: PipeWire with the usual compatibility layers; rtkit gives it
+    # realtime scheduling (crackle/underrun protection under load).
+    security.rtkit.enable = true;
     services.pipewire = {
       enable = true;
       alsa.enable = true;

@@ -7,7 +7,7 @@
       url = "github:nix-community/home-manager/release-25.05";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    # Fast-moving pieces (niri, quickshell) get pinned as their own inputs
+    # Fast-moving pieces (niri, Quickshell) get pinned as their own inputs
     # during the 0.1 prototype - zinc-style pinning, exact releases, our hand
     # on the bump. Until verified they are not declared here.
   };
