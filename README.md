@@ -25,6 +25,8 @@ reach out.
   the action map.
 - [`docs/roadmap.md`](docs/roadmap.md) - phases 0.1-0.4 and the
   verify-in-prototype list.
+- [`docs/delivery.md`](docs/delivery.md) - how zde ships: NixOS reference,
+  portable path, ISO.
 - [`docs/glossary.md`](docs/glossary.md) - the terms; every doc uses only
   these words.
 

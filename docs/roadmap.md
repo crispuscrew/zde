@@ -46,6 +46,10 @@ attribution; asks 5-6 land with their consumers.
 - laptop profile: battery/brightness/power, wifi/bt TUIs, single-monitor
   degradation, dock re-placement.
 
+Delivery ([`delivery.md`](delivery.md)): the flake skeleton exists; the home
+module grows with each 0.1 component; ISO and `install.sh` after 0.1 is
+usable.
+
 ## Verify in prototype
 
 - niri: runtime workspace renaming (adoption + monitor moves);
@@ -54,6 +58,9 @@ attribution; asks 5-6 land with their consumers.
 - kanata mouse-button interception (fallback: evsieve).
 - Quickshell under multi-monitor hotplug (swap path exists).
 - netns stats readable without ask 6, as a degraded first cut.
+- NixOS: flake evaluates (no nix on the dev host yet), rootless podman
+  subuids, Quickshell from its flake, kanata uinput permissions, NVIDIA with
+  niri on stable.
 
 ## Cross-cutting
 
