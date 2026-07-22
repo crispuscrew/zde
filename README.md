@@ -1,6 +1,8 @@
 # zde-niri
 ## Zinc Desktop Environment - Niri based
 
+> From paranoids to paranoids)
+
 A keyboard-first desktop environment where every user-facing app runs under
 **zinc** sandboxing (rootless Podman, fail-closed) as defined by the Zinc app
 schema.
