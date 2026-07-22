@@ -1,0 +1,58 @@
+# zde app: Neovim (LazyVim, multi-language). Schema v2, ZincContainer.
+# Plugins/parsers/tools are baked at build time; the runtime is network-locked.
+SchemaVersion: 2
+Type: ZincContainer
+
+AppNameID: nvim
+Icon: nvim
+Description: Neovim editor (LazyVim, multi-language)
+
+StartConditions:
+  Entrypoint: nvim
+  Terminal: true
+
+ResourcesMeta:
+  MaxCPUCores: 4
+  MaxRamMiB: 2048
+  PIDsLimit: 1024
+
+InternalUserMeta:
+  UseNonRootUser: true
+  NonRootUserName: dev
+  KeepUserID: true
+
+ImageMeta:
+  # glibc base required: mason installs prebuilt glibc binaries (musl breaks them).
+  Image: docker.io/library/debian@sha256:1def178129dfb5f24db43afbf2fcac04530012e3264ba4ff81c71184e17a9ee4
+  Install:
+    - export DEBIAN_FRONTEND=noninteractive
+    - apt-get update
+    - apt-get install -y --no-install-recommends
+        ca-certificates curl git unzip xz-utils
+        build-essential python3 python3-venv nodejs npm
+        ripgrep fd-find
+    # Debian's neovim is too old for LazyVim. Upstream publishes no checksum for
+    # this asset, so the sha256 below is trust-on-first-use (pins reproducibility,
+    # not authenticity); the build fails closed if the bytes ever differ.
+    - curl -fsSL -o /tmp/nvim.tar.gz
+        https://github.com/neovim/neovim/releases/download/v0.11.4/nvim-linux-x86_64.tar.gz
+    - echo "a74740047e73b2b380d63a474282814063d10650cd6cc95efa16d1713c7e616c  /tmp/nvim.tar.gz" | sha256sum -c -
+    - tar -C /opt -xzf /tmp/nvim.tar.gz
+    - ln -s /opt/nvim-linux-x86_64/bin/nvim /usr/local/bin/nvim
+    # Config is already at ~/.config/nvim (builder copies configs/ before Install).
+    - runuser -u dev -- nvim --headless "+Lazy! sync" +qa
+    - runuser -u dev -- nvim --headless "+TSUpdateSync" +qa
+    - runuser -u dev -- nvim --headless "+MasonInstall gopls lua-language-server nixd bash-language-server basedpyright ruff clangd typescript-language-server html-lsp css-lsp marksman json-lsp yaml-language-server taplo dockerfile-language-server stylua shfmt shellcheck gofumpt goimports prettier clang-format markdownlint-cli2" +qa
+
+DisplayMeta:
+  DisableSecurityContext: false
+  DisableGpuAccess: true
+
+Configs:
+  - InnerMount: /home/dev/.config/nvim
+    Writable: false
+
+# Code and state dirs are host paths of the invocation; attach them at runtime.
+Volumes: []
+
+HostTheme: true

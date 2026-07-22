@@ -1,0 +1,3 @@
+-- Loaded on VeryLazy. LazyVim defaults:
+-- https://github.com/LazyVim/LazyVim/blob/main/lua/lazyvim/config/keymaps.lua
+-- Add project-specific keymaps here.

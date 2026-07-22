@@ -1,0 +1,3 @@
+# Runtime state that must never be committed; the config is the only source.
+/lazy-lock.json.bak
+/.luarc.json
