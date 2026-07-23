@@ -1,0 +1,32 @@
+# CI: the flake must evaluate and the nix sources must be clean.
+# This is the required status check for main (dev-rules); it is also the
+# only place the flake gets evaluated until a dev host has nix.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [dev, main]
+
+permissions:
+  contents: read
+
+jobs:
+  flake:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
+
+      - name: nix flake check
+        run: nix flake check --print-build-logs
+
+      - name: statix
+        run: nix develop --command statix check .
+
+      # nixfmt --check only names the offending file; formatting + diffing
+      # prints the exact fix, which matters while no dev host has nix.
+      - name: nixfmt
+        run: |
+          git ls-files '*.nix' | xargs nix develop --command nixfmt
+          git diff --exit-code
