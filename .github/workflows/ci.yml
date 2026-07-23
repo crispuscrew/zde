@@ -28,5 +28,5 @@ jobs:
       # prints the exact fix, which matters while no dev host has nix.
       - name: nixfmt
         run: |
-          git ls-files '*.nix' | xargs nix develop --command nixfmt
+          git ls-files -z '*.nix' | xargs -0 nix develop --command nixfmt
           git diff --exit-code
