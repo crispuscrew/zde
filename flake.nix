@@ -21,6 +21,17 @@
     let
       systems = [ "x86_64-linux" ];
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+      # zde-keymap: keymap.yaml -> niri binds + cheatsheet. Deps are vendored
+      # (vendorHash null), zinc-style: the build fetches nothing.
+      keymap =
+        pkgs:
+        pkgs.buildGoModule {
+          pname = "zde-keymap";
+          version = "0.1.0";
+          src = self;
+          vendorHash = null;
+          subPackages = [ "cmd/zde-keymap" ];
+        };
     in
     {
       # Layer 0: the system module (NixOS reference platform).
@@ -30,9 +41,21 @@
       # reference and the portable path (docs/delivery.md).
       homeModules.zde = ./nix/home.nix;
 
+      packages = forAll (pkgs: {
+        zde-keymap = keymap pkgs;
+        default = keymap pkgs;
+      });
+
+      # Built by nix flake check in CI: compiles the tools and runs their
+      # go tests.
+      checks = forAll (pkgs: {
+        zde-keymap = keymap pkgs;
+      });
+
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {
           packages = [
+            pkgs.go
             pkgs.nixfmt-rfc-style
             pkgs.statix
           ];
@@ -42,6 +65,6 @@
       formatter = forAll (pkgs: pkgs.nixfmt-rfc-style);
 
       # Added once 0.1 is usable (docs/delivery.md, sequencing):
-      # nixosConfigurations.zde, the ISO output, checks.
+      # nixosConfigurations.zde, the ISO output.
     };
 }

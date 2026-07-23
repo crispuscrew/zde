@@ -36,7 +36,10 @@ reach out.
 
 - `common/` - variant-agnostic apps and config (e.g. the nvim editor); kept
   compositor-neutral so a future hypr variant could reuse it.
+  `common/keymap/keymap.yaml` is the keymap source of truth.
 - `niri/` - pieces that only make sense for niri.
+- `cmd/`, `internal/` - the Go tools (`zde-keymap` generates the niri binds
+  and the cheatsheet; zded and friends land here later).
 
 Apps (wherever they live) follow the same shape under `apps/<name>/`:
 

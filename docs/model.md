@@ -111,7 +111,7 @@ Modes gate which actions are live.
 | clip | `history`, `clear` |
 | capture | `shot-region`, `shot-window`, `shot-full`, `replay-clip`, `send-to <target>` |
 | media | `play-pause`, `next`, `prev`, `like`, `download`, `target-pick`, `target-next`, `target-pin` |
-| audio | `vol-up`, `vol-down`, `app-vol`, `sink-switch`, `app-sink`, `mic-mute` |
+| audio | `vol-up`, `vol-down`, `mute`, `app-vol`, `sink-switch`, `app-sink`, `mic-mute` |
 | net | `observe`, `kill` (global toggle, loud bar state), `app-cut <app>` |
 | modes | `normal`, `window`, `kb-mouse`, `one-hand`, `passthrough` |
 | system | `lock`, `lock-preset` (switch BEFORE lock), `power`, `quiet`, `notif-center`, `doctor`, `update`, `layout-switch` (native) |

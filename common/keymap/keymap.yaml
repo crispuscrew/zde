@@ -1,0 +1,98 @@
+# zde keymap - the source of truth. Chords only; what each action does lives
+# in the generator registry (internal/keymap/registry.go). Normal mode only
+# until the mode mechanism is verified (docs/roadmap.md, verify list).
+#
+# Seeded from the pre-zde keybind draft. Deviations are commented where a key
+# moved; Hyper chords wait for the caps:hyper verify item.
+
+binds:
+  # desk
+  - { action: desk.pick, key: Mod+D }
+  - { action: desk.queue-jump, key: Mod+U } # decided in design: queue-jump on Super+u
+  - { action: desk.previous, key: Mod+Tab }
+  - { action: desk.commons, key: Mod+C }
+  - { action: desk.panic, key: Mod+Shift+Escape } # draft used Hyper; pending caps:hyper
+  - { action: desk.zen, key: Mod+Shift+Z }
+
+  # monitor. h/l were reserved in the draft for vim-style focus; this is it.
+  - { action: monitor.focus left, key: Mod+H }
+  - { action: monitor.focus right, key: Mod+L }
+  - { action: monitor.move-window left, key: Mod+Ctrl+Left }
+  - { action: monitor.move-window right, key: Mod+Ctrl+Right }
+  - { action: monitor.move-workspace left, key: Mod+Ctrl+Shift+Left }
+  - { action: monitor.move-workspace right, key: Mod+Ctrl+Shift+Right }
+
+  # workspace. Draft had k=forward on Hyprland's horizontal axis; niri's
+  # strip is vertical, so vim wins: j down (next), k up (prev).
+  - { action: workspace.next, key: Mod+J }
+  - { action: workspace.prev, key: Mod+K }
+  - { action: workspace.overview, key: Mod+S }
+  - { action: workspace.go 1, key: Mod+1 }
+  - { action: workspace.go 2, key: Mod+2 }
+  - { action: workspace.go 3, key: Mod+3 }
+  - { action: workspace.go 4, key: Mod+4 }
+  - { action: workspace.go 5, key: Mod+5 }
+  - { action: workspace.go 6, key: Mod+6 }
+  - { action: workspace.go 7, key: Mod+7 }
+  - { action: workspace.go 8, key: Mod+8 }
+  - { action: workspace.go 9, key: Mod+9 }
+  - { action: workspace.go 10, key: Mod+0 }
+  - { action: workspace.move-window 1, key: Mod+Shift+1 }
+  - { action: workspace.move-window 2, key: Mod+Shift+2 }
+  - { action: workspace.move-window 3, key: Mod+Shift+3 }
+  - { action: workspace.move-window 4, key: Mod+Shift+4 }
+  - { action: workspace.move-window 5, key: Mod+Shift+5 }
+  - { action: workspace.move-window 6, key: Mod+Shift+6 }
+  - { action: workspace.move-window 7, key: Mod+Shift+7 }
+  - { action: workspace.move-window 8, key: Mod+Shift+8 }
+  - { action: workspace.move-window 9, key: Mod+Shift+9 }
+  - { action: workspace.move-window 10, key: Mod+Shift+0 }
+
+  # window
+  - { action: window.focus left, key: Mod+Left }
+  - { action: window.focus right, key: Mod+Right }
+  - { action: window.focus up, key: Mod+Up }
+  - { action: window.focus down, key: Mod+Down }
+  - { action: window.move left, key: Mod+Shift+Left }
+  - { action: window.move right, key: Mod+Shift+Right }
+  - { action: window.move up, key: Mod+Shift+Up }
+  - { action: window.move down, key: Mod+Shift+Down }
+  - { action: window.float, key: Mod+F }
+  - { action: window.fullscreen, key: Mod+Shift+F }
+  - { action: window.close, key: Mod+Q } # draft kept q for Window mode; Normal-only 0.1 needs it here
+  - { action: window.consume, key: Mod+BracketLeft }
+  - { action: window.expel, key: Mod+BracketRight }
+  - { action: window.jump, key: Mod+W }
+
+  # launch
+  - { action: launcher.open, key: Mod+G }
+  - { action: palette.open, key: Mod+Semicolon }
+  - { action: app.launch terminal, key: Mod+T }
+  - { action: app.launch nvim, key: Mod+E }
+
+  # ask. Draft's a was split-orientation, which niri does not have.
+  - { action: ask.oneshot, key: Mod+A }
+  - { action: ask.panel, key: Mod+Shift+A }
+
+  # clip
+  - { action: clip.history, key: Mod+V }
+
+  # audio. Draft: m mic, M output.
+  - { action: audio.vol-up, key: Mod+Period }
+  - { action: audio.vol-down, key: Mod+Comma }
+  - { action: audio.mic-mute, key: Mod+M }
+  - { action: audio.mute, key: Mod+Shift+M }
+  - { action: audio.vol-up, key: XF86AudioRaiseVolume }
+  - { action: audio.vol-down, key: XF86AudioLowerVolume }
+  - { action: audio.mute, key: XF86AudioMute }
+  - { action: audio.mic-mute, key: XF86AudioMicMute }
+
+  # media
+  - { action: media.play-pause, key: XF86AudioPlay }
+  - { action: media.next, key: XF86AudioNext }
+  - { action: media.prev, key: XF86AudioPrev }
+
+  # system. Draft lock was Mod+L, now monitor.focus right; lock moved.
+  - { action: system.lock, key: Mod+Ctrl+L }
+  - { action: system.quiet, key: Mod+P }
+  - { action: system.notif-center, key: Mod+N }
