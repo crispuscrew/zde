@@ -38,8 +38,8 @@ in
     })
 
     # Laptop hardware. The 0.4 laptop profile (battery widgets, wifi/bt TUIs,
-    # dock re-placement) builds on these; the radios and power daemons are
-    # layer 0, the UIs are layer 1.
+    # workspace placement re-applied on dock/undock) builds on these; the
+    # radios and power daemons are layer 0, the UIs are layer 1.
     (lib.mkIf (cfg.enable && cfg.laptop.enable) {
       # Battery state for the shell; profile switching for power actions.
       services.upower.enable = true;
