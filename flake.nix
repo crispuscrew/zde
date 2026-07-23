@@ -13,7 +13,11 @@
   };
 
   outputs =
-    { self, nixpkgs, home-manager }:
+    {
+      self,
+      nixpkgs,
+      home-manager,
+    }:
     let
       systems = [ "x86_64-linux" ];
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
