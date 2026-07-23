@@ -61,6 +61,7 @@ usable.
 - NixOS: flake evaluates (no nix on the dev host yet), rootless podman
   subuids, Quickshell from its flake, kanata uinput permissions, NVIDIA with
   niri on stable.
+- laptop: power-profiles-daemon vs TLP on real battery life.
 
 ## Cross-cutting
 

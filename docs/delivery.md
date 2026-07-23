@@ -6,12 +6,16 @@ How zde reaches a machine. Frozen 2026-07-22.
 
 | Layer | Contains | Owned by |
 |---|---|---|
-| 0 system | kernel, drivers/firmware, modprobe options, podman + subuids, greetd, PipeWire, portals, kanata permissions, nix | `nix/system.nix` (NixOS) or `install.sh` (portable) |
+| 0 system | kernel, drivers/firmware, modprobe options, podman + subuids, greetd, PipeWire, portals, kanata permissions, laptop hardware (power, radios), nix | `nix/system.nix` (NixOS) or `install.sh` (portable) |
 | 1 user env | niri config (generated keymap), zded, shell, zinc tools, fonts, theme | `nix/home.nix` - one module, shared by both paths |
 | 2 apps | zinc containers, app YAMLs, desk manifests | zcr at first run; digest-pinned |
 
 Layer 1 is the same home-manager module everywhere, so "which distro" only
 affects layer 0.
+
+Laptop hardware (upower, power profiles, wifi/bt radios) is a toggle in the
+system module: `zde.laptop.enable`. Desktops leave it off; the 0.4 laptop
+profile (roadmap) builds its UIs on top of it in layer 1.
 
 ## Reference platform: NixOS
 
