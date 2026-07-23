@@ -123,7 +123,7 @@ func checkChord(chord string) error {
 		hasMod = hasMod || m == "Mod"
 	}
 	if !hasMod && !hardwareKey(key) {
-		return fmt.Errorf("chord %q: zde binds go through Mod (vision.md, principle 2)", chord)
+		return fmt.Errorf("chord %q: zde binds go through Mod (docs/vision.md, principle 2)", chord)
 	}
 	return nil
 }
