@@ -7,8 +7,8 @@ attribution; asks 5-6 land with their consumers.
 ## 0.1 - Foundation: desks + attn (proves the model)
 
 - zded: journal, IPC, name-as-ownership, commons band.
-- desk: manifests, switch/pick/snapshot/reconcile, adoption, band clamp,
-  last-active restore.
+- desk: manifests, switcher/switch/next/prev/snapshot/reconcile, adoption,
+  band clamp, last-active restore.
 - attn: zded as notification server; queue (actions, `zde queue add`, urgent
   hints); queue-jump; work/focus/quiet modes.
 - keymap: generated niri binds (Normal only) + generated cheatsheet.
@@ -54,6 +54,9 @@ usable.
 
 - niri: runtime workspace renaming (adoption + monitor moves);
   block-out-from granularity; mode mechanism (config-swap vs input layer).
+- keymap: niri key-name casing for punctuation (grave, brackets, semicolon,
+  comma, period); desk next/prev ordering; the panic/block leader sequences
+  (Mod+Escape then L, Mod+Tab then L) via the input daemon, not niri.
 - caps:hyper landing in a usable modifier (stock xkb folds Hyper into Mod4).
 - kanata mouse-button interception (fallback: evsieve).
 - Quickshell under multi-monitor hotplug (swap path exists).

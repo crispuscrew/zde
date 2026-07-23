@@ -7,10 +7,12 @@ import (
 
 const sample = `
 binds:
-  - { action: desk.pick, key: Mod+D }
-  - { action: workspace.go 3, key: Mod+3 }
-  - { action: window.focus left, key: Mod+Left }
+  - { action: desk.switcher, key: Mod+Tab }
+  - { action: desk.next, key: Mod+J }
+  - { action: window.focus left, key: Mod+H }
+  - { action: window.narrower, key: Mod+Ctrl+H }
   - { action: app.launch terminal, key: Mod+T }
+  - { action: app.launch-at editor, key: Mod+Shift+E }
   - { action: media.play-pause, key: XF86AudioPlay }
 `
 
@@ -21,10 +23,12 @@ func TestEmitKDL(t *testing.T) {
 	}
 	want := `// ` + header + `
 binds {
-    Mod+D { spawn "zde" "desk" "pick"; }
-    Mod+3 { focus-workspace 3; }
-    Mod+Left { focus-column-left; }
+    Mod+Tab { spawn "zde" "desk" "switcher"; }
+    Mod+J { spawn "zde" "desk" "next"; }
+    Mod+H { focus-column-left; }
+    Mod+Ctrl+H { set-column-width "-10%"; }
     Mod+T { spawn "zde" "app" "launch" "terminal"; }
+    Mod+Shift+E { spawn "zde" "app" "launch-at" "editor"; }
     XF86AudioPlay { spawn "zde" "media" "play-pause"; }
 }
 `
@@ -41,9 +45,10 @@ func TestEmitCheatsheet(t *testing.T) {
 	got := EmitCheatsheet(km)
 	for _, want := range []string{
 		"## desk",
-		"| `Mod+D` | `desk.pick` | open the desk picker |",
-		"| `Mod+3` | `workspace.go 3` | focus workspace 3 |",
+		"| `Mod+Tab` | `desk.switcher` | open the desk switcher |",
+		"| `Mod+H` | `window.focus left` | focus the column to the left |",
 		"| `Mod+T` | `app.launch terminal` | launch terminal |",
+		"| `Mod+Shift+E` | `app.launch-at editor` | prompt for a location, then launch editor |",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("cheatsheet is missing %q:\n%s", want, got)
@@ -60,10 +65,9 @@ func TestErrors(t *testing.T) {
 		name, yaml, want string
 	}{
 		{"unknown action", `binds: [{ action: desk.frobnicate, key: Mod+D }]`, "unknown action"},
-		{"duplicate chord", "binds:\n  - { action: desk.pick, key: Mod+D }\n  - { action: desk.zen, key: Mod+D }", "bound to both"},
-		{"no Mod", `binds: [{ action: desk.pick, key: Ctrl+D }]`, "go through Mod"},
-		{"unknown modifier", `binds: [{ action: desk.pick, key: Hyper+D }]`, "unknown modifier"},
-		{"bad workspace number", `binds: [{ action: workspace.go zero, key: Mod+D }]`, "workspace number"},
+		{"duplicate chord", "binds:\n  - { action: desk.switcher, key: Mod+D }\n  - { action: desk.zen, key: Mod+D }", "bound to both"},
+		{"no Mod", `binds: [{ action: desk.switcher, key: Ctrl+D }]`, "go through Mod"},
+		{"unknown modifier", `binds: [{ action: desk.switcher, key: Hyper+D }]`, "unknown modifier"},
 		{"bad app name", `binds: [{ action: app.launch UPPER, key: Mod+D }]`, "lowercase name"},
 		{"empty", `binds: []`, "no binds"},
 	}
@@ -74,6 +78,14 @@ func TestErrors(t *testing.T) {
 				t.Errorf("got %v, want error containing %q", err, c.want)
 			}
 		})
+	}
+}
+
+// A hardware media/volume key with no modifier is allowed; a Mod-less letter
+// is not.
+func TestHardwareKeysBypassMod(t *testing.T) {
+	if _, err := Parse([]byte(`binds: [{ action: media.next, key: XF86AudioNext }]`)); err != nil {
+		t.Errorf("hardware key should be allowed without Mod: %v", err)
 	}
 }
 

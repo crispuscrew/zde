@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -91,16 +90,8 @@ func resolve(src sourceBind) (Bind, error) {
 }
 
 func checkArg(e Entry, arg string) error {
-	switch e.Arg {
-	case argNum:
-		n, err := strconv.Atoi(arg)
-		if err != nil || n < 1 || n > 50 {
-			return fmt.Errorf("argument %q: want a workspace number", arg)
-		}
-	case argName:
-		if !nameArg.MatchString(arg) {
-			return fmt.Errorf("argument %q: want a lowercase name", arg)
-		}
+	if e.Arg == argName && !nameArg.MatchString(arg) {
+		return fmt.Errorf("argument %q: want a lowercase name", arg)
 	}
 	return nil
 }

@@ -101,13 +101,13 @@ Modes gate which actions are live.
 
 | Group | Actions |
 |---|---|
-| desk | `pick`, `switch <name>`, `queue-jump`, `previous`, `commons`, `move-window-to-desk`, `snapshot`, `reconcile`, `pause`, `panic`, `guest <name>`, `zen` |
+| desk | `switcher`, `switch <name>`, `next`, `prev`, `last`, `queue-jump`, `commons`, `move-window-next`, `move-window-prev`, `move-window-to-desk <name>`, `snapshot`, `reconcile`, `pause`, `panic`, `block`, `guest <name>`, `zen` |
 | monitor | `focus <dir>`, `move-window <dir>`, `move-workspace <dir>` |
-| workspace | `next`/`prev` (band-clamped), `go <n>`, `move-window <n|next|prev>`, `overview` |
+| workspace | `next`/`prev` (band-clamped), `overview` |
 | window | `focus <dir>`, `move <dir>`, `resize`, `preset-width`, `consume`/`expel`, `float`, `fullscreen`, `close`, `capture-block`, `jump` (fuzzy over all windows; travels the hierarchy) |
-| launch | `launcher.open` (zlg), `palette.open`, `app.launch <name>`, `app.launch-here` (context fills the slot), `app.jump-or-launch`, `app.new-instance` (always fresh) |
+| launch | `launcher.open` (zlg), `palette.open` (run any action by name), `app.launch <name>`, `app.launch-at <name>` (prompts for a directory), `app.launch-here` (context fills the slot), `app.jump-or-launch`, `app.new-instance` (always fresh) |
 | ask | `oneshot`, `panel`, `escalate`, `local` |
-| pass | `type` (trusted window only) |
+| pass | `open` (trusted secrets window; types into the focused field, never the clipboard), `type` (trusted window only) |
 | clip | `history`, `clear` |
 | capture | `shot-region`, `shot-window`, `shot-full`, `replay-clip`, `send-to <target>` |
 | media | `play-pause`, `next`, `prev`, `like`, `download`, `target-pick`, `target-next`, `target-pin` |
