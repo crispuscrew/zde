@@ -25,7 +25,7 @@ binds:
   - { action: desk.move-window-next, key: Mod+Shift+Down }
   - { action: desk.move-window-prev, key: Mod+Shift+k }
   - { action: desk.move-window-prev, key: Mod+Shift+Up }
-  - { action: desk.last, key: Mod+Escape } # return to previous desk - frequent
+  - { action: desk.last, key: Mod+Shift+Tab } # return to previous desk (frequent); pairs with the switcher on Tab
   - { action: desk.queue-jump, key: Mod+u }
   - { action: desk.regulars, key: Mod+r }
   - { action: desk.zen, key: Mod+Shift+z }
