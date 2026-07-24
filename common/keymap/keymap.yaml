@@ -106,8 +106,8 @@ binds:
   - { action: system.brightness-up, key: XF86MonBrightnessUp }
   - { action: system.quiet, key: Mod+q } # q = quiet
   - { action: system.power, key: Mod+Shift+x }
-  - { action: system.connections, key: Mod+c }
-  - { action: system.calendar, key: Mod+Shift+c }
+  - { action: system.calendar, key: Mod+c }
+  - { action: system.connections, key: Mod+Shift+c }
   - { action: system.wallpapers, key: Mod+Shift+w }
   - { action: system.help, key: Mod+slash }
   - { action: system.layout-switch, key: Mod+space } # lang switch
