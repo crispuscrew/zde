@@ -19,12 +19,13 @@
 # their Shift variants bind (Shift+z zen, Shift+x power). Do not bind plain z/x.
 
 binds:
-  # desk. Mod+Tab is the switcher; the vertical axis walks the desk order.
+  # desk. Mod+Tab is the switcher; the vertical axis walks windows then desks.
+  # nav.down/up focus a stacked window first, and rotate the desk at the edge.
   - { action: desk.switcher, key: Mod+Tab }
-  - { action: desk.next, key: Mod+j }
-  - { action: desk.next, key: Mod+Down }
-  - { action: desk.prev, key: Mod+k }
-  - { action: desk.prev, key: Mod+Up }
+  - { action: nav.down, key: Mod+j }
+  - { action: nav.down, key: Mod+Down }
+  - { action: nav.up, key: Mod+k }
+  - { action: nav.up, key: Mod+Up }
   - { action: desk.move-window-next, key: Mod+Shift+j }
   - { action: desk.move-window-next, key: Mod+Shift+Down }
   - { action: desk.move-window-prev, key: Mod+Shift+k }
@@ -63,6 +64,9 @@ binds:
   - { action: window.close, key: Mod+grave } # backtick
   - { action: window.jump-to, key: Mod+w }
   - { action: workspace.overview, key: Mod+s }
+  # column stacking: i = in (consume), o = out (expel).
+  - { action: window.consume, key: Mod+i }
+  - { action: window.expel, key: Mod+o }
 
   # monitor. h/l belong to columns now, so monitors take the bracket pair.
   - { action: monitor.focus left, key: Mod+bracketleft }
@@ -87,17 +91,25 @@ binds:
   - { action: clip.history, key: Mod+v }
   - { action: pass.open, key: Mod+Shift+v }
 
-  # media. Hardware transport keys + the control panel on p (player).
+  # capture. Region on Shift+s, full screen on Print, focused window on Ctrl+w.
+  - { action: capture.shot-region, key: Mod+Shift+s }
+  - { action: capture.shot-full, key: Mod+Print }
+  - { action: capture.shot-window, key: Mod+Ctrl+w }
+
+  # media. Panel on p (player); like and the target picker share the cluster.
+  # Transport is on the hardware keys. The target auto-routes by default.
   - { action: media.panel, key: Mod+p }
+  - { action: media.like, key: Mod+Shift+p }
+  - { action: media.target, key: Mod+Ctrl+p }
   - { action: media.play-pause, key: XF86AudioPlay }
   - { action: media.next, key: XF86AudioNext }
   - { action: media.prev, key: XF86AudioPrev }
 
-  # audio.
+  # audio. m is the mode picker now, so mute is Shift+m and the mic is Ctrl+m.
   - { action: audio.vol-up, key: Mod+period }
   - { action: audio.vol-down, key: Mod+comma }
-  - { action: audio.mic-mute, key: Mod+m }
   - { action: audio.mute, key: Mod+Shift+m }
+  - { action: audio.mic-mute, key: Mod+Ctrl+m }
   - { action: audio.vol-up, key: XF86AudioRaiseVolume }
   - { action: audio.vol-down, key: XF86AudioLowerVolume }
   - { action: audio.mute, key: XF86AudioMute }
@@ -117,13 +129,18 @@ binds:
   - { action: system.layout-switch, key: Mod+space } # lang switch
   - { action: system.notif-center, key: Mod+n }
   - { action: system.lock, key: Mod+Ctrl+semicolon } # deliberate combo: no accidental locks
+
+  # net. The observer widget (Shift+n) does the cutting; net.observe is live.
+  - { action: net.observe, key: Mod+Shift+n }
+  # The two quick cuts you described are Mod+Tab-then-n / Mod+Shift+Tab-then-n -
+  # leader sequences that need the input daemon (same as panic/block). Until
+  # then cut from the widget; net.app-cut and net.kill are in the palette.
+  # - { action: net.app-cut, key: ... }   # cut the focused app
+  # - { action: net.kill, key: ... }      # cut all network
+
+  # modes. Mod+m opens the picker; you choose Window / Kb-mouse / One-hand /
+  # Passthrough there. Not functional until the mode daemon lands (verify list),
+  # but the key is reserved and the picker will drive the rest.
+  - { action: modes.menu, key: Mod+m }
   # help also wanted on Mod+h, but h is window.focus left in the grid. Pick one:
   # - { action: system.help, key: Mod+h }
-
-  # modes - not implemented yet (mode mechanism is a verify item). Kept here so
-  # the entry keys are reserved and visible; uncomment when the daemon lands.
-  # Note: Mod+Shift+h collides with window.move left today - resolve then.
-  # - { action: modes.one-hand, key: Mod+Shift+h }
-  # - { action: modes.window, key: ... }
-  # - { action: modes.kb-mouse, key: ... }
-  # - { action: modes.passthrough, key: ... }

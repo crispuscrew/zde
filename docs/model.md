@@ -101,7 +101,7 @@ Modes gate which actions are live.
 
 | Group | Actions |
 |---|---|
-| desk | `switcher`, `switch <name>`, `next`, `prev`, `last`, `queue-jump`, `regulars`, `move-window-next`, `move-window-prev`, `move-window-to-desk <name>`, `snapshot`, `reconcile`, `pause`, `panic`, `block`, `guest <name>`, `zen` |
+| desk | `switcher`, `nav-down`/`nav-up` (focus stacked window, else rotate desk), `switch <name>`, `next`, `prev`, `last`, `queue-jump`, `regulars`, `move-window-next`, `move-window-prev`, `move-window-to-desk <name>`, `snapshot`, `reconcile`, `pause`, `panic`, `block`, `guest <name>`, `zen` |
 | monitor | `focus <dir>`, `move-window <dir>`, `move-workspace <dir>` |
 | workspace | `next`/`prev` (band-clamped), `overview` |
 | window | `focus <dir>`, `move <dir>`, `resize`, `preset-width`, `consume`/`expel`, `float`, `fullscreen`, `close`, `capture-block`, `jump-to` (fuzzy over all windows; travels the hierarchy) |
@@ -113,7 +113,7 @@ Modes gate which actions are live.
 | media | `play-pause`, `next`, `prev`, `panel`, `like`, `download`, `target-pick`, `target-next`, `target-pin` |
 | audio | `vol-up`, `vol-down`, `mute`, `app-vol`, `sink-switch`, `app-sink`, `mic-mute` |
 | net | `observe`, `kill` (global toggle, loud bar state), `app-cut <app>` |
-| modes | `normal`, `window`, `kb-mouse`, `one-hand`, `passthrough` |
+| modes | `menu` (pick a mode), `normal`, `window`, `kb-mouse`, `one-hand`, `passthrough` |
 | system | `lock`, `lock-preset` (switch BEFORE lock), `power`, `quiet`, `connections` (bt/wifi/eth), `calendar`, `wallpapers`, `brightness-up`/`brightness-dn`, `help`, `notif-center`, `doctor`, `update`, `layout-switch` (native) |
 
 Launch placement: manifest pin first; else adoption (focused workspace,
