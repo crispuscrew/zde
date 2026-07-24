@@ -13,6 +13,10 @@
 #
 # Hyper chords wait for the caps:hyper verify item; modes beyond Normal wait
 # for the mode-mechanism verify item.
+#
+# Reserved: plain Mod+z and Mod+x stay UNBOUND on purpose. They sit under the
+# resting hand next to the Mod/Ctrl/Shift cluster and get brushed, so only
+# their Shift variants bind (Shift+z zen, Shift+x power). Do not bind plain z/x.
 
 binds:
   # desk. Mod+Tab is the switcher; the vertical axis walks the desk order.
@@ -112,6 +116,7 @@ binds:
   - { action: system.help, key: Mod+slash }
   - { action: system.layout-switch, key: Mod+space } # lang switch
   - { action: system.notif-center, key: Mod+n }
+  - { action: system.lock, key: Mod+Ctrl+semicolon } # deliberate combo: no accidental locks
   # help also wanted on Mod+h, but h is window.focus left in the grid. Pick one:
   # - { action: system.help, key: Mod+h }
 
