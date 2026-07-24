@@ -8,11 +8,11 @@ import (
 const sample = `
 binds:
   - { action: desk.switcher, key: Mod+Tab }
-  - { action: desk.next, key: Mod+J }
-  - { action: window.focus left, key: Mod+H }
-  - { action: window.narrower, key: Mod+Ctrl+H }
-  - { action: app.launch terminal, key: Mod+T }
-  - { action: app.launch-at editor, key: Mod+Shift+E }
+  - { action: desk.next, key: Mod+j }
+  - { action: window.focus left, key: Mod+h }
+  - { action: window.narrower, key: Mod+Ctrl+h }
+  - { action: app.launch terminal, key: Mod+t }
+  - { action: app.launch-at editor, key: Mod+Shift+e }
   - { action: media.play-pause, key: XF86AudioPlay }
 `
 
@@ -24,11 +24,11 @@ func TestEmitKDL(t *testing.T) {
 	want := `// ` + header + `
 binds {
     Mod+Tab { spawn "zde" "desk" "switcher"; }
-    Mod+J { spawn "zde" "desk" "next"; }
-    Mod+H { focus-column-left; }
-    Mod+Ctrl+H { set-column-width "-10%"; }
-    Mod+T { spawn "zde" "app" "launch" "terminal"; }
-    Mod+Shift+E { spawn "zde" "app" "launch-at" "editor"; }
+    Mod+j { spawn "zde" "desk" "next"; }
+    Mod+h { focus-column-left; }
+    Mod+Ctrl+h { set-column-width "-10%"; }
+    Mod+t { spawn "zde" "app" "launch" "terminal"; }
+    Mod+Shift+e { spawn "zde" "app" "launch-at" "editor"; }
     XF86AudioPlay { spawn "zde" "media" "play-pause"; }
 }
 `
@@ -46,9 +46,9 @@ func TestEmitCheatsheet(t *testing.T) {
 	for _, want := range []string{
 		"## desk",
 		"| `Mod+Tab` | `desk.switcher` | open the desk switcher |",
-		"| `Mod+H` | `window.focus left` | focus the column to the left |",
-		"| `Mod+T` | `app.launch terminal` | launch terminal |",
-		"| `Mod+Shift+E` | `app.launch-at editor` | prompt for a location, then launch editor |",
+		"| `Mod+h` | `window.focus left` | focus the column to the left |",
+		"| `Mod+t` | `app.launch terminal` | launch terminal |",
+		"| `Mod+Shift+e` | `app.launch-at editor` | prompt for a location, then launch editor |",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("cheatsheet is missing %q:\n%s", want, got)
@@ -64,11 +64,12 @@ func TestErrors(t *testing.T) {
 	cases := []struct {
 		name, yaml, want string
 	}{
-		{"unknown action", `binds: [{ action: desk.frobnicate, key: Mod+D }]`, "unknown action"},
-		{"duplicate chord", "binds:\n  - { action: desk.switcher, key: Mod+D }\n  - { action: desk.zen, key: Mod+D }", "bound to both"},
-		{"no Mod", `binds: [{ action: desk.switcher, key: Ctrl+D }]`, "go through Mod"},
-		{"unknown modifier", `binds: [{ action: desk.switcher, key: Hyper+D }]`, "unknown modifier"},
-		{"bad app name", `binds: [{ action: app.launch UPPER, key: Mod+D }]`, "lowercase name"},
+		{"unknown action", `binds: [{ action: desk.frobnicate, key: Mod+d }]`, "unknown action"},
+		{"duplicate chord", "binds:\n  - { action: desk.switcher, key: Mod+d }\n  - { action: desk.zen, key: Mod+d }", "bound to both"},
+		{"no Mod", `binds: [{ action: desk.switcher, key: Ctrl+d }]`, "go through Mod"},
+		{"unknown modifier", `binds: [{ action: desk.switcher, key: Hyper+d }]`, "unknown modifier"},
+		{"uppercase letter", `binds: [{ action: desk.switcher, key: Mod+J }]`, "lowercase"},
+		{"bad app name", `binds: [{ action: app.launch UPPER, key: Mod+d }]`, "lowercase name"},
 		{"empty", `binds: []`, "no binds"},
 	}
 	for _, c := range cases {

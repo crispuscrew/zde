@@ -106,6 +106,11 @@ func checkChord(chord string) error {
 	if key == "" {
 		return fmt.Errorf("chord %q: empty key", chord)
 	}
+	// Vim notation: a bare letter is the unshifted key. "J" already implies
+	// Shift, so spell it Mod+Shift+j and keep the base key lowercase.
+	if len(key) == 1 && key[0] >= 'A' && key[0] <= 'Z' {
+		return fmt.Errorf("chord %q: write the base key lowercase (Mod+Shift+%s, not %s)", chord, strings.ToLower(key), key)
+	}
 	hasMod := false
 	for _, m := range parts[:len(parts)-1] {
 		if !mods[m] {

@@ -32,8 +32,9 @@ var groups = []string{
 	"ask",
 	"pass",
 	"clip",
-	"audio",
 	"media",
+	"audio",
+	"modes",
 	"system",
 }
 
@@ -49,8 +50,9 @@ var registry = map[string]Entry{
 	"desk.move-window-next": {Group: "desk", Desc: "move the window to the next desk", Spawn: []string{"zde", "desk", "move-window", "next"}},
 	"desk.move-window-prev": {Group: "desk", Desc: "move the window to the previous desk", Spawn: []string{"zde", "desk", "move-window", "prev"}},
 	"desk.queue-jump":       {Group: "desk", Desc: "jump to the queue's top item", Spawn: []string{"zde", "desk", "queue-jump"}},
-	"desk.commons":          {Group: "desk", Desc: "go to the commons (shared singletons: comms, music, personal browser)", Spawn: []string{"zde", "desk", "commons"}},
+	"desk.regulars":         {Group: "desk", Desc: "go to the regulars (shared singletons: comms, music, personal browser)", Spawn: []string{"zde", "desk", "regulars"}},
 	"desk.panic":            {Group: "desk", Desc: "panic: decoy desk, mute, silence", Spawn: []string{"zde", "desk", "panic"}},
+	"desk.block":            {Group: "desk", Desc: "block: hard lock, no notifications or capture leak", Spawn: []string{"zde", "desk", "block"}},
 	"desk.zen":              {Group: "desk", Desc: "toggle zen (content only)", Spawn: []string{"zde", "desk", "zen"}},
 
 	// monitor: niri natives. The window axis owns h/l, so monitors get their
@@ -60,7 +62,7 @@ var registry = map[string]Entry{
 	"monitor.move-window left":  {Group: "monitor", Desc: "move the window one monitor left", Native: "move-window-to-monitor-left"},
 	"monitor.move-window right": {Group: "monitor", Desc: "move the window one monitor right", Native: "move-window-to-monitor-right"},
 
-	// window: niri natives except jump, which travels the whole hierarchy.
+	// window: niri natives except jump-to, which travels the whole hierarchy.
 	// The h/l/arrows grid: plain focus, Shift moves, Ctrl resizes. Vertical
 	// window ops (focus/move up-down within a column) and consume/expel are
 	// column-stacking tools; unbound for now, reachable through the palette,
@@ -77,12 +79,12 @@ var registry = map[string]Entry{
 	"window.wider":       {Group: "window", Desc: "make the column wider", Native: "set-column-width \"+10%\""},
 	"window.shorter":     {Group: "window", Desc: "make the window shorter", Native: "set-window-height \"-10%\""},
 	"window.taller":      {Group: "window", Desc: "make the window taller", Native: "set-window-height \"+10%\""},
-	"window.float":       {Group: "window", Desc: "toggle floating", Native: "toggle-window-floating"},
 	"window.fullscreen":  {Group: "window", Desc: "fullscreen", Native: "fullscreen-window"},
+	"window.float":       {Group: "window", Desc: "toggle floating", Native: "toggle-window-floating"},
 	"window.close":       {Group: "window", Desc: "close the window", Native: "close-window"},
 	"window.consume":     {Group: "window", Desc: "pull the next window into this column (stack them)", Native: "consume-window-into-column"},
 	"window.expel":       {Group: "window", Desc: "push the window out of its column", Native: "expel-window-from-column"},
-	"window.jump":        {Group: "window", Desc: "jump to any open window by name", Spawn: []string{"zde", "window", "jump"}},
+	"window.jump-to":     {Group: "window", Desc: "jump to any open window by name", Spawn: []string{"zde", "window", "jump-to"}},
 
 	// workspace: niri natives. Numbered switching is gone (desks replace it);
 	// overview zooms out to the whole band.
@@ -109,20 +111,38 @@ var registry = map[string]Entry{
 	// clip.
 	"clip.history": {Group: "clip", Desc: "clipboard history", Spawn: []string{"zde", "clip", "history"}},
 
+	// media: through zde so the media target decides who plays
+	// (docs/vision.md, media targeting). The panel is the full control surface.
+	"media.play-pause": {Group: "media", Desc: "play/pause the media target", Spawn: []string{"zde", "media", "play-pause"}},
+	"media.next":       {Group: "media", Desc: "next track on the media target", Spawn: []string{"zde", "media", "next"}},
+	"media.prev":       {Group: "media", Desc: "previous track on the media target", Spawn: []string{"zde", "media", "prev"}},
+	"media.panel":      {Group: "media", Desc: "the music control panel", Spawn: []string{"zde", "media", "panel"}},
+
 	// audio: raw wpctl until zde audio lands; the OSD comes with the shell.
 	"audio.vol-up":   {Group: "audio", Desc: "volume up", Spawn: []string{"wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%+"}},
 	"audio.vol-down": {Group: "audio", Desc: "volume down", Spawn: []string{"wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%-"}},
 	"audio.mute":     {Group: "audio", Desc: "mute the output", Spawn: []string{"wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"}},
 	"audio.mic-mute": {Group: "audio", Desc: "mute the mic", Spawn: []string{"wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"}},
 
-	// media: through zde so the media target decides who plays
-	// (docs/vision.md, media targeting).
-	"media.play-pause": {Group: "media", Desc: "play/pause the media target", Spawn: []string{"zde", "media", "play-pause"}},
-	"media.next":       {Group: "media", Desc: "next track on the media target", Spawn: []string{"zde", "media", "next"}},
-	"media.prev":       {Group: "media", Desc: "previous track on the media target", Spawn: []string{"zde", "media", "prev"}},
+	// modes: not wired yet - the mode mechanism is a verify item
+	// (docs/roadmap.md). Registered so the commented binds in keymap.yaml
+	// just work once the input daemon lands.
+	"modes.window":      {Group: "modes", Desc: "enter Window mode", Spawn: []string{"zde", "mode", "window"}},
+	"modes.kb-mouse":    {Group: "modes", Desc: "enter Keyboard-mouse mode", Spawn: []string{"zde", "mode", "kb-mouse"}},
+	"modes.one-hand":    {Group: "modes", Desc: "enter One-hand mode", Spawn: []string{"zde", "mode", "one-hand"}},
+	"modes.passthrough": {Group: "modes", Desc: "enter Passthrough mode", Spawn: []string{"zde", "mode", "passthrough"}},
 
-	// system.
-	"system.lock":         {Group: "system", Desc: "lock the screen", Spawn: []string{"zde", "system", "lock"}},
-	"system.quiet":        {Group: "system", Desc: "toggle quiet (do not disturb)", Spawn: []string{"zde", "system", "quiet"}},
-	"system.notif-center": {Group: "system", Desc: "the notification center", Spawn: []string{"zde", "system", "notif-center"}},
+	// system: raw tools until zde grows its own (brightnessctl now; layout
+	// switch is a niri native). The rest routes through zde.
+	"system.lock":          {Group: "system", Desc: "lock the screen", Spawn: []string{"zde", "system", "lock"}},
+	"system.quiet":         {Group: "system", Desc: "toggle quiet (do not disturb)", Spawn: []string{"zde", "system", "quiet"}},
+	"system.power":         {Group: "system", Desc: "the power menu", Spawn: []string{"zde", "system", "power"}},
+	"system.connections":   {Group: "system", Desc: "connections: bluetooth, wifi, ethernet", Spawn: []string{"zde", "system", "connections"}},
+	"system.calendar":      {Group: "system", Desc: "the calendar and clock widget", Spawn: []string{"zde", "system", "calendar"}},
+	"system.wallpapers":    {Group: "system", Desc: "the wallpapers widget", Spawn: []string{"zde", "system", "wallpapers"}},
+	"system.help":          {Group: "system", Desc: "the help widget (the keybind cheatsheet)", Spawn: []string{"zde", "help"}},
+	"system.brightness-up": {Group: "system", Desc: "brightness up", Spawn: []string{"brightnessctl", "set", "5%+"}},
+	"system.brightness-dn": {Group: "system", Desc: "brightness down", Spawn: []string{"brightnessctl", "set", "5%-"}},
+	"system.layout-switch": {Group: "system", Desc: "switch keyboard layout (language)", Native: "switch-layout \"next\""},
+	"system.notif-center":  {Group: "system", Desc: "the notification center", Spawn: []string{"zde", "system", "notif-center"}},
 }

@@ -9,7 +9,7 @@ paragraph, it gets an entry here or it does not ship.
 | **workspace** | niri's unit: an endless horizontal strip of columns on one monitor |
 | **column** | one or more windows stacked vertically, side by side within a workspace |
 | **desk** | saved state of ALL monitors at once: workspaces + apps + policies |
-| **commons** | reserved desk name; its workspaces are reachable from every desk (singletons: comms, music, personal browser) |
+| **regulars** | reserved desk name; its workspaces are reachable from every desk (singletons: comms, music, personal browser) |
 | **app** | a zinc-sandboxed application (one YAML file) |
 | **instance** | one running copy of an app (`app@name`); same config, own state |
 | **inherited app** | an app YAML that extends another (`Inherits:`); its own security posture |

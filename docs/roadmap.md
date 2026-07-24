@@ -6,7 +6,7 @@ attribution; asks 5-6 land with their consumers.
 
 ## 0.1 - Foundation: desks + attn (proves the model)
 
-- zded: journal, IPC, name-as-ownership, commons band.
+- zded: journal, IPC, name-as-ownership, regulars band.
 - desk: manifests, switcher/switch/next/prev/snapshot/reconcile, adoption,
   band clamp, last-active restore.
 - attn: zded as notification server; queue (actions, `zde queue add`, urgent
@@ -35,7 +35,7 @@ attribution; asks 5-6 land with their consumers.
 - resources: `desk.pause`, background policies, per-desk cost widgets.
 - netview: per-app connections/rates, nft counters (zinc ask 6), `app-cut`.
 - per-project browsers via `Inherits:` (ask 5) + `zde new`.
-- commons polish: focus-mode comms filtering.
+- regulars polish: focus-mode comms filtering.
 
 ## 0.4 - Media, gaming, laptop
 

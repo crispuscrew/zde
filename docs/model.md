@@ -38,10 +38,10 @@ Frozen 2026-07-22. Terms: [`glossary.md`](glossary.md). Rationale:
 
 ```
 <desk>.<monitor>.<label-or-n>     vshop.DP-1.code   vshop.HDMI-A-1.1
-commons.<monitor>.<n>             commons.DP-1.1
+regulars.<monitor>.<n>            regulars.DP-1.1
 ```
 
-The commons band is reachable from any desk. The mapping is self-describing
+The regulars band is reachable from any desk. The mapping is self-describing
 and crash-proof:
 zded rebuilds the whole desk map from the names alone. The journal keeps only
 what names cannot: last-active position per desk, queue, media target, mode.
@@ -49,7 +49,7 @@ The bar shows the friendly part.
 
 ## 4. Invariants
 
-1. A workspace belongs to exactly one desk (or the commons) and is shown on
+1. A workspace belongs to exactly one desk (or the regulars) and is shown on
    exactly one monitor at a time. Windows and whole workspaces move freely
    between monitors (monitor action group; zded renames a moved workspace so
    the name stays truthful). Only simultaneous display on two monitors is
@@ -101,20 +101,20 @@ Modes gate which actions are live.
 
 | Group | Actions |
 |---|---|
-| desk | `switcher`, `switch <name>`, `next`, `prev`, `last`, `queue-jump`, `commons`, `move-window-next`, `move-window-prev`, `move-window-to-desk <name>`, `snapshot`, `reconcile`, `pause`, `panic`, `block`, `guest <name>`, `zen` |
+| desk | `switcher`, `switch <name>`, `next`, `prev`, `last`, `queue-jump`, `regulars`, `move-window-next`, `move-window-prev`, `move-window-to-desk <name>`, `snapshot`, `reconcile`, `pause`, `panic`, `block`, `guest <name>`, `zen` |
 | monitor | `focus <dir>`, `move-window <dir>`, `move-workspace <dir>` |
 | workspace | `next`/`prev` (band-clamped), `overview` |
-| window | `focus <dir>`, `move <dir>`, `resize`, `preset-width`, `consume`/`expel`, `float`, `fullscreen`, `close`, `capture-block`, `jump` (fuzzy over all windows; travels the hierarchy) |
+| window | `focus <dir>`, `move <dir>`, `resize`, `preset-width`, `consume`/`expel`, `float`, `fullscreen`, `close`, `capture-block`, `jump-to` (fuzzy over all windows; travels the hierarchy) |
 | launch | `launcher.open` (zlg), `palette.open` (run any action by name), `app.launch <name>`, `app.launch-at <name>` (prompts for a directory), `app.launch-here` (context fills the slot), `app.jump-or-launch`, `app.new-instance` (always fresh) |
 | ask | `oneshot`, `panel`, `escalate`, `local` |
 | pass | `open` (trusted secrets window; types into the focused field, never the clipboard), `type` (trusted window only) |
 | clip | `history`, `clear` |
 | capture | `shot-region`, `shot-window`, `shot-full`, `replay-clip`, `send-to <target>` |
-| media | `play-pause`, `next`, `prev`, `like`, `download`, `target-pick`, `target-next`, `target-pin` |
+| media | `play-pause`, `next`, `prev`, `panel`, `like`, `download`, `target-pick`, `target-next`, `target-pin` |
 | audio | `vol-up`, `vol-down`, `mute`, `app-vol`, `sink-switch`, `app-sink`, `mic-mute` |
 | net | `observe`, `kill` (global toggle, loud bar state), `app-cut <app>` |
 | modes | `normal`, `window`, `kb-mouse`, `one-hand`, `passthrough` |
-| system | `lock`, `lock-preset` (switch BEFORE lock), `power`, `quiet`, `notif-center`, `doctor`, `update`, `layout-switch` (native) |
+| system | `lock`, `lock-preset` (switch BEFORE lock), `power`, `quiet`, `connections` (bt/wifi/eth), `calendar`, `wallpapers`, `brightness-up`/`brightness-dn`, `help`, `notif-center`, `doctor`, `update`, `layout-switch` (native) |
 
 Launch placement: manifest pin first; else adoption (focused workspace,
 current scroll position, active desk); guest mode restricts launching to the

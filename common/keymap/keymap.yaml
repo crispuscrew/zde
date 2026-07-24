@@ -2,6 +2,9 @@
 # in the generator registry (internal/keymap/registry.go). Normal mode only
 # until the mode mechanism is verified (docs/roadmap.md, verify list).
 #
+# Notation is vim: the base key is lowercase, Shift is explicit. Mod+j is the
+# j key; Mod+Shift+j is Shift held. (Mod+J is rejected - J already means Shift.)
+#
 # The grid. hjkl and the arrows are one scheme:
 #   plain   -> navigate   (h/l = columns, j/k = desks)
 #   +Shift  -> move       (bring the focused window along)
@@ -14,45 +17,48 @@
 binds:
   # desk. Mod+Tab is the switcher; the vertical axis walks the desk order.
   - { action: desk.switcher, key: Mod+Tab }
-  - { action: desk.next, key: Mod+J }
+  - { action: desk.next, key: Mod+j }
   - { action: desk.next, key: Mod+Down }
-  - { action: desk.prev, key: Mod+K }
+  - { action: desk.prev, key: Mod+k }
   - { action: desk.prev, key: Mod+Up }
-  - { action: desk.move-window-next, key: Mod+Shift+J }
+  - { action: desk.move-window-next, key: Mod+Shift+j }
   - { action: desk.move-window-next, key: Mod+Shift+Down }
-  - { action: desk.move-window-prev, key: Mod+Shift+K }
+  - { action: desk.move-window-prev, key: Mod+Shift+k }
   - { action: desk.move-window-prev, key: Mod+Shift+Up }
-  - { action: desk.queue-jump, key: Mod+U } # decided in design: queue-jump on Super+u
-  - { action: desk.commons, key: Mod+C }
-  - { action: desk.zen, key: Mod+Shift+Z }
+  - { action: desk.last, key: Mod+Escape } # return to previous desk - frequent
+  - { action: desk.queue-jump, key: Mod+u }
+  - { action: desk.regulars, key: Mod+r }
+  - { action: desk.zen, key: Mod+Shift+z }
   # panic: single chord for now. The described Mod+Escape-then-L / Mod+Tab-then-L
-  # sequences need the input daemon (roadmap: modes); block lands with it.
+  # sequences (panic + block) need the input daemon (roadmap: modes).
   - { action: desk.panic, key: Mod+Shift+Escape }
+  # - { action: desk.block, key: ... }   # leader sequence, needs the input daemon
 
-  # window. The horizontal axis: focus / move / resize columns.
-  - { action: window.focus left, key: Mod+H }
+  # window. Horizontal axis: focus / move / resize columns.
+  - { action: window.focus left, key: Mod+h }
   - { action: window.focus left, key: Mod+Left }
-  - { action: window.focus right, key: Mod+L }
+  - { action: window.focus right, key: Mod+l }
   - { action: window.focus right, key: Mod+Right }
-  - { action: window.move left, key: Mod+Shift+H }
+  - { action: window.move left, key: Mod+Shift+h }
   - { action: window.move left, key: Mod+Shift+Left }
-  - { action: window.move right, key: Mod+Shift+L }
+  - { action: window.move right, key: Mod+Shift+l }
   - { action: window.move right, key: Mod+Shift+Right }
-  - { action: window.narrower, key: Mod+Ctrl+H }
+  - { action: window.narrower, key: Mod+Ctrl+h }
   - { action: window.narrower, key: Mod+Ctrl+Left }
-  - { action: window.wider, key: Mod+Ctrl+L }
+  - { action: window.wider, key: Mod+Ctrl+l }
   - { action: window.wider, key: Mod+Ctrl+Right }
   # vertical resize shares the axis desks navigate (plain j/k = desk).
-  - { action: window.shorter, key: Mod+Ctrl+J }
+  - { action: window.shorter, key: Mod+Ctrl+j }
   - { action: window.shorter, key: Mod+Ctrl+Down }
-  - { action: window.taller, key: Mod+Ctrl+K }
+  - { action: window.taller, key: Mod+Ctrl+k }
   - { action: window.taller, key: Mod+Ctrl+Up }
-  - { action: window.float, key: Mod+F }
-  - { action: window.fullscreen, key: Mod+Shift+F }
-  - { action: window.fullscreen, key: Mod+F11 } # alternate, per request
+  # fullscreen is the common one, so it takes plain f; float is the rarer, Shift+f.
+  - { action: window.fullscreen, key: Mod+f }
+  - { action: window.fullscreen, key: Mod+F11 }
+  - { action: window.float, key: Mod+Shift+f }
   - { action: window.close, key: Mod+grave } # backtick
-  - { action: window.jump, key: Mod+W }
-  - { action: workspace.overview, key: Mod+S }
+  - { action: window.jump-to, key: Mod+w }
+  - { action: workspace.overview, key: Mod+s }
 
   # monitor. h/l belong to columns now, so monitors take the bracket pair.
   - { action: monitor.focus left, key: Mod+bracketleft }
@@ -62,37 +68,57 @@ binds:
 
   # launch. terminal + editor get a plain and a prompt-for-location variant;
   # "editor" resolves to the configured $EDITOR zinc app, not a fixed one.
-  - { action: launcher.open, key: Mod+G }
+  - { action: launcher.open, key: Mod+g }
   - { action: palette.open, key: Mod+semicolon }
-  - { action: app.launch terminal, key: Mod+T }
-  - { action: app.launch-at terminal, key: Mod+Shift+T }
-  - { action: app.launch editor, key: Mod+E }
-  - { action: app.launch-at editor, key: Mod+Shift+E }
+  - { action: app.launch terminal, key: Mod+t }
+  - { action: app.launch-at terminal, key: Mod+Shift+t }
+  - { action: app.launch editor, key: Mod+e }
+  - { action: app.launch-at editor, key: Mod+Shift+e }
 
   # ask.
-  - { action: ask.oneshot, key: Mod+A }
-  - { action: ask.panel, key: Mod+Shift+A }
+  - { action: ask.oneshot, key: Mod+a }
+  - { action: ask.panel, key: Mod+Shift+a }
 
   # clip + its safe sibling.
-  - { action: clip.history, key: Mod+V }
-  - { action: pass.open, key: Mod+Shift+V }
+  - { action: clip.history, key: Mod+v }
+  - { action: pass.open, key: Mod+Shift+v }
+
+  # media. Hardware transport keys + the control panel on p (player).
+  - { action: media.panel, key: Mod+p }
+  - { action: media.play-pause, key: XF86AudioPlay }
+  - { action: media.next, key: XF86AudioNext }
+  - { action: media.prev, key: XF86AudioPrev }
 
   # audio.
   - { action: audio.vol-up, key: Mod+period }
   - { action: audio.vol-down, key: Mod+comma }
-  - { action: audio.mic-mute, key: Mod+M }
-  - { action: audio.mute, key: Mod+Shift+M }
+  - { action: audio.mic-mute, key: Mod+m }
+  - { action: audio.mute, key: Mod+Shift+m }
   - { action: audio.vol-up, key: XF86AudioRaiseVolume }
   - { action: audio.vol-down, key: XF86AudioLowerVolume }
   - { action: audio.mute, key: XF86AudioMute }
   - { action: audio.mic-mute, key: XF86AudioMicMute }
 
-  # media.
-  - { action: media.play-pause, key: XF86AudioPlay }
-  - { action: media.next, key: XF86AudioNext }
-  - { action: media.prev, key: XF86AudioPrev }
+  # system. Brightness on b (down) / Shift+b (up) + hardware keys.
+  - { action: system.brightness-dn, key: Mod+b }
+  - { action: system.brightness-up, key: Mod+Shift+b }
+  - { action: system.brightness-dn, key: XF86MonBrightnessDown }
+  - { action: system.brightness-up, key: XF86MonBrightnessUp }
+  - { action: system.quiet, key: Mod+q } # q = quiet
+  - { action: system.power, key: Mod+Shift+x }
+  - { action: system.connections, key: Mod+c }
+  - { action: system.calendar, key: Mod+Shift+c }
+  - { action: system.wallpapers, key: Mod+Shift+w }
+  - { action: system.help, key: Mod+slash }
+  - { action: system.layout-switch, key: Mod+space } # lang switch
+  - { action: system.notif-center, key: Mod+n }
+  # help also wanted on Mod+h, but h is window.focus left in the grid. Pick one:
+  # - { action: system.help, key: Mod+h }
 
-  # system.
-  - { action: system.lock, key: Mod+Ctrl+semicolon }
-  - { action: system.quiet, key: Mod+P }
-  - { action: system.notif-center, key: Mod+N }
+  # modes - not implemented yet (mode mechanism is a verify item). Kept here so
+  # the entry keys are reserved and visible; uncomment when the daemon lands.
+  # Note: Mod+Shift+h collides with window.move left today - resolve then.
+  # - { action: modes.one-hand, key: Mod+Shift+h }
+  # - { action: modes.window, key: ... }
+  # - { action: modes.kb-mouse, key: ... }
+  # - { action: modes.passthrough, key: ... }
