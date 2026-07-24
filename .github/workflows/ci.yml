@@ -24,6 +24,12 @@ jobs:
       - name: statix
         run: nix develop --command statix check .
 
+      - name: go test + gofmt
+        run: |
+          nix develop --command go test ./...
+          fmt=$(nix develop --command gofmt -l cmd internal)
+          if [ -n "$fmt" ]; then echo "gofmt needed: $fmt"; exit 1; fi
+
       # nixfmt --check only names the offending file; formatting + diffing
       # prints the exact fix, which matters while no dev host has nix.
       - name: nixfmt

@@ -9,3 +9,8 @@ Third-party material in this repository and the credit its license requires:
 
 - `common/apps/nvim/nvim.png` - the Neovim logo by Jason Long, licensed
   [CC-BY-3.0](https://creativecommons.org/licenses/by/3.0/).
+
+## Vendored Go modules
+
+- `vendor/gopkg.in/yaml.v3` - go-yaml, Apache-2.0 and MIT; its own LICENSE
+  and NOTICE files are kept in place.
