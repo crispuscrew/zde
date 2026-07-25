@@ -12,10 +12,15 @@
     # Quickshell joins when the shell lands.
     niri = {
       url = "github:niri-wm/niri/v26.04";
-      # Built against our nixpkgs, so the compositor and the graphics stack it
-      # talks to come from one place. rust-overlay is upstream's dev-shell
-      # toolchain only; upstream documents dropping it for end users.
-      inputs.nixpkgs.follows = "nixpkgs";
+      # niri keeps its own nixpkgs on purpose: upstream's flake targets
+      # nixpkgs-unstable, and against our 25.05 the install fails - its
+      # postInstall asks installShellFiles for --nushell completions, which
+      # 25.05's hook does not know, and the build dies with an empty log.
+      # Bringing its own dependencies is what pinning it separately is for.
+      # It ships no flake.lock, so the nixpkgs it builds against is resolved
+      # here and pinned in ours; bumping niri moves both.
+      # rust-overlay is upstream's dev-shell toolchain; aiming it at this flake
+      # keeps it unfetched, and nothing we evaluate reads it.
       inputs.rust-overlay.follows = "";
     };
   };
@@ -38,17 +43,23 @@
 
       # Layer 0 (docs/delivery.md). The pinned niri is handed over here rather
       # than inside the module, so the module stays a plain NixOS module - a
-      # consumer who prefers the nixpkgs build only sets zde.niri.package.
-      zdeSystem =
-        {
-          lib,
-          pkgs,
-          ...
-        }:
-        {
-          imports = [ ./nix/system.nix ];
-          zde.niri.package = lib.mkDefault niri.packages.${pkgs.stdenv.hostPlatform.system}.niri;
-        };
+      # consumer who prefers the nixpkgs build only sets zde.niri.package. The
+      # key is what keeps this deduplicated when a config imports it twice, say
+      # from a shared profile and a host; a bare path module gets that for
+      # free, an inline one does not.
+      zdeSystem = {
+        key = "zde:nixosModules.zde";
+        _file = ./flake.nix;
+        imports = [
+          ./nix/system.nix
+          (
+            { lib, pkgs, ... }:
+            {
+              zde.niri.package = lib.mkDefault niri.packages.${pkgs.stdenv.hostPlatform.system}.niri;
+            }
+          )
+        ];
+      };
     in
     {
       nixosModules.zde = zdeSystem;
@@ -61,6 +72,9 @@
         zde-keymap = keymap pkgs;
         zde-config = zdeConfig pkgs;
         default = keymap pkgs;
+        # The pinned compositor, re-exported so that bumping the input is one
+        # command to verify: nix build .#niri. CI never builds it.
+        inherit (niri.packages.${pkgs.stdenv.hostPlatform.system}) niri;
       });
 
       # Built by nix flake check in CI: compiles the tools, assembles the niri
@@ -85,7 +99,10 @@
           # Evaluation only: discarding the string context keeps the system
           # closure out of the build, so this costs an eval and nothing else.
           # It is what catches a bad option or a typo in nix/system.nix and
-          # nix/home.nix, neither of which any other check touches.
+          # nix/home.nix, neither of which any other check touches. A build
+          # failure it cannot catch - that is what nix build .#niri is for.
+          # Evaluating niri does reach the network for its git dependencies,
+          # so this check is not offline-capable.
           zde-nixos-eval = pkgs.runCommand "zde-nixos-eval" { } ''
             echo ${builtins.unsafeDiscardStringContext testHost.config.system.build.toplevel.drvPath} > "$out"
           '';

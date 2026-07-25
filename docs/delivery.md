@@ -25,7 +25,8 @@ profile (roadmap) builds its UIs on top of it in layer 1.
   `boot.extraModprobeConfig`) in the same reviewable file as everything else.
 - A flake with pinned inputs is zinc's digest-pinning applied to the OS.
 - Channel strategy: nixpkgs stable for the base; niri pinned as its own flake
-  input, bumped by hand; Quickshell joins it when the shell lands.
+  input, bringing the dependencies upstream tests against, bumped by hand and
+  checked with `nix build .#niri`; Quickshell joins it when the shell lands.
 
 ## Portable path: any distro
 
@@ -58,4 +59,6 @@ On top of it, layer 0 enables niri from the pinned input and starts it through
 greetd (tuigreet, no graphical display manager), so the machine boots into the
 compositor that reads layer 1's config. `nix flake check` also evaluates a
 throwaway host with both layers on (`nix/test-host.nix`); that eval is the only
-thing catching a module error while no dev host has nix.
+thing catching a module error while no dev host has nix. It never builds the
+compositor, so a pin that does not compile stays invisible to CI: that check is
+`nix build .#niri`, by hand when the pin moves.
