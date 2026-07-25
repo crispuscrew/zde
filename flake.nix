@@ -63,9 +63,10 @@
         default = keymap pkgs;
       });
 
-      # Built by nix flake check in CI: compiles the tools, runs their go
-      # tests, assembles the niri config (catches KDL assembly errors), and
-      # evaluates both layers on a throwaway host.
+      # Built by nix flake check in CI: compiles the tools, assembles the niri
+      # config (catches KDL assembly errors), and evaluates both layers on a
+      # throwaway host. The go tests are their own CI step - this build only
+      # covers cmd/zde-keymap, which has none.
       checks = forAll (
         pkgs:
         let

@@ -24,17 +24,18 @@ in
       # Rootless podman: what zcr runs apps with.
       virtualisation.podman.enable = true;
 
-      # The compositor. Upstream's module installs the wayland-session entry
-      # greetd launches, niri's user units, the portals (gnome, for
-      # screencast), and the desktop basics: polkit, dconf, graphics, fonts.
+      # The compositor. Upstream's module installs niri and its wayland-session
+      # entry, niri's user units, the portals (gnome, for screencast), and the
+      # desktop basics: polkit, dconf, graphics, fonts.
       programs.niri = {
         enable = true;
         inherit (cfg.niri) package;
       };
 
-      # No display manager: greetd on its own VT, tuigreet, then niri-session -
-      # the systemd-integrated entry point niri ships. The session reads
-      # ~/.config/niri/config.kdl, which layer 1 generates from the keymap.
+      # No graphical display manager: greetd on its own VT, tuigreet, then
+      # niri-session, the systemd-integrated entry point niri ships. The
+      # session reads ~/.config/niri/config.kdl, which layer 1 generates from
+      # the keymap.
       services.greetd = {
         enable = true;
         settings.default_session = {
