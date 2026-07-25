@@ -36,8 +36,8 @@ cost is the script alone.
 
 ## Artifacts
 
-- flake outputs: `nixosModules.zde`, `homeModules.zde`, devShell, formatter;
-  later `nixosConfigurations.zde`, the ISO, `checks`.
+- flake outputs: `nixosModules.zde`, `homeModules.zde`, `packages`, `checks`,
+  devShell, formatter; later `nixosConfigurations.zde`, the ISO.
 - `zde.iso`: a NixOS installer preseeded with the zde configuration, CI-built
   and checksummed. Later polish: a live session booting straight into zde.
 - `install.sh`: the portable bootstrapper, checksummed alongside.
@@ -47,3 +47,9 @@ cost is the script alone.
 Flake skeleton first; the home module grows as each 0.1 component lands; the
 ISO and `install.sh` ship once 0.1 is actually usable. An ISO of an
 environment that does not exist yet is pointless.
+
+First landed: the home module generates `~/.config/niri/config.kdl` from
+`common/keymap/keymap.yaml` (a base config plus the generated binds, assembled
+by `nix/zde-config.nix`) and installs the cheatsheet. `nix flake check` builds
+the config, so a broken keymap fails CI. The base config's niri syntax is only
+validated on a real niri (roadmap), since assembly just concatenates it.

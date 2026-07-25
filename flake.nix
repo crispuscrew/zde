@@ -21,17 +21,11 @@
     let
       systems = [ "x86_64-linux" ];
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
-      # zde-keymap: keymap.yaml -> niri binds + cheatsheet. Deps are vendored
-      # (vendorHash null), zinc-style: the build fetches nothing.
-      keymap =
-        pkgs:
-        pkgs.buildGoModule {
-          pname = "zde-keymap";
-          version = "0.1.0";
-          src = self;
-          vendorHash = null;
-          subPackages = [ "cmd/zde-keymap" ];
-        };
+      # zde-keymap generates niri binds + cheatsheet; zde-config assembles the
+      # full niri config.kdl (base + binds). Both are shared with the home
+      # module (nix/*.nix) so the flake and layer 1 build identical output.
+      keymap = pkgs: pkgs.callPackage ./nix/zde-keymap.nix { };
+      zdeConfig = pkgs: pkgs.callPackage ./nix/zde-config.nix { };
     in
     {
       # Layer 0: the system module (NixOS reference platform).
@@ -43,13 +37,15 @@
 
       packages = forAll (pkgs: {
         zde-keymap = keymap pkgs;
+        zde-config = zdeConfig pkgs;
         default = keymap pkgs;
       });
 
-      # Built by nix flake check in CI: compiles the tools and runs their
-      # go tests.
+      # Built by nix flake check in CI: compiles the tools, runs their go
+      # tests, and assembles the niri config (catches KDL assembly errors).
       checks = forAll (pkgs: {
         zde-keymap = keymap pkgs;
+        zde-config = zdeConfig pkgs;
       });
 
       devShells = forAll (pkgs: {
