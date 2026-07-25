@@ -53,7 +53,8 @@ usable.
 ## Verify in prototype
 
 - niri: runtime workspace renaming (adoption + monitor moves);
-  block-out-from granularity; mode mechanism (config-swap vs input layer).
+  block-out-from granularity; mode mechanism (config-swap vs input layer);
+  X11 apps, which need xwayland-satellite (the session leaves XWayland off).
 - keymap: niri key-name casing for punctuation (grave, brackets, semicolon,
   comma, period); desk next/prev ordering; the panic/block leader sequences
   (Mod+Escape then L, Mod+Tab then L) via the input daemon, not niri.
@@ -64,9 +65,9 @@ usable.
 - kanata mouse-button interception (fallback: evsieve).
 - Quickshell under multi-monitor hotplug (swap path exists).
 - netns stats readable without ask 6, as a degraded first cut.
-- NixOS: flake evaluates (no nix on the dev host yet), rootless podman
-  subuids, Quickshell from its flake, kanata uinput permissions, NVIDIA with
-  niri on stable.
+- NixOS: greetd reaching niri-session on real hardware (CI only evaluates the
+  host, it never boots it), rootless podman subuids, Quickshell from its
+  flake, kanata uinput permissions, NVIDIA with the pinned niri.
 - laptop: power-profiles-daemon vs TLP on real battery life.
 
 ## Cross-cutting

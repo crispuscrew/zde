@@ -7,16 +7,25 @@
       url = "github:nix-community/home-manager/release-25.05";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    # Fast-moving pieces (niri, Quickshell) get pinned as their own inputs
-    # during the 0.1 prototype - zinc-style pinning, exact releases, our hand
-    # on the bump. Until verified they are not declared here.
+    # Fast-moving pieces get pinned as their own inputs - zinc-style pinning,
+    # exact releases, our hand on the bump (delivery.md, channel strategy).
+    # Quickshell joins when the shell lands.
+    niri = {
+      url = "github:niri-wm/niri/v26.04";
+      # Built against our nixpkgs, so the compositor and the graphics stack it
+      # talks to come from one place. rust-overlay is upstream's dev-shell
+      # toolchain only; upstream documents dropping it for end users.
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.rust-overlay.follows = "";
+    };
   };
 
   outputs =
     {
-      self,
       nixpkgs,
       home-manager,
+      niri,
+      ...
     }:
     let
       systems = [ "x86_64-linux" ];
@@ -26,10 +35,23 @@
       # module (nix/*.nix) so the flake and layer 1 build identical output.
       keymap = pkgs: pkgs.callPackage ./nix/zde-keymap.nix { };
       zdeConfig = pkgs: pkgs.callPackage ./nix/zde-config.nix { };
+
+      # Layer 0 (docs/delivery.md). The pinned niri is handed over here rather
+      # than inside the module, so the module stays a plain NixOS module - a
+      # consumer who prefers the nixpkgs build only sets zde.niri.package.
+      zdeSystem =
+        {
+          lib,
+          pkgs,
+          ...
+        }:
+        {
+          imports = [ ./nix/system.nix ];
+          zde.niri.package = lib.mkDefault niri.packages.${pkgs.stdenv.hostPlatform.system}.niri;
+        };
     in
     {
-      # Layer 0: the system module (NixOS reference platform).
-      nixosModules.zde = ./nix/system.nix;
+      nixosModules.zde = zdeSystem;
 
       # Layer 1: the user environment. One module, shared by the NixOS
       # reference and the portable path (docs/delivery.md).
@@ -42,11 +64,32 @@
       });
 
       # Built by nix flake check in CI: compiles the tools, runs their go
-      # tests, and assembles the niri config (catches KDL assembly errors).
-      checks = forAll (pkgs: {
-        zde-keymap = keymap pkgs;
-        zde-config = zdeConfig pkgs;
-      });
+      # tests, assembles the niri config (catches KDL assembly errors), and
+      # evaluates both layers on a throwaway host.
+      checks = forAll (
+        pkgs:
+        let
+          testHost = nixpkgs.lib.nixosSystem {
+            inherit (pkgs.stdenv.hostPlatform) system;
+            modules = [
+              zdeSystem
+              home-manager.nixosModules.home-manager
+              ./nix/test-host.nix
+            ];
+          };
+        in
+        {
+          zde-keymap = keymap pkgs;
+          zde-config = zdeConfig pkgs;
+          # Evaluation only: discarding the string context keeps the system
+          # closure out of the build, so this costs an eval and nothing else.
+          # It is what catches a bad option or a typo in nix/system.nix and
+          # nix/home.nix, neither of which any other check touches.
+          zde-nixos-eval = pkgs.runCommand "zde-nixos-eval" { } ''
+            echo ${builtins.unsafeDiscardStringContext testHost.config.system.build.toplevel.drvPath} > "$out"
+          '';
+        }
+      );
 
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {

@@ -53,3 +53,9 @@ First landed: the home module generates `~/.config/niri/config.kdl` from
 by `nix/zde-config.nix`) and installs the cheatsheet. `nix flake check` builds
 the config, so a broken keymap fails CI. The base config's niri syntax is only
 validated on a real niri (roadmap), since assembly just concatenates it.
+
+On top of it, layer 0 enables niri from the pinned input and starts it through
+greetd (tuigreet, no display manager), so the machine boots into the compositor
+that reads layer 1's config. `nix flake check` also evaluates a throwaway host
+with both layers on (`nix/test-host.nix`); that eval is the only thing catching
+a module error while no dev host has nix.

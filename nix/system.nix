@@ -14,12 +14,34 @@ in
   options.zde = {
     enable = lib.mkEnableOption "the zde system layer";
     laptop.enable = lib.mkEnableOption "laptop hardware support (battery, radios, brightness)";
+    # The flake points this at its pinned niri input; the nixpkgs build is the
+    # fallback for anyone importing this module on its own.
+    niri.package = lib.mkPackageOption pkgs "niri" { };
   };
 
   config = lib.mkMerge [
     (lib.mkIf cfg.enable {
       # Rootless podman: what zcr runs apps with.
       virtualisation.podman.enable = true;
+
+      # The compositor. Upstream's module installs the wayland-session entry
+      # greetd launches, niri's user units, the portals (gnome, for
+      # screencast), and the desktop basics: polkit, dconf, graphics, fonts.
+      programs.niri = {
+        enable = true;
+        inherit (cfg.niri) package;
+      };
+
+      # No display manager: greetd on its own VT, tuigreet, then niri-session -
+      # the systemd-integrated entry point niri ships. The session reads
+      # ~/.config/niri/config.kdl, which layer 1 generates from the keymap.
+      services.greetd = {
+        enable = true;
+        settings.default_session = {
+          command = "${lib.getExe pkgs.greetd.tuigreet} --time --remember --cmd niri-session";
+          user = "greeter";
+        };
+      };
 
       # Audio: PipeWire with the usual compatibility layers; rtkit gives it
       # realtime scheduling (crackle/underrun protection under load).
@@ -31,10 +53,9 @@ in
       };
 
       # Land with their roadmap phases (see docs/roadmap.md, verify list):
-      # - niri session + portals (pinned input, not nixpkgs stable)
-      # - greetd
       # - kanata + uinput/udev permissions
       # - NVIDIA / firmware quirks via nixos-hardware
+      # - xwayland-satellite (the niri module leaves XWayland off)
     })
 
     # Laptop hardware. The 0.4 laptop profile (battery widgets, wifi/bt TUIs,
