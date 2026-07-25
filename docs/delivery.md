@@ -47,3 +47,8 @@ cost is the script alone.
 Flake skeleton first; the home module grows as each 0.1 component lands; the
 ISO and `install.sh` ship once 0.1 is actually usable. An ISO of an
 environment that does not exist yet is pointless.
+
+First landed: the home module generates `~/.config/niri/config.kdl` from
+`common/keymap/keymap.yaml` (a base config plus the generated binds, assembled
+by `nix/zde-config.nix`) and installs the cheatsheet. `nix flake check` builds
+the config, so a broken keymap or base fails CI.

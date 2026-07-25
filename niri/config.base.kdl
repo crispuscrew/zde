@@ -1,0 +1,42 @@
+// zde - niri base config.
+//
+// The binds block is generated from common/keymap/keymap.yaml by zde-keymap
+// and appended at build time (nix/zde-config.nix). Do NOT add binds here; edit
+// the keymap instead.
+//
+// This base is intentionally minimal. Everything in it still needs validation
+// on a real niri (docs/roadmap.md, verify list): node syntax, key-name casing
+// in the appended binds, and whether the actions resolve.
+
+input {
+    keyboard {
+        xkb {
+            // Layout is the user's; language switching is bound to
+            // system.layout-switch (niri's switch-layout action).
+        }
+    }
+    touchpad {
+        tap
+        natural-scroll
+    }
+}
+
+layout {
+    gaps 8
+    focus-ring {
+        width 2
+    }
+    border {
+        off
+    }
+}
+
+prefer-no-csd
+
+hotkey-overlay {
+    skip-at-startup
+}
+
+// zded, the shell, and the portals spawn here as they land (roadmap 0.1).
+// Nothing to start yet - the generated binds are the first real content.
+// spawn-at-startup "zded"
