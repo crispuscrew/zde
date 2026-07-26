@@ -1,0 +1,86 @@
+// zded is the zde daemon (docs/vision.md, section 2): it owns the journal,
+// reads the compositor, and answers the one socket everything else talks to.
+package main
+
+import (
+	"flag"
+	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/crispuscrew/zde/internal/desk"
+	"github.com/crispuscrew/zde/internal/journal"
+	"github.com/crispuscrew/zde/internal/niri"
+	"github.com/crispuscrew/zde/internal/zded"
+)
+
+const version = "0.1.0"
+
+func main() {
+	socket := flag.String("socket", "", "listen here instead of $XDG_RUNTIME_DIR/zde/zded.sock")
+	jrnPath := flag.String("journal", "", "journal path (default $XDG_STATE_HOME/zde/journal.jsonl)")
+	flag.Parse()
+	if flag.NArg() != 0 {
+		fatal(fmt.Errorf("unexpected argument %q", flag.Arg(0)))
+	}
+
+	if *socket == "" {
+		s, err := zded.DefaultSocket()
+		if err != nil {
+			fatal(err)
+		}
+		*socket = s
+	}
+	if *jrnPath == "" {
+		*jrnPath = journal.DefaultPath()
+	}
+
+	jrn, err := journal.Open(*jrnPath)
+	if err != nil {
+		fatal(fmt.Errorf("journal: %w", err))
+	}
+	defer jrn.Close()
+	if n := jrn.Skipped(); n > 0 {
+		fmt.Fprintf(os.Stderr, "zded: journal: %d entries could not be read\n", n)
+	}
+
+	srv := zded.New(version, jrn, compositor{})
+	if err := srv.Listen(*socket); err != nil {
+		fatal(err)
+	}
+	fmt.Fprintf(os.Stderr, "zded %s listening on %s\n", version, *socket)
+
+	// The signal has to reach the listener, or a stale socket outlives the
+	// daemon and the next zded refuses to start.
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-stop
+		srv.Close()
+	}()
+
+	if err := srv.Serve(); err != nil {
+		fatal(err)
+	}
+	os.Remove(*socket)
+}
+
+// compositor dials niri per call. The connection is deliberately not held
+// open: niri restarts, and a daemon holding a dead socket would answer with
+// stale truth instead of saying it cannot see the compositor.
+type compositor struct{}
+
+func (compositor) DeskMap() (*desk.Map, error) {
+	c, err := niri.Dial()
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+	return c.DeskMap()
+}
+
+func fatal(err error) {
+	fmt.Fprintln(os.Stderr, "zded:", err)
+	os.Exit(1)
+}

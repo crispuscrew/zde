@@ -24,10 +24,10 @@
     let
       systems = [ "x86_64-linux" ];
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
-      # zde-keymap generates niri binds + cheatsheet; zde-config assembles the
-      # full niri config.kdl (base + binds). Both are shared with the home
-      # module (nix/*.nix) so the flake and layer 1 build identical output.
-      keymap = pkgs: pkgs.callPackage ./nix/zde-keymap.nix { };
+      # zde is the binaries (zded, zde, zde-keymap); zde-config is the niri
+      # config and cheatsheet built from the keymap. Both are shared with the
+      # home module (nix/*.nix) so the flake and layer 1 build the same thing.
+      zdeTools = pkgs: pkgs.callPackage ./nix/zde.nix { };
       zdeConfig = pkgs: pkgs.callPackage ./nix/zde-config.nix { };
 
     in
@@ -42,9 +42,9 @@
       homeModules.zde = ./nix/home.nix;
 
       packages = forAll (pkgs: {
-        zde-keymap = keymap pkgs;
+        zde = zdeTools pkgs;
         zde-config = zdeConfig pkgs;
-        default = keymap pkgs;
+        default = zdeTools pkgs;
 
         # The QEMU smoke test (nix build .#zde-smoke). A package and not a
         # check, so that booting a VM stays off pull requests that cannot
@@ -59,8 +59,8 @@
 
       # Built by nix flake check in CI: compiles the tools, assembles the niri
       # config (catches KDL assembly errors), and evaluates both layers on a
-      # throwaway host. The go tests are their own CI step - this build only
-      # covers cmd/zde-keymap, which has none.
+      # throwaway host. The go tests are their own CI step: this build compiles
+      # the binaries but only runs the tests that sit beside them.
       checks = forAll (
         pkgs:
         let
@@ -74,7 +74,7 @@
           };
         in
         {
-          zde-keymap = keymap pkgs;
+          zde = zdeTools pkgs;
           zde-config = zdeConfig pkgs;
           # Evaluation only: discarding the string context keeps the system
           # closure out of the build, so this costs an eval and nothing else.

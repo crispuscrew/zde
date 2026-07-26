@@ -1,9 +1,10 @@
-# The keymap generator as its own package, so the flake output and the home
-# module (which generates the niri config) build the exact same binary.
+# The zde binaries: zded (the daemon), zde (the command line into it) and
+# zde-keymap (the generator the config build runs). One derivation, so the
+# flake output and the home module cannot drift onto different builds.
 # Deps are vendored (vendorHash null), zinc-style: the build fetches nothing.
 { lib, buildGoModule }:
 buildGoModule {
-  pname = "zde-keymap";
+  pname = "zde";
   version = "0.1.0";
   # Only the Go tree. With the whole repo as src, editing a doc rebuilt the
   # binary, which rebuilt zde-config, which rewrote the user's config.kdl and
@@ -14,14 +15,18 @@ buildGoModule {
       ../go.mod
       ../go.sum
       ../vendor
-      ../cmd/zde-keymap
+      ../cmd
       ../internal
     ];
   };
   vendorHash = null;
-  subPackages = [ "cmd/zde-keymap" ];
+  subPackages = [
+    "cmd/zde"
+    "cmd/zded"
+    "cmd/zde-keymap"
+  ];
   meta = {
-    description = "Generate niri binds and a cheatsheet from the zde keymap";
-    mainProgram = "zde-keymap";
+    description = "The zde daemon, its command line, and the keymap generator";
+    mainProgram = "zde";
   };
 }

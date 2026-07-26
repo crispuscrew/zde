@@ -29,8 +29,12 @@ pkgs.testers.runNixOSTest {
     zde.enable = true;
 
     # Only so that shell_interact and a manual login work when debugging this
-    # test; every assertion below runs as root.
+    # test; most assertions below run as root.
     users.users.zde.password = "zde";
+
+    # Somebody else on the machine, so that "the zde socket is private" can be
+    # asserted by a user who is actually subject to it - root is not.
+    users.users.intruder.isNormalUser = true;
 
     virtualisation = {
       memorySize = 2048;
@@ -107,8 +111,8 @@ pkgs.testers.runNixOSTest {
       machine.succeed("su -l zde -c 'niri validate -c ~/.config/niri/config.kdl'")
 
       # Every binary the binds spawn has to be on the user's PATH, or the key
-      # does nothing and says nothing. The zde tools are the known exception
-      # until roadmap 0.1 builds them; that list shrinks, it must not grow.
+      # does nothing and says nothing. zlg is zinc's launcher and is the last
+      # exception left; that list shrinks, it must not grow.
       spawned = machine.succeed(
           "grep -ho 'spawn \"[^\"]*\"' /home/zde/.config/niri/*.kdl"
           " | cut -d'\"' -f2 | sort -u"
@@ -118,10 +122,29 @@ pkgs.testers.runNixOSTest {
       assert len(spawned) >= 3, f"expected the binds to spawn several commands, found {spawned}"
       missing = [
           c for c in spawned
-          if c not in ("zde", "zlg")
+          if c not in ("zlg",)
           and machine.execute(f"su -l zde -c 'command -v {c}'")[0] != 0
       ]
       assert missing == [], f"binds spawn commands that are not installed: {missing}"
+
+      # zded comes up and answers its socket. There is no compositor in a
+      # build sandbox, which is the point: the daemon everyone asks why the
+      # session is broken has to run, and say so, when niri is not there.
+      machine.succeed("su -l zde -c 'mkdir -p /tmp/rt'")
+      machine.succeed(
+          "su -l zde -c 'XDG_RUNTIME_DIR=/tmp/rt nohup zded >/tmp/zded.log 2>&1 &'"
+      )
+      machine.wait_until_succeeds("test -S /tmp/rt/zde/zded.sock")
+      status = machine.succeed("su -l zde -c 'XDG_RUNTIME_DIR=/tmp/rt zde status'")
+      assert "zded" in status, status
+      # It reports the missing compositor rather than claiming a working one.
+      assert "NIRI_SOCKET" in status, status
+
+      # The socket is the zde boundary (docs/vision.md, principle 7). Asserted
+      # as another user, because root is not subject to the mode bits and
+      # would pass this test no matter what zded did.
+      machine.fail("su -l intruder -c 'test -r /tmp/rt/zde/zded.sock'")
+      machine.fail("su -l intruder -c 'ls /tmp/rt/zde'")
 
       # Rootless podman, what zcr will run apps with. su gives no logind
       # session, so this exercises podman's cgroupfs fallback rather than the

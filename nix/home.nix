@@ -92,6 +92,7 @@ in
     #
     # Grows with roadmap 0.1: the zded service, the shell, and zcr/zcc/zlt.
     home.packages = [
+      (pkgs.callPackage ./zde.nix { }) # zded, zde
       pkgs.brightnessctl # system.brightness-up/dn
       pkgs.wireplumber # wpctl, for audio.*
     ];
