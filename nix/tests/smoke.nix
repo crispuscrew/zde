@@ -82,23 +82,46 @@ pkgs.testers.runNixOSTest {
           'test "$(readlink -f /home/zde/.config/niri/config.kdl)"'
           ' = "${zdeConfig}/niri-config.kdl"'
       )
+      machine.succeed(
+          'test "$(readlink -f /home/zde/.config/niri/binds.kdl)"'
+          ' = "${zdeConfig}/binds.kdl"'
+      )
 
-      # The generated config is one this niri accepts: the base nodes parse and
-      # every action name the keymap emitted resolves.
-      machine.succeed("niri validate -c /home/zde/.config/niri/config.kdl")
+      # dynamic.kdl is the one file zded writes at runtime, so it has to exist
+      # before niri reads the config (a missing include is fatal) and it has to
+      # be a real writable file, not a symlink into the read-only store.
+      machine.succeed("test -f /home/zde/.config/niri/dynamic.kdl")
+      machine.succeed("test ! -L /home/zde/.config/niri/dynamic.kdl")
+      machine.succeed("su -l zde -c 'echo \"// zded was here\" >> ~/.config/niri/dynamic.kdl'")
+
+      # The whole tree is one config this niri accepts: the nodes parse, the
+      # includes resolve, and every action name the keymap emitted is real.
+      # Run as the user, since the includes resolve relative to the file.
+      machine.succeed("su -l zde -c 'niri validate -c ~/.config/niri/config.kdl'")
+
+      # A broken include has to fail loudly rather than boot into a default
+      # config: this is the seam zded writes through every day.
+      machine.succeed("su -l zde -c 'mv ~/.config/niri/dynamic.kdl ~/dyn.bak'")
+      machine.fail("su -l zde -c 'niri validate -c ~/.config/niri/config.kdl'")
+      machine.succeed("su -l zde -c 'mv ~/dyn.bak ~/.config/niri/dynamic.kdl'")
+      machine.succeed("su -l zde -c 'niri validate -c ~/.config/niri/config.kdl'")
 
       # Every binary the binds spawn has to be on the user's PATH, or the key
       # does nothing and says nothing. The zde tools are the known exception
       # until roadmap 0.1 builds them; that list shrinks, it must not grow.
-      missing = machine.succeed(
-          "su -l zde -c '"
-          "for c in $(grep -o \"spawn \\\"[^\\\"]*\\\"\" ~/.config/niri/config.kdl"
-          " | cut -d\\\" -f2 | sort -u); do"
-          "  case $c in zde|zlg) continue;; esac;"
-          "  command -v $c >/dev/null || echo $c;"
-          "done'"
-      ).strip()
-      assert missing == "", f"binds spawn commands that are not installed: {missing}"
+      spawned = machine.succeed(
+          "grep -ho 'spawn \"[^\"]*\"' /home/zde/.config/niri/*.kdl"
+          " | cut -d'\"' -f2 | sort -u"
+      ).split()
+      # The binds moved to binds.kdl once the config was split, and a grep of
+      # the wrong file would make everything below pass by finding nothing.
+      assert len(spawned) >= 3, f"expected the binds to spawn several commands, found {spawned}"
+      missing = [
+          c for c in spawned
+          if c not in ("zde", "zlg")
+          and machine.execute(f"su -l zde -c 'command -v {c}'")[0] != 0
+      ]
+      assert missing == [], f"binds spawn commands that are not installed: {missing}"
 
       # Rootless podman, what zcr will run apps with. su gives no logind
       # session, so this exercises podman's cgroupfs fallback rather than the

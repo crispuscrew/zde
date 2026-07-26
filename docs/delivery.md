@@ -53,11 +53,16 @@ Flake skeleton first; the home module grows as each 0.1 component lands; the
 ISO and `install.sh` ship once 0.1 is actually usable. An ISO of an
 environment that does not exist yet is pointless.
 
-First landed: the home module generates `~/.config/niri/config.kdl` from
-`common/keymap/keymap.yaml` (a base config plus the generated binds, assembled
-by `nix/zde-config.nix`) and installs the cheatsheet. `nix flake check` builds
-the config, so a broken keymap fails CI. The base config's niri syntax is only
-validated on a real niri (roadmap), since assembly just concatenates it.
+First landed: the home module writes `~/.config/niri/`, and the split there is
+ownership. `config.kdl` holds what zde fixes and includes three files:
+`binds.kdl`, generated from `common/keymap/keymap.yaml`; `local.kdl`, the
+host's own settings from `zde.niri.extraConfig`; and `dynamic.kdl`, which zded
+writes while the session runs. The first three are read-only symlinks into the
+store, which is exactly why the fourth cannot be - capture-block rules and the
+binds a desk releases have to change without a rebuild, and niri reloads the
+lot when any of them is written. `nix/zde-config.nix` runs `niri validate` over
+the assembled tree at build time, so a broken keymap or a base that does not
+parse fails the build rather than the login.
 
 On top of it, layer 0 enables niri and starts it through
 greetd (tuigreet, no graphical display manager), so the machine boots into the
