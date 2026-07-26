@@ -1,9 +1,6 @@
 package desk
 
-import (
-	"sort"
-	"strconv"
-)
+import "sort"
 
 // Workspace is what niri reports about one workspace: the name it carries and
 // the output it is on right now. Those two can disagree, and telling apart the
@@ -22,42 +19,24 @@ type Rename struct {
 	To   Name
 }
 
-// Conflict is a rename that cannot be applied because the truthful name is
-// taken. Ordinals restart per monitor, so vshop.DP-1.1 arriving on a monitor
-// that already has vshop.HDMI-A-1.1 is ordinary rather than exotic. Renaming
-// anyway would put two workspaces under one name and break invariant 1 inside
-// the map itself, so the collision comes back for the caller to resolve: only
-// it knows whether to mint a free ordinal or leave the workspace alone.
+// Conflict is a workspace Rebuild noticed and would not touch, with the reason.
+// Rebuild cannot fail - a recovery path that refuses to run is not one - but
+// declining to act is not the same as noticing nothing, and everything here is
+// a case where acting would have made the map wrong.
 type Conflict struct {
-	Workspace Name
-	Wanted    Name
+	Workspace Workspace
+	Reason    string
 }
 
-// Map is the desk map, rebuilt from workspace names alone.
+// Map is the desk map, rebuilt from workspace names alone. Its fields are
+// unexported: the IPC layer and the journal will both hold one, and a shared
+// read model that any caller can reach into and reorder is not one.
 type Map struct {
-	// Desks holds the zde-owned workspaces, keyed by desk name. The regulars
-	// band is a key like any other; what makes it special is that no desk's
-	// band contains it.
-	Desks map[string][]Name
-
-	// Foreign is every workspace that is not zde-named: niri's own unnamed
-	// workspaces, and anything a user or another tool named. Until adoption
-	// claims one it is nobody's, and it stays untouched.
-	Foreign []Workspace
-
-	// Renames is what has to be applied to make the names truthful again.
-	Renames []Rename
-
-	// Conflicts are the renames that would collide with a name in use.
-	Conflicts []Conflict
-
-	// Displaced is a workspace sitting somewhere other than the monitor its
-	// name claims, because that monitor is gone. Its name is not a lie and
-	// must not be corrected: it is the only record of where the workspace
-	// belongs, and invariant 5 puts it back there on replug. A manifest
-	// records home too, but only for workspaces a manifest declares - an
-	// adopted one has the name and nothing else.
-	Displaced []Name
+	desks     map[string][]Name
+	foreign   []Workspace
+	renames   []Rename
+	conflicts []Conflict
+	displaced []Name
 }
 
 // Rebuild reconstructs the desk map from what niri reports. It is the whole
@@ -71,24 +50,25 @@ type Map struct {
 // declares. Pass nil only when the caller genuinely does not know, which
 // disables renaming rather than guessing.
 func Rebuild(workspaces []Workspace, connected []string) *Map {
-	m := &Map{Desks: map[string][]Name{}}
+	m := &Map{desks: map[string][]Name{}}
 
 	isConnected := make(map[string]bool, len(connected))
 	for _, o := range connected {
 		isConnected[o] = true
 	}
-	// Every name in play, so a rename cannot be handed a name already in use.
+	// Every name in play, so a rename is never handed a name already in use.
 	taken := map[string]bool{}
 	for _, w := range workspaces {
 		if _, err := ParseName(w.Name); err == nil {
 			taken[w.Name] = true
 		}
 	}
+	placed := map[string]bool{}
 
 	for _, w := range workspaces {
 		name, err := ParseName(w.Name)
 		if err != nil {
-			m.Foreign = append(m.Foreign, w)
+			m.foreign = append(m.foreign, w)
 			continue
 		}
 		switch {
@@ -101,29 +81,62 @@ func Rebuild(workspaces []Workspace, connected []string) *Map {
 		case !isConnected[name.Monitor]:
 			// Its monitor is gone and niri parked it on a survivor. The name
 			// still records home, so leave it alone and say where it sits.
-			m.Displaced = append(m.Displaced, name)
+			m.displaced = append(m.displaced, name)
 		case !isConnected[w.Output]:
-			// niri reports an output it does not have. Nothing sane to do.
+			m.conflicts = append(m.conflicts, Conflict{w, "niri reports an output it does not have"})
 		default:
 			// Both monitors are real, so this was a move: correct the name.
-			truthful := name
-			truthful.Monitor = w.Output
+			// Through NewName, because the output is niri's string and not
+			// ours - one that is not a connector would mint a name nothing can
+			// read back, and the workspace would leave its desk for good.
+			truthful, err := NewName(name.Desk, w.Output, name.Slot)
+			if err != nil {
+				m.conflicts = append(m.conflicts, Conflict{w, err.Error()})
+				break
+			}
 			if taken[truthful.String()] {
-				m.Conflicts = append(m.Conflicts, Conflict{Workspace: name, Wanted: truthful})
+				// Ordinals restart per monitor, so this is ordinary rather
+				// than exotic. Only the caller can mint a free slot.
+				m.conflicts = append(m.conflicts, Conflict{w, "the truthful name " + truthful.String() + " is taken"})
 				break
 			}
 			delete(taken, name.String())
 			taken[truthful.String()] = true
-			m.Renames = append(m.Renames, Rename{From: name, To: truthful})
+			m.renames = append(m.renames, Rename{From: name, To: truthful})
 			name = truthful
 		}
-		m.Desks[name.Desk] = append(m.Desks[name.Desk], name)
+		// Two workspaces under one name would break invariant 1 inside the map
+		// that reports it, and would leave Rename.From addressing either one.
+		// The second one is not ours: we cannot say which workspace the name
+		// owns, so it goes back with the unnamed and the foreign, where
+		// adoption can give it a name of its own.
+		if placed[name.String()] {
+			m.conflicts = append(m.conflicts, Conflict{w, "another workspace is already named " + name.String()})
+			m.foreign = append(m.foreign, w)
+			continue
+		}
+		placed[name.String()] = true
+		m.desks[name.Desk] = append(m.desks[name.Desk], name)
 	}
-	for desk := range m.Desks {
-		sort.Slice(m.Desks[desk], func(i, j int) bool {
-			return less(m.Desks[desk][i], m.Desks[desk][j])
-		})
+
+	for desk := range m.desks {
+		band := m.desks[desk]
+		sort.Slice(band, func(i, j int) bool { return less(band[i], band[j]) })
 	}
+	// Sorted so that the map does not depend on the order niri happened to
+	// list things in: a shell diffing two polls should see churn only when
+	// something changed.
+	sort.Slice(m.foreign, func(i, j int) bool {
+		if m.foreign[i].Output != m.foreign[j].Output {
+			return m.foreign[i].Output < m.foreign[j].Output
+		}
+		return m.foreign[i].Name < m.foreign[j].Name
+	})
+	sort.Slice(m.renames, func(i, j int) bool { return less(m.renames[i].From, m.renames[j].From) })
+	sort.Slice(m.displaced, func(i, j int) bool { return less(m.displaced[i], m.displaced[j]) })
+	sort.Slice(m.conflicts, func(i, j int) bool {
+		return m.conflicts[i].Workspace.Name < m.conflicts[j].Workspace.Name
+	})
 	return m
 }
 
@@ -147,10 +160,10 @@ func less(a, b Name) bool {
 	}
 }
 
-// Names lists every desk in the map, regulars included, in a stable order.
-func (m *Map) Names() []string {
-	out := make([]string, 0, len(m.Desks))
-	for d := range m.Desks {
+// DeskNames lists every desk in the map, regulars included, in a stable order.
+func (m *Map) DeskNames() []string {
+	out := make([]string, 0, len(m.desks))
+	for d := range m.desks {
 		out = append(out, d)
 	}
 	sort.Strings(out)
@@ -160,14 +173,14 @@ func (m *Map) Names() []string {
 // Band is the workspaces a desk's scrolling is clamped to on one monitor
 // (invariant 4). It is per monitor because the strip is: each monitor owns its
 // own vertical strip (docs/model.md, section 1), so a band spanning monitors
-// would clamp a scroll to workspaces that are not on the screen doing the
+// would clamp a scroll against workspaces that are not on the screen doing the
 // scrolling.
 //
 // Regulars are in no desk's band: reachable from every desk by an explicit
 // action, never by scrolling into them.
 func (m *Map) Band(desk, monitor string) []Name {
 	var out []Name
-	for _, n := range m.Desks[desk] {
+	for _, n := range m.desks[desk] {
 		if n.Monitor == monitor {
 			out = append(out, n)
 		}
@@ -175,20 +188,30 @@ func (m *Map) Band(desk, monitor string) []Name {
 	return out
 }
 
-// Workspaces is every workspace a desk owns, across monitors, as a copy: the
-// map's own slices stay its own, so a caller that sorts or appends cannot
-// reorder the map underneath everyone else.
+// Workspaces is every workspace a desk owns, across monitors.
 func (m *Map) Workspaces(desk string) []Name {
-	return append([]Name(nil), m.Desks[desk]...)
+	return append([]Name(nil), m.desks[desk]...)
 }
 
-// Ordinal reads the slot back as a number. The second result is false for a
-// label, which is the distinction between vshop.DP-1.code, declared by a
-// manifest, and vshop.DP-1.2, which adoption minted.
-func (n Name) Ordinal() (int, bool) {
-	i, err := strconv.Atoi(n.Slot)
-	if err != nil || i < 0 {
-		return 0, false
-	}
-	return i, true
-}
+// Regulars is the band reachable from every desk.
+func (m *Map) Regulars() []Name { return m.Workspaces(Regulars) }
+
+// Foreign is every workspace that is not zde-named: niri's own unnamed
+// workspaces, and anything a user or another tool named. Until adoption claims
+// one it is nobody's, and it stays untouched. The output comes with it, since
+// naming one into a desk needs to know where it is.
+func (m *Map) Foreign() []Workspace { return append([]Workspace(nil), m.foreign...) }
+
+// Renames is what has to be applied to make the names truthful again.
+func (m *Map) Renames() []Rename { return append([]Rename(nil), m.renames...) }
+
+// Conflicts is what Rebuild noticed and would not touch.
+func (m *Map) Conflicts() []Conflict { return append([]Conflict(nil), m.conflicts...) }
+
+// Displaced is the workspaces sitting somewhere other than the monitor their
+// name claims, because that monitor is gone. Their names are not lies and must
+// not be corrected: the name is the only record of where the workspace
+// belongs, and invariant 5 puts it back there on replug. A manifest records
+// home too, but only for the workspaces a manifest declares - an adopted one
+// has the name and nothing else.
+func (m *Map) Displaced() []Name { return append([]Name(nil), m.displaced...) }

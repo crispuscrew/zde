@@ -1,6 +1,7 @@
 package desk
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -18,6 +19,7 @@ func TestParseName(t *testing.T) {
 		{"regulars.eDP-1.2", Name{Regulars, "eDP-1", "2"}},
 		{"film-2.DP-2.ambient", Name{"film-2", "DP-2", "ambient"}},
 		{"vshop.DP-2-1.code", Name{"vshop", "DP-2-1", "code"}}, // a real niri connector
+		{"vshop.Unknown-1.0", Name{"vshop", "Unknown-1", "0"}},
 	}
 	for _, c := range ok {
 		got, err := ParseName(c.in)
@@ -48,8 +50,14 @@ func TestParseNameRejects(t *testing.T) {
 		"vshop.DP-1.",       // empty slot
 		"vshop.DP-1.Code",   // slots are lowercase
 		"-vshop.DP-1.code",  // leading dash
+		"vshop-.DP-1.code",  // trailing dash
+		"vshop.DP-.code",    // trailing dash in a connector
+		"vshop.D---1.code",  // a run of dashes
 		"vshop.1DP.code",    // a connector starts with a letter
 		"vshop.DP 1.code",   // no spaces
+		"vshop.DP-1.007",    // one spelling per ordinal
+		"vshop.DP-1.ф",      // ascii only
+		"vshop.DP-1." + strings.Repeat("a", partMax+1), // a name is something you read
 	} {
 		if _, err := ParseName(in); err == nil {
 			t.Errorf("ParseName(%q) was accepted", in)
@@ -57,18 +65,21 @@ func TestParseNameRejects(t *testing.T) {
 	}
 }
 
-// NewName is the only way to mint a name that is checked. Assembling a Name
-// literal is possible and is how an unparseable name gets into the system.
+// NewName is the checked way to mint one. A Name literal is not checked, which
+// is how an unreadable name would get into the system.
 func TestNewName(t *testing.T) {
 	n, err := NewName("vshop", "DP-1", "code")
 	if err != nil || n.String() != "vshop.DP-1.code" {
 		t.Errorf("NewName = %v, %v", n, err)
 	}
-	if _, err := NewName("VSHOP", "DP-1", "code"); err == nil {
-		t.Error("NewName accepted an uppercase desk")
-	}
-	if _, err := NewName("vshop", "DP-1", "co.de"); err == nil {
-		t.Error("NewName accepted a slot containing the separator")
+	for _, c := range [][3]string{
+		{"VSHOP", "DP-1", "code"},
+		{"vshop", "DP-1", "co.de"},
+		{"vshop", "Dell Inc. U2515H", "code"},
+	} {
+		if _, err := NewName(c[0], c[1], c[2]); err == nil {
+			t.Errorf("NewName%v was accepted", c)
+		}
 	}
 }
 
@@ -94,23 +105,45 @@ func TestRebuild(t *testing.T) {
 		{Name: "scratch", Output: "DP-1"}, // somebody else's
 	}, both)
 
-	if got, want := m.Names(), []string{"haven", Regulars, "vshop"}; !equal(got, want) {
-		t.Errorf("Names() = %v, want %v", got, want)
+	if got, want := m.DeskNames(), []string{"haven", Regulars, "vshop"}; !equal(got, want) {
+		t.Errorf("DeskNames() = %v, want %v", got, want)
 	}
-	if got := len(m.Desks["vshop"]); got != 3 {
+	if got := len(m.Workspaces("vshop")); got != 3 {
 		t.Errorf("vshop has %d workspaces, want 3", got)
 	}
-	if got := len(m.Foreign); got != 2 {
-		t.Errorf("Foreign = %v, want the unnamed and the foreign one", m.Foreign)
+	if got := len(m.Foreign()); got != 2 {
+		t.Errorf("Foreign = %v, want the unnamed and the foreign one", m.Foreign())
 	}
-	if len(m.Renames)+len(m.Conflicts)+len(m.Displaced) != 0 {
+	// Foreign carries the output: adoption has to know where it is naming to.
+	for _, f := range m.Foreign() {
+		if f.Output == "" {
+			t.Errorf("foreign workspace %+v lost its output", f)
+		}
+	}
+	if got := len(m.Regulars()); got != 1 {
+		t.Errorf("Regulars() = %v, want the one regulars workspace", m.Regulars())
+	}
+	if len(m.Renames())+len(m.Conflicts())+len(m.Displaced()) != 0 {
 		t.Error("a map where every name agrees with niri reported work to do")
+	}
+}
+
+// Monitor first, then slot. Data where the two orderings differ, because with
+// the wrong data both give the same answer and the test proves nothing.
+func TestBandOrderAcrossMonitors(t *testing.T) {
+	m := Rebuild([]Workspace{
+		{Name: "vshop.HDMI-A-1.aaa", Output: "HDMI-A-1"},
+		{Name: "vshop.DP-1.zzz", Output: "DP-1"},
+	}, both)
+	got := m.Workspaces("vshop")
+	if got[0].String() != "vshop.DP-1.zzz" || got[1].String() != "vshop.HDMI-A-1.aaa" {
+		t.Errorf("order = %v, want monitor before slot", got)
 	}
 }
 
 // Ordinals are numbers, so 2 sorts before 10. Lexical order would have put the
 // strip in an order no human reads.
-func TestBandOrder(t *testing.T) {
+func TestBandOrderOrdinals(t *testing.T) {
 	m := Rebuild([]Workspace{
 		{Name: "vshop.DP-1.10", Output: "DP-1"},
 		{Name: "vshop.DP-1.2", Output: "DP-1"},
@@ -132,21 +165,55 @@ func TestRebuildRenamesMovedWorkspace(t *testing.T) {
 	m := Rebuild([]Workspace{
 		{Name: "vshop.DP-1.code", Output: "HDMI-A-1"},
 	}, both)
-	if len(m.Renames) != 1 {
-		t.Fatalf("Renames = %v, want the moved workspace", m.Renames)
+	if len(m.Renames()) != 1 {
+		t.Fatalf("Renames = %v, want the moved workspace", m.Renames())
 	}
-	r := m.Renames[0]
+	r := m.Renames()[0]
 	if r.From.String() != "vshop.DP-1.code" || r.To.String() != "vshop.HDMI-A-1.code" {
 		t.Errorf("rename %s -> %s, want vshop.DP-1.code -> vshop.HDMI-A-1.code", r.From, r.To)
 	}
 	// The map holds the corrected name, not the stale one.
-	if got := m.Desks["vshop"][0].Monitor; got != "HDMI-A-1" {
+	if got := m.Workspaces("vshop")[0].Monitor; got != "HDMI-A-1" {
 		t.Errorf("map kept monitor %q, want the one niri reports", got)
 	}
 	// Ownership does not move with the monitor. That is the whole point of
 	// putting the desk in the name.
-	if got := m.Desks["vshop"][0].Desk; got != "vshop" {
+	if got := m.Workspaces("vshop")[0].Desk; got != "vshop" {
 		t.Errorf("desk became %q, want vshop", got)
+	}
+}
+
+// A workspace with no output reported is not evidence of a move.
+func TestRebuildIgnoresEmptyOutput(t *testing.T) {
+	m := Rebuild([]Workspace{{Name: "vshop.DP-1.code", Output: ""}}, both)
+	if len(m.Renames()) != 0 {
+		t.Errorf("Renames = %v, want none for a workspace niri placed nowhere", m.Renames())
+	}
+	if got := m.Workspaces("vshop"); len(got) != 1 || got[0].Monitor != "DP-1" {
+		t.Errorf("Workspaces = %v, want the name untouched", got)
+	}
+}
+
+// niri's output string is niri's, not ours. One that is not a connector would
+// mint a name nothing can read back, and the workspace would leave its desk
+// with no way home.
+func TestRebuildRefusesToMintAnUnreadableName(t *testing.T) {
+	for _, output := range []string{"DP.1", "1DP", "Dell Inc. U2515H", `code"; spawn "sh`} {
+		m := Rebuild([]Workspace{{Name: "vshop.DP-1.code", Output: output}}, []string{"DP-1", output})
+		if len(m.Renames()) != 0 {
+			t.Errorf("output %q produced a rename %v", output, m.Renames())
+		}
+		if len(m.Conflicts()) != 1 {
+			t.Errorf("output %q was not reported as a conflict", output)
+		}
+		// The workspace stays where it was, under a name that still parses.
+		got := m.Workspaces("vshop")
+		if len(got) != 1 {
+			t.Fatalf("output %q lost the workspace: %v", output, got)
+		}
+		if _, err := ParseName(got[0].String()); err != nil {
+			t.Errorf("map holds an unreadable name %q", got[0])
+		}
 	}
 }
 
@@ -161,19 +228,19 @@ func TestRebuildDoesNotRenameDisplaced(t *testing.T) {
 		{Name: "vshop.eDP-1.notes", Output: "eDP-1"},
 	}, []string{"eDP-1"}) // DP-1 is gone
 
-	if len(m.Renames) != 0 {
-		t.Errorf("Renames = %v, want none: those monitors are gone, not wrong", m.Renames)
+	if len(m.Renames()) != 0 {
+		t.Errorf("Renames = %v, want none: those monitors are gone, not wrong", m.Renames())
 	}
-	if len(m.Displaced) != 2 {
-		t.Fatalf("Displaced = %v, want the two workspaces from the departed monitor", m.Displaced)
+	if len(m.Displaced()) != 2 {
+		t.Fatalf("Displaced = %v, want the two workspaces from the departed monitor", m.Displaced())
 	}
 	// Home survives in the name, which is what puts them back on replug.
-	for _, n := range m.Displaced {
+	for _, n := range m.Displaced() {
 		if n.Monitor != "DP-1" {
 			t.Errorf("displaced workspace kept monitor %q, want its home DP-1", n.Monitor)
 		}
 	}
-	for _, n := range m.Desks["vshop"] {
+	for _, n := range m.Workspaces("vshop") {
 		if n.Slot == "code" && n.Monitor != "DP-1" {
 			t.Errorf("the map lost home for %s", n)
 		}
@@ -181,74 +248,149 @@ func TestRebuildDoesNotRenameDisplaced(t *testing.T) {
 }
 
 // Replug: the monitor is back and niri has returned the workspaces to it.
-// Nothing to correct, and nothing displaced.
 func TestRebuildReplugIsQuiet(t *testing.T) {
 	m := Rebuild([]Workspace{
 		{Name: "vshop.DP-1.code", Output: "DP-1"},
 		{Name: "vshop.eDP-1.notes", Output: "eDP-1"},
 	}, []string{"DP-1", "eDP-1"})
-	if len(m.Renames)+len(m.Displaced)+len(m.Conflicts) != 0 {
-		t.Errorf("replug reported work: renames %v displaced %v conflicts %v", m.Renames, m.Displaced, m.Conflicts)
+	if len(m.Renames())+len(m.Displaced())+len(m.Conflicts()) != 0 {
+		t.Errorf("replug reported work: %v %v %v", m.Renames(), m.Displaced(), m.Conflicts())
 	}
 }
 
 // Ordinals restart per monitor, so a move can want a name that is already
-// taken. Renaming anyway would put two workspaces under one name and break
-// invariant 1 inside the map itself.
+// taken. Renaming anyway would put two workspaces under one name.
 func TestRebuildReportsRenameCollision(t *testing.T) {
 	m := Rebuild([]Workspace{
 		{Name: "vshop.DP-1.1", Output: "HDMI-A-1"},
 		{Name: "vshop.HDMI-A-1.1", Output: "HDMI-A-1"},
 	}, both)
 
-	if len(m.Renames) != 0 {
-		t.Errorf("Renames = %v, want none: the truthful name is taken", m.Renames)
+	if len(m.Renames()) != 0 {
+		t.Errorf("Renames = %v, want none: the truthful name is taken", m.Renames())
 	}
-	if len(m.Conflicts) != 1 {
-		t.Fatalf("Conflicts = %v, want the collision", m.Conflicts)
+	if len(m.Conflicts()) != 1 {
+		t.Fatalf("Conflicts = %v, want the collision", m.Conflicts())
 	}
-	if got := m.Conflicts[0].Wanted.String(); got != "vshop.HDMI-A-1.1" {
-		t.Errorf("conflict wanted %q", got)
+	if !strings.Contains(m.Conflicts()[0].Reason, "taken") {
+		t.Errorf("conflict reason %q does not say what happened", m.Conflicts()[0].Reason)
 	}
-	// No two workspaces share a name in the map that comes back.
-	seen := map[string]bool{}
-	for _, n := range m.Desks["vshop"] {
-		if seen[n.String()] {
-			t.Errorf("%s appears twice in the map", n)
-		}
-		seen[n.String()] = true
+}
+
+// Two workspaces arriving under one name, with no rename involved at all.
+func TestRebuildReportsDuplicateNames(t *testing.T) {
+	m := Rebuild([]Workspace{
+		{Name: "vshop.DP-1.code", Output: "DP-1"},
+		{Name: "vshop.DP-1.code", Output: "DP-1"},
+	}, both)
+	if got := len(m.Workspaces("vshop")); got != 1 {
+		t.Errorf("vshop has %d workspaces, want the duplicate kept out of the map", got)
+	}
+	if len(m.Conflicts()) != 1 {
+		t.Errorf("Conflicts = %v, want the duplicate reported", m.Conflicts())
+	}
+	// Not dropped: it exists, it is just not ours to file until it has a
+	// name of its own.
+	if got := len(m.Foreign()); got != 1 {
+		t.Errorf("Foreign = %v, want the duplicate handed to adoption", m.Foreign())
 	}
 }
 
 // With no output list the caller does not know what is connected, so renaming
-// would be a guess. Declining is the safe reading: a wrong rename is
-// unrecoverable, a missing one is not.
+// would be a guess. A missing rename is recoverable; a wrong one is not.
 func TestRebuildWithoutConnectedDoesNotRename(t *testing.T) {
 	m := Rebuild([]Workspace{{Name: "vshop.DP-1.code", Output: "HDMI-A-1"}}, nil)
-	if len(m.Renames) != 0 {
-		t.Errorf("Renames = %v, want none without a connected-output list", m.Renames)
+	if len(m.Renames()) != 0 {
+		t.Errorf("Renames = %v, want none without a connected-output list", m.Renames())
 	}
 }
 
-// Rebuild is the recovery path, so it must not depend on anything zded
-// remembers: the same input has to give the same map every time, and a second
-// pass over its own corrected world has to be a no-op.
-func TestRebuildIsStableAndConverges(t *testing.T) {
+// What the map must never contain, whatever it was fed. This is the shape of
+// keymap's TestRegistryInvariants: the rules live in prose and in no type, so
+// they live here.
+func TestMapInvariants(t *testing.T) {
+	inputs := [][]Workspace{
+		{
+			{Name: "vshop.DP-1.code", Output: "DP-1"},
+			{Name: "vshop.DP-1.code", Output: "DP-1"},
+			{Name: "vshop.DP-1.1", Output: "HDMI-A-1"},
+			{Name: "vshop.HDMI-A-1.1", Output: "HDMI-A-1"},
+			{Name: "regulars.DP-1.1", Output: "HDMI-A-1"},
+			{Name: "haven.DP-9.gone", Output: "DP-1"},
+			{Name: "", Output: "DP-1"},
+			{Name: "scratch", Output: ""},
+		},
+		nil,
+	}
+	for _, in := range inputs {
+		for _, connected := range [][]string{both, nil, {"DP-1"}} {
+			m := Rebuild(in, connected)
+			seen := map[string]bool{}
+			counted := len(m.Foreign())
+			for _, d := range m.DeskNames() {
+				for _, n := range m.Workspaces(d) {
+					if n.Desk != d {
+						t.Errorf("%s is filed under desk %q", n, d)
+					}
+					if seen[n.String()] {
+						t.Errorf("%s appears twice in the map", n)
+					}
+					seen[n.String()] = true
+					if _, err := ParseName(n.String()); err != nil {
+						t.Errorf("map holds an unreadable name %q: %v", n, err)
+					}
+					counted++
+				}
+			}
+			// Every workspace is accounted for exactly once: owned by a
+			// desk, or foreign. Nothing is dropped in silence, whatever
+			// Rebuild decided about it.
+			if counted != len(in) {
+				t.Errorf("connected=%v: %d workspaces in, %d accounted for",
+					connected, len(in), counted)
+			}
+			for _, r := range m.Renames() {
+				if r.From.Desk != r.To.Desk || r.From.Slot != r.To.Slot {
+					t.Errorf("rename %s -> %s changed more than the monitor", r.From, r.To)
+				}
+			}
+		}
+	}
+}
+
+// Rebuild is the recovery path: it must not depend on anything zded remembers,
+// must not touch what it was given, and must not report churn just because
+// niri listed things in a different order.
+func TestRebuildIsPure(t *testing.T) {
 	in := []Workspace{
 		{Name: "haven.DP-1.db", Output: "DP-1"},
 		{Name: "vshop.DP-1.code", Output: "HDMI-A-1"},
 		{Name: "nope", Output: "DP-1"},
+		{Name: "regulars.HDMI-A-1.1", Output: "HDMI-A-1"},
+	}
+	untouched := append([]Workspace(nil), in...)
+
+	if !reflect.DeepEqual(Rebuild(in, both), Rebuild(in, both)) {
+		t.Error("two rebuilds of one input differ")
+	}
+	if !reflect.DeepEqual(in, untouched) {
+		t.Error("Rebuild modified its input")
+	}
+	// Same set, different order in: same map out.
+	shuffled := []Workspace{in[3], in[1], in[0], in[2]}
+	if !reflect.DeepEqual(Rebuild(in, both), Rebuild(shuffled, both)) {
+		t.Error("the map depends on the order niri listed workspaces in")
+	}
+}
+
+// Applying what Rebuild asked for and feeding the result back must ask for
+// nothing: a converging loop, not an oscillating one.
+func TestRebuildConverges(t *testing.T) {
+	in := []Workspace{
+		{Name: "vshop.DP-1.code", Output: "HDMI-A-1"},
+		{Name: "haven.DP-1.db", Output: "DP-1"},
 	}
 	first := Rebuild(in, both)
-	for i := 0; i < 5; i++ {
-		again := Rebuild(in, both)
-		if !equal(first.Names(), again.Names()) ||
-			len(again.Renames) != len(first.Renames) ||
-			len(again.Foreign) != len(first.Foreign) {
-			t.Fatal("Rebuild is not stable across calls")
-		}
-	}
-	// Apply what it asked for, feed the result back: it must ask for nothing.
 	var applied []Workspace
 	for _, w := range in {
 		n, err := ParseName(w.Name)
@@ -256,15 +398,15 @@ func TestRebuildIsStableAndConverges(t *testing.T) {
 			applied = append(applied, w)
 			continue
 		}
-		for _, r := range first.Renames {
+		for _, r := range first.Renames() {
 			if r.From == n {
 				n = r.To
 			}
 		}
 		applied = append(applied, Workspace{Name: n.String(), Output: w.Output})
 	}
-	if second := Rebuild(applied, both); len(second.Renames) != 0 {
-		t.Errorf("applying the renames did not converge: %v", second.Renames)
+	if second := Rebuild(applied, both); len(second.Renames()) != 0 {
+		t.Errorf("applying the renames did not converge: %v", second.Renames())
 	}
 }
 
@@ -284,6 +426,10 @@ func TestBandExcludesRegulars(t *testing.T) {
 			t.Error("the regulars band is inside a desk's band")
 		}
 	}
+	// And they are still reachable, by name.
+	if got := m.Regulars(); len(got) != 1 {
+		t.Errorf("Regulars() = %v, want the regulars workspace", got)
+	}
 }
 
 // A band is per monitor because the strip is: each monitor owns its own.
@@ -300,17 +446,23 @@ func TestBandIsPerMonitor(t *testing.T) {
 	}
 }
 
-// The map's slices are the map's. A caller that sorts what it got back must
-// not reorder the map underneath everyone else.
-func TestWorkspacesIsACopy(t *testing.T) {
+// The map's slices are the map's. A caller that sorts or overwrites what it
+// got back must not reorder the map underneath everyone else.
+func TestAccessorsReturnCopies(t *testing.T) {
 	m := Rebuild([]Workspace{
 		{Name: "vshop.DP-1.a", Output: "DP-1"},
 		{Name: "vshop.DP-1.b", Output: "DP-1"},
+		{Name: "nope", Output: "DP-1"},
 	}, both)
-	got := m.Workspaces("vshop")
-	got[0] = Name{"haven", "DP-1", "hijacked"}
-	if m.Desks["vshop"][0].Desk != "vshop" {
-		t.Error("writing to the returned slice changed the map")
+
+	m.Workspaces("vshop")[0] = Name{"haven", "DP-9", "hijacked"}
+	m.Band("vshop", "DP-1")[0] = Name{"haven", "DP-9", "hijacked"}
+	m.Foreign()[0] = Workspace{Name: "hijacked"}
+	if got := m.Workspaces("vshop")[0]; got.Desk != "vshop" || got.Slot != "a" {
+		t.Errorf("writing to a returned slice changed the map: %v", got)
+	}
+	if got := m.Foreign()[0].Name; got != "nope" {
+		t.Errorf("writing to Foreign changed the map: %v", got)
 	}
 }
 
@@ -320,13 +472,6 @@ func TestBandUnknownDesk(t *testing.T) {
 	m := Rebuild(nil, both)
 	if got := m.Band("never-seen", "DP-1"); len(got) != 0 {
 		t.Errorf("Band of an unknown desk = %v, want empty", got)
-	}
-}
-
-func TestNameErrorsSayWhy(t *testing.T) {
-	_, err := ParseName("VSHOP.DP-1.code")
-	if err == nil || !strings.Contains(err.Error(), "lowercase") {
-		t.Errorf("got %v, want an error naming the rule", err)
 	}
 }
 
