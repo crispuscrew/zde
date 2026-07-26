@@ -1,0 +1,62 @@
+// zde - niri config.
+//
+// This is ~/.config/niri/config.kdl. It holds the settings zde fixes, and
+// includes the three files that hold everything it does not:
+//
+//   binds.kdl    generated from common/keymap/keymap.yaml. Do NOT add binds
+//                here; edit the keymap.
+//   local.kdl    the host's own settings - outputs, xkb layout. Written from
+//                the zde.niri.extraConfig option, so it is still declarative.
+//   dynamic.kdl  written by zded while it runs: capture-block window rules,
+//                and the binds a desk releases. Created empty on first
+//                activation, and never touched again by home-manager.
+//
+// The split is what makes the last one possible. This file is a read-only
+// symlink into the nix store, so anything that has to change while the session
+// runs cannot live in it. niri resolves a relative include against the
+// directory the symlink is in, which is how a store-owned config reaches its
+// mutable siblings, and it reloads the lot when any of them is written.
+
+input {
+    keyboard {
+        xkb {
+            // No layout here, so the session gets xkb's default (us) unless
+            // XKB_DEFAULT_LAYOUT is set for it. The host's own layout is not
+            // inherited - where that gets wired in is on the roadmap.
+            // Language switching is bound to system.layout-switch (niri's
+            // switch-layout action).
+        }
+    }
+    touchpad {
+        tap
+        natural-scroll
+    }
+}
+
+layout {
+    gaps 8
+    focus-ring {
+        width 2
+    }
+    border {
+        off
+    }
+}
+
+prefer-no-csd
+
+hotkey-overlay {
+    skip-at-startup
+}
+
+// zded, the shell, and the portals spawn here as they land (roadmap 0.1).
+// Nothing to start yet - the generated binds are the first real content.
+// spawn-at-startup "zded"
+
+// Order is precedence: a later file's version of a node is the one that
+// applies, so the host can override what zde ships and zded can override both.
+// Which of two bindings of the same chord wins is a real-niri item
+// (docs/roadmap.md, verify list) - niri accepts both without complaint.
+include "binds.kdl"
+include "local.kdl"
+include "dynamic.kdl"
