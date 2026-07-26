@@ -21,6 +21,28 @@ in
       # Rootless podman: what zcr runs apps with.
       virtualisation.podman.enable = true;
 
+      # The compositor, from nixpkgs stable (docs/update.md). Upstream's module
+      # installs niri and its wayland-session entry, niri's user units, the
+      # portals (gnome, for screencast), and the desktop basics: polkit, dconf,
+      # graphics, fonts. A host that wants a different build of it sets
+      # programs.niri.package, which is left alone here on purpose.
+      programs.niri.enable = true;
+
+      # No graphical display manager: greetd on its own VT, tuigreet, then
+      # niri-session, the systemd-integrated entry point niri ships. The
+      # session reads ~/.config/niri/config.kdl, which layer 1 generates from
+      # the keymap.
+      services.greetd = {
+        enable = true;
+        settings.default_session = {
+          # mkDefault: the command is one composite string, so without it a
+          # consumer wanting to add a tuigreet flag has to retype the whole
+          # invocation under mkForce and stops tracking changes to it.
+          command = lib.mkDefault "${lib.getExe pkgs.tuigreet} --time --remember --cmd niri-session";
+          user = "greeter";
+        };
+      };
+
       # Audio: PipeWire with the usual compatibility layers; rtkit gives it
       # realtime scheduling (crackle/underrun protection under load).
       security.rtkit.enable = true;
@@ -31,10 +53,9 @@ in
       };
 
       # Land with their roadmap phases (see docs/roadmap.md, verify list):
-      # - niri session + portals (pinned input, not nixpkgs stable)
-      # - greetd
       # - kanata + uinput/udev permissions
       # - NVIDIA / firmware quirks via nixos-hardware
+      # - xwayland-satellite (the niri module leaves XWayland off)
     })
 
     # Laptop hardware. The 0.4 laptop profile (battery widgets, wifi/bt TUIs,

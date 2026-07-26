@@ -30,7 +30,7 @@ attribution; asks 5-6 land with their consumers.
 
 ## 0.3 - Comfort and ops
 
-- doctor + first runbooks (update runbook first).
+- doctor + the remaining runbooks (the update one exists: [`update.md`](update.md)).
 - update: staleness/CVE collection, agent-drafted re-pin, human signs.
 - resources: `desk.pause`, background policies, per-desk cost widgets.
 - netview: per-app connections/rates, nft counters (zinc ask 6), `app-cut`.
@@ -53,20 +53,25 @@ usable.
 ## Verify in prototype
 
 - niri: runtime workspace renaming (adoption + monitor moves);
-  block-out-from granularity; mode mechanism (config-swap vs input layer).
+  block-out-from granularity; mode mechanism (config-swap vs input layer);
+  X11 apps, which need xwayland-satellite (the session leaves XWayland off).
 - keymap: niri key-name casing for punctuation (grave, brackets, semicolon,
   comma, period); desk next/prev ordering; the panic/block leader sequences
   (Mod+Escape then L, Mod+Tab then L) via the input daemon, not niri.
-- niri config: the generated `config.kdl` (base + binds) actually loads on a
-  real niri - base-node syntax, that every emitted action name resolves, and
-  that `nav.*` shelling to zded per keypress feels instant.
+- niri config: `nav.*` shelling to zded per keypress feeling instant, and the
+  config driving a real compositor. The smoke test settles the static half -
+  niri's own parser accepts the generated `config.kdl`, base nodes and every
+  emitted action name - which is not the same as running it.
+- keyboard layout: the base config sets no xkb layout, so the session falls
+  back to us while the greeter uses the console keymap; decide where a host's
+  layout gets wired in.
 - caps:hyper landing in a usable modifier (stock xkb folds Hyper into Mod4).
 - kanata mouse-button interception (fallback: evsieve).
 - Quickshell under multi-monitor hotplug (swap path exists).
 - netns stats readable without ask 6, as a degraded first cut.
-- NixOS: flake evaluates (no nix on the dev host yet), rootless podman
-  subuids, Quickshell from its flake, kanata uinput permissions, NVIDIA with
-  niri on stable.
+- NixOS: greetd reaching niri-session on real hardware (CI only evaluates the
+  host, it never boots it), rootless podman subuids, Quickshell from its
+  flake, kanata uinput permissions, NVIDIA with niri.
 - laptop: power-profiles-daemon vs TLP on real battery life.
 
 ## Cross-cutting
