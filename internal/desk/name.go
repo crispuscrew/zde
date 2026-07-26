@@ -42,6 +42,15 @@ func (n Name) String() string {
 // in no desk's band and reachable from all of them.
 func (n Name) IsRegulars() bool { return n.Desk == Regulars }
 
+// NewName builds a workspace name, validating it the same way ParseName does.
+// Name's fields are exported for reading, so nothing stops a caller assembling
+// one by hand - but everything that mints a name (adoption, a manifest, the
+// target of a rename) should come through here, or the first sign of a bad
+// name is niri refusing it.
+func NewName(desk, monitor, slot string) (Name, error) {
+	return ParseName(desk + "." + monitor + "." + slot)
+}
+
 // ParseName reads a workspace name. A name that does not parse is not a zde
 // workspace: it belongs to whoever made it, and Rebuild leaves it alone.
 func ParseName(s string) (Name, error) {
