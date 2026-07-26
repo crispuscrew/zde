@@ -3,18 +3,12 @@
 # machine: the disk and the bootloader are placeholders that satisfy the NixOS
 # module system, and nothing is ever built from this file.
 {
-  # Layer 0, laptop bits included so that branch gets evaluated too.
+  imports = [ ./zde-user.nix ];
+
+  # Layer 0, laptop bits included so that branch gets evaluated too. The smoke
+  # test leaves them off, so they are evaluated here and booted nowhere.
   zde.enable = true;
   zde.laptop.enable = true;
-
-  # Layer 1, the same home module the portable path uses.
-  home-manager.users.zde = {
-    imports = [ ./home.nix ];
-    zde.enable = true;
-    home.stateVersion = "25.05";
-  };
-
-  users.users.zde.isNormalUser = true;
 
   boot.loader.grub.devices = [ "/dev/sda" ];
   fileSystems."/" = {

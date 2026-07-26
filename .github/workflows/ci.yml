@@ -11,9 +11,16 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   flake:
     runs-on: ubuntu-latest
+    # Evaluation reaches the network for niri's git dependencies, so without a
+    # timeout a hung fetch would sit on the 6-hour default.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
@@ -21,10 +28,14 @@ jobs:
       - name: nix flake check
         run: nix flake check --print-build-logs
 
+      # The lint steps report independently: a statix failure should not hide a
+      # nixfmt one and cost a whole extra round trip to find out.
       - name: statix
+        if: ${{ !cancelled() }}
         run: nix develop --command statix check .
 
       - name: go test + gofmt
+        if: ${{ !cancelled() }}
         run: |
           nix develop --command go test ./...
           fmt=$(nix develop --command gofmt -l cmd internal)
@@ -33,6 +44,7 @@ jobs:
       # nixfmt --check only names the offending file; formatting + diffing
       # prints the exact fix, which matters while no dev host has nix.
       - name: nixfmt
+        if: ${{ !cancelled() }}
         run: |
           git ls-files -z '*.nix' | xargs -0 nix develop --command nixfmt
           git diff --exit-code

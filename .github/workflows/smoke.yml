@@ -1,15 +1,28 @@
 # Smoke test: boots zde in a QEMU VM and checks that both layers arrive on a
-# machine. It builds the pinned compositor from source, so it is kept off
-# doc-sized pull requests - but a change to the system definition is exactly
-# what it exists to catch, so those do run it before they land.
+# machine. Kept out of the required check because it needs KVM and a VM boot,
+# and off pull requests that cannot affect a machine - but a change to the
+# system definition is what it exists to catch, so those run it before landing.
 name: smoke
 
 on:
   workflow_dispatch:
+  # Weekly, not nightly: every input is pinned, so a daily run rebuilds the
+  # identical derivation and can only ever catch a cache eviction.
   schedule:
-    - cron: "17 4 * * *"
+    - cron: "17 4 * * 1"
   push:
     branches: [dev, main]
+    paths:
+      - flake.nix
+      - flake.lock
+      - nix/**
+      - niri/**
+      - common/keymap/**
+      - cmd/**
+      - internal/**
+      - go.mod
+      - go.sum
+      - .github/workflows/smoke.yml
   pull_request:
     paths:
       - flake.nix
@@ -17,15 +30,25 @@ on:
       - nix/**
       - niri/**
       - common/keymap/**
+      - cmd/**
+      - internal/**
+      - go.mod
+      - go.sum
       - .github/workflows/smoke.yml
 
 permissions:
   contents: read
 
+# Superseding a pull request run is worth it; a run that already reached dev or
+# main gets to finish.
+concurrency:
+  group: smoke-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0

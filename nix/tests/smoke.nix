@@ -20,20 +20,17 @@ pkgs.testers.runNixOSTest {
     imports = [
       zdeModule
       homeManagerModule
+      ../zde-user.nix
     ];
 
+    # zde.laptop stays off here on purpose: it would hand the VM's network to
+    # NetworkManager and make anything network-shaped in this script flaky.
+    # nix/test-host.nix evaluates that branch instead.
     zde.enable = true;
 
-    users.users.zde = {
-      isNormalUser = true;
-      password = "zde";
-    };
-
-    home-manager.users.zde = {
-      imports = [ ../home.nix ];
-      zde.enable = true;
-      home.stateVersion = "25.05";
-    };
+    # Only so that shell_interact and a manual login work when debugging this
+    # test; every assertion below runs as root.
+    users.users.zde.password = "zde";
 
     virtualisation = {
       memorySize = 2048;
@@ -53,17 +50,17 @@ pkgs.testers.runNixOSTest {
       machine.succeed("test -x /run/current-system/sw/bin/niri-session")
       machine.succeed("test -f /run/current-system/sw/share/xdg-desktop-portal/niri-portals.conf")
 
-      # niri's user units reached systemd. Upstream installs them where NixOS
-      # does not look, so this is what stands between a login and a greeter
-      # that silently takes it back (see niriFor in flake.nix).
+      # niri's user units reached systemd. This is what stands between a login
+      # and a greeter that silently takes it straight back: niri-session starts
+      # niri.service, and a build that installs those units where NixOS does not
+      # glob for them (share/ rather than lib/) produces exactly that, with
+      # nothing on screen and nothing in a log. It held for a whole PR here.
       machine.succeed("test -f /etc/systemd/user/niri.service")
 
-      # The session entry a greeter or display manager registers. Asserted on
-      # the package because the system profile does not link
-      # share/wayland-sessions, and because the postInstall that puts it there
-      # is ours to maintain.
+      # The session entry, asserted on the package because the system profile
+      # does not link share/wayland-sessions.
       machine.succeed(
-          "test -f ${nodes.machine.zde.niri.package}/share/wayland-sessions/niri.desktop"
+          "test -f ${nodes.machine.programs.niri.package}/share/wayland-sessions/niri.desktop"
       )
 
       # Layer 1: home-manager put the generated config and the cheatsheet in
@@ -72,6 +69,11 @@ pkgs.testers.runNixOSTest {
       # Its activation is a oneshot that does not linger, so this waits on what
       # it produced rather than on the unit ever being active.
       machine.wait_until_succeeds("test -L /home/zde/.config/niri/config.kdl")
+      # LoadState first: systemctl reports Result=success for a unit that does
+      # not exist, so asking about Result alone would pass a typo.
+      machine.succeed(
+          "systemctl show -p LoadState --value home-manager-zde.service | grep -qx loaded"
+      )
       machine.succeed(
           "systemctl show -p Result --value home-manager-zde.service | grep -qx success"
       )
@@ -85,7 +87,9 @@ pkgs.testers.runNixOSTest {
       # every action name the keymap emitted resolves.
       machine.succeed("niri validate -c /home/zde/.config/niri/config.kdl")
 
-      # Rootless podman, what zcr will run apps with.
+      # Rootless podman, what zcr will run apps with. su gives no logind
+      # session, so this exercises podman's cgroupfs fallback rather than the
+      # systemd path a real login would take.
       machine.succeed("su -l zde -c 'podman info'")
     '';
 }

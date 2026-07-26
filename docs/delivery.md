@@ -24,9 +24,13 @@ profile (roadmap) builds its UIs on top of it in layer 1.
 - Drivers and modprobe are declarative (`hardware.*`, nixos-hardware,
   `boot.extraModprobeConfig`) in the same reviewable file as everything else.
 - A flake with pinned inputs is zinc's digest-pinning applied to the OS.
-- Channel strategy: nixpkgs stable for the base; niri pinned as its own flake
-  input, bringing the dependencies upstream tests against, bumped by hand and
-  checked with `nix build .#niri`; Quickshell joins it when the shell lands.
+- Channel strategy: nixpkgs stable for the base (`nixos-26.05`, with
+  home-manager matched to it). niri comes from it too, for as long as stable
+  carries the release zde wants: that keeps the compositor on the same mesa as
+  the system, which is what keeps a session off a black screen. A fast-moving
+  piece becomes its own pinned input the day stable stops carrying what zde
+  needs - Quickshell will, when the shell lands. Either way the lock is the
+  pin, and moving it is [`update.md`](update.md).
 
 ## Portable path: any distro
 
@@ -55,7 +59,7 @@ by `nix/zde-config.nix`) and installs the cheatsheet. `nix flake check` builds
 the config, so a broken keymap fails CI. The base config's niri syntax is only
 validated on a real niri (roadmap), since assembly just concatenates it.
 
-On top of it, layer 0 enables niri from the pinned input and starts it through
+On top of it, layer 0 enables niri and starts it through
 greetd (tuigreet, no graphical display manager), so the machine boots into the
 compositor that reads layer 1's config. What it boots into is still bare: the
 generated binds spawn zde tools that land with roadmap 0.1.

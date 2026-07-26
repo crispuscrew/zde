@@ -30,7 +30,7 @@ attribution; asks 5-6 land with their consumers.
 
 ## 0.3 - Comfort and ops
 
-- doctor + first runbooks (update runbook first).
+- doctor + the remaining runbooks (the update one exists: [`update.md`](update.md)).
 - update: staleness/CVE collection, agent-drafted re-pin, human signs.
 - resources: `desk.pause`, background policies, per-desk cost widgets.
 - netview: per-app connections/rates, nft counters (zinc ask 6), `app-cut`.
@@ -71,7 +71,7 @@ usable.
 - netns stats readable without ask 6, as a degraded first cut.
 - NixOS: greetd reaching niri-session on real hardware (CI only evaluates the
   host, it never boots it), rootless podman subuids, Quickshell from its
-  flake, kanata uinput permissions, NVIDIA with the pinned niri.
+  flake, kanata uinput permissions, NVIDIA with niri.
 - laptop: power-profiles-daemon vs TLP on real battery life.
 
 ## Cross-cutting

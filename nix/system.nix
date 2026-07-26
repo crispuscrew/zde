@@ -14,9 +14,6 @@ in
   options.zde = {
     enable = lib.mkEnableOption "the zde system layer";
     laptop.enable = lib.mkEnableOption "laptop hardware support (battery, radios, brightness)";
-    # The flake points this at its pinned niri input; the nixpkgs build is the
-    # fallback for anyone importing this module on its own.
-    niri.package = lib.mkPackageOption pkgs "niri" { };
   };
 
   config = lib.mkMerge [
@@ -24,13 +21,12 @@ in
       # Rootless podman: what zcr runs apps with.
       virtualisation.podman.enable = true;
 
-      # The compositor. Upstream's module installs niri and its wayland-session
-      # entry, niri's user units, the portals (gnome, for screencast), and the
-      # desktop basics: polkit, dconf, graphics, fonts.
-      programs.niri = {
-        enable = true;
-        inherit (cfg.niri) package;
-      };
+      # The compositor, from nixpkgs stable (docs/update.md). Upstream's module
+      # installs niri and its wayland-session entry, niri's user units, the
+      # portals (gnome, for screencast), and the desktop basics: polkit, dconf,
+      # graphics, fonts. A host that wants a different build of it sets
+      # programs.niri.package, which is left alone here on purpose.
+      programs.niri.enable = true;
 
       # No graphical display manager: greetd on its own VT, tuigreet, then
       # niri-session, the systemd-integrated entry point niri ships. The
@@ -39,7 +35,10 @@ in
       services.greetd = {
         enable = true;
         settings.default_session = {
-          command = "${lib.getExe pkgs.greetd.tuigreet} --time --remember --cmd niri-session";
+          # mkDefault: the command is one composite string, so without it a
+          # consumer wanting to add a tuigreet flag has to retype the whole
+          # invocation under mkForce and stops tracking changes to it.
+          command = lib.mkDefault "${lib.getExe pkgs.tuigreet} --time --remember --cmd niri-session";
           user = "greeter";
         };
       };
