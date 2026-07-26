@@ -60,11 +60,15 @@ usable.
   (Mod+Escape then L, Mod+Tab then L) via the input daemon, not niri.
 - niri config: `nav.*` shelling to zded per keypress feeling instant, and the
   config driving a real compositor. The smoke test settles the static half -
-  niri's own parser accepts the generated `config.kdl`, base nodes and every
-  emitted action name - which is not the same as running it.
-- keyboard layout: the base config sets no xkb layout, so the session falls
-  back to us while the greeter uses the console keymap; decide where a host's
-  layout gets wired in.
+  niri's own parser accepts the tree, its includes resolve, and every emitted
+  action name is real - which is not the same as running it.
+- include precedence: two files binding the same chord is accepted without
+  complaint, so which one wins is unverified. zded releasing a desk's clashing
+  bind through `dynamic.kdl` depends on the answer being "the last include".
+- keyboard layout: the config sets no xkb layout, so the session falls back to
+  us while the greeter uses the console keymap. `local.kdl` is where a host's
+  layout goes now; whether it should be derived from the system's own setting
+  instead is the open half.
 - caps:hyper landing in a usable modifier (stock xkb folds Hyper into Mod4).
 - kanata mouse-button interception (fallback: evsieve).
 - Quickshell under multi-monitor hotplug (swap path exists).
