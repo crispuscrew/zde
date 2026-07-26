@@ -98,6 +98,24 @@ func (compositor) FocusWorkspace(name string) error {
 	return c.FocusWorkspace(name)
 }
 
+func (compositor) RenameWorkspace(from, to string) error {
+	c, err := niri.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	return c.RenameWorkspace(from, to)
+}
+
+func (compositor) SetWorkspaceNameByID(id uint64, name string) error {
+	c, err := niri.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	return c.SetWorkspaceNameByID(id, name)
+}
+
 func fatal(err error) {
 	fmt.Fprintln(os.Stderr, "zded:", err)
 	os.Exit(1)

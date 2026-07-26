@@ -33,6 +33,11 @@ type Compositor interface {
 	// FocusWorkspace focuses one by name, which is what makes its monitor
 	// show it.
 	FocusWorkspace(name string) error
+	// RenameWorkspace corrects a name that no longer tells the truth.
+	RenameWorkspace(from, to string) error
+	// SetWorkspaceNameByID names a workspace that has no name to be
+	// addressed by, which is what adoption claims.
+	SetWorkspaceNameByID(id uint64, name string) error
 }
 
 // Request is one line in.
@@ -213,6 +218,8 @@ func (s *Server) Dispatch(req Request) Response {
 			return Response{Error: "desk.switch takes one desk name"}
 		}
 		return s.switchDesk(req.Args[0])
+	case "desk.reconcile":
+		return s.reconcile()
 	case "desk.last":
 		if s.jrn == nil {
 			return Response{Error: "no journal, so no desk to go back to"}
@@ -225,6 +232,60 @@ func (s *Server) Dispatch(req Request) Response {
 	default:
 		return Response{Error: fmt.Sprintf("unknown method %q", req.Method)}
 	}
+}
+
+// Reconciled is what a reconcile did, so the caller can see whether anything
+// was wrong rather than only that it ran.
+type Reconciled struct {
+	Renamed  []string `json:"renamed"`
+	Adopted  []string `json:"adopted"`
+	Conflict []string `json:"conflicts,omitempty"`
+}
+
+// reconcile makes the names true again: it corrects the ones a monitor move
+// left lying, and claims the workspaces that are nobody's into the active desk
+// (invariants 1 and 3). It is the same mechanism a snapshot uses, run by hand
+// (vision.md, principle 8) - and it is what stops the naming model drifting
+// away from what niri actually has.
+func (s *Server) reconcile() Response {
+	m, err := s.niri.DeskMap()
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	out := Reconciled{Renamed: []string{}, Adopted: []string{}}
+
+	// Renames first: adoption picks free ordinals, and it should pick them
+	// against corrected names rather than stale ones.
+	for _, r := range m.Renames() {
+		if err := s.niri.RenameWorkspace(r.From.String(), r.To.String()); err != nil {
+			return Response{Error: "renaming " + r.From.String() + ": " + err.Error()}
+		}
+		if s.jrn != nil {
+			s.jrn.Renamed(r)
+		}
+		out.Renamed = append(out.Renamed, r.From.String()+" -> "+r.To.String())
+	}
+
+	active := ""
+	if focused, err := s.niri.FocusedName(); err == nil {
+		if n, err := desk.ParseName(focused); err == nil {
+			active = n.Desk
+		}
+	}
+	// With no active desk, adoption would have to guess which desk owns a new
+	// workspace, and guessing puts windows somewhere the user never chose.
+	if active != "" {
+		for _, a := range desk.AdoptPlan(m, active) {
+			if err := s.niri.SetWorkspaceNameByID(a.ID, a.Name.String()); err != nil {
+				return Response{Error: "adopting into " + active + ": " + err.Error()}
+			}
+			out.Adopted = append(out.Adopted, a.Name.String())
+		}
+	}
+	for _, c := range m.Conflicts() {
+		out.Conflict = append(out.Conflict, c.Workspace.Name+": "+c.Reason)
+	}
+	return ok(out)
 }
 
 // switchDesk brings a desk up on every monitor it owns workspaces on, and

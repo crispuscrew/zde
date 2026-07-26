@@ -19,9 +19,11 @@ type fakeCompositor struct {
 	err     error
 	focused string
 
-	mu     sync.Mutex
-	calls  []string // what was asked to be focused, in order
-	failOn string
+	mu      sync.Mutex
+	calls   []string // what was asked to be focused, in order
+	renames []string
+	adopted []string
+	failOn  string
 }
 
 func (f *fakeCompositor) DeskMap() (*desk.Map, error) {
@@ -46,6 +48,32 @@ func (f *fakeCompositor) FocusWorkspace(name string) error {
 	}
 	f.calls = append(f.calls, name)
 	return nil
+}
+
+func (f *fakeCompositor) RenameWorkspace(from, to string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.renames = append(f.renames, from+" -> "+to)
+	return nil
+}
+
+func (f *fakeCompositor) SetWorkspaceNameByID(id uint64, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.adopted = append(f.adopted, name)
+	return nil
+}
+
+func (f *fakeCompositor) renameCalls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.renames...)
+}
+
+func (f *fakeCompositor) adoptCalls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.adopted...)
 }
 
 func (f *fakeCompositor) focusCalls() []string {
@@ -403,6 +431,99 @@ func TestDeskSwitchNeedsAName(t *testing.T) {
 	if err := c.Call("desk.switch", nil); err == nil {
 		t.Error("desk.switch with no name was accepted")
 	}
+}
+
+// Reconcile is what keeps the naming model true: it corrects the names a
+// monitor move left lying, and claims what is nobody's into the active desk.
+func TestReconcile(t *testing.T) {
+	jrn, err := journal.Open(filepath.Join(t.TempDir(), "j.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jrn.Close()
+	jrn.SetActive(mustName(t, "vshop.DP-1.code"))
+
+	niri := &fakeCompositor{
+		m: desk.Rebuild([]desk.Workspace{
+			{ID: 1, Name: "vshop.DP-1.code", Output: "HDMI-A-1"}, // moved
+			{ID: 2, Name: "", Output: "DP-1"},                    // niri's own
+		}, []string{"DP-1", "HDMI-A-1"}),
+		focused: "vshop.DP-1.code",
+	}
+	s := New("test", jrn, niri)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	var r Reconciled
+	if err := c.Call("desk.reconcile", &r); err != nil {
+		t.Fatal(err)
+	}
+	if got := niri.renameCalls(); len(got) != 1 || got[0] != "vshop.DP-1.code -> vshop.HDMI-A-1.code" {
+		t.Errorf("renames = %v, want the moved workspace corrected", got)
+	}
+	if got := niri.adoptCalls(); len(got) != 1 || got[0] != "vshop.DP-1.1" {
+		t.Errorf("adopted = %v, want the unnamed workspace claimed into vshop", got)
+	}
+	// The journal follows the rename, or it points at a workspace that is gone.
+	if st := jrn.State(); st.LastActive["vshop"]["HDMI-A-1"] != "code" {
+		t.Errorf("journal did not follow the rename: %+v", st.LastActive)
+	}
+}
+
+// With nothing focused there is no active desk, and adopting into a guess puts
+// windows on a desk the user never chose.
+func TestReconcileWithoutActiveDeskDoesNotAdopt(t *testing.T) {
+	niri := &fakeCompositor{
+		m: desk.Rebuild([]desk.Workspace{
+			{ID: 1, Name: "", Output: "DP-1"},
+		}, []string{"DP-1"}),
+		focused: "", // nothing focused, or focused on a foreign workspace
+	}
+	s := New("test", nil, niri)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	var r Reconciled
+	if err := c.Call("desk.reconcile", &r); err != nil {
+		t.Fatal(err)
+	}
+	if got := niri.adoptCalls(); len(got) != 0 {
+		t.Errorf("adopted %v with no active desk", got)
+	}
+}
+
+// A tidy world reports nothing to do, rather than inventing work.
+func TestReconcileQuietWhenNothingIsWrong(t *testing.T) {
+	niri := &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code"}
+	s := New("test", nil, niri)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	var r Reconciled
+	if err := c.Call("desk.reconcile", &r); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Renamed) != 0 || len(r.Adopted) != 0 || len(r.Conflict) != 0 {
+		t.Errorf("reconcile invented work: %+v", r)
+	}
+}
+
+func mustName(t *testing.T, s string) desk.Name {
+	t.Helper()
+	n, err := desk.ParseName(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
 }
 
 func TestDefaultSocketNeedsRuntimeDir(t *testing.T) {

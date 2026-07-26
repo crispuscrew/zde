@@ -6,6 +6,10 @@ import "sort"
 // the output it is on right now. Those two can disagree, and telling apart the
 // two reasons they disagree is most of what this file does.
 type Workspace struct {
+	// ID is niri's, stable within a session and not across one. It is not
+	// what the map keys on - names are - but a workspace with no name can be
+	// addressed no other way, which is what adoption needs.
+	ID     uint64
 	Name   string
 	Output string
 }

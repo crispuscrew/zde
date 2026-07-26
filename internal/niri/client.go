@@ -155,6 +155,21 @@ func (c *Client) FocusWorkspace(name string) error {
 	}, "FocusWorkspace "+name)
 }
 
+// SetWorkspaceName renames a workspace addressed by niri's id. Adoption uses
+// the id because the workspace it is naming has no name to be addressed by.
+func (c *Client) SetWorkspaceNameByID(id uint64, name string) error {
+	return c.Action(map[string]any{
+		"SetWorkspaceName": map[string]any{"name": name, "workspace": map[string]any{"Id": id}},
+	}, "SetWorkspaceName "+name)
+}
+
+// RenameWorkspace renames a workspace that already has one.
+func (c *Client) RenameWorkspace(from, to string) error {
+	return c.Action(map[string]any{
+		"SetWorkspaceName": map[string]any{"name": to, "workspace": map[string]any{"Name": from}},
+	}, "SetWorkspaceName "+to)
+}
+
 // FocusedName is the name of the focused workspace, empty if it has none.
 func (c *Client) FocusedName() (string, error) {
 	all, err := c.Workspaces()
@@ -217,7 +232,7 @@ func (c *Client) DeskMap() (*desk.Map, error) {
 func AsDeskWorkspaces(in []Workspace) []desk.Workspace {
 	out := make([]desk.Workspace, 0, len(in))
 	for _, w := range in {
-		out = append(out, desk.Workspace{Name: deref(w.Name), Output: deref(w.Output)})
+		out = append(out, desk.Workspace{ID: w.ID, Name: deref(w.Name), Output: deref(w.Output)})
 	}
 	return out
 }

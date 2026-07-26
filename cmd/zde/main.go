@@ -33,6 +33,8 @@ func run(args []string) error {
 		return switchDesk(args[2])
 	case len(args) == 2 && args[0] == "desk" && args[1] == "last":
 		return lastDesk()
+	case len(args) == 2 && args[0] == "desk" && args[1] == "reconcile":
+		return reconcile()
 	}
 	switch strings.Join(args, " ") {
 	case "status":
@@ -105,6 +107,31 @@ func lastDesk() error {
 	return c.Call("desk.last", nil)
 }
 
+func reconcile() error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	var r zded.Reconciled
+	if err := c.Call("desk.reconcile", &r); err != nil {
+		return err
+	}
+	for _, line := range r.Renamed {
+		fmt.Println("renamed ", line)
+	}
+	for _, line := range r.Adopted {
+		fmt.Println("adopted ", line)
+	}
+	for _, line := range r.Conflict {
+		fmt.Println("conflict", line)
+	}
+	if len(r.Renamed)+len(r.Adopted)+len(r.Conflict) == 0 {
+		fmt.Println("nothing to reconcile")
+	}
+	return nil
+}
+
 func usage() {
 	fmt.Fprint(os.Stderr, `zde - the command line into zded
 
@@ -112,6 +139,7 @@ func usage() {
   zde desk list          the desks that exist right now
   zde desk switch NAME   bring a desk up on every monitor it owns
   zde desk last          go back to the desk you came from
+  zde desk reconcile     make the workspace names true again
 
 Most of the action map (docs/model.md, section 6) is not wired yet; the
 generated keybinds that call it land with roadmap 0.1.
