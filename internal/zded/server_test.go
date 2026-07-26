@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/crispuscrew/zde/internal/desk"
@@ -14,15 +15,43 @@ import (
 )
 
 type fakeCompositor struct {
-	m   *desk.Map
-	err error
+	m       *desk.Map
+	err     error
+	focused string
+
+	mu     sync.Mutex
+	calls  []string // what was asked to be focused, in order
+	failOn string
 }
 
-func (f fakeCompositor) DeskMap() (*desk.Map, error) {
+func (f *fakeCompositor) DeskMap() (*desk.Map, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
 	return f.m, nil
+}
+
+func (f *fakeCompositor) FocusedName() (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	return f.focused, nil
+}
+
+func (f *fakeCompositor) FocusWorkspace(name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if name == f.failOn {
+		return errors.New("no such workspace")
+	}
+	f.calls = append(f.calls, name)
+	return nil
+}
+
+func (f *fakeCompositor) focusCalls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.calls...)
 }
 
 func twoDesks() *desk.Map {
@@ -63,7 +92,7 @@ func TestStatus(t *testing.T) {
 	defer jrn.Close()
 	jrn.SetLastDesk("vshop")
 
-	s := New("test", jrn, fakeCompositor{m: twoDesks()})
+	s := New("test", jrn, &fakeCompositor{m: twoDesks()})
 	c, err := DialPath(serve(t, s))
 	if err != nil {
 		t.Fatal(err)
@@ -82,7 +111,7 @@ func TestStatus(t *testing.T) {
 // The case someone runs `zde status` to understand: zded is up, niri is not.
 // It has to answer, and say so, rather than fail.
 func TestStatusWithoutCompositor(t *testing.T) {
-	s := New("test", nil, fakeCompositor{err: errors.New("NIRI_SOCKET is not set")})
+	s := New("test", nil, &fakeCompositor{err: errors.New("NIRI_SOCKET is not set")})
 	c, err := DialPath(serve(t, s))
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +133,7 @@ func TestStatusWithoutCompositor(t *testing.T) {
 // A method that does need the compositor fails, with niri's reason, rather
 // than reporting an empty desktop.
 func TestDeskListWithoutCompositor(t *testing.T) {
-	s := New("test", nil, fakeCompositor{err: errors.New("connection refused")})
+	s := New("test", nil, &fakeCompositor{err: errors.New("connection refused")})
 	c, err := DialPath(serve(t, s))
 	if err != nil {
 		t.Fatal(err)
@@ -122,7 +151,7 @@ func TestDeskListWithoutCompositor(t *testing.T) {
 }
 
 func TestDeskList(t *testing.T) {
-	s := New("test", nil, fakeCompositor{m: twoDesks()})
+	s := New("test", nil, &fakeCompositor{m: twoDesks()})
 	c, err := DialPath(serve(t, s))
 	if err != nil {
 		t.Fatal(err)
@@ -139,7 +168,7 @@ func TestDeskList(t *testing.T) {
 }
 
 func TestUnknownMethod(t *testing.T) {
-	s := New("test", nil, fakeCompositor{m: twoDesks()})
+	s := New("test", nil, &fakeCompositor{m: twoDesks()})
 	c, err := DialPath(serve(t, s))
 	if err != nil {
 		t.Fatal(err)
@@ -152,7 +181,7 @@ func TestUnknownMethod(t *testing.T) {
 
 // One connection, several requests: the shell will hold one open.
 func TestManyRequestsOnOneConnection(t *testing.T) {
-	s := New("test", nil, fakeCompositor{m: twoDesks()})
+	s := New("test", nil, &fakeCompositor{m: twoDesks()})
 	c, err := DialPath(serve(t, s))
 	if err != nil {
 		t.Fatal(err)
@@ -169,7 +198,7 @@ func TestManyRequestsOnOneConnection(t *testing.T) {
 // Garbage on the socket is answered, not fatal: one bad client must not take
 // the daemon down with it.
 func TestGarbageRequest(t *testing.T) {
-	s := New("test", nil, fakeCompositor{m: twoDesks()})
+	s := New("test", nil, &fakeCompositor{m: twoDesks()})
 	path := serve(t, s)
 
 	conn, err := net.Dial("unix", path)
@@ -204,7 +233,7 @@ func TestGarbageRequest(t *testing.T) {
 // The socket is the zde boundary, so it is not world-reachable even before the
 // peer check runs.
 func TestSocketIsPrivate(t *testing.T) {
-	s := New("test", nil, fakeCompositor{m: twoDesks()})
+	s := New("test", nil, &fakeCompositor{m: twoDesks()})
 	path := serve(t, s)
 
 	fi, err := os.Stat(path)
@@ -225,10 +254,10 @@ func TestSocketIsPrivate(t *testing.T) {
 
 // Two daemons on one socket is worse than one that refuses to start.
 func TestSecondDaemonRefuses(t *testing.T) {
-	first := New("test", nil, fakeCompositor{m: twoDesks()})
+	first := New("test", nil, &fakeCompositor{m: twoDesks()})
 	path := serve(t, first)
 
-	second := New("test", nil, fakeCompositor{m: twoDesks()})
+	second := New("test", nil, &fakeCompositor{m: twoDesks()})
 	err := second.Listen(path)
 	if err == nil {
 		second.Close()
@@ -253,11 +282,127 @@ func TestStaleSocketIsReplaced(t *testing.T) {
 	if err := os.WriteFile(path, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	s := New("test", nil, fakeCompositor{m: twoDesks()})
+	s := New("test", nil, &fakeCompositor{m: twoDesks()})
 	if err := s.Listen(path); err != nil {
 		t.Fatalf("a stale socket stopped the daemon: %v", err)
 	}
 	defer s.Close()
+}
+
+// The switch focuses one workspace per monitor the desk owns, and remembers
+// where it came from so desk.last can return.
+func TestDeskSwitch(t *testing.T) {
+	jrn, err := journal.Open(filepath.Join(t.TempDir(), "j.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jrn.Close()
+
+	niri := &fakeCompositor{
+		m: desk.Rebuild([]desk.Workspace{
+			{Name: "vshop.DP-1.code", Output: "DP-1"},
+			{Name: "vshop.HDMI-A-1.aux", Output: "HDMI-A-1"},
+			{Name: "haven.DP-1.db", Output: "DP-1"},
+		}, []string{"DP-1", "HDMI-A-1"}),
+		focused: "haven.DP-1.db", // we are on haven right now
+	}
+	s := New("test", jrn, niri)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	var plan []desk.Name
+	if err := c.Call("desk.switch", &plan, "vshop"); err != nil {
+		t.Fatal(err)
+	}
+	if got := niri.focusCalls(); len(got) != 2 || got[0] != "vshop.DP-1.code" || got[1] != "vshop.HDMI-A-1.aux" {
+		t.Errorf("focused %v, want one workspace per monitor", got)
+	}
+	st := jrn.State()
+	if st.LastDesk != "haven" {
+		t.Errorf("LastDesk = %q, want the desk we came from", st.LastDesk)
+	}
+	if st.LastActive["vshop"]["DP-1"] != "code" {
+		t.Errorf("did not record where vshop was left: %+v", st.LastActive)
+	}
+}
+
+// desk.last returns to where the previous switch came from.
+func TestDeskLast(t *testing.T) {
+	jrn, err := journal.Open(filepath.Join(t.TempDir(), "j.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jrn.Close()
+	jrn.SetLastDesk("haven")
+
+	niri := &fakeCompositor{m: twoDesks()}
+	s := New("test", jrn, niri)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	if err := c.Call("desk.last", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := niri.focusCalls(); len(got) != 1 || got[0] != "haven.DP-1.db" {
+		t.Errorf("focused %v, want haven's workspace", got)
+	}
+}
+
+// Switching to a desk with nothing in it is not a switch, and saying so beats
+// reporting success while every monitor stayed where it was.
+func TestDeskSwitchEmpty(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks()})
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	err = c.Call("desk.switch", nil, "never-launched")
+	if err == nil || !strings.Contains(err.Error(), "no workspaces") {
+		t.Errorf("got %v, want a refusal that says why", err)
+	}
+}
+
+// A switch that fails halfway has already moved some monitors. That is worth
+// reporting, not carrying on through.
+func TestDeskSwitchStopsOnFailure(t *testing.T) {
+	niri := &fakeCompositor{
+		m: desk.Rebuild([]desk.Workspace{
+			{Name: "vshop.DP-1.code", Output: "DP-1"},
+			{Name: "vshop.HDMI-A-1.aux", Output: "HDMI-A-1"},
+		}, []string{"DP-1", "HDMI-A-1"}),
+		failOn: "vshop.DP-1.code",
+	}
+	s := New("test", nil, niri)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.Call("desk.switch", nil, "vshop"); err == nil {
+		t.Fatal("a failed focus was reported as a switch")
+	}
+	if got := niri.focusCalls(); len(got) != 0 {
+		t.Errorf("kept going after a failure: %v", got)
+	}
+}
+
+func TestDeskSwitchNeedsAName(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks()})
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.Call("desk.switch", nil); err == nil {
+		t.Error("desk.switch with no name was accepted")
+	}
 }
 
 func TestDefaultSocketNeedsRuntimeDir(t *testing.T) {

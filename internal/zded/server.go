@@ -28,11 +28,17 @@ import (
 // asked why the session is broken.
 type Compositor interface {
 	DeskMap() (*desk.Map, error)
+	// FocusedName is the focused workspace, empty if none is.
+	FocusedName() (string, error)
+	// FocusWorkspace focuses one by name, which is what makes its monitor
+	// show it.
+	FocusWorkspace(name string) error
 }
 
-// Request is one line in: a method and nothing else, so far.
+// Request is one line in.
 type Request struct {
-	Method string `json:"method"`
+	Method string   `json:"method"`
+	Args   []string `json:"args,omitempty"`
 }
 
 // Response is one line back. Exactly one of Ok and Error is set, which is the
@@ -202,9 +208,68 @@ func (s *Server) Dispatch(req Request) Response {
 			return Response{Error: err.Error()}
 		}
 		return ok(m.DeskNames())
+	case "desk.switch":
+		if len(req.Args) != 1 {
+			return Response{Error: "desk.switch takes one desk name"}
+		}
+		return s.switchDesk(req.Args[0])
+	case "desk.last":
+		if s.jrn == nil {
+			return Response{Error: "no journal, so no desk to go back to"}
+		}
+		prev := s.jrn.State().LastDesk
+		if prev == "" {
+			return Response{Error: "no desk to go back to yet"}
+		}
+		return s.switchDesk(prev)
 	default:
 		return Response{Error: fmt.Sprintf("unknown method %q", req.Method)}
 	}
+}
+
+// switchDesk brings a desk up on every monitor it owns workspaces on, and
+// records where it left from so desk.last can come back.
+func (s *Server) switchDesk(target string) Response {
+	m, err := s.niri.DeskMap()
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	var lastActive map[string]string
+	if s.jrn != nil {
+		lastActive = s.jrn.State().LastActive[target]
+	}
+	plan := desk.SwitchPlan(m, target, lastActive)
+	if len(plan) == 0 {
+		// Nothing to focus is not the same as a failed switch, but it is not
+		// a switch either: say so rather than pretending the desk is up.
+		return Response{Error: "desk " + target + " has no workspaces"}
+	}
+
+	// Where we are now, before anything moves, so desk.last has somewhere to
+	// go back to. A failure to read it is not worth refusing the switch over.
+	from := ""
+	if focused, err := s.niri.FocusedName(); err == nil {
+		if n, err := desk.ParseName(focused); err == nil {
+			from = n.Desk
+		}
+	}
+
+	for _, n := range plan {
+		if err := s.niri.FocusWorkspace(n.String()); err != nil {
+			// Partway through: some monitors have moved. Report it rather
+			// than carrying on, because the state is now worth looking at.
+			return Response{Error: "switching to " + target + ": " + err.Error()}
+		}
+	}
+	if s.jrn != nil {
+		for _, n := range plan {
+			s.jrn.SetActive(n)
+		}
+		if from != "" && from != target {
+			s.jrn.SetLastDesk(from)
+		}
+	}
+	return ok(plan)
 }
 
 func (s *Server) status() Status {

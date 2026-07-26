@@ -35,11 +35,11 @@ func Dial() (*Client, error) {
 func (c *Client) Close() error { return c.conn.Close() }
 
 // Call sends one request and decodes the reply into out.
-func (c *Client) Call(method string, out any) error {
+func (c *Client) Call(method string, out any, args ...string) error {
 	if err := c.conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		return err
 	}
-	line, err := json.Marshal(Request{Method: method})
+	line, err := json.Marshal(Request{Method: method, Args: args})
 	if err != nil {
 		return err
 	}

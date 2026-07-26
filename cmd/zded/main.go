@@ -80,6 +80,24 @@ func (compositor) DeskMap() (*desk.Map, error) {
 	return c.DeskMap()
 }
 
+func (compositor) FocusedName() (string, error) {
+	c, err := niri.Dial()
+	if err != nil {
+		return "", err
+	}
+	defer c.Close()
+	return c.FocusedName()
+}
+
+func (compositor) FocusWorkspace(name string) error {
+	c, err := niri.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	return c.FocusWorkspace(name)
+}
+
 func fatal(err error) {
 	fmt.Fprintln(os.Stderr, "zded:", err)
 	os.Exit(1)

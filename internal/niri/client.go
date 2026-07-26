@@ -37,11 +37,12 @@ var requestTimeout = 5 * time.Second
 // it is the only way to address one workspace unambiguously within a session -
 // a rename has to name the workspace it renames.
 type Workspace struct {
-	ID     uint64  `json:"id"`
-	Idx    uint8   `json:"idx"`
-	Name   *string `json:"name"`
-	Output *string `json:"output"`
-	Active bool    `json:"is_active"`
+	ID      uint64  `json:"id"`
+	Idx     uint8   `json:"idx"`
+	Name    *string `json:"name"`
+	Output  *string `json:"output"`
+	Active  bool    `json:"is_active"`
+	Focused bool    `json:"is_focused"`
 }
 
 // Output is niri's output, narrowed to its name. Which outputs exist is the
@@ -84,9 +85,8 @@ type reply struct {
 	Err *string         `json:"Err"`
 }
 
-// request writes one request and reads one reply, returning the payload of the
-// named response variant.
-func (c *Client) request(req any, variant string) (json.RawMessage, error) {
+// call writes one request and reads one reply, returning the Ok payload.
+func (c *Client) call(req any, what string) (json.RawMessage, error) {
 	line, err := json.Marshal(req)
 	if err != nil {
 		return nil, err
@@ -95,25 +95,34 @@ func (c *Client) request(req any, variant string) (json.RawMessage, error) {
 		return nil, err
 	}
 	if _, err := c.conn.Write(append(line, '\n')); err != nil {
-		return nil, fmt.Errorf("niri: write %s: %w", variant, err)
+		return nil, fmt.Errorf("niri: write %s: %w", what, err)
 	}
 	raw, err := c.r.ReadBytes('\n')
 	if err != nil {
-		return nil, fmt.Errorf("niri: read %s: %w", variant, err)
+		return nil, fmt.Errorf("niri: read %s: %w", what, err)
 	}
 	var rep reply
 	if err := json.Unmarshal(raw, &rep); err != nil {
-		return nil, fmt.Errorf("niri: %s: reply is not niri's: %w", variant, err)
+		return nil, fmt.Errorf("niri: %s: reply is not niri's: %w", what, err)
 	}
 	if rep.Err != nil {
-		return nil, fmt.Errorf("niri: %s: %s", variant, *rep.Err)
+		return nil, fmt.Errorf("niri: %s: %s", what, *rep.Err)
 	}
 	if len(rep.Ok) == 0 {
-		return nil, fmt.Errorf("niri: %s: reply carried neither Ok nor Err", variant)
+		return nil, fmt.Errorf("niri: %s: reply carried neither Ok nor Err", what)
 	}
-	// Response is an enum too, so the payload sits under its variant name.
+	return rep.Ok, nil
+}
+
+// request is call for the responses that carry data, which niri wraps in the
+// name of the response variant.
+func (c *Client) request(req any, variant string) (json.RawMessage, error) {
+	okRaw, err := c.call(req, variant)
+	if err != nil {
+		return nil, err
+	}
 	var byVariant map[string]json.RawMessage
-	if err := json.Unmarshal(rep.Ok, &byVariant); err != nil {
+	if err := json.Unmarshal(okRaw, &byVariant); err != nil {
 		return nil, fmt.Errorf("niri: %s: %w", variant, err)
 	}
 	payload, ok := byVariant[variant]
@@ -121,6 +130,43 @@ func (c *Client) request(req any, variant string) (json.RawMessage, error) {
 		return nil, fmt.Errorf("niri: asked for %s, got %v", variant, keys(byVariant))
 	}
 	return payload, nil
+}
+
+// Action performs a niri action. An action that niri accepted answers with the
+// bare string "Handled" rather than a payload, so anything else means it did
+// not do what was asked.
+func (c *Client) Action(action any, what string) error {
+	okRaw, err := c.call(map[string]any{"Action": action}, what)
+	if err != nil {
+		return err
+	}
+	var handled string
+	if err := json.Unmarshal(okRaw, &handled); err != nil || handled != "Handled" {
+		return fmt.Errorf("niri: %s: not handled: %s", what, okRaw)
+	}
+	return nil
+}
+
+// FocusWorkspace focuses a workspace by name. Focusing one makes the monitor
+// it is on show it, which is how a desk switch moves every monitor at once.
+func (c *Client) FocusWorkspace(name string) error {
+	return c.Action(map[string]any{
+		"FocusWorkspace": map[string]any{"reference": map[string]any{"Name": name}},
+	}, "FocusWorkspace "+name)
+}
+
+// FocusedName is the name of the focused workspace, empty if it has none.
+func (c *Client) FocusedName() (string, error) {
+	all, err := c.Workspaces()
+	if err != nil {
+		return "", err
+	}
+	for _, w := range all {
+		if w.Focused {
+			return deref(w.Name), nil
+		}
+	}
+	return "", nil
 }
 
 // Workspaces lists every workspace niri knows about.
