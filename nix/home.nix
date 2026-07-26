@@ -29,8 +29,15 @@ in
     # The cheatsheet the help widget (system.help) shows.
     xdg.configFile."zde/keymap-cheatsheet.md".source = "${zdeConfig}/keymap-cheatsheet.md";
 
-    # Grows with roadmap 0.1: the zded service, the shell, and zcr/zcc/zlt on
-    # PATH. niri itself arrives with its pinned flake input (delivery.md).
-    home.packages = [ ];
+    # What the generated binds actually shell out to. The keymap is the source
+    # of truth for the chords, which makes it a source of truth for the
+    # binaries too: a bind whose command is not installed is a key that does
+    # nothing, silently. The smoke test checks the two against each other.
+    #
+    # Grows with roadmap 0.1: the zded service, the shell, and zcr/zcc/zlt.
+    home.packages = [
+      pkgs.brightnessctl # system.brightness-up/dn
+      pkgs.wireplumber # wpctl, for audio.*
+    ];
   };
 }

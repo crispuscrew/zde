@@ -87,6 +87,19 @@ pkgs.testers.runNixOSTest {
       # every action name the keymap emitted resolves.
       machine.succeed("niri validate -c /home/zde/.config/niri/config.kdl")
 
+      # Every binary the binds spawn has to be on the user's PATH, or the key
+      # does nothing and says nothing. The zde tools are the known exception
+      # until roadmap 0.1 builds them; that list shrinks, it must not grow.
+      missing = machine.succeed(
+          "su -l zde -c '"
+          "for c in $(grep -o \"spawn \\\"[^\\\"]*\\\"\" ~/.config/niri/config.kdl"
+          " | cut -d\\\" -f2 | sort -u); do"
+          "  case $c in zde|zlg) continue;; esac;"
+          "  command -v $c >/dev/null || echo $c;"
+          "done'"
+      ).strip()
+      assert missing == "", f"binds spawn commands that are not installed: {missing}"
+
       # Rootless podman, what zcr will run apps with. su gives no logind
       # session, so this exercises podman's cgroupfs fallback rather than the
       # systemd path a real login would take.

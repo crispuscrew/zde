@@ -13,10 +13,23 @@ func EmitKDL(km *Keymap) string {
 	b.WriteString("// " + header + "\n")
 	b.WriteString("binds {\n")
 	for _, bind := range km.Binds {
-		b.WriteString("    " + bind.Key + " { " + bind.node() + "; }\n")
+		b.WriteString("    " + bind.Key + bind.props() + " { " + bind.node() + "; }\n")
 	}
 	b.WriteString("}\n")
 	return b.String()
+}
+
+// props renders the bind's niri properties. Only the ones that differ from
+// niri's defaults are written, so the generated config stays readable.
+func (b Bind) props() string {
+	var p string
+	if !b.Entry.Repeat {
+		p += " repeat=false"
+	}
+	if b.Entry.WhenLocked {
+		p += " allow-when-locked=true"
+	}
+	return p
 }
 
 func (b Bind) node() string {
