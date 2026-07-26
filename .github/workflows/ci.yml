@@ -34,10 +34,12 @@ jobs:
         if: ${{ !cancelled() }}
         run: nix develop --command statix check .
 
+      # -race because the journal is written from more than one goroutine, and
+      # a data race there corrupts the file that says where you were.
       - name: go test + gofmt
         if: ${{ !cancelled() }}
         run: |
-          nix develop --command go test ./...
+          nix develop --command go test -race ./...
           fmt=$(nix develop --command gofmt -l cmd internal)
           if [ -n "$fmt" ]; then echo "gofmt needed: $fmt"; exit 1; fi
 
