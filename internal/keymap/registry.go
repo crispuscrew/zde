@@ -13,6 +13,19 @@ type Entry struct {
 	Native string
 	Spawn  []string
 	Arg    argKind
+
+	// Repeat says whether holding the key re-fires the action. niri's own
+	// default is true, which is right for navigating and resizing and wrong for
+	// everything that opens something: held, Mod+t launches a terminal per
+	// key-repeat tick. So the default here is the opposite of niri's, and the
+	// entries that are meant to be held say so.
+	Repeat bool
+
+	// WhenLocked keeps the bind working on the lock screen. It is what makes
+	// volume, mic-mute, brightness and media transport usable while locked,
+	// and it must stay off for everything else - a bind that reaches past the
+	// lock screen is a way around it.
+	WhenLocked bool
 }
 
 type argKind int
@@ -79,14 +92,14 @@ var registry = map[string]Entry{
 	// Horizontal grid: plain focus, Shift moves, Ctrl resizes. Vertical focus
 	// lives on nav.down/up (desk group). consume/expel stack a column: i = in,
 	// o = out.
-	"window.focus left":  {Group: "window", Desc: "focus the column to the left", Native: "focus-column-left"},
-	"window.focus right": {Group: "window", Desc: "focus the column to the right", Native: "focus-column-right"},
-	"window.move left":   {Group: "window", Desc: "move the column left", Native: "move-column-left"},
-	"window.move right":  {Group: "window", Desc: "move the column right", Native: "move-column-right"},
-	"window.narrower":    {Group: "window", Desc: "make the column narrower", Native: "set-column-width \"-10%\""},
-	"window.wider":       {Group: "window", Desc: "make the column wider", Native: "set-column-width \"+10%\""},
-	"window.shorter":     {Group: "window", Desc: "make the window shorter", Native: "set-window-height \"-10%\""},
-	"window.taller":      {Group: "window", Desc: "make the window taller", Native: "set-window-height \"+10%\""},
+	"window.focus left":  {Group: "window", Desc: "focus the column to the left", Native: "focus-column-left", Repeat: true},
+	"window.focus right": {Group: "window", Desc: "focus the column to the right", Native: "focus-column-right", Repeat: true},
+	"window.move left":   {Group: "window", Desc: "move the column left", Native: "move-column-left", Repeat: true},
+	"window.move right":  {Group: "window", Desc: "move the column right", Native: "move-column-right", Repeat: true},
+	"window.narrower":    {Group: "window", Desc: "make the column narrower", Native: "set-column-width \"-10%\"", Repeat: true},
+	"window.wider":       {Group: "window", Desc: "make the column wider", Native: "set-column-width \"+10%\"", Repeat: true},
+	"window.shorter":     {Group: "window", Desc: "make the window shorter", Native: "set-window-height \"-10%\"", Repeat: true},
+	"window.taller":      {Group: "window", Desc: "make the window taller", Native: "set-window-height \"+10%\"", Repeat: true},
 	"window.fullscreen":  {Group: "window", Desc: "fullscreen", Native: "fullscreen-window"},
 	"window.float":       {Group: "window", Desc: "toggle floating", Native: "toggle-window-floating"},
 	"window.close":       {Group: "window", Desc: "close the window", Native: "close-window"},
@@ -127,18 +140,18 @@ var registry = map[string]Entry{
 	// media: through zde so the media target decides who plays
 	// (docs/vision.md, media targeting). The target auto-routes to the
 	// most-recent player by default; the picker pins or re-enables auto.
-	"media.play-pause": {Group: "media", Desc: "play/pause the media target", Spawn: []string{"zde", "media", "play-pause"}},
-	"media.next":       {Group: "media", Desc: "next track on the media target", Spawn: []string{"zde", "media", "next"}},
-	"media.prev":       {Group: "media", Desc: "previous track on the media target", Spawn: []string{"zde", "media", "prev"}},
+	"media.play-pause": {Group: "media", Desc: "play/pause the media target", Spawn: []string{"zde", "media", "play-pause"}, WhenLocked: true},
+	"media.next":       {Group: "media", Desc: "next track on the media target", Spawn: []string{"zde", "media", "next"}, WhenLocked: true},
+	"media.prev":       {Group: "media", Desc: "previous track on the media target", Spawn: []string{"zde", "media", "prev"}, WhenLocked: true},
 	"media.panel":      {Group: "media", Desc: "the music control panel", Spawn: []string{"zde", "media", "panel"}},
 	"media.like":       {Group: "media", Desc: "like the current track", Spawn: []string{"zde", "media", "like"}},
 	"media.target":     {Group: "media", Desc: "the media target picker (pin a player, or auto-route)", Spawn: []string{"zde", "media", "target"}},
 
 	// audio: raw wpctl until zde audio lands; the OSD comes with the shell.
-	"audio.vol-up":   {Group: "audio", Desc: "volume up", Spawn: []string{"wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%+"}},
-	"audio.vol-down": {Group: "audio", Desc: "volume down", Spawn: []string{"wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%-"}},
-	"audio.mute":     {Group: "audio", Desc: "mute the output", Spawn: []string{"wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"}},
-	"audio.mic-mute": {Group: "audio", Desc: "mute the mic", Spawn: []string{"wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"}},
+	"audio.vol-up":   {Group: "audio", Desc: "volume up", Spawn: []string{"wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%+"}, Repeat: true, WhenLocked: true},
+	"audio.vol-down": {Group: "audio", Desc: "volume down", Spawn: []string{"wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%-"}, Repeat: true, WhenLocked: true},
+	"audio.mute":     {Group: "audio", Desc: "mute the output", Spawn: []string{"wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"}, WhenLocked: true},
+	"audio.mic-mute": {Group: "audio", Desc: "mute the mic", Spawn: []string{"wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"}, WhenLocked: true},
 
 	// net: the observer widget does per-app cuts and the kill switch; the two
 	// quick-cut sequences (keymap.yaml) wait for the input daemon.
@@ -164,8 +177,8 @@ var registry = map[string]Entry{
 	"system.calendar":      {Group: "system", Desc: "the calendar and clock widget", Spawn: []string{"zde", "system", "calendar"}},
 	"system.wallpapers":    {Group: "system", Desc: "the wallpapers widget", Spawn: []string{"zde", "system", "wallpapers"}},
 	"system.help":          {Group: "system", Desc: "the help widget (the keybind cheatsheet)", Spawn: []string{"zde", "help"}},
-	"system.brightness-up": {Group: "system", Desc: "brightness up", Spawn: []string{"brightnessctl", "set", "5%+"}},
-	"system.brightness-dn": {Group: "system", Desc: "brightness down", Spawn: []string{"brightnessctl", "set", "5%-"}},
+	"system.brightness-up": {Group: "system", Desc: "brightness up", Spawn: []string{"brightnessctl", "set", "5%+"}, Repeat: true, WhenLocked: true},
+	"system.brightness-dn": {Group: "system", Desc: "brightness down", Spawn: []string{"brightnessctl", "set", "5%-"}, Repeat: true, WhenLocked: true},
 	"system.layout-switch": {Group: "system", Desc: "switch keyboard layout (language)", Native: "switch-layout \"next\""},
 	"system.notif-center":  {Group: "system", Desc: "the notification center", Spawn: []string{"zde", "system", "notif-center"}},
 }
