@@ -8,12 +8,12 @@
   niri,
 }:
 let
-  zde-keymap = callPackage ./zde-keymap.nix { };
+  zde = callPackage ./zde.nix { };
 in
 runCommand "zde-config" { nativeBuildInputs = [ niri ]; } ''
   mkdir -p "$out"
   cp ${../niri/config.kdl} "$out/niri-config.kdl"
-  ${zde-keymap}/bin/zde-keymap \
+  ${zde}/bin/zde-keymap \
     -in ${../common/keymap/keymap.yaml} \
     -kdl "$out/binds.kdl" \
     -cheatsheet "$out/keymap-cheatsheet.md"
