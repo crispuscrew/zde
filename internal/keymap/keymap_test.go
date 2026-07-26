@@ -21,15 +21,17 @@ func TestEmitKDL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Holding a key repeats where that is the interaction (focus, resize) and
+	// nowhere else; the lock screen sees the media key and nothing else.
 	want := `// ` + header + `
 binds {
-    Mod+Tab { spawn "zde" "desk" "switcher"; }
-    Mod+j { spawn "zde" "desk" "next"; }
+    Mod+Tab repeat=false { spawn "zde" "desk" "switcher"; }
+    Mod+j repeat=false { spawn "zde" "desk" "next"; }
     Mod+h { focus-column-left; }
     Mod+Ctrl+h { set-column-width "-10%"; }
-    Mod+t { spawn "zde" "app" "launch" "terminal"; }
-    Mod+Shift+e { spawn "zde" "app" "launch-at" "editor"; }
-    XF86AudioPlay { spawn "zde" "media" "play-pause"; }
+    Mod+t repeat=false { spawn "zde" "app" "launch" "terminal"; }
+    Mod+Shift+e repeat=false { spawn "zde" "app" "launch-at" "editor"; }
+    XF86AudioPlay repeat=false allow-when-locked=true { spawn "zde" "media" "play-pause"; }
 }
 `
 	if got := EmitKDL(km); got != want {
@@ -186,6 +188,9 @@ func TestRegistryInvariants(t *testing.T) {
 	for _, g := range groups {
 		inGroup[g] = true
 	}
+	// The only things a locked screen may do: change the volume, the mic, the
+	// brightness, or the track.
+	inLockGroup := map[string]bool{"audio": true, "media": true, "system": true}
 	for id, e := range registry {
 		switch {
 		case e.Native == "" && len(e.Spawn) == 0:
@@ -198,6 +203,11 @@ func TestRegistryInvariants(t *testing.T) {
 		}
 		if e.Desc == "" {
 			t.Errorf("%s: no Desc, the cheatsheet row would be blank", id)
+		}
+		// A bind that reaches past the lock screen is a way around it, so the
+		// set that does is fixed here rather than left to a code review.
+		if e.WhenLocked && !inLockGroup[e.Group] {
+			t.Errorf("%s: allow-when-locked on a %q bind, which the lock screen has no business running", id, e.Group)
 		}
 		holes := strings.Count(e.Native, argPlaceholder)
 		if e.parametric() && e.Native != "" && holes != 1 {
@@ -223,7 +233,8 @@ func TestShippedKeymap(t *testing.T) {
 	kdl := EmitKDL(km)
 	cheat := EmitCheatsheet(km)
 	for _, b := range km.Binds {
-		if !strings.Contains(kdl, "    "+b.Key+" { ") {
+		// The chord, then either properties or the node - never another chord.
+		if !strings.Contains(kdl, "\n    "+b.Key+" ") {
 			t.Errorf("%s (%s) is missing from the generated binds", b.Key, b.Action)
 		}
 		if !strings.Contains(cheat, "| `"+b.Key+"` |") {
