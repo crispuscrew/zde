@@ -4,7 +4,9 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/crispuscrew/zde/internal/keymap"
 )
@@ -15,6 +17,16 @@ func main() {
 	cheat := flag.String("cheatsheet", "", "write the markdown cheatsheet here")
 	check := flag.Bool("check", false, "validate the keymap and exit")
 	flag.Parse()
+
+	// The source is -in, never a positional: silently generating the default
+	// keymap because an argument landed in the wrong place is worse than
+	// stopping.
+	if flag.NArg() != 0 {
+		fatal(fmt.Errorf("unexpected argument %q (the source is -in)", flag.Arg(0)))
+	}
+	if *check && (*kdl != "" || *cheat != "") {
+		fatal(fmt.Errorf("-check validates and writes nothing; drop -kdl and -cheatsheet"))
+	}
 
 	km, err := keymap.Load(*in)
 	if err != nil {
@@ -36,10 +48,30 @@ func main() {
 
 func out(path, content string) error {
 	if path == "" {
-		fmt.Print(content)
-		return nil
+		// Checked: a generator that writes nothing and exits 0 (a full disk, a
+		// closed pipe) is the worst failure available to it.
+		_, err := io.WriteString(os.Stdout, content)
+		return err
 	}
-	return os.WriteFile(path, []byte(content), 0o644)
+	// Written beside the target and renamed over it, so a failure part way
+	// through cannot leave a truncated config in place - os.WriteFile truncates
+	// first and would.
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := io.WriteString(tmp, content); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 func fatal(err error) {

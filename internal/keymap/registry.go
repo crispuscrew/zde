@@ -1,9 +1,12 @@
 package keymap
 
 // Entry pins what one action means for niri. Exactly one of Native (a niri
-// action line) or Spawn (an argv) is set; %s marks where a parametric
-// argument lands in a Native template. The registry is code on purpose: the
-// YAML assigns chords and nothing else.
+// action line) or Spawn (an argv) is set; argPlaceholder marks where a
+// parametric argument lands in a Native template. The registry is code on
+// purpose: the YAML assigns chords and nothing else.
+//
+// TestRegistryInvariants holds all of that, since none of it is expressible in
+// the type and every violation is silent in the generated config.
 type Entry struct {
 	Group  string
 	Desc   string
@@ -18,6 +21,11 @@ const (
 	argNone argKind = iota
 	argName
 )
+
+// argPlaceholder is where a parametric argument lands in a Native template.
+// Deliberately not a printf verb: niri action lines carry literal percent
+// signs.
+const argPlaceholder = "{arg}"
 
 func (e Entry) parametric() bool { return e.Arg != argNone }
 

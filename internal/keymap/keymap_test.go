@@ -71,6 +71,7 @@ func TestErrors(t *testing.T) {
 		{"uppercase letter", `binds: [{ action: desk.switcher, key: Mod+J }]`, "lowercase"},
 		{"bad app name", `binds: [{ action: app.launch UPPER, key: Mod+d }]`, "lowercase name"},
 		{"empty", `binds: []`, "no binds"},
+		{"argument to exact action", `binds: [{ action: desk.zen loudly, key: Mod+d }]`, "takes no argument"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -90,7 +91,126 @@ func TestHardwareKeysBypassMod(t *testing.T) {
 	}
 }
 
-// The shipped keymap must always validate; this is the exit check.
+// The key half of a chord is written into KDL unquoted, so anything that can
+// close a node or start a new one has to be refused at the source. Every string
+// here was accepted before, and the first one emitted a working bind that ran
+// an arbitrary command plus a second, Mod-less bind.
+func TestChordInjection(t *testing.T) {
+	for _, key := range []string{
+		"Mod+q { spawn \"sh\" \"-c\" \"whoami\"; }\n    Escape",
+		"Mod+a\n    Delete",
+		"Mod+z { spawn \"id\"; } Escape",
+		`Mod+"`,
+		"Mod+q;",
+		"Mod+{",
+		"Mod+a b",
+		"Mod+a|b",
+		`Mod+\`,
+	} {
+		t.Run(key, func(t *testing.T) {
+			_, err := parseChord(key)
+			if err == nil {
+				t.Fatalf("parseChord(%q) was accepted", key)
+			}
+			if !strings.Contains(err.Error(), "not a key name") {
+				t.Errorf("got %v, want a key-name error", err)
+			}
+		})
+	}
+}
+
+// Names niri rejects at startup, which is to say at a login. The generator
+// cannot know every keysym, but it can insist on the shape of one.
+func TestKeyShape(t *testing.T) {
+	ok := []string{"Mod+q", "Mod+F5", "Mod+bracketleft", "Mod+Page_Up", "XF86AudioNext", "Print", "Mod+1"}
+	for _, key := range ok {
+		if _, err := parseChord(key); err != nil {
+			t.Errorf("parseChord(%q) = %v, want accepted", key, err)
+		}
+	}
+	// Cyrillic Ф is two bytes, so the "write it lowercase" check never saw it.
+	for _, key := range []string{"Mod+ф", "Mod+Ф", "Mod+"} {
+		if _, err := parseChord(key); err == nil {
+			t.Errorf("parseChord(%q) was accepted", key)
+		}
+	}
+}
+
+// Modifier order is not meaning. Two spellings of one chord used to pass as two
+// binds and collide inside niri, which then rejects the whole config.
+func TestChordNormalization(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{"Mod+Shift+q", "Mod+Shift+q"},
+		{"Shift+Mod+q", "Mod+Shift+q"},
+		{"Shift+Ctrl+Mod+h", "Mod+Ctrl+Shift+h"},
+	} {
+		got, err := parseChord(c.in)
+		if err != nil {
+			t.Fatalf("parseChord(%q) = %v", c.in, err)
+		}
+		if got.String() != c.want {
+			t.Errorf("parseChord(%q) = %q, want %q", c.in, got.String(), c.want)
+		}
+	}
+	_, err := Parse([]byte("binds:\n  - { action: desk.switcher, key: Mod+Shift+q }\n  - { action: desk.zen, key: Shift+Mod+q }"))
+	if err == nil || !strings.Contains(err.Error(), "bound to both") {
+		t.Errorf("got %v, want the reordered spelling to collide", err)
+	}
+	if _, err := parseChord("Mod+Mod+j"); err == nil {
+		t.Error("a repeated modifier was accepted")
+	}
+}
+
+// keymap.yaml reserves these; the comment saying so was the only thing
+// enforcing it.
+func TestReservedChords(t *testing.T) {
+	for _, key := range []string{"Mod+z", "Mod+x"} {
+		if _, err := parseChord(key); err == nil {
+			t.Errorf("parseChord(%q) was accepted, it is reserved", key)
+		}
+	}
+	// The Shift variants are the ones that bind.
+	for _, key := range []string{"Mod+Shift+z", "Mod+Shift+x"} {
+		if _, err := parseChord(key); err != nil {
+			t.Errorf("parseChord(%q) = %v, want accepted", key, err)
+		}
+	}
+}
+
+// The registry's rules live in its doc comment and in no type, so they live
+// here too. Every one of these fails silently in the generated config: a bind
+// that spawns nothing, a Native that wins over a Spawn, or a bind that vanishes
+// from the cheatsheet because its group is misspelled.
+func TestRegistryInvariants(t *testing.T) {
+	inGroup := map[string]bool{}
+	for _, g := range groups {
+		inGroup[g] = true
+	}
+	for id, e := range registry {
+		switch {
+		case e.Native == "" && len(e.Spawn) == 0:
+			t.Errorf("%s: neither Native nor Spawn, would emit an empty action", id)
+		case e.Native != "" && len(e.Spawn) > 0:
+			t.Errorf("%s: both Native and Spawn, Spawn would be dropped", id)
+		}
+		if !inGroup[e.Group] {
+			t.Errorf("%s: group %q is not in groups, its binds would vanish from the cheatsheet", id, e.Group)
+		}
+		if e.Desc == "" {
+			t.Errorf("%s: no Desc, the cheatsheet row would be blank", id)
+		}
+		holes := strings.Count(e.Native, argPlaceholder)
+		if e.parametric() && e.Native != "" && holes != 1 {
+			t.Errorf("%s: parametric Native has %d %s, want exactly 1", id, holes, argPlaceholder)
+		}
+		if !e.parametric() && holes != 0 {
+			t.Errorf("%s: non-parametric Native contains %s", id, argPlaceholder)
+		}
+	}
+}
+
+// The shipped keymap must always validate, and the artifacts that actually
+// reach a machine are the two the emitters produce - so emit them.
 func TestShippedKeymap(t *testing.T) {
 	km, err := Load("../../common/keymap/keymap.yaml")
 	if err != nil {
@@ -98,5 +218,23 @@ func TestShippedKeymap(t *testing.T) {
 	}
 	if len(km.Binds) < 40 {
 		t.Errorf("shipped keymap has only %d binds, expected the full Normal set", len(km.Binds))
+	}
+
+	kdl := EmitKDL(km)
+	cheat := EmitCheatsheet(km)
+	for _, b := range km.Binds {
+		if !strings.Contains(kdl, "    "+b.Key+" { ") {
+			t.Errorf("%s (%s) is missing from the generated binds", b.Key, b.Action)
+		}
+		if !strings.Contains(cheat, "| `"+b.Key+"` |") {
+			t.Errorf("%s (%s) is missing from the cheatsheet", b.Key, b.Action)
+		}
+	}
+	// Every group that has binds must have a section, or binds are being
+	// dropped silently.
+	for _, b := range km.Binds {
+		if !strings.Contains(cheat, "## "+b.Entry.Group+"\n") {
+			t.Errorf("cheatsheet has no section for group %q", b.Entry.Group)
+		}
 	}
 }
