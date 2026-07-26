@@ -1,0 +1,43 @@
+# Smoke test: boots zde in a QEMU VM and checks that both layers arrive on a
+# machine. It builds the pinned compositor from source, so it is kept off
+# doc-sized pull requests - but a change to the system definition is exactly
+# what it exists to catch, so those do run it before they land.
+name: smoke
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * *"
+  push:
+    branches: [dev, main]
+  pull_request:
+    paths:
+      - flake.nix
+      - flake.lock
+      - nix/**
+      - niri/**
+      - common/keymap/**
+      - .github/workflows/smoke.yml
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
+
+      # Runners have KVM but do not hand it to non-root users. Without this the
+      # VM falls back to emulation and the boot crawls.
+      - name: enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: nix build .#zde-smoke
+        run: nix build --print-build-logs .#zde-smoke

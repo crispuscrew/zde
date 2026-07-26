@@ -12,13 +12,12 @@
     # Quickshell joins when the shell lands.
     niri = {
       url = "github:niri-wm/niri/v26.04";
-      # niri keeps its own nixpkgs on purpose: upstream's flake targets
-      # nixpkgs-unstable, and against our 25.05 the install fails - its
-      # postInstall asks installShellFiles for --nushell completions, which
-      # 25.05's hook does not know, and the build dies with an empty log.
-      # Bringing its own dependencies is what pinning it separately is for.
-      # It ships no flake.lock, so the nixpkgs it builds against is resolved
-      # here and pinned in ours; bumping niri moves both.
+      # niri follows our nixpkgs so it links the same mesa as the system it
+      # runs on. Upstream calls a mesa mismatch the usual cause of a black
+      # screen when starting niri from a TTY on NixOS, and letting it bring its
+      # own nixpkgs produced exactly that skew. What upstream's flake needs in
+      # return is a patched postInstall (see niriFor below).
+      inputs.nixpkgs.follows = "nixpkgs";
       # rust-overlay is upstream's dev-shell toolchain; aiming it at this flake
       # keeps it unfetched, and nothing we evaluate reads it.
       inputs.rust-overlay.follows = "";
@@ -41,6 +40,36 @@
       keymap = pkgs: pkgs.callPackage ./nix/zde-keymap.nix { };
       zdeConfig = pkgs: pkgs.callPackage ./nix/zde-config.nix { };
 
+      # The pinned compositor, with upstream's postInstall rewritten. That
+      # flake targets nixpkgs-unstable, and against 25.05 it breaks twice:
+      #  - it asks installShellFiles for --nushell, a flag 25.05's hook does
+      #    not know. The hook returns 2, which kills the install with an empty
+      #    log, and the nushell output lands on top of the fish completions.
+      #  - it installs the systemd user units straight to share/systemd/user,
+      #    which NixOS never reads: systemd.packages globs lib/ and etc/ only.
+      #    Installing them to lib/ is what nixpkgs' fixup hook wants; it moves
+      #    them back to share/ and leaves the lib/systemd/user symlink the glob
+      #    follows. Skip that and the units go missing, niri-session finds no
+      #    niri.service, and the greeter takes the login straight back, in
+      #    silence.
+      # Everything else is upstream's, so a bump only needs nix build .#niri.
+      niriFor =
+        pkgs:
+        niri.packages.${pkgs.stdenv.hostPlatform.system}.niri.overrideAttrs (_: {
+          postInstall = ''
+            installShellCompletion --cmd niri \
+              --bash <($out/bin/niri completions bash) \
+              --fish <($out/bin/niri completions fish) \
+              --zsh <($out/bin/niri completions zsh)
+
+            install -Dm644 resources/niri.desktop -t $out/share/wayland-sessions
+            install -Dm644 resources/niri-portals.conf -t $out/share/xdg-desktop-portal
+            install -Dm755 resources/niri-session $out/bin/niri-session
+            install -Dm644 resources/niri.service -t $out/lib/systemd/user
+            install -Dm644 resources/niri-shutdown.target -t $out/lib/systemd/user
+          '';
+        });
+
       # Layer 0 (docs/delivery.md). The pinned niri is handed over here rather
       # than inside the module, so the module stays a plain NixOS module - a
       # consumer who prefers the nixpkgs build only sets zde.niri.package. The
@@ -55,7 +84,7 @@
           (
             { lib, pkgs, ... }:
             {
-              zde.niri.package = lib.mkDefault niri.packages.${pkgs.stdenv.hostPlatform.system}.niri;
+              zde.niri.package = lib.mkDefault (niriFor pkgs);
             }
           )
         ];
@@ -72,9 +101,19 @@
         zde-keymap = keymap pkgs;
         zde-config = zdeConfig pkgs;
         default = keymap pkgs;
-        # The pinned compositor, re-exported so that bumping the input is one
-        # command to verify: nix build .#niri. CI never builds it.
-        inherit (niri.packages.${pkgs.stdenv.hostPlatform.system}) niri;
+        # The pinned compositor, exposed so that bumping the input is one
+        # command to verify: nix build .#niri.
+        niri = niriFor pkgs;
+
+        # The QEMU smoke test (nix build .#zde-smoke). A package and not a
+        # check on purpose: it builds the compositor from source, which is far
+        # longer than a review should wait, so it runs in its own workflow.
+        zde-smoke = import ./nix/tests/smoke.nix {
+          inherit pkgs;
+          zdeModule = zdeSystem;
+          homeManagerModule = home-manager.nixosModules.home-manager;
+          zdeConfig = zdeConfig pkgs;
+        };
       });
 
       # Built by nix flake check in CI: compiles the tools, assembles the niri

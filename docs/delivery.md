@@ -57,8 +57,14 @@ validated on a real niri (roadmap), since assembly just concatenates it.
 
 On top of it, layer 0 enables niri from the pinned input and starts it through
 greetd (tuigreet, no graphical display manager), so the machine boots into the
-compositor that reads layer 1's config. `nix flake check` also evaluates a
-throwaway host with both layers on (`nix/test-host.nix`); that eval is the only
-thing catching a module error while no dev host has nix. It never builds the
-compositor, so a pin that does not compile stays invisible to CI: that check is
-`nix build .#niri`, by hand when the pin moves.
+compositor that reads layer 1's config. What it boots into is still bare: the
+generated binds spawn zde tools that land with roadmap 0.1.
+
+Two things check that, since no dev host has nix. `nix flake check` evaluates a
+throwaway host with both layers on (`nix/test-host.nix`), which is what catches
+a module error, but it builds nothing. The smoke test (`nix build .#zde-smoke`,
+its own workflow) boots that host in QEMU and checks that the greeter is up,
+the session pieces are installed where systemd and the portals look for them,
+home-manager wrote the generated config, and niri's own parser accepts it. The
+compositor itself never starts there - a build sandbox has no GPU and niri has
+no software renderer - so a running session stays a real-hardware item.

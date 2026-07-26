@@ -19,7 +19,13 @@ in
   config = lib.mkIf cfg.enable {
     # The generated niri config. Regenerated on every switch, so keymap.yaml is
     # the only place binds are edited (the file itself says "Do not edit").
-    xdg.configFile."niri/config.kdl".source = "${zdeConfig}/niri-config.kdl";
+    # Forced, because niri writes a default config.kdl itself the first time it
+    # starts without one, and an unmanaged file in that spot stops every later
+    # home-manager generation.
+    xdg.configFile."niri/config.kdl" = {
+      source = "${zdeConfig}/niri-config.kdl";
+      force = true;
+    };
     # The cheatsheet the help widget (system.help) shows.
     xdg.configFile."zde/keymap-cheatsheet.md".source = "${zdeConfig}/keymap-cheatsheet.md";
 

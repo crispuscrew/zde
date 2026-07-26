@@ -58,9 +58,13 @@ usable.
 - keymap: niri key-name casing for punctuation (grave, brackets, semicolon,
   comma, period); desk next/prev ordering; the panic/block leader sequences
   (Mod+Escape then L, Mod+Tab then L) via the input daemon, not niri.
-- niri config: the generated `config.kdl` (base + binds) actually loads on a
-  real niri - base-node syntax, that every emitted action name resolves, and
-  that `nav.*` shelling to zded per keypress feels instant.
+- niri config: `nav.*` shelling to zded per keypress feeling instant, and the
+  config driving a real compositor. The smoke test settles the static half -
+  niri's own parser accepts the generated `config.kdl`, base nodes and every
+  emitted action name - which is not the same as running it.
+- keyboard layout: the base config sets no xkb layout, so the session falls
+  back to us while the greeter uses the console keymap; decide where a host's
+  layout gets wired in.
 - caps:hyper landing in a usable modifier (stock xkb folds Hyper into Mod4).
 - kanata mouse-button interception (fallback: evsieve).
 - Quickshell under multi-monitor hotplug (swap path exists).

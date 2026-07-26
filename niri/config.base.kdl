@@ -11,8 +11,11 @@
 input {
     keyboard {
         xkb {
-            // Layout is the user's; language switching is bound to
-            // system.layout-switch (niri's switch-layout action).
+            // No layout here, so the session gets xkb's default (us) unless
+            // XKB_DEFAULT_LAYOUT is set for it. The host's own layout is not
+            // inherited - where that gets wired in is on the roadmap.
+            // Language switching is bound to system.layout-switch (niri's
+            // switch-layout action).
         }
     }
     touchpad {
