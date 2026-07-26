@@ -24,6 +24,16 @@ func main() {
 }
 
 func run(args []string) error {
+	switch {
+	case len(args) == 2 && args[0] == "desk" && args[1] == "switcher":
+		// The switcher is a shell surface (roadmap 0.1); until it exists,
+		// listing is the honest thing this key can do.
+		return deskList()
+	case len(args) == 3 && args[0] == "desk" && args[1] == "switch":
+		return switchDesk(args[2])
+	case len(args) == 2 && args[0] == "desk" && args[1] == "last":
+		return lastDesk()
+	}
 	switch strings.Join(args, " ") {
 	case "status":
 		return status()
@@ -73,11 +83,35 @@ func deskList() error {
 	return nil
 }
 
+func switchDesk(name string) error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	var focused []string
+	if err := c.Call("desk.switch", &focused, name); err != nil {
+		return err
+	}
+	return nil
+}
+
+func lastDesk() error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	return c.Call("desk.last", nil)
+}
+
 func usage() {
 	fmt.Fprint(os.Stderr, `zde - the command line into zded
 
-  zde status      what zded and the compositor are doing
-  zde desk list   the desks that exist right now
+  zde status             what zded and the compositor are doing
+  zde desk list          the desks that exist right now
+  zde desk switch NAME   bring a desk up on every monitor it owns
+  zde desk last          go back to the desk you came from
 
 Most of the action map (docs/model.md, section 6) is not wired yet; the
 generated keybinds that call it land with roadmap 0.1.
