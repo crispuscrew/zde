@@ -3,16 +3,102 @@
 # enough - that one proves the modules evaluate, not that a machine comes up
 # with a greeter and a config niri accepts.
 #
-# The compositor itself never starts here: a nix build sandbox has no GPU and
-# niri has no software renderer, so a running session stays a real-hardware
-# item (docs/roadmap.md, verify list). What runs instead is `niri validate`,
-# the same parser niri uses on its own config at startup.
+# niri does start here, which took some finding: a build sandbox has no GPU, and
+# niri has no software renderer of its own. It runs nested inside a headless
+# cage on llvmpipe instead, which needs no /dev/dri at all. That is enough for
+# everything zde does, because everything zde does is IPC - so the daemon and
+# the client are exercised against a real compositor rather than a fake.
+#
+# What it still is not is a session on real hardware: no GPU, no seat, no
+# input, no monitors coming and going (docs/roadmap.md, verify list).
 {
   pkgs,
   zdeModule,
   homeManagerModule,
   zdeConfig,
 }:
+let
+  # One script, so the quoting lives in a shell file rather than inside a
+  # Python string inside a Nix string.
+  liveCheck = pkgs.writeShellScript "zde-live-check" ''
+        set -eu
+        # Its own runtime directory: the zded started earlier in this test is
+        # still listening on /tmp/rt, and it has never heard of a compositor.
+        export XDG_RUNTIME_DIR=/tmp/live-rt
+        mkdir -p "$XDG_RUNTIME_DIR" /tmp/desks
+        chmod 700 "$XDG_RUNTIME_DIR"
+
+        # A desk that does not exist yet, declared.
+        printf 'name: vshop
+    monitors:
+      winit: { workspaces: [code, notes] }
+    '       > /tmp/desks/vshop.yaml
+
+        # niri, nested and headless. cage gives it a Wayland host; pixman and
+        # llvmpipe give both of them something to draw on without a GPU.
+        export WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1
+        export LIBGL_ALWAYS_SOFTWARE=1
+        cage -- niri >/tmp/niri.log 2>&1 &
+
+        for i in $(seq 60); do
+          set +e; NIRI_SOCKET=$(ls "$XDG_RUNTIME_DIR"/niri.*.sock 2>/dev/null | head -1); set -e
+          [ -n "$NIRI_SOCKET" ] && break
+          sleep 1
+        done
+        if [ -z "''${NIRI_SOCKET:-}" ]; then
+          echo "niri never opened its IPC socket:"; cat /tmp/niri.log; exit 1
+        fi
+        export NIRI_SOCKET
+        # The socket file appearing is not niri answering on it. Software
+        # rendering in a VM is slow to get going, and zded's first question would
+        # otherwise time out against a compositor that is not listening yet.
+        for i in $(seq 60); do
+          niri msg version >/dev/null 2>&1 && break
+          sleep 1
+        done
+        niri msg version >/dev/null
+        echo "niri is up on $NIRI_SOCKET"
+
+        zded -journal /tmp/live.jsonl -desks /tmp/desks >/tmp/zded-live.log 2>&1 &
+        for i in $(seq 30); do
+          [ -S "$XDG_RUNTIME_DIR/zde/zded.sock" ] && break
+          sleep 1
+        done
+        if [ ! -S "$XDG_RUNTIME_DIR/zde/zded.sock" ]; then
+          echo "zded never listened:"; cat /tmp/zded-live.log; exit 1
+        fi
+
+        # The daemon can see the compositor, which is the thing a fake cannot
+        # prove.
+        zde status 2>&1 | tee /tmp/status.txt
+        grep -qx 'compositor connected' /tmp/status.txt
+
+        # A desk that exists only as a manifest is created and entered.
+        zde desk switch vshop 2>&1 | tee /tmp/switch.txt
+        grep -qx 'vshop.winit.code' /tmp/switch.txt
+
+        # niri's own client agrees that both declared workspaces are there.
+        niri msg workspaces 2>&1 | tee /tmp/ws.txt
+        grep -q 'vshop.winit.code' /tmp/ws.txt
+        grep -q 'vshop.winit.notes' /tmp/ws.txt
+
+        # The journal recorded where the desk was left.
+        grep -q '"slot":"code"' /tmp/live.jsonl
+
+        # Reconcile is quiet on a world that is already true, and niri's own
+        # trailing empty workspace is left alone rather than adopted.
+        zde desk reconcile 2>&1 | tee /tmp/rec.txt
+        grep -qx 'nothing to reconcile' /tmp/rec.txt
+
+        # And the desk can be written back out as a manifest.
+        zde desk snapshot haven 2>/dev/null && { echo "snapshotted a desk that does not exist"; exit 1; }
+        rm -f /tmp/desks/vshop.yaml
+        zde desk snapshot 2>&1 | tee /tmp/snap.txt
+        grep -q 'vshop.yaml' /tmp/snap.txt
+        grep -q 'code' /tmp/desks/vshop.yaml
+        echo "live compositor check passed"
+  '';
+in
 pkgs.testers.runNixOSTest {
   name = "zde-smoke";
 
@@ -35,6 +121,10 @@ pkgs.testers.runNixOSTest {
     # Somebody else on the machine, so that "the zde socket is private" can be
     # asserted by a user who is actually subject to it - root is not.
     users.users.intruder.isNormalUser = true;
+
+    # cage hosts the nested niri; mesa's software rasteriser is what both of
+    # them render with.
+    environment.systemPackages = [ pkgs.cage ];
 
     virtualisation = {
       memorySize = 2048;
@@ -145,6 +235,9 @@ pkgs.testers.runNixOSTest {
       # would pass this test no matter what zded did.
       machine.fail("su -l intruder -c 'test -r /tmp/rt/zde/zded.sock'")
       machine.fail("su -l intruder -c 'ls /tmp/rt/zde'")
+
+      # A real compositor: zded and zde against niri itself, not a fake.
+      machine.succeed("su -l zde -c ${liveCheck}")
 
       # Rootless podman, what zcr will run apps with. su gives no logind
       # session, so this exercises podman's cgroupfs fallback rather than the
