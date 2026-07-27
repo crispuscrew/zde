@@ -38,6 +38,9 @@ type Compositor interface {
 	// SetWorkspaceNameByID names a workspace that has no name to be
 	// addressed by, which is what adoption claims.
 	SetWorkspaceNameByID(id uint64, name string) error
+	// FirstApps is the app of the first window on each workspace, by niri's
+	// workspace id. It is what an adopted workspace is named after.
+	FirstApps() (map[uint64]string, error)
 }
 
 // Request is one line in.
@@ -275,7 +278,11 @@ func (s *Server) reconcile() Response {
 	// With no active desk, adoption would have to guess which desk owns a new
 	// workspace, and guessing puts windows somewhere the user never chose.
 	if active != "" {
-		for _, a := range desk.AdoptPlan(m, active) {
+		firstApp, err := s.niri.FirstApps()
+		if err != nil {
+			return Response{Error: "reading windows: " + err.Error()}
+		}
+		for _, a := range desk.AdoptPlan(m, active, firstApp) {
 			if err := s.niri.SetWorkspaceNameByID(a.ID, a.Name.String()); err != nil {
 				return Response{Error: "adopting into " + active + ": " + err.Error()}
 			}

@@ -9,15 +9,16 @@ func TestAdoptPlanNamesForeignIntoActiveDesk(t *testing.T) {
 		{ID: 2, Name: "", Output: "DP-1"}, // niri made this one
 	}, []string{"DP-1"})
 
-	plan := AdoptPlan(m, "vshop")
+	plan := AdoptPlan(m, "vshop", map[uint64]string{2: "org.mozilla.firefox"})
 	if len(plan) != 1 {
 		t.Fatalf("plan = %v, want the unnamed workspace claimed", plan)
 	}
 	if plan[0].ID != 2 {
 		t.Errorf("adopting id %d, want the unnamed one", plan[0].ID)
 	}
-	if got := plan[0].Name.String(); got != "vshop.DP-1.1" {
-		t.Errorf("name = %q, want the first free ordinal on its monitor", got)
+	// Named after what is in it, so the bar says something.
+	if got := plan[0].Name.String(); got != "vshop.DP-1.firefox" {
+		t.Errorf("name = %q, want the workspace named after its first app", got)
 	}
 }
 
@@ -34,12 +35,41 @@ func TestAdoptPlanPicksFreeOrdinals(t *testing.T) {
 	}, []string{"DP-1", "HDMI-A-1"})
 
 	var got []string
-	for _, a := range AdoptPlan(m, "vshop") {
+	for _, a := range AdoptPlan(m, "vshop", map[uint64]string{4: "", 5: "", 6: ""}) {
 		got = append(got, a.Name.String())
 	}
 	want := []string{"vshop.DP-1.3", "vshop.DP-1.4", "vshop.HDMI-A-1.1"}
 	if !equal(got, want) {
 		t.Errorf("plan = %v, want %v", got, want)
+	}
+}
+
+// Two workspaces running the same app on one monitor cannot share a name.
+func TestAdoptPlanMakesLabelsUnique(t *testing.T) {
+	m := Rebuild([]Workspace{
+		{ID: 1, Name: "vshop.DP-1.firefox", Output: "DP-1"},
+		{ID: 2, Name: "", Output: "DP-1"},
+		{ID: 3, Name: "", Output: "DP-1"},
+	}, []string{"DP-1"})
+	var got []string
+	for _, a := range AdoptPlan(m, "vshop", map[uint64]string{2: "firefox", 3: "firefox"}) {
+		got = append(got, a.Name.String())
+	}
+	if !equal(got, []string{"vshop.DP-1.firefox-2", "vshop.DP-1.firefox-3"}) {
+		t.Errorf("plan = %v, want the label made unique", got)
+	}
+}
+
+// niri keeps one empty workspace at the end of every strip. Claiming it would
+// name the scratch space, niri would make another, and the next pass would
+// claim that one: a ratchet that fills the strip with named nothing.
+func TestAdoptPlanLeavesEmptyWorkspacesAlone(t *testing.T) {
+	m := Rebuild([]Workspace{
+		{ID: 1, Name: "vshop.DP-1.code", Output: "DP-1"},
+		{ID: 2, Name: "", Output: "DP-1"}, // niri's trailing empty one
+	}, []string{"DP-1"})
+	if got := AdoptPlan(m, "vshop", map[uint64]string{}); got != nil {
+		t.Errorf("plan = %v, want the empty workspace left alone", got)
 	}
 }
 
@@ -49,8 +79,8 @@ func TestAdoptPlanClaimsForeignNames(t *testing.T) {
 	m := Rebuild([]Workspace{
 		{ID: 1, Name: "scratch", Output: "DP-1"},
 	}, []string{"DP-1"})
-	plan := AdoptPlan(m, "vshop")
-	if len(plan) != 1 || plan[0].Name.String() != "vshop.DP-1.1" {
+	plan := AdoptPlan(m, "vshop", map[uint64]string{1: "Alacritty"})
+	if len(plan) != 1 || plan[0].Name.String() != "vshop.DP-1.alacritty" {
 		t.Errorf("plan = %v, want the foreign name claimed", plan)
 	}
 }
@@ -58,7 +88,7 @@ func TestAdoptPlanClaimsForeignNames(t *testing.T) {
 // A workspace on no output has no monitor to be named onto.
 func TestAdoptPlanSkipsWorkspacesOnNoOutput(t *testing.T) {
 	m := Rebuild([]Workspace{{ID: 1, Name: "", Output: ""}}, []string{"DP-1"})
-	if got := AdoptPlan(m, "vshop"); got != nil {
+	if got := AdoptPlan(m, "vshop", map[uint64]string{1: "firefox"}); got != nil {
 		t.Errorf("plan = %v, want nothing claimed onto no monitor", got)
 	}
 }
@@ -67,7 +97,7 @@ func TestAdoptPlanSkipsWorkspacesOnNoOutput(t *testing.T) {
 // windows on a desk the user never chose.
 func TestAdoptPlanWithoutActiveDesk(t *testing.T) {
 	m := Rebuild([]Workspace{{ID: 1, Name: "", Output: "DP-1"}}, []string{"DP-1"})
-	if got := AdoptPlan(m, ""); got != nil {
+	if got := AdoptPlan(m, "", map[uint64]string{1: "firefox"}); got != nil {
 		t.Errorf("plan = %v, want nothing adopted with no active desk", got)
 	}
 }
@@ -79,7 +109,8 @@ func TestAdoptPlanConverges(t *testing.T) {
 		{ID: 2, Name: "", Output: "DP-1"},
 		{ID: 3, Name: "", Output: "DP-1"},
 	}
-	plan := AdoptPlan(Rebuild(in, []string{"DP-1"}), "vshop")
+	apps := map[uint64]string{2: "firefox", 3: "ghostty"}
+	plan := AdoptPlan(Rebuild(in, []string{"DP-1"}), "vshop", apps)
 	for _, a := range plan {
 		for i := range in {
 			if in[i].ID == a.ID {
@@ -91,7 +122,7 @@ func TestAdoptPlanConverges(t *testing.T) {
 	if got := m.Foreign(); len(got) != 0 {
 		t.Errorf("still foreign after adoption: %v", got)
 	}
-	if got := AdoptPlan(m, "vshop"); got != nil {
+	if got := AdoptPlan(m, "vshop", apps); got != nil {
 		t.Errorf("a second pass wanted to adopt again: %v", got)
 	}
 }

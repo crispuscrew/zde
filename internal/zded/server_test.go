@@ -18,6 +18,7 @@ type fakeCompositor struct {
 	m       *desk.Map
 	err     error
 	focused string
+	apps    map[uint64]string
 
 	mu      sync.Mutex
 	calls   []string // what was asked to be focused, in order
@@ -48,6 +49,13 @@ func (f *fakeCompositor) FocusWorkspace(name string) error {
 	}
 	f.calls = append(f.calls, name)
 	return nil
+}
+
+func (f *fakeCompositor) FirstApps() (map[uint64]string, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.apps, nil
 }
 
 func (f *fakeCompositor) RenameWorkspace(from, to string) error {
@@ -449,6 +457,7 @@ func TestReconcile(t *testing.T) {
 			{ID: 2, Name: "", Output: "DP-1"},                    // niri's own
 		}, []string{"DP-1", "HDMI-A-1"}),
 		focused: "vshop.DP-1.code",
+		apps:    map[uint64]string{2: "org.mozilla.firefox"},
 	}
 	s := New("test", jrn, niri)
 	c, err := DialPath(serve(t, s))
@@ -464,8 +473,8 @@ func TestReconcile(t *testing.T) {
 	if got := niri.renameCalls(); len(got) != 1 || got[0] != "vshop.DP-1.code -> vshop.HDMI-A-1.code" {
 		t.Errorf("renames = %v, want the moved workspace corrected", got)
 	}
-	if got := niri.adoptCalls(); len(got) != 1 || got[0] != "vshop.DP-1.1" {
-		t.Errorf("adopted = %v, want the unnamed workspace claimed into vshop", got)
+	if got := niri.adoptCalls(); len(got) != 1 || got[0] != "vshop.DP-1.firefox" {
+		t.Errorf("adopted = %v, want the workspace named after its first app", got)
 	}
 	// The journal follows the rename, or it points at a workspace that is gone.
 	if st := jrn.State(); st.LastActive["vshop"]["HDMI-A-1"] != "code" {
@@ -481,6 +490,7 @@ func TestReconcileWithoutActiveDeskDoesNotAdopt(t *testing.T) {
 			{ID: 1, Name: "", Output: "DP-1"},
 		}, []string{"DP-1"}),
 		focused: "", // nothing focused, or focused on a foreign workspace
+		apps:    map[uint64]string{1: "firefox"},
 	}
 	s := New("test", nil, niri)
 	c, err := DialPath(serve(t, s))
