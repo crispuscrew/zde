@@ -37,9 +37,17 @@ Frozen 2026-07-22. Terms: [`glossary.md`](glossary.md). Rationale:
 ## 3. Naming: the name IS the ownership record
 
 ```
-<desk>.<monitor>.<label-or-n>     vshop.DP-1.code   vshop.HDMI-A-1.1
-regulars.<monitor>.<n>            regulars.DP-1.1
+<desk>.<monitor>.<label>          vshop.DP-1.code   vshop.DP-1.firefox
+regulars.<monitor>.<label>        regulars.DP-1.comms
 ```
+
+The label is the manifest's where it declares one, and otherwise the
+workspace's first app: `org.mozilla.firefox` becomes `firefox`, and a second
+one on that monitor becomes `firefox-2`. A name is something you read on a bar
+and say out loud, so it says what is in there. An ordinal (`vshop.DP-1.1`) is
+the fallback for an app id that leaves nothing readable, not the normal case.
+An empty workspace is never named: niri keeps one at the end of every strip,
+and claiming it would name the scratch space and make niri open another.
 
 The regulars band is reachable from any desk. The mapping is self-describing
 and crash-proof:

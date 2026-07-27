@@ -107,6 +107,15 @@ func (compositor) RenameWorkspace(from, to string) error {
 	return c.RenameWorkspace(from, to)
 }
 
+func (compositor) FirstApps() (map[uint64]string, error) {
+	c, err := niri.Dial()
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+	return c.FirstApps()
+}
+
 func (compositor) SetWorkspaceNameByID(id uint64, name string) error {
 	c, err := niri.Dial()
 	if err != nil {

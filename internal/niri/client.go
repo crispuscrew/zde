@@ -45,6 +45,14 @@ type Workspace struct {
 	Focused bool    `json:"is_focused"`
 }
 
+// Window is niri's window, narrowed to what naming a workspace after its first
+// app needs.
+type Window struct {
+	ID          uint64  `json:"id"`
+	AppID       *string `json:"app_id"`
+	WorkspaceID *uint64 `json:"workspace_id"`
+}
+
 // Output is niri's output, narrowed to its name. Which outputs exist is the
 // input that separates a workspace someone moved from one whose monitor was
 // unplugged (internal/desk).
@@ -209,6 +217,42 @@ func (c *Client) Outputs() ([]string, error) {
 		return nil, fmt.Errorf("niri: Outputs: %w", err)
 	}
 	return keysOf(byName), nil
+}
+
+// Windows lists the open windows.
+func (c *Client) Windows() ([]Window, error) {
+	payload, err := c.request("Windows", "Windows")
+	if err != nil {
+		return nil, err
+	}
+	var out []Window
+	if err := json.Unmarshal(payload, &out); err != nil {
+		return nil, fmt.Errorf("niri: Windows: %w", err)
+	}
+	return out, nil
+}
+
+// FirstApps is the app of the first window on each workspace, by workspace id.
+// It is what a workspace gets named after when a desk adopts it: a name you
+// can read on a bar beats a number you have to remember.
+//
+// niri lists windows in a stable order per workspace, so "first" is the one
+// that has been there longest - the app that made the workspace worth having.
+func (c *Client) FirstApps() (map[uint64]string, error) {
+	windows, err := c.Windows()
+	if err != nil {
+		return nil, err
+	}
+	out := map[uint64]string{}
+	for _, w := range windows {
+		if w.WorkspaceID == nil || w.AppID == nil || *w.AppID == "" {
+			continue
+		}
+		if _, taken := out[*w.WorkspaceID]; !taken {
+			out[*w.WorkspaceID] = *w.AppID
+		}
+	}
+	return out, nil
 }
 
 // DeskMap reads niri and rebuilds the desk map from it. This is the join
