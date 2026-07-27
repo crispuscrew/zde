@@ -717,6 +717,42 @@ func TestDeskSnapshotWithoutFocus(t *testing.T) {
 	}
 }
 
+// The case adoption exists for: a window opened past the end of the strip
+// makes a fresh workspace, focus follows it there, and that workspace is
+// unnamed precisely because nothing has claimed it. If a name were required to
+// decide who claims it, adoption could never claim anything.
+func TestReconcileAdoptsWhenFocusHasNoName(t *testing.T) {
+	jrn, err := journal.Open(filepath.Join(t.TempDir(), "j.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jrn.Close()
+	jrn.SetOnDesk("vshop") // where a desk switch left us
+
+	niri := &fakeCompositor{
+		m: desk.Rebuild([]desk.Workspace{
+			{ID: 1, Name: "vshop.DP-1.code", Output: "DP-1"},
+			{ID: 2, Name: "", Output: "DP-1"}, // the new one, with a window
+		}, []string{"DP-1"}),
+		focused: "", // focus is on the unnamed workspace
+		apps:    map[uint64]string{2: "foot"},
+	}
+	s := New("test", jrn, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	var r Reconciled
+	if err := c.Call("desk.reconcile", &r); err != nil {
+		t.Fatal(err)
+	}
+	if got := niri.adoptCalls(); len(got) != 1 || got[0] != "vshop.DP-1.foot" {
+		t.Errorf("adopted %v, want the workspace claimed into the desk we are on", got)
+	}
+}
+
 func TestDefaultSocketNeedsRuntimeDir(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", "")
 	if _, err := DefaultSocket(); err == nil {

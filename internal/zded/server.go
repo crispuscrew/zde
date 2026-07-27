@@ -295,12 +295,7 @@ func (s *Server) reconcile() Response {
 		out.Renamed = append(out.Renamed, r.From.String()+" -> "+r.To.String())
 	}
 
-	active := ""
-	if focused, err := s.niri.FocusedName(); err == nil {
-		if n, err := desk.ParseName(focused); err == nil {
-			active = n.Desk
-		}
-	}
+	active := s.activeDesk()
 	// With no active desk, adoption would have to guess which desk owns a new
 	// workspace, and guessing puts windows somewhere the user never chose.
 	if active != "" {
@@ -375,11 +370,7 @@ func (s *Server) snapshot(args []string) Response {
 	switch len(args) {
 	case 0:
 		// The desk you are on is the one you just arranged.
-		if focused, err := s.niri.FocusedName(); err == nil {
-			if n, err := desk.ParseName(focused); err == nil {
-				target = n.Desk
-			}
-		}
+		target = s.activeDesk()
 		if target == "" {
 			return Response{Error: "no desk is focused, so there is none to write down: name one"}
 		}
@@ -398,6 +389,26 @@ func (s *Server) snapshot(args []string) Response {
 		return Response{Error: err.Error()}
 	}
 	return ok(path)
+}
+
+// activeDesk is the desk whose band new workspaces belong to.
+//
+// The focused workspace answers it when it has a name. It often does not: open
+// a window past the end of the strip and niri makes a fresh workspace, focus
+// follows it there, and that workspace is unnamed precisely because nothing has
+// claimed it yet. Requiring a name to decide who claims it would mean the one
+// case adoption exists for is the one it cannot handle - so the journal's
+// record of the desk you switched to answers instead.
+func (s *Server) activeDesk() string {
+	if focused, err := s.niri.FocusedName(); err == nil {
+		if n, err := desk.ParseName(focused); err == nil {
+			return n.Desk
+		}
+	}
+	if s.jrn != nil {
+		return s.jrn.State().OnDesk
+	}
+	return ""
 }
 
 // manifestFor is the desk's manifest, or nil if it has none. A desk without
@@ -468,6 +479,7 @@ func (s *Server) switchDesk(target string) Response {
 		if from != "" && from != target {
 			s.jrn.SetLastDesk(from)
 		}
+		s.jrn.SetOnDesk(target)
 	}
 	// Names as strings, not as their parts. A workspace name is one thing
 	// everywhere else in zde - in niri, on the bar, in the journal - and the

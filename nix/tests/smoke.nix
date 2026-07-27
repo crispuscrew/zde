@@ -90,7 +90,39 @@ let
         zde desk reconcile 2>&1 | tee /tmp/rec.txt
         grep -qx 'nothing to reconcile' /tmp/rec.txt
 
-        # And the desk can be written back out as a manifest.
+        # Adoption, against a real compositor and a real window. Everything up to
+    # here could be done with no windows at all; this is the path that names a
+    # workspace after what is in it.
+    #
+    # foot is a Wayland client that starts without a GPU, which not many do.
+    # It has to talk to niri rather than to the cage hosting it, and niri names
+    # its IPC socket after the Wayland display it opened.
+    export WAYLAND_DISPLAY=$(basename "$NIRI_SOCKET" | cut -d. -f2)
+    # Past the end of the strip, onto the empty workspace niri keeps there.
+    # That is where a new workspace comes from in real use, and it is unnamed
+    # until something claims it.
+    niri msg action focus-workspace-down >/dev/null
+    niri msg action focus-workspace-down >/dev/null
+    foot -e sleep 600 >/tmp/foot.log 2>&1 &
+    for i in $(seq 60); do
+      niri msg windows 2>/dev/null | grep -qi foot && break
+      sleep 1
+    done
+    if ! niri msg windows 2>/dev/null | grep -qi foot; then
+      echo "no window ever appeared:"; cat /tmp/foot.log; exit 1
+    fi
+
+    zde desk reconcile 2>&1 | tee /tmp/rec2.txt
+    # Named after the app in it, not after a number.
+    niri msg workspaces 2>&1 | tee /tmp/ws2.txt
+    grep -q 'vshop.winit.foot' /tmp/ws2.txt
+
+    # A second pass has nothing left to do: adoption converges on a real
+    # compositor, not only in a unit test.
+    zde desk reconcile 2>&1 | tee /tmp/rec3.txt
+    grep -qx 'nothing to reconcile' /tmp/rec3.txt
+
+    # And the desk can be written back out as a manifest.
         zde desk snapshot haven 2>/dev/null && { echo "snapshotted a desk that does not exist"; exit 1; }
         rm -f /tmp/desks/vshop.yaml
         zde desk snapshot 2>&1 | tee /tmp/snap.txt
@@ -124,7 +156,10 @@ pkgs.testers.runNixOSTest {
 
     # cage hosts the nested niri; mesa's software rasteriser is what both of
     # them render with.
-    environment.systemPackages = [ pkgs.cage ];
+    environment.systemPackages = [
+      pkgs.cage
+      pkgs.foot # a Wayland client that runs without a GPU, for adoption
+    ];
 
     virtualisation = {
       memorySize = 2048;

@@ -1,2 +1,5 @@
 /zde-keymap
 /out/
+
+# Local tool state, not the project's
+.claude/settings.local.json*
