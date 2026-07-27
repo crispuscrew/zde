@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -60,17 +61,40 @@ func main() {
 
 	// The signal has to reach the listener, or a stale socket outlives the
 	// daemon and the next zded refuses to start.
+	ctx, stopWatching := context.WithCancel(context.Background())
+	defer stopWatching()
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-stop
+		stopWatching()
 		srv.Close()
 	}()
+
+	// Keep the names true while the session runs, rather than only when
+	// someone asks. This is also what makes zded worth having running: a
+	// workspace is adopted the moment something is in it.
+	go srv.Watch(ctx, subscribe)
 
 	if err := srv.Serve(); err != nil {
 		fatal(err)
 	}
 	os.Remove(*socket)
+}
+
+// subscribe opens an event stream. The connection is not shared with the
+// request path: the stream owns its socket for as long as it lasts.
+func subscribe() (<-chan string, error) {
+	c, err := niri.Dial()
+	if err != nil {
+		return nil, err
+	}
+	events, err := c.Events()
+	if err != nil {
+		c.Close()
+		return nil, err
+	}
+	return events, nil
 }
 
 // compositor dials niri per call. The connection is deliberately not held

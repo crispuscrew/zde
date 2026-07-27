@@ -27,16 +27,26 @@ type fakeCompositor struct {
 	base    []desk.Workspace // what exists before any naming
 	named   []desk.Workspace
 	nextID  uint64
+	reads   int
 	renames []string
 	adopted []string
 	failOn  string
 }
 
 func (f *fakeCompositor) DeskMap() (*desk.Map, error) {
+	f.mu.Lock()
+	f.reads++
+	f.mu.Unlock()
 	if f.err != nil {
 		return nil, f.err
 	}
 	return f.m, nil
+}
+
+func (f *fakeCompositor) mapReads() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reads
 }
 
 func (f *fakeCompositor) FocusedName() (string, error) {
