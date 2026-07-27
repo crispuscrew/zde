@@ -82,6 +82,7 @@ type Status struct {
 	Version    string `json:"version"`
 	Compositor string `json:"compositor"` // "connected", or why not
 	Desks      int    `json:"desks"`
+	OnDesk     string `json:"onDesk,omitempty"`
 	LastDesk   string `json:"lastDesk,omitempty"`
 	Skipped    int    `json:"journalSkipped"`
 }
@@ -295,7 +296,7 @@ func (s *Server) reconcile() Response {
 		out.Renamed = append(out.Renamed, r.From.String()+" -> "+r.To.String())
 	}
 
-	active := s.activeDesk()
+	active := s.activeDesk(m)
 	// With no active desk, adoption would have to guess which desk owns a new
 	// workspace, and guessing puts windows somewhere the user never chose.
 	if active != "" {
@@ -369,8 +370,14 @@ func (s *Server) snapshot(args []string) Response {
 	target := ""
 	switch len(args) {
 	case 0:
-		// The desk you are on is the one you just arranged.
-		target = s.activeDesk()
+		// The desk you are on is the one you just arranged. Deliberately not
+		// the journal's answer: snapshot writes a file, and writing down the
+		// wrong desk is worse than asking which one.
+		if focused, err := s.niri.FocusedName(); err == nil {
+			if n, err := desk.ParseName(focused); err == nil {
+				target = n.Desk
+			}
+		}
 		if target == "" {
 			return Response{Error: "no desk is focused, so there is none to write down: name one"}
 		}
@@ -393,22 +400,45 @@ func (s *Server) snapshot(args []string) Response {
 
 // activeDesk is the desk whose band new workspaces belong to.
 //
-// The focused workspace answers it when it has a name. It often does not: open
-// a window past the end of the strip and niri makes a fresh workspace, focus
-// follows it there, and that workspace is unnamed precisely because nothing has
-// claimed it yet. Requiring a name to decide who claims it would mean the one
-// case adoption exists for is the one it cannot handle - so the journal's
-// record of the desk you switched to answers instead.
-func (s *Server) activeDesk() string {
-	if focused, err := s.niri.FocusedName(); err == nil {
-		if n, err := desk.ParseName(focused); err == nil {
-			return n.Desk
+// The focused workspace answers it when it has a name, and that answer is
+// written down: the fallback below is only ever as good as how recently it was
+// true, so every observation refreshes it.
+//
+// It often has no name. Open a window past the end of the strip and niri makes
+// a fresh workspace, focus follows it there, and that workspace is unnamed
+// precisely because nothing has claimed it yet. Requiring a name to decide who
+// claims it would mean the one case adoption exists for is the one it cannot
+// handle, so the journal answers instead - but only under two conditions.
+//
+// The name must be absent rather than merely unreadable. A workspace somebody
+// else named is not unclaimed, it is theirs, and renaming it into a desk is
+// not adoption.
+//
+// And the desk must still be there. A journal outlives the compositor it was
+// written under: log out on vshop, log back in, and niri starts with nothing
+// named. Spending the remembered desk then would file the first window of a
+// fresh session into a desk that does not exist, which is a stronger claim
+// than adoption has any business making.
+func (s *Server) activeDesk(m *desk.Map) string {
+	focused, err := s.niri.FocusedName()
+	if err == nil && focused != "" {
+		n, err := desk.ParseName(focused)
+		if err != nil {
+			return "" // named, but not by us
 		}
+		if s.jrn != nil && s.jrn.State().OnDesk != n.Desk {
+			s.jrn.SetOnDesk(n.Desk)
+		}
+		return n.Desk
 	}
-	if s.jrn != nil {
-		return s.jrn.State().OnDesk
+	if s.jrn == nil {
+		return ""
 	}
-	return ""
+	on := s.jrn.State().OnDesk
+	if on == "" || len(m.Workspaces(on)) == 0 {
+		return ""
+	}
+	return on
 }
 
 // manifestFor is the desk's manifest, or nil if it has none. A desk without
@@ -458,13 +488,11 @@ func (s *Server) switchDesk(target string) Response {
 
 	// Where we are now, before anything moves, so desk.last has somewhere to
 	// go back to. A failure to read it is not worth refusing the switch over.
-	from := ""
-	if focused, err := s.niri.FocusedName(); err == nil {
-		if n, err := desk.ParseName(focused); err == nil {
-			from = n.Desk
-		}
-	}
+	from := s.activeDesk(m)
 
+	if s.jrn != nil {
+		s.jrn.SetOnDesk(target)
+	}
 	for _, n := range plan {
 		if err := s.niri.FocusWorkspace(n.String()); err != nil {
 			// Partway through: some monitors have moved. Report it rather
@@ -479,7 +507,6 @@ func (s *Server) switchDesk(target string) Response {
 		if from != "" && from != target {
 			s.jrn.SetLastDesk(from)
 		}
-		s.jrn.SetOnDesk(target)
 	}
 	// Names as strings, not as their parts. A workspace name is one thing
 	// everywhere else in zde - in niri, on the bar, in the journal - and the
@@ -503,7 +530,9 @@ func (s *Server) status() Status {
 		st.Desks = len(m.DeskNames())
 	}
 	if s.jrn != nil {
-		st.LastDesk = s.jrn.State().LastDesk
+		js := s.jrn.State()
+		st.OnDesk = js.OnDesk
+		st.LastDesk = js.LastDesk
 		st.Skipped = s.jrn.Skipped()
 	}
 	return st

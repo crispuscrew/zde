@@ -732,6 +732,7 @@ func TestReconcileAdoptsWhenFocusHasNoName(t *testing.T) {
 	niri := &fakeCompositor{
 		m: desk.Rebuild([]desk.Workspace{
 			{ID: 1, Name: "vshop.DP-1.code", Output: "DP-1"},
+			{ID: 3, Name: "haven.DP-1.db", Output: "DP-1"},
 			{ID: 2, Name: "", Output: "DP-1"}, // the new one, with a window
 		}, []string{"DP-1"}),
 		focused: "", // focus is on the unnamed workspace
@@ -750,6 +751,106 @@ func TestReconcileAdoptsWhenFocusHasNoName(t *testing.T) {
 	}
 	if got := niri.adoptCalls(); len(got) != 1 || got[0] != "vshop.DP-1.foot" {
 		t.Errorf("adopted %v, want the workspace claimed into the desk we are on", got)
+	}
+}
+
+// A journal outlives the compositor it was written under. Log out on vshop,
+// log back in, and niri starts with nothing named - so the remembered desk
+// must not be spent, or the first window of a fresh session is filed into a
+// desk that is not there.
+func TestReconcileWillNotAdoptIntoADeskThatIsGone(t *testing.T) {
+	jrn, err := journal.Open(filepath.Join(t.TempDir(), "j.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jrn.Close()
+	jrn.SetOnDesk("vshop") // from the session before this one
+
+	niri := &fakeCompositor{
+		m: desk.Rebuild([]desk.Workspace{
+			{ID: 1, Name: "", Output: "DP-1"}, // a fresh niri: nothing named
+		}, []string{"DP-1"}),
+		focused: "",
+		apps:    map[uint64]string{1: "foot"},
+	}
+	s := New("test", jrn, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	var r Reconciled
+	if err := c.Call("desk.reconcile", &r); err != nil {
+		t.Fatal(err)
+	}
+	if got := niri.adoptCalls(); len(got) != 0 {
+		t.Errorf("adopted %v into a desk with no workspaces in it", got)
+	}
+}
+
+// A workspace somebody else named is not unclaimed, it is theirs. Renaming it
+// into a desk is not adoption.
+func TestReconcileLeavesAWorkspaceSomebodyElseNamed(t *testing.T) {
+	jrn, err := journal.Open(filepath.Join(t.TempDir(), "j.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jrn.Close()
+	jrn.SetOnDesk("vshop")
+
+	niri := &fakeCompositor{
+		m: desk.Rebuild([]desk.Workspace{
+			{ID: 1, Name: "vshop.DP-1.code", Output: "DP-1"},
+			{ID: 2, Name: "notes", Output: "DP-1"}, // the user's own name
+		}, []string{"DP-1"}),
+		focused: "notes",
+		apps:    map[uint64]string{2: "foot"},
+	}
+	s := New("test", jrn, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	var r Reconciled
+	if err := c.Call("desk.reconcile", &r); err != nil {
+		t.Fatal(err)
+	}
+	if got := niri.adoptCalls(); len(got) != 0 {
+		t.Errorf("renamed %v, which the user had named themselves", got)
+	}
+}
+
+// Focus is the better answer whenever it has one, so seeing it refreshes what
+// the journal will say when focus goes quiet.
+func TestActiveDeskIsRefreshedByFocus(t *testing.T) {
+	jrn, err := journal.Open(filepath.Join(t.TempDir(), "j.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jrn.Close()
+	jrn.SetOnDesk("vshop") // stale: the user reached haven another way
+
+	niri := &fakeCompositor{
+		m: desk.Rebuild([]desk.Workspace{
+			{ID: 1, Name: "vshop.DP-1.code", Output: "DP-1"},
+			{ID: 2, Name: "haven.DP-1.db", Output: "DP-1"},
+		}, []string{"DP-1"}),
+		focused: "haven.DP-1.db",
+	}
+	s := New("test", jrn, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.Call("desk.reconcile", &Reconciled{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := jrn.State().OnDesk; got != "haven" {
+		t.Errorf("OnDesk = %q after looking at haven, want it caught up", got)
 	}
 }
 
