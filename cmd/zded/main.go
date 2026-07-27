@@ -11,6 +11,7 @@ import (
 
 	"github.com/crispuscrew/zde/internal/desk"
 	"github.com/crispuscrew/zde/internal/journal"
+	"github.com/crispuscrew/zde/internal/manifest"
 	"github.com/crispuscrew/zde/internal/niri"
 	"github.com/crispuscrew/zde/internal/zded"
 )
@@ -20,6 +21,7 @@ const version = "0.1.0"
 func main() {
 	socket := flag.String("socket", "", "listen here instead of $XDG_RUNTIME_DIR/zde/zded.sock")
 	jrnPath := flag.String("journal", "", "journal path (default $XDG_STATE_HOME/zde/journal.jsonl)")
+	desksDir := flag.String("desks", "", "desk manifests (default $XDG_CONFIG_HOME/zde/desks)")
 	flag.Parse()
 	if flag.NArg() != 0 {
 		fatal(fmt.Errorf("unexpected argument %q", flag.Arg(0)))
@@ -35,6 +37,9 @@ func main() {
 	if *jrnPath == "" {
 		*jrnPath = journal.DefaultPath()
 	}
+	if *desksDir == "" {
+		*desksDir = manifest.DefaultDir()
+	}
 
 	jrn, err := journal.Open(*jrnPath)
 	if err != nil {
@@ -45,7 +50,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "zded: journal: %d entries could not be read\n", n)
 	}
 
-	srv := zded.New(version, jrn, compositor{})
+	srv := zded.New(version, jrn, compositor{}, func() (map[string]*manifest.Desk, error) {
+		return manifest.LoadDir(*desksDir)
+	})
 	if err := srv.Listen(*socket); err != nil {
 		fatal(err)
 	}
@@ -105,6 +112,15 @@ func (compositor) RenameWorkspace(from, to string) error {
 	}
 	defer c.Close()
 	return c.RenameWorkspace(from, to)
+}
+
+func (compositor) EmptyByOutput() (map[string][]uint64, error) {
+	c, err := niri.Dial()
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+	return c.EmptyByOutput()
 }
 
 func (compositor) FirstApps() (map[uint64]string, error) {

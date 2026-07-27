@@ -255,6 +255,31 @@ func (c *Client) FirstApps() (map[uint64]string, error) {
 	return out, nil
 }
 
+// EmptyByOutput is the unnamed workspaces with nothing in them, by output.
+// niri keeps one at the end of every strip, which is what a desk's declared
+// workspaces get made out of.
+func (c *Client) EmptyByOutput() (map[string][]uint64, error) {
+	workspaces, err := c.Workspaces()
+	if err != nil {
+		return nil, err
+	}
+	firstApp, err := c.FirstApps()
+	if err != nil {
+		return nil, err
+	}
+	out := map[string][]uint64{}
+	for _, w := range workspaces {
+		if w.Output == nil || (w.Name != nil && *w.Name != "") {
+			continue
+		}
+		if _, hasApp := firstApp[w.ID]; hasApp {
+			continue
+		}
+		out[*w.Output] = append(out[*w.Output], w.ID)
+	}
+	return out, nil
+}
+
 // DeskMap reads niri and rebuilds the desk map from it. This is the join
 // between the compositor and the spatial model: workspaces carry the names,
 // the output list is what tells a move apart from an unplug.
