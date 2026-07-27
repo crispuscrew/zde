@@ -255,6 +255,49 @@ func (c *Client) FirstApps() (map[uint64]string, error) {
 	return out, nil
 }
 
+// Events subscribes to niri's event stream and yields the name of each event.
+//
+// Only the name: the payload is deliberately dropped. zded rebuilds the world
+// from names when something happens rather than tracking deltas, so an event
+// is a wake-up and not a fact to be trusted. That is the same reasoning that
+// keeps the desk map out of zded's memory.
+//
+// The connection is consumed by the stream, so this Client answers nothing
+// else afterwards. The channel closes when niri goes away, which is the signal
+// to reconnect.
+func (c *Client) Events() (<-chan string, error) {
+	if _, err := c.call("EventStream", "EventStream"); err != nil {
+		return nil, err
+	}
+	// No deadline from here on: an idle session is quiet for hours, and a
+	// stream that timed out because nothing happened would be a bug that
+	// looks like the compositor dying.
+	if err := c.conn.SetDeadline(time.Time{}); err != nil {
+		return nil, err
+	}
+	out := make(chan string, 16)
+	go func() {
+		defer close(out)
+		for {
+			line, err := c.r.ReadBytes('\n')
+			if err != nil {
+				return
+			}
+			var byName map[string]json.RawMessage
+			if err := json.Unmarshal(line, &byName); err != nil {
+				continue // not an event we can read; the next one may be
+			}
+			for name := range byName {
+				select {
+				case out <- name:
+				default: // a slow reader is not a reason to stall niri
+				}
+			}
+		}
+	}()
+	return out, nil
+}
+
 // EmptyByOutput is the unnamed workspaces with nothing in them, by output.
 // niri keeps one at the end of every strip, which is what a desk's declared
 // workspaces get made out of.
