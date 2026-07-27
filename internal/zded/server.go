@@ -469,7 +469,14 @@ func (s *Server) switchDesk(target string) Response {
 			s.jrn.SetLastDesk(from)
 		}
 	}
-	return ok(plan)
+	// Names as strings, not as their parts. A workspace name is one thing
+	// everywhere else in zde - in niri, on the bar, in the journal - and the
+	// socket is the wire a shell adapter will read, so it says the same thing.
+	focused := make([]string, 0, len(plan))
+	for _, n := range plan {
+		focused = append(focused, n.String())
+	}
+	return ok(focused)
 }
 
 func (s *Server) status() Status {

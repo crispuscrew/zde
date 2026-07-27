@@ -99,6 +99,9 @@ func switchDesk(name string) error {
 	if err := c.Call("desk.switch", &focused, name); err != nil {
 		return err
 	}
+	for _, n := range focused {
+		fmt.Println(n)
+	}
 	return nil
 }
 

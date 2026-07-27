@@ -406,9 +406,14 @@ func TestDeskSwitch(t *testing.T) {
 	}
 	defer c.Close()
 
-	var plan []desk.Name
+	// Decoded the way the CLI decodes it: a switch that worked but could not
+	// be read back is a switch the user is told failed.
+	var plan []string
 	if err := c.Call("desk.switch", &plan, "vshop"); err != nil {
 		t.Fatal(err)
+	}
+	if len(plan) != 2 || plan[0] != "vshop.DP-1.code" {
+		t.Errorf("desk.switch returned %v, want the workspace names it focused", plan)
 	}
 	if got := niri.focusCalls(); len(got) != 2 || got[0] != "vshop.DP-1.code" || got[1] != "vshop.HDMI-A-1.aux" {
 		t.Errorf("focused %v, want one workspace per monitor", got)
@@ -613,7 +618,7 @@ func TestSwitchCreatesDeclaredWorkspaces(t *testing.T) {
 	}
 	defer c.Close()
 
-	var plan []desk.Name
+	var plan []string
 	if err := c.Call("desk.switch", &plan, "vshop"); err != nil {
 		t.Fatal(err)
 	}
