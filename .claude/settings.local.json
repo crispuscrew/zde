@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -fsSL https://www.apache.org/licenses/LICENSE-2.0.txt -o /home/crispushome/git/hyperzinc-meta/zde-niri/LICENSE)",
+      "Bash(git fetch *)",
+      "Bash(gh pr *)",
+      "Bash(gh api *)",
+      "Bash(go run *)",
+      "Bash(command -v nix nix-build)",
+      "Bash(podman pull *)",
+      "Bash(podman run *)",
+      "Bash(podman exec *)",
+      "Bash(git add *)",
+      "Bash(podman ps *)",
+      "Bash(git checkout *)",
+      "Bash(git ls-tree *)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(command -v nix)",
+      "Bash(grep -E \"systemd/[a-z0-9-]*\\\\.\\(nix|patch\\)$\")",
+      "Bash(nix flake *)"
+    ]
+  }
+}
