@@ -35,6 +35,10 @@ func run(args []string) error {
 		return lastDesk()
 	case len(args) == 2 && args[0] == "desk" && args[1] == "reconcile":
 		return reconcile()
+	case len(args) == 2 && args[0] == "desk" && args[1] == "snapshot":
+		return snapshot(nil)
+	case len(args) == 3 && args[0] == "desk" && args[1] == "snapshot":
+		return snapshot([]string{args[2]})
 	}
 	switch strings.Join(args, " ") {
 	case "status":
@@ -132,6 +136,20 @@ func reconcile() error {
 	return nil
 }
 
+func snapshot(args []string) error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	var path string
+	if err := c.Call("desk.snapshot", &path, args...); err != nil {
+		return err
+	}
+	fmt.Println("wrote", path)
+	return nil
+}
+
 func usage() {
 	fmt.Fprint(os.Stderr, `zde - the command line into zded
 
@@ -140,6 +158,7 @@ func usage() {
   zde desk switch NAME   bring a desk up on every monitor it owns
   zde desk last          go back to the desk you came from
   zde desk reconcile     make the workspace names true again
+  zde desk snapshot [N]  write down the desk you are on, so you can ask for it
 
 Most of the action map (docs/model.md, section 6) is not wired yet; the
 generated keybinds that call it land with roadmap 0.1.

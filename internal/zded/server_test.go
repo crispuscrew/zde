@@ -606,9 +606,7 @@ func TestSwitchCreatesDeclaredWorkspaces(t *testing.T) {
 		nextID: 10,
 	}
 	niri.remap()
-	s := New("test", nil, niri, func() (map[string]*manifest.Desk, error) {
-		return map[string]*manifest.Desk{"vshop": d}, nil
-	})
+	s := New("test", nil, niri, fixedDesks{"vshop": d})
 	c, err := DialPath(serve(t, s))
 	if err != nil {
 		t.Fatal(err)
@@ -641,9 +639,7 @@ func TestSwitchDoesNotRecreateWhatExists(t *testing.T) {
 		nextID: 10,
 	}
 	niri.remap()
-	s := New("test", nil, niri, func() (map[string]*manifest.Desk, error) {
-		return map[string]*manifest.Desk{"vshop": d}, nil
-	})
+	s := New("test", nil, niri, fixedDesks{"vshop": d})
 	c, err := DialPath(serve(t, s))
 	if err != nil {
 		t.Fatal(err)
@@ -654,6 +650,65 @@ func TestSwitchDoesNotRecreateWhatExists(t *testing.T) {
 	}
 	if got := niri.adoptCalls(); len(got) != 0 {
 		t.Errorf("created %v, want nothing: it is already there", got)
+	}
+}
+
+// fixedDesks is a manifest set that cannot be written to, for the tests that
+// only read.
+type fixedDesks map[string]*manifest.Desk
+
+func (f fixedDesks) All() (map[string]*manifest.Desk, error) { return f, nil }
+func (f fixedDesks) Save(*manifest.Desk) (string, error) {
+	return "", errors.New("not writable")
+}
+
+// A snapshot of the desk you are on writes what is there, and what it writes
+// has to be a manifest that switching can use.
+func TestDeskSnapshot(t *testing.T) {
+	dir := manifest.Dir(t.TempDir())
+	niri := &fakeCompositor{
+		m: desk.Rebuild([]desk.Workspace{
+			{ID: 1, Name: "vshop.DP-1.code", Output: "DP-1"},
+			{ID: 2, Name: "vshop.HDMI-A-1.aux", Output: "HDMI-A-1"},
+		}, []string{"DP-1", "HDMI-A-1"}),
+		focused: "vshop.DP-1.code",
+	}
+	s := New("test", nil, niri, dir)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	var path string
+	if err := c.Call("desk.snapshot", &path); err != nil {
+		t.Fatal(err)
+	}
+	all, err := dir.All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, ok := all["vshop"]
+	if !ok {
+		t.Fatalf("snapshot wrote %s, which does not load as a desk", path)
+	}
+	if len(d.Workspaces()) != 2 {
+		t.Errorf("snapshot recorded %v", d.Workspaces())
+	}
+}
+
+// With nothing focused there is no desk you are on, and guessing which one to
+// write down would write the wrong one.
+func TestDeskSnapshotWithoutFocus(t *testing.T) {
+	niri := &fakeCompositor{m: twoDesks(), focused: ""}
+	s := New("test", nil, niri, manifest.Dir(t.TempDir()))
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.Call("desk.snapshot", nil); err == nil {
+		t.Error("snapshot guessed a desk with nothing focused")
 	}
 }
 

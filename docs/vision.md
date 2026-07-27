@@ -10,7 +10,9 @@ then Beautiful.**
 1. **Containers-first, minimal host surface.** On the host only what must
    be: niri, the input daemon (evdev), the shell (layer-shell is
    privileged), zcr with podman, zded. Everything else is a zinc container.
-   Host pieces install via the Nix home-manager flake.
+   Host pieces install through the flake: the ones that need root - niri's
+   session, greetd, portals, podman - in the system module, the rest in the
+   home-manager one (delivery.md, layers 0 and 1).
 2. **The keybind doctrine.** One scheme file generates the niri binds, the
    cheatsheet, and the overlay: no drift. Binds are grabbed at the
    compositor, so sandboxed apps can neither shadow nor observe them. Super
