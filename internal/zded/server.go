@@ -21,6 +21,7 @@ import (
 
 	"github.com/crispuscrew/zde/internal/desk"
 	"github.com/crispuscrew/zde/internal/journal"
+	"github.com/crispuscrew/zde/internal/manifest"
 )
 
 // Compositor is what the daemon needs from niri. An interface because zded
@@ -41,7 +42,15 @@ type Compositor interface {
 	// FirstApps is the app of the first window on each workspace, by niri's
 	// workspace id. It is what an adopted workspace is named after.
 	FirstApps() (map[uint64]string, error)
+	// EmptyByOutput is the unnamed, empty workspaces per output - what a
+	// declared workspace gets made out of.
+	EmptyByOutput() (map[string][]uint64, error)
 }
+
+// Manifests is where zded reads desk manifests from. A function rather than a
+// loaded map, because a desk written while the session runs should be usable
+// without restarting the daemon.
+type Manifests func() (map[string]*manifest.Desk, error)
 
 // Request is one line in.
 type Request struct {
@@ -68,16 +77,20 @@ type Status struct {
 
 // Server answers the zde socket.
 type Server struct {
-	version string
-	jrn     *journal.Journal
-	niri    Compositor
+	version   string
+	jrn       *journal.Journal
+	niri      Compositor
+	manifests Manifests
 
 	mu sync.Mutex
 	ln net.Listener
 }
 
-func New(version string, jrn *journal.Journal, compositor Compositor) *Server {
-	return &Server{version: version, jrn: jrn, niri: compositor}
+func New(version string, jrn *journal.Journal, compositor Compositor, manifests Manifests) *Server {
+	if manifests == nil {
+		manifests = func() (map[string]*manifest.Desk, error) { return nil, nil }
+	}
+	return &Server{version: version, jrn: jrn, niri: compositor, manifests: manifests}
 }
 
 // DefaultSocket is where the socket lives: the runtime directory, which the
@@ -295,22 +308,91 @@ func (s *Server) reconcile() Response {
 	return ok(out)
 }
 
+// ensureDeclared makes the workspaces a manifest declares exist before the
+// switch focuses them. Without it, switching to a desk that has never been
+// launched is a refusal, which makes a manifest a description of the past
+// rather than something you can ask for.
+//
+// niri keeps one empty workspace per strip, so each pass can create one per
+// monitor: name it, let niri open the next, go round again. The loop is bounded
+// by what is declared, so a compositor that stops producing empties ends it
+// rather than spinning.
+func (s *Server) ensureDeclared(target string) error {
+	all, err := s.manifests()
+	if err != nil {
+		return fmt.Errorf("reading manifests: %w", err)
+	}
+	declared, ok := all[target]
+	if !ok {
+		return nil // no manifest: the desk is whatever is already named into it
+	}
+	want := declared.Workspaces()
+	for range want {
+		m, err := s.niri.DeskMap()
+		if err != nil {
+			return err
+		}
+		empty, err := s.niri.EmptyByOutput()
+		if err != nil {
+			return err
+		}
+		plan := desk.MissingPlan(m, want, empty)
+		if len(plan) == 0 {
+			return nil
+		}
+		// One per pass: naming this one is what makes niri open the next
+		// empty workspace for the one after it.
+		a := plan[0]
+		if err := s.niri.SetWorkspaceNameByID(a.ID, a.Name.String()); err != nil {
+			return fmt.Errorf("creating %s: %w", a.Name, err)
+		}
+	}
+	return nil
+}
+
+// manifestFor is the desk's manifest, or nil if it has none. A desk without
+// one is not an error: it is whatever has been named into it.
+func (s *Server) manifestFor(target string) *manifest.Desk {
+	all, err := s.manifests()
+	if err != nil {
+		return nil
+	}
+	return all[target]
+}
+
 // switchDesk brings a desk up on every monitor it owns workspaces on, and
 // records where it left from so desk.last can come back.
 func (s *Server) switchDesk(target string) Response {
+	if err := s.ensureDeclared(target); err != nil {
+		return Response{Error: err.Error()}
+	}
 	m, err := s.niri.DeskMap()
 	if err != nil {
 		return Response{Error: err.Error()}
 	}
-	var lastActive map[string]string
+	lastActive := map[string]string{}
 	if s.jrn != nil {
-		lastActive = s.jrn.State().LastActive[target]
+		for monitor, slot := range s.jrn.State().LastActive[target] {
+			lastActive[monitor] = slot
+		}
+	}
+	// Where the journal has no memory of a monitor - a desk being switched to
+	// for the first time - the manifest's own order decides where you land.
+	// It lists workspaces in the order the person who wrote it wanted them,
+	// and the map cannot know that: it sorts names, because niri's strip order
+	// is niri's to say and does not reach us yet.
+	if d := s.manifestFor(target); d != nil {
+		for _, n := range d.Workspaces() {
+			if _, remembered := lastActive[n.Monitor]; !remembered {
+				lastActive[n.Monitor] = n.Slot
+			}
+		}
 	}
 	plan := desk.SwitchPlan(m, target, lastActive)
 	if len(plan) == 0 {
 		// Nothing to focus is not the same as a failed switch, but it is not
 		// a switch either: say so rather than pretending the desk is up.
-		return Response{Error: "desk " + target + " has no workspaces"}
+		return Response{Error: "desk " + target + " has no workspaces and no manifest that declares any"}
 	}
 
 	// Where we are now, before anything moves, so desk.last has somewhere to

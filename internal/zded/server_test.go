@@ -12,6 +12,7 @@ import (
 
 	"github.com/crispuscrew/zde/internal/desk"
 	"github.com/crispuscrew/zde/internal/journal"
+	"github.com/crispuscrew/zde/internal/manifest"
 )
 
 type fakeCompositor struct {
@@ -19,9 +20,13 @@ type fakeCompositor struct {
 	err     error
 	focused string
 	apps    map[uint64]string
+	empty   map[string][]uint64 // output -> empty workspace ids
 
 	mu      sync.Mutex
-	calls   []string // what was asked to be focused, in order
+	calls   []string         // what was asked to be focused, in order
+	base    []desk.Workspace // what exists before any naming
+	named   []desk.Workspace
+	nextID  uint64
 	renames []string
 	adopted []string
 	failOn  string
@@ -51,6 +56,19 @@ func (f *fakeCompositor) FocusWorkspace(name string) error {
 	return nil
 }
 
+func (f *fakeCompositor) EmptyByOutput() (map[string][]uint64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return nil, f.err
+	}
+	out := map[string][]uint64{}
+	for k, v := range f.empty {
+		out[k] = append([]uint64(nil), v...)
+	}
+	return out, nil
+}
+
 func (f *fakeCompositor) FirstApps() (map[uint64]string, error) {
 	if f.err != nil {
 		return nil, f.err
@@ -69,7 +87,36 @@ func (f *fakeCompositor) SetWorkspaceNameByID(id uint64, name string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.adopted = append(f.adopted, name)
+	// Behave like niri: the workspace is named, and a fresh empty one appears
+	// at the end of that strip.
+	for output, ids := range f.empty {
+		for i, got := range ids {
+			if got != id {
+				continue
+			}
+			f.named = append(f.named, desk.Workspace{ID: id, Name: name, Output: output})
+			f.nextID++
+			f.empty[output] = append(append([]uint64{}, ids[:i]...), ids[i+1:]...)
+			f.empty[output] = append(f.empty[output], f.nextID)
+			f.remap()
+			return nil
+		}
+	}
 	return nil
+}
+
+// remap rebuilds what DeskMap returns, so a test sees the effect of naming.
+func (f *fakeCompositor) remap() {
+	all := append([]desk.Workspace(nil), f.base...)
+	all = append(all, f.named...)
+	var outputs []string
+	for o := range f.empty {
+		outputs = append(outputs, o)
+		for _, id := range f.empty[o] {
+			all = append(all, desk.Workspace{ID: id, Output: o})
+		}
+	}
+	f.m = desk.Rebuild(all, outputs)
 }
 
 func (f *fakeCompositor) renameCalls() []string {
@@ -128,7 +175,7 @@ func TestStatus(t *testing.T) {
 	defer jrn.Close()
 	jrn.SetLastDesk("vshop")
 
-	s := New("test", jrn, &fakeCompositor{m: twoDesks()})
+	s := New("test", jrn, &fakeCompositor{m: twoDesks()}, nil)
 	c, err := DialPath(serve(t, s))
 	if err != nil {
 		t.Fatal(err)
@@ -147,7 +194,7 @@ func TestStatus(t *testing.T) {
 // The case someone runs `zde status` to understand: zded is up, niri is not.
 // It has to answer, and say so, rather than fail.
 func TestStatusWithoutCompositor(t *testing.T) {
-	s := New("test", nil, &fakeCompositor{err: errors.New("NIRI_SOCKET is not set")})
+	s := New("test", nil, &fakeCompositor{err: errors.New("NIRI_SOCKET is not set")}, nil)
 	c, err := DialPath(serve(t, s))
 	if err != nil {
 		t.Fatal(err)
@@ -169,7 +216,7 @@ func TestStatusWithoutCompositor(t *testing.T) {
 // A method that does need the compositor fails, with niri's reason, rather
 // than reporting an empty desktop.
 func TestDeskListWithoutCompositor(t *testing.T) {
-	s := New("test", nil, &fakeCompositor{err: errors.New("connection refused")})
+	s := New("test", nil, &fakeCompositor{err: errors.New("connection refused")}, nil)
 	c, err := DialPath(serve(t, s))
 	if err != nil {
 		t.Fatal(err)
@@ -187,7 +234,7 @@ func TestDeskListWithoutCompositor(t *testing.T) {
 }
 
 func TestDeskList(t *testing.T) {
-	s := New("test", nil, &fakeCompositor{m: twoDesks()})
+	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
 	c, err := DialPath(serve(t, s))
 	if err != nil {
 		t.Fatal(err)
@@ -204,7 +251,7 @@ func TestDeskList(t *testing.T) {
 }
 
 func TestUnknownMethod(t *testing.T) {
-	s := New("test", nil, &fakeCompositor{m: twoDesks()})
+	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
 	c, err := DialPath(serve(t, s))
 	if err != nil {
 		t.Fatal(err)
@@ -217,7 +264,7 @@ func TestUnknownMethod(t *testing.T) {
 
 // One connection, several requests: the shell will hold one open.
 func TestManyRequestsOnOneConnection(t *testing.T) {
-	s := New("test", nil, &fakeCompositor{m: twoDesks()})
+	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
 	c, err := DialPath(serve(t, s))
 	if err != nil {
 		t.Fatal(err)
@@ -234,7 +281,7 @@ func TestManyRequestsOnOneConnection(t *testing.T) {
 // Garbage on the socket is answered, not fatal: one bad client must not take
 // the daemon down with it.
 func TestGarbageRequest(t *testing.T) {
-	s := New("test", nil, &fakeCompositor{m: twoDesks()})
+	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
 	path := serve(t, s)
 
 	conn, err := net.Dial("unix", path)
@@ -269,7 +316,7 @@ func TestGarbageRequest(t *testing.T) {
 // The socket is the zde boundary, so it is not world-reachable even before the
 // peer check runs.
 func TestSocketIsPrivate(t *testing.T) {
-	s := New("test", nil, &fakeCompositor{m: twoDesks()})
+	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
 	path := serve(t, s)
 
 	fi, err := os.Stat(path)
@@ -290,10 +337,10 @@ func TestSocketIsPrivate(t *testing.T) {
 
 // Two daemons on one socket is worse than one that refuses to start.
 func TestSecondDaemonRefuses(t *testing.T) {
-	first := New("test", nil, &fakeCompositor{m: twoDesks()})
+	first := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
 	path := serve(t, first)
 
-	second := New("test", nil, &fakeCompositor{m: twoDesks()})
+	second := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
 	err := second.Listen(path)
 	if err == nil {
 		second.Close()
@@ -318,7 +365,7 @@ func TestStaleSocketIsReplaced(t *testing.T) {
 	if err := os.WriteFile(path, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	s := New("test", nil, &fakeCompositor{m: twoDesks()})
+	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
 	if err := s.Listen(path); err != nil {
 		t.Fatalf("a stale socket stopped the daemon: %v", err)
 	}
@@ -342,7 +389,7 @@ func TestDeskSwitch(t *testing.T) {
 		}, []string{"DP-1", "HDMI-A-1"}),
 		focused: "haven.DP-1.db", // we are on haven right now
 	}
-	s := New("test", jrn, niri)
+	s := New("test", jrn, niri, nil)
 	c, err := DialPath(serve(t, s))
 	if err != nil {
 		t.Fatal(err)
@@ -375,7 +422,7 @@ func TestDeskLast(t *testing.T) {
 	jrn.SetLastDesk("haven")
 
 	niri := &fakeCompositor{m: twoDesks()}
-	s := New("test", jrn, niri)
+	s := New("test", jrn, niri, nil)
 	c, err := DialPath(serve(t, s))
 	if err != nil {
 		t.Fatal(err)
@@ -393,7 +440,7 @@ func TestDeskLast(t *testing.T) {
 // Switching to a desk with nothing in it is not a switch, and saying so beats
 // reporting success while every monitor stayed where it was.
 func TestDeskSwitchEmpty(t *testing.T) {
-	s := New("test", nil, &fakeCompositor{m: twoDesks()})
+	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
 	c, err := DialPath(serve(t, s))
 	if err != nil {
 		t.Fatal(err)
@@ -415,7 +462,7 @@ func TestDeskSwitchStopsOnFailure(t *testing.T) {
 		}, []string{"DP-1", "HDMI-A-1"}),
 		failOn: "vshop.DP-1.code",
 	}
-	s := New("test", nil, niri)
+	s := New("test", nil, niri, nil)
 	c, err := DialPath(serve(t, s))
 	if err != nil {
 		t.Fatal(err)
@@ -430,7 +477,7 @@ func TestDeskSwitchStopsOnFailure(t *testing.T) {
 }
 
 func TestDeskSwitchNeedsAName(t *testing.T) {
-	s := New("test", nil, &fakeCompositor{m: twoDesks()})
+	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
 	c, err := DialPath(serve(t, s))
 	if err != nil {
 		t.Fatal(err)
@@ -459,7 +506,7 @@ func TestReconcile(t *testing.T) {
 		focused: "vshop.DP-1.code",
 		apps:    map[uint64]string{2: "org.mozilla.firefox"},
 	}
-	s := New("test", jrn, niri)
+	s := New("test", jrn, niri, nil)
 	c, err := DialPath(serve(t, s))
 	if err != nil {
 		t.Fatal(err)
@@ -492,7 +539,7 @@ func TestReconcileWithoutActiveDeskDoesNotAdopt(t *testing.T) {
 		focused: "", // nothing focused, or focused on a foreign workspace
 		apps:    map[uint64]string{1: "firefox"},
 	}
-	s := New("test", nil, niri)
+	s := New("test", nil, niri, nil)
 	c, err := DialPath(serve(t, s))
 	if err != nil {
 		t.Fatal(err)
@@ -511,7 +558,7 @@ func TestReconcileWithoutActiveDeskDoesNotAdopt(t *testing.T) {
 // A tidy world reports nothing to do, rather than inventing work.
 func TestReconcileQuietWhenNothingIsWrong(t *testing.T) {
 	niri := &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code"}
-	s := New("test", nil, niri)
+	s := New("test", nil, niri, nil)
 	c, err := DialPath(serve(t, s))
 	if err != nil {
 		t.Fatal(err)
@@ -534,6 +581,70 @@ func mustName(t *testing.T, s string) desk.Name {
 		t.Fatal(err)
 	}
 	return n
+}
+
+// A manifest is something you can ask for: switching to a desk that has never
+// been launched creates what it declares instead of refusing.
+func TestSwitchCreatesDeclaredWorkspaces(t *testing.T) {
+	d, err := manifest.Parse([]byte("name: vshop\nmonitors: { DP-1: { workspaces: [code, agent] } }"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	niri := &fakeCompositor{
+		base:   []desk.Workspace{{ID: 1, Name: "haven.DP-1.db", Output: "DP-1"}},
+		empty:  map[string][]uint64{"DP-1": {10}}, // niri keeps one per strip
+		nextID: 10,
+	}
+	niri.remap()
+	s := New("test", nil, niri, func() (map[string]*manifest.Desk, error) {
+		return map[string]*manifest.Desk{"vshop": d}, nil
+	})
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	var plan []desk.Name
+	if err := c.Call("desk.switch", &plan, "vshop"); err != nil {
+		t.Fatal(err)
+	}
+	// Both declared workspaces made, one per pass, because niri only offers
+	// one empty workspace at a time.
+	if got := niri.adoptCalls(); len(got) != 2 || got[0] != "vshop.DP-1.code" || got[1] != "vshop.DP-1.agent" {
+		t.Errorf("created %v, want both declared workspaces", got)
+	}
+	if got := niri.focusCalls(); len(got) != 1 || got[0] != "vshop.DP-1.code" {
+		t.Errorf("focused %v, want the first of the new band", got)
+	}
+}
+
+// What already exists is not made again.
+func TestSwitchDoesNotRecreateWhatExists(t *testing.T) {
+	d, err := manifest.Parse([]byte("name: vshop\nmonitors: { DP-1: { workspaces: [code] } }"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	niri := &fakeCompositor{
+		base:   []desk.Workspace{{ID: 1, Name: "vshop.DP-1.code", Output: "DP-1"}},
+		empty:  map[string][]uint64{"DP-1": {10}},
+		nextID: 10,
+	}
+	niri.remap()
+	s := New("test", nil, niri, func() (map[string]*manifest.Desk, error) {
+		return map[string]*manifest.Desk{"vshop": d}, nil
+	})
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.Call("desk.switch", nil, "vshop"); err != nil {
+		t.Fatal(err)
+	}
+	if got := niri.adoptCalls(); len(got) != 0 {
+		t.Errorf("created %v, want nothing: it is already there", got)
+	}
 }
 
 func TestDefaultSocketNeedsRuntimeDir(t *testing.T) {

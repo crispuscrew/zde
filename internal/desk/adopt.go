@@ -57,6 +57,40 @@ func AdoptPlan(m *Map, active string, firstApp map[uint64]string) []Adoption {
 	return plan
 }
 
+// MissingPlan is the workspaces a manifest declares that niri does not have.
+// They are created by naming an empty workspace on the right monitor, which is
+// what niri leaves at the end of every strip - the same mechanic adoption
+// avoids on purpose, used here on purpose.
+//
+// empty is output -> ids of unnamed workspaces with nothing in them. niri
+// keeps exactly one per strip, so a desk that declares three workspaces on one
+// monitor takes three passes: name one, let niri open the next, name that.
+// Callers loop until this returns nothing.
+func MissingPlan(m *Map, declared []Name, empty map[string][]uint64) []Adoption {
+	have := map[string]bool{}
+	for _, d := range declared {
+		for _, n := range m.Workspaces(d.Desk) {
+			have[n.String()] = true
+		}
+		break
+	}
+	used := map[string]int{}
+	var plan []Adoption
+	for _, want := range declared {
+		if have[want.String()] {
+			continue
+		}
+		ids := empty[want.Monitor]
+		if used[want.Monitor] >= len(ids) {
+			continue // no empty workspace on that monitor this time round
+		}
+		plan = append(plan, Adoption{ID: ids[used[want.Monitor]], Name: want})
+		used[want.Monitor]++
+		have[want.String()] = true
+	}
+	return plan
+}
+
 // slotFor is the workspace's label, made unique on its monitor, and an ordinal
 // when the app id leaves nothing a name can hold.
 func slotFor(active, output, app string, taken map[string]bool, next map[string]int) (Name, bool) {
