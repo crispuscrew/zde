@@ -159,6 +159,67 @@ func (d *Desk) Workspaces() []desk.Name {
 	return out
 }
 
+// FromMap writes down a desk that already exists: the workspaces niri has,
+// under the name they carry. That is what snapshot is (docs/model.md, section
+// 5) - you arrange a desk by hand, adoption names it, and this makes it
+// something you can ask for again.
+//
+// Apps are deliberately not captured. A manifest's app is a zinc app name and
+// what niri reports is an application id; writing one where the other belongs
+// would produce a manifest that reads fine and launches nothing. Capturing
+// them needs zcr, which is not in this repo.
+func FromMap(m *desk.Map, name string) (*Desk, error) {
+	workspaces := m.Workspaces(name)
+	if len(workspaces) == 0 {
+		return nil, fmt.Errorf("desk %q has no workspaces to write down", name)
+	}
+	d := &Desk{Name: name, Monitors: map[string]Monitor{}}
+	for _, n := range workspaces {
+		mon := d.Monitors[n.Monitor]
+		mon.Workspaces = append(mon.Workspaces, n.Slot)
+		d.Monitors[n.Monitor] = mon
+	}
+	// Written through its own checks: a snapshot that cannot be read back is
+	// not a snapshot, and an adopted ordinal is one way to get there.
+	if err := d.check(); err != nil {
+		return nil, err
+	}
+	return d, nil
+}
+
+// Dir is a directory of manifests, and the two things zded does with one.
+type Dir string
+
+// All reads every manifest in the directory.
+func (dir Dir) All() (map[string]*Desk, error) { return LoadDir(string(dir)) }
+
+// Save writes a manifest, refusing to overwrite one that is already there.
+// A snapshot is a record of an arrangement someone made; quietly replacing an
+// existing desk with the current shape of the screen is not what anybody means
+// by taking one.
+func (dir Dir) Save(d *Desk) (string, error) {
+	if err := d.check(); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(string(dir), 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(string(dir), d.Name+".yaml")
+	if _, err := os.Stat(path); err == nil {
+		return "", fmt.Errorf("%s already exists: remove it to take a new snapshot of %q", path, d.Name)
+	}
+	out, err := yaml.Marshal(d)
+	if err != nil {
+		return "", err
+	}
+	header := "# Written by zde desk snapshot. Apps are not captured yet - add\n" +
+		"# them by hand (docs/model.md, section 5).\n"
+	if err := os.WriteFile(path, append([]byte(header), out...), 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
 // Load reads one manifest from a file.
 func Load(path string) (*Desk, error) {
 	data, err := os.ReadFile(path)

@@ -47,10 +47,21 @@ type Compositor interface {
 	EmptyByOutput() (map[string][]uint64, error)
 }
 
-// Manifests is where zded reads desk manifests from. A function rather than a
-// loaded map, because a desk written while the session runs should be usable
-// without restarting the daemon.
-type Manifests func() (map[string]*manifest.Desk, error)
+// Desks is where manifests live. An interface rather than a loaded map,
+// because a desk written while the session runs should be usable without
+// restarting the daemon - and because snapshot writes one back.
+type Desks interface {
+	All() (map[string]*manifest.Desk, error)
+	Save(*manifest.Desk) (string, error)
+}
+
+// noDesks is a machine with nothing declared, which is where everyone starts.
+type noDesks struct{}
+
+func (noDesks) All() (map[string]*manifest.Desk, error) { return nil, nil }
+func (noDesks) Save(*manifest.Desk) (string, error) {
+	return "", fmt.Errorf("no desks directory to write to")
+}
 
 // Request is one line in.
 type Request struct {
@@ -77,20 +88,20 @@ type Status struct {
 
 // Server answers the zde socket.
 type Server struct {
-	version   string
-	jrn       *journal.Journal
-	niri      Compositor
-	manifests Manifests
+	version string
+	jrn     *journal.Journal
+	niri    Compositor
+	desks   Desks
 
 	mu sync.Mutex
 	ln net.Listener
 }
 
-func New(version string, jrn *journal.Journal, compositor Compositor, manifests Manifests) *Server {
-	if manifests == nil {
-		manifests = func() (map[string]*manifest.Desk, error) { return nil, nil }
+func New(version string, jrn *journal.Journal, compositor Compositor, desks Desks) *Server {
+	if desks == nil {
+		desks = noDesks{}
 	}
-	return &Server{version: version, jrn: jrn, niri: compositor, manifests: manifests}
+	return &Server{version: version, jrn: jrn, niri: compositor, desks: desks}
 }
 
 // DefaultSocket is where the socket lives: the runtime directory, which the
@@ -234,6 +245,8 @@ func (s *Server) Dispatch(req Request) Response {
 			return Response{Error: "desk.switch takes one desk name"}
 		}
 		return s.switchDesk(req.Args[0])
+	case "desk.snapshot":
+		return s.snapshot(req.Args)
 	case "desk.reconcile":
 		return s.reconcile()
 	case "desk.last":
@@ -318,7 +331,7 @@ func (s *Server) reconcile() Response {
 // by what is declared, so a compositor that stops producing empties ends it
 // rather than spinning.
 func (s *Server) ensureDeclared(target string) error {
-	all, err := s.manifests()
+	all, err := s.desks.All()
 	if err != nil {
 		return fmt.Errorf("reading manifests: %w", err)
 	}
@@ -350,10 +363,47 @@ func (s *Server) ensureDeclared(target string) error {
 	return nil
 }
 
+// snapshot writes down a desk that exists, so it can be asked for again. It is
+// the other end of adoption: arrange a desk by hand, let the names settle,
+// then make it something a manifest declares.
+func (s *Server) snapshot(args []string) Response {
+	m, err := s.niri.DeskMap()
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	target := ""
+	switch len(args) {
+	case 0:
+		// The desk you are on is the one you just arranged.
+		if focused, err := s.niri.FocusedName(); err == nil {
+			if n, err := desk.ParseName(focused); err == nil {
+				target = n.Desk
+			}
+		}
+		if target == "" {
+			return Response{Error: "no desk is focused, so there is none to write down: name one"}
+		}
+	case 1:
+		target = args[0]
+	default:
+		return Response{Error: "desk.snapshot takes one desk name, or none for the one you are on"}
+	}
+
+	d, err := manifest.FromMap(m, target)
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	path, err := s.desks.Save(d)
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	return ok(path)
+}
+
 // manifestFor is the desk's manifest, or nil if it has none. A desk without
 // one is not an error: it is whatever has been named into it.
 func (s *Server) manifestFor(target string) *manifest.Desk {
-	all, err := s.manifests()
+	all, err := s.desks.All()
 	if err != nil {
 		return nil
 	}

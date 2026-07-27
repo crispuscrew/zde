@@ -51,9 +51,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "zded: journal: %d entries could not be read\n", n)
 	}
 
-	srv := zded.New(version, jrn, compositor{}, func() (map[string]*manifest.Desk, error) {
-		return manifest.LoadDir(*desksDir)
-	})
+	srv := zded.New(version, jrn, compositor{}, manifest.Dir(*desksDir))
 	if err := srv.Listen(*socket); err != nil {
 		fatal(err)
 	}
