@@ -661,6 +661,145 @@ func TestNavOnAnEmptyWorkspaceRotates(t *testing.T) {
 	}
 }
 
+// The regulars are reachable from any desk by their own key, and coming back
+// is what makes reaching for them cheap: desk.last has to know where you were.
+func TestDeskRegularsGoesThereAndRemembers(t *testing.T) {
+	jrn, err := journal.Open(filepath.Join(t.TempDir(), "j.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jrn.Close()
+
+	niri := &fakeCompositor{
+		m: desk.Rebuild([]desk.Workspace{
+			{Name: "vshop.DP-1.code", Output: "DP-1"},
+			{Name: "regulars.DP-1.comms", Output: "DP-1"},
+		}, []string{"DP-1"}),
+		focused: "vshop.DP-1.code",
+	}
+	s := New("test", jrn, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var focused []string
+	if err := c.Call("desk.regulars", &focused); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(focused, []string{"regulars.DP-1.comms"}) {
+		t.Errorf("regulars left %v focused, want the band", focused)
+	}
+	if got := jrn.State().LastDesk; got != "vshop" {
+		t.Errorf("last desk %q, want the desk reached from", got)
+	}
+}
+
+// A band nobody has declared is not a broken command. The answer says how to
+// have one rather than reading like a desk that went missing.
+func TestDeskRegularsWithNoneYet(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code"}, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	err = c.Call("desk.regulars", nil)
+	if err == nil || !strings.Contains(err.Error(), "no regulars yet") {
+		t.Errorf("got %v, want an answer that says how to have regulars", err)
+	}
+}
+
+// brokenDesks is a desks directory that cannot be read at all, which is what
+// one unparseable file in it amounts to.
+type brokenDesks struct{}
+
+func (brokenDesks) All() (map[string]*manifest.Desk, error) {
+	return nil, errors.New("reading manifests: vshop.yaml: field monitorz not found")
+}
+func (brokenDesks) Save(*manifest.Desk) (string, error) { return "", errors.New("not writable") }
+
+// Every way of failing that is not "there is no band" has to keep its own
+// words. Told they have no regulars, someone with an unreadable manifest or a
+// compositor that has gone away would go looking in the wrong place - and the
+// thing that actually broke would never be mentioned.
+func TestDeskRegularsDoesNotSpeakForOtherFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		s    *Server
+		want string
+	}{
+		{
+			name: "a manifest that will not parse",
+			s:    New("test", nil, &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code"}, brokenDesks{}),
+			want: "monitorz",
+		},
+		{
+			name: "a compositor that cannot be read",
+			s:    New("test", nil, &fakeCompositor{err: errors.New("NIRI_SOCKET is not set")}, nil),
+			want: "NIRI_SOCKET",
+		},
+		{
+			name: "a focus that failed partway",
+			s: New("test", nil, &fakeCompositor{
+				m: desk.Rebuild([]desk.Workspace{
+					{Name: "regulars.DP-1.comms", Output: "DP-1"},
+				}, []string{"DP-1"}),
+				focused: "regulars.DP-1.comms",
+				failOn:  "regulars.DP-1.comms",
+			}, nil),
+			want: "no such workspace",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := DialPath(serve(t, tc.s))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			err = c.Call("desk.regulars", nil)
+			if err == nil {
+				t.Fatal("answered as though nothing was wrong")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %v, want the one that actually happened (%s)", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestDeskRegularsTakesNoArguments(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code"}, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.Call("desk.regulars", nil, "comms"); err == nil {
+		t.Error("desk.regulars with an argument was accepted")
+	}
+}
+
+// The regulars cannot be written down, and saying so in words about a manifest
+// nobody asked for is not saying so.
+func TestDeskSnapshotOfTheRegulars(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{
+		m: desk.Rebuild([]desk.Workspace{
+			{Name: "regulars.DP-1.comms", Output: "DP-1"},
+		}, []string{"DP-1"}),
+		focused: "regulars.DP-1.comms",
+	}, manifest.Dir(t.TempDir()))
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	err = c.Call("desk.snapshot", nil)
+	if err == nil || !strings.Contains(err.Error(), "not a desk") {
+		t.Errorf("got %v, want a refusal that says what the regulars are", err)
+	}
+}
+
 // twoScreens is two desks that both own workspaces on both monitors, which is
 // what makes "the window stays on its screen" a claim that can fail.
 func twoScreens() *desk.Map {

@@ -244,6 +244,47 @@ let
           nirimsg windows; exit 1
         }
 
+        # The regulars: a band reachable from anywhere by its own key, and
+        # never scrolled into by anything else. Made last, so everything above
+        # it ran on a machine that had none.
+        #
+        # Not declared, because they cannot be: a manifest named regulars is
+        # refused where manifests are read - the regulars are the band that is
+        # not a desk. Naming a workspace into the band is the only way they
+        # come into being, so that is what this does, and what the error on a
+        # machine without them tells you to do.
+        for i in $(seq 10); do nirimsg action focus-workspace-down >/dev/null; done
+        nirimsg action set-workspace-name regulars.winit.comms >/dev/null
+
+        # Naming the band left focus sitting on it, so the desk to come back to
+        # is chosen here rather than inherited: what is being checked is
+        # reaching the regulars from somewhere and landing back on that
+        # somewhere, which needs the somewhere to be known.
+        zde desk switch haven >/dev/null
+        zde desk regulars 2>&1 | tee /tmp/reg.txt
+        grep -qx 'regulars.winit.comms' /tmp/reg.txt
+
+        # Reaching for them costs nothing, because coming back is one key.
+        zde desk last 2>&1 | tee /tmp/reg-back.txt
+        grep -q 'haven.winit' /tmp/reg-back.txt
+
+        # And the rotation steps over them, in both directions and in both
+        # senses. From the band, which is in no rotation, forward is the first
+        # desk and back is the last; were the regulars in it they would be an
+        # index in the middle, and both of these would answer the other desk.
+        zde desk regulars >/dev/null
+        zde desk next 2>&1 | tee /tmp/reg-next.txt
+        grep -q 'haven.winit' /tmp/reg-next.txt
+        zde desk regulars >/dev/null
+        zde desk prev 2>&1 | tee /tmp/reg-prev.txt
+        grep -q 'vshop.winit' /tmp/reg-prev.txt
+
+        # The step that would actually land on them: alphabetically the
+        # regulars sit between haven and vshop, so going back from vshop is
+        # where a rotation that stopped excluding them would arrive.
+        zde desk prev 2>&1 | tee /tmp/reg-prev2.txt
+        grep -q 'haven.winit' /tmp/reg-prev2.txt
+
         echo "live compositor check passed"
   '';
 in

@@ -271,6 +271,11 @@ func (s *Server) Dispatch(req Request) Response {
 			return s.moveWindow(desk.Next)
 		}
 		return s.moveWindow(desk.Prev)
+	case "desk.regulars":
+		if len(req.Args) != 0 {
+			return Response{Error: "desk.regulars takes no arguments"}
+		}
+		return s.regulars()
 	case "desk.next", "desk.prev":
 		if len(req.Args) != 0 {
 			return Response{Error: req.Method + " takes no arguments"}
@@ -418,6 +423,12 @@ func (s *Server) snapshot(args []string) Response {
 		target = args[0]
 	default:
 		return Response{Error: "desk.snapshot takes one desk name, or none for the one you are on"}
+	}
+	if target == desk.Regulars {
+		// Standing on the regulars is one key away now, so this is a thing
+		// people will do by accident. The manifest layer refuses it too, but
+		// in words about a manifest nobody asked for.
+		return Response{Error: "the regulars are not a desk, so there is no manifest to write: they are named into, never declared"}
 	}
 
 	d, err := manifest.FromMap(m, target)
@@ -591,6 +602,40 @@ func (s *Server) carry(m *desk.Map, target string) (string, error) {
 	return landing.String(), nil
 }
 
+// regulars brings up the band that belongs to no desk: comms, music, the
+// personal browser - the windows you want from wherever you are, rather than
+// on the desk you happen to be on (docs/model.md, section 3).
+//
+// It is a switch like any other, which is the whole point of the regulars
+// being a desk key rather than a special case in the map. What makes them
+// regulars is the two things around it: rotation steps over them, so they are
+// never scrolled into by accident, and desk.last brings you back, so reaching
+// for music does not cost you your place.
+//
+// They come into being by being named into, and only that way: a manifest
+// named regulars is refused where manifests are read, because the regulars are
+// not a desk. Saying that when there are none beats a refusal that reads like
+// a desk went missing - and beats the manifest advice this used to give, which
+// the manifest layer would have rejected.
+func (s *Server) regulars() Response {
+	resp := s.switchDesk(desk.Regulars)
+	// Only the one refusal that means the band is not there. A manifest that
+	// will not parse, a compositor that cannot be read, a focus that failed
+	// partway: those keep their own words, because advice about how to make
+	// regulars would send the people who hit them looking in the wrong place.
+	if resp.Error != noSuchBand(desk.Regulars) {
+		return resp
+	}
+	return Response{Error: "no regulars yet: name a workspace " + desk.Regulars + ".<monitor>.<label> into the band, which is the only way they are made"}
+}
+
+// noSuchBand is the refusal for a desk that has no workspaces and nothing
+// declaring any. One place, so that reading it back to decide what a failure
+// meant cannot drift from writing it.
+func noSuchBand(target string) string {
+	return "desk " + target + " has no workspaces and no manifest that declares any"
+}
+
 // rotate switches to the desk beside the one you are on. Which way is the
 // caller's to say; everything else the two directions do is the same, down to
 // the rotation being a loop with no ends to fall off.
@@ -694,7 +739,7 @@ func (s *Server) switchFrom(target, from string) Response {
 	if len(plan) == 0 {
 		// Nothing to focus is not the same as a failed switch, but it is not
 		// a switch either: say so rather than pretending the desk is up.
-		return Response{Error: "desk " + target + " has no workspaces and no manifest that declares any"}
+		return Response{Error: noSuchBand(target)}
 	}
 
 	// Where we are now, before anything moves, so desk.last has somewhere to
