@@ -286,8 +286,9 @@ let
         grep -q 'haven.winit' /tmp/reg-prev2.txt
 
         # Into the regulars and back out, which is what a desk named rather
-        # than counted to is for. No rotation reaches the band, so without this
-        # a window could go in and never come out again.
+        # than counted to is for. Out was already possible - from inside the
+        # band the rotation falls back to an end of it - but only to whichever
+        # desk that fallback picked. Getting a window in was impossible.
         zde desk switch vshop >/dev/null
         nirimsg action focus-workspace vshop.winit.foot >/dev/null
         moved=$(focused_window)
@@ -299,8 +300,14 @@ let
         [ "$(focused_window)" = "$moved" ] || {
           echo "window $moved did not arrive in the band: focus is on $(focused_window)"; exit 1
         }
+        # Whole line, not a substring: tee hides the exit status, so this grep
+        # is all that stands between a refusal and a green run - and a refusal
+        # that names the desk it could not reach contains "vshop.winit" too.
+        # vshop is entered on code, which is where the journal left it: the
+        # raw focus-workspace above went behind zded's back and did not move
+        # what it remembers.
         zde desk move-window-to vshop 2>&1 | tee /tmp/mwt-out.txt
-        grep -q 'vshop.winit' /tmp/mwt-out.txt
+        grep -qx 'vshop.winit.code' /tmp/mwt-out.txt
         [ "$(focused_window)" = "$moved" ] || {
           echo "window $moved did not come back out: focus is on $(focused_window)"; exit 1
         }

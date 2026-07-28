@@ -532,7 +532,7 @@ func (s *Server) moveWindowTo(target string) Response {
 	if err != nil {
 		return Response{Error: err.Error()}
 	}
-	return s.carryTo(target, s.activeDesk(m))
+	return bandAdvice(target, s.carryTo(target, s.activeDesk(m)))
 }
 
 // carryTo takes the focused window to a desk and follows it there.
@@ -620,7 +620,10 @@ func (s *Server) carry(m *desk.Map, target string) (string, error) {
 		// it off the screen the switch is about to show.
 		plan := desk.SwitchPlan(m, target, slots)
 		if len(plan) == 0 {
-			return "", fmt.Errorf("desk %s has no workspaces to move a window to", target)
+			// The same refusal a switch would give, in the same words: both
+			// mean the desk is not there, and one of them gets translated for
+			// the band that cannot be declared.
+			return "", errors.New(noSuchBand(target))
 		}
 		landing = plan[0]
 	}
@@ -646,12 +649,19 @@ func (s *Server) carry(m *desk.Map, target string) (string, error) {
 // a desk went missing - and beats the manifest advice this used to give, which
 // the manifest layer would have rejected.
 func (s *Server) regulars() Response {
-	resp := s.switchDesk(desk.Regulars)
-	// Only the one refusal that means the band is not there. A manifest that
-	// will not parse, a compositor that cannot be read, a focus that failed
-	// partway: those keep their own words, because advice about how to make
-	// regulars would send the people who hit them looking in the wrong place.
-	if resp.Error != noSuchBand(desk.Regulars) {
+	return bandAdvice(desk.Regulars, s.switchDesk(desk.Regulars))
+}
+
+// bandAdvice replaces the refusal for a desk that is not there with the one
+// that says how to have it, and only for the regulars: the generic answer
+// offers a manifest, and the regulars are the one band a manifest cannot
+// declare, so it is advice that cannot be taken.
+//
+// Only that refusal. A manifest that will not parse, a compositor that cannot
+// be read, a focus that failed partway: those keep their own words, because
+// this advice would send the people who hit them looking in the wrong place.
+func bandAdvice(target string, resp Response) Response {
+	if target != desk.Regulars || resp.Error != noSuchBand(target) {
 		return resp
 	}
 	return Response{Error: "no regulars yet: name a workspace " + desk.Regulars + ".<monitor>.<label> into the band, which is the only way they are made"}
