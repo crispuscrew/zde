@@ -539,7 +539,10 @@ func TestDeskRotationStepsOverTheRegulars(t *testing.T) {
 			{Name: "haven.DP-1.db", Output: "DP-1"},
 			{Name: "regulars.DP-1.comms", Output: "DP-1"},
 		}, []string{"DP-1"}),
-		focused: "vshop.DP-1.code", // the last desk in the rotation
+		// From the first desk, so the step lands on what comes next rather
+		// than wrapping - wrapping from the last desk reaches the first either
+		// way, and would pass with the regulars still in the rotation.
+		focused: "haven.DP-1.db",
 	}
 	s := New("test", nil, niri, nil)
 	c, err := DialPath(serve(t, s))
@@ -551,8 +554,8 @@ func TestDeskRotationStepsOverTheRegulars(t *testing.T) {
 	if err := c.Call("desk.next", &focused); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(focused, []string{"haven.DP-1.db"}) {
-		t.Errorf("next wrapped to %v, want the first desk rather than the regulars", focused)
+	if !slices.Equal(focused, []string{"vshop.DP-1.code"}) {
+		t.Errorf("next went to %v, want the desk after haven rather than the regulars", focused)
 	}
 }
 
@@ -565,7 +568,9 @@ func TestDeskNextFromAWorkspaceWithNoName(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer jrn.Close()
-	jrn.SetOnDesk("vshop")
+	// The first desk, so that using the journal and ignoring it give different
+	// answers: from haven the step is vshop, while from nowhere it is haven.
+	jrn.SetOnDesk("haven")
 
 	niri := &fakeCompositor{m: twoDesks(), focused: ""}
 	s := New("test", jrn, niri, nil)
@@ -578,8 +583,55 @@ func TestDeskNextFromAWorkspaceWithNoName(t *testing.T) {
 	if err := c.Call("desk.next", &focused); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(focused, []string{"haven.DP-1.db"}) {
+	if !slices.Equal(focused, []string{"vshop.DP-1.code"}) {
 		t.Errorf("next left %v focused, want the desk after the one the journal is on", focused)
+	}
+}
+
+// A rotation of one has no desk beside it, and switching to the desk you are
+// already on is not the no-op it looks like: a switch restores that desk's
+// last-active workspace, so pressing next on a single-desk session would
+// scroll you off the workspace you were using and then remember the wrong one.
+func TestDeskNextWithOneDeskStaysPut(t *testing.T) {
+	niri := &fakeCompositor{
+		m: desk.Rebuild([]desk.Workspace{
+			{Name: "vshop.DP-1.code", Output: "DP-1"},
+			{Name: "vshop.DP-1.notes", Output: "DP-1"},
+		}, []string{"DP-1"}),
+		focused: "vshop.DP-1.notes", // not the first of the band
+	}
+	s := New("test", nil, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var focused []string
+	if err := c.Call("desk.next", &focused); err != nil {
+		t.Fatal(err)
+	}
+	if len(focused) != 0 {
+		t.Errorf("next answered %v, want nothing: there is no desk beside this one", focused)
+	}
+	if got := niri.focusCalls(); len(got) != 0 {
+		t.Errorf("focused %v, which would have scrolled off the workspace in use", got)
+	}
+}
+
+// The socket is a wire anything can write to, so a verb that takes nothing
+// says so rather than quietly ignoring what it was handed.
+func TestDeskRotationTakesNoArguments(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks(), focused: "haven.DP-1.db"}, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	for _, method := range []string{"desk.next", "desk.prev"} {
+		err := c.Call(method, nil, "nonsense")
+		if err == nil || !strings.Contains(err.Error(), "takes no arguments") {
+			t.Errorf("%s with an argument: got %v, want a refusal", method, err)
+		}
 	}
 }
 

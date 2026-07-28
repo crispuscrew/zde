@@ -55,8 +55,9 @@ func TestFromOutsideTheRotation(t *testing.T) {
 	}
 }
 
-// One desk is a loop of one: rotating is a no-op rather than an error, and the
-// caller re-focuses where it already is.
+// One desk is a loop of one, so a step comes back to where it started. What
+// the caller does with that is the caller's - zded declines to switch, because
+// switching to the desk you are on is not the no-op it looks like.
 func TestRotationOfOne(t *testing.T) {
 	m := Rebuild([]Workspace{{Name: "vshop.DP-1.code", Output: "DP-1"}}, []string{"DP-1"})
 	r := m.Rotation()
@@ -65,6 +66,27 @@ func TestRotationOfOne(t *testing.T) {
 	}
 	if got := Prev(r, "vshop"); got != "vshop" {
 		t.Errorf("prev = %q, want the only desk", got)
+	}
+}
+
+// A step longer than the rotation still lands inside it. Nothing asks for one
+// yet, but the arithmetic is the kind that is wrong quietly, and a page-step
+// would be the first caller to find out.
+func TestStepsLongerThanTheRotation(t *testing.T) {
+	r := threeDesks() // haven, misc, vshop
+	for _, c := range []struct {
+		by   int
+		from string
+		want string
+	}{
+		{4, "haven", "misc"},
+		{-4, "haven", "vshop"},
+		{-7, "misc", "haven"},
+		{9, "vshop", "vshop"},
+	} {
+		if got := step(r.Rotation(), c.from, c.by); got != c.want {
+			t.Errorf("step %d from %s = %q, want %q", c.by, c.from, got, c.want)
+		}
 	}
 }
 

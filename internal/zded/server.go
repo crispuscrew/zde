@@ -246,9 +246,13 @@ func (s *Server) Dispatch(req Request) Response {
 			return Response{Error: "desk.switch takes one desk name"}
 		}
 		return s.switchDesk(req.Args[0])
-	case "desk.next":
-		return s.rotate(desk.Next)
-	case "desk.prev":
+	case "desk.next", "desk.prev":
+		if len(req.Args) != 0 {
+			return Response{Error: req.Method + " takes no arguments"}
+		}
+		if req.Method == "desk.next" {
+			return s.rotate(desk.Next)
+		}
 		return s.rotate(desk.Prev)
 	case "desk.snapshot":
 		return s.snapshot(req.Args)
@@ -420,7 +424,16 @@ func (s *Server) rotate(step func(rotation []string, from string) string) Respon
 	if len(rotation) == 0 {
 		return Response{Error: "no desks to rotate through yet"}
 	}
-	return s.switchDesk(step(rotation, s.activeDesk(m)))
+	from := s.activeDesk(m)
+	to := step(rotation, from)
+	if to == from {
+		// A rotation of one: there is no desk beside this one. Switching to it
+		// anyway is not the no-op it looks like - a switch restores the desk's
+		// last-active workspace, so it would scroll off the workspace you are
+		// on and then remember the wrong one as where you were.
+		return ok([]string{})
+	}
+	return s.switchDesk(to)
 }
 
 // activeDesk is the desk whose band new workspaces belong to.

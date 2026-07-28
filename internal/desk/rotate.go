@@ -40,7 +40,11 @@ func step(rotation []string, from string, by int) string {
 	}
 	for i, d := range rotation {
 		if d == from {
-			return rotation[((i+by)+len(rotation))%len(rotation)]
+			// Reduced before the shift, not after: Go's remainder keeps the
+			// sign of its left side, so a step bigger than the rotation would
+			// otherwise index backwards off the front of it.
+			n := len(rotation)
+			return rotation[((i+by)%n+n)%n]
 		}
 	}
 	if by > 0 {
