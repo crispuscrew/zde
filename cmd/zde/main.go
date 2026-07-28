@@ -37,6 +37,8 @@ func run(args []string) error {
 		return focusDesk("nav." + args[1])
 	case len(args) == 2 && args[0] == "desk" && (args[1] == "next" || args[1] == "prev"):
 		return focusDesk("desk." + args[1])
+	case len(args) == 2 && args[0] == "desk" && args[1] == "regulars":
+		return focusDesk("desk.regulars")
 	case len(args) == 2 && args[0] == "desk" && args[1] == "last":
 		return lastDesk()
 	case len(args) == 2 && args[0] == "desk" && args[1] == "reconcile":
@@ -178,6 +180,7 @@ func usage() {
                          carry the focused window to the desk beside, and go
   zde desk next          the desk after this one, wrapping (regulars excluded)
   zde desk prev          the desk before this one, wrapping
+  zde desk regulars      the band that belongs to no desk (comms, music)
   zde desk last          go back to the desk you came from
   zde desk reconcile     make the workspace names true again
   zde desk snapshot [N]  write down the desk you are on, so you can ask for it

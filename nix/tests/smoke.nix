@@ -244,6 +244,29 @@ let
           nirimsg windows; exit 1
         }
 
+        # The regulars: a band reachable from anywhere by its own key, and
+        # never scrolled into by anything else. Declared last, so everything
+        # above it ran on a machine that had none.
+        printf 'name: regulars
+    monitors:
+      winit: { workspaces: [comms] }
+    '       > /tmp/desks/regulars.yaml
+        zde desk regulars 2>&1 | tee /tmp/reg.txt
+        grep -qx 'regulars.winit.comms' /tmp/reg.txt
+
+        # Reaching for them costs nothing, because coming back is one key.
+        zde desk last 2>&1 | tee /tmp/reg-back.txt
+        grep -q 'haven.winit' /tmp/reg-back.txt
+
+        # And the rotation steps over them. Alphabetically the regulars sit
+        # between haven and vshop, so a rotation that did not exclude them
+        # would land on them on the very first step from either side.
+        zde desk regulars >/dev/null
+        zde desk next 2>&1 | tee /tmp/reg-next.txt
+        grep -q 'haven.winit' /tmp/reg-next.txt
+        zde desk next 2>&1 | tee /tmp/reg-next2.txt
+        grep -q 'vshop.winit' /tmp/reg-next2.txt
+
         echo "live compositor check passed"
   '';
 in

@@ -271,6 +271,11 @@ func (s *Server) Dispatch(req Request) Response {
 			return s.moveWindow(desk.Next)
 		}
 		return s.moveWindow(desk.Prev)
+	case "desk.regulars":
+		if len(req.Args) != 0 {
+			return Response{Error: "desk.regulars takes no arguments"}
+		}
+		return s.regulars()
 	case "desk.next", "desk.prev":
 		if len(req.Args) != 0 {
 			return Response{Error: req.Method + " takes no arguments"}
@@ -589,6 +594,29 @@ func (s *Server) carry(m *desk.Map, target string) (string, error) {
 		return "", err
 	}
 	return landing.String(), nil
+}
+
+// regulars brings up the band that belongs to no desk: comms, music, the
+// personal browser - the windows you want from wherever you are, rather than
+// on the desk you happen to be on (docs/model.md, section 3).
+//
+// It is a switch like any other, which is the whole point of the regulars
+// being a desk key rather than a special case in the map. What makes them
+// regulars is the two things around it: rotation steps over them, so they are
+// never scrolled into by accident, and desk.last brings you back, so reaching
+// for music does not cost you your place.
+//
+// They exist the way any desk does - a manifest, or workspaces named into
+// them. Saying so when there are none beats a refusal that reads like a bug.
+func (s *Server) regulars() Response {
+	resp := s.switchDesk(desk.Regulars)
+	if resp.Error != "" {
+		m, err := s.niri.DeskMap()
+		if err == nil && len(m.Regulars()) == 0 && s.manifestFor(desk.Regulars) == nil {
+			return Response{Error: "no regulars yet: declare them in a desk manifest named regulars, or name a workspace into the band"}
+		}
+	}
+	return resp
 }
 
 // rotate switches to the desk beside the one you are on. Which way is the

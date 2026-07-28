@@ -661,6 +661,55 @@ func TestNavOnAnEmptyWorkspaceRotates(t *testing.T) {
 	}
 }
 
+// The regulars are reachable from any desk by their own key, and coming back
+// is what makes reaching for them cheap: desk.last has to know where you were.
+func TestDeskRegularsGoesThereAndRemembers(t *testing.T) {
+	jrn, err := journal.Open(filepath.Join(t.TempDir(), "j.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jrn.Close()
+
+	niri := &fakeCompositor{
+		m: desk.Rebuild([]desk.Workspace{
+			{Name: "vshop.DP-1.code", Output: "DP-1"},
+			{Name: "regulars.DP-1.comms", Output: "DP-1"},
+		}, []string{"DP-1"}),
+		focused: "vshop.DP-1.code",
+	}
+	s := New("test", jrn, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var focused []string
+	if err := c.Call("desk.regulars", &focused); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(focused, []string{"regulars.DP-1.comms"}) {
+		t.Errorf("regulars left %v focused, want the band", focused)
+	}
+	if got := jrn.State().LastDesk; got != "vshop" {
+		t.Errorf("last desk %q, want the desk reached from", got)
+	}
+}
+
+// A band nobody has declared is not a broken command. The answer says how to
+// have one rather than reading like a desk that went missing.
+func TestDeskRegularsWithNoneYet(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code"}, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	err = c.Call("desk.regulars", nil)
+	if err == nil || !strings.Contains(err.Error(), "no regulars yet") {
+		t.Errorf("got %v, want an answer that says how to have regulars", err)
+	}
+}
+
 // twoScreens is two desks that both own workspaces on both monitors, which is
 // what makes "the window stays on its screen" a claim that can fail.
 func twoScreens() *desk.Map {
