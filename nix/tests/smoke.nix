@@ -185,6 +185,47 @@ let
         zde desk prev 2>&1 | tee /tmp/prev.txt
         grep -q 'vshop.winit' /tmp/prev.txt
 
+        # nav, the axis the model reads as one: the window below first, the
+        # desk after it.
+        #
+        # On the workspace that has a window in it, deliberately. A desk switch
+        # comes back to the workspace you left, which here is an empty one, and
+        # an empty workspace rotates whatever nav does with a stack - so this
+        # would pass just as well with the window half of nav missing.
+        focused_window() { nirimsg --json focused-window 2>/dev/null | grep -o '"id":[0-9]*' | head -1; }
+        nirimsg action focus-workspace vshop.winit.foot >/dev/null
+
+        # One window is the end of its own stack, so the desk turns. This is
+        # also where the assumption under nav gets tested: niri's
+        # FocusWindowDown does nothing at the end of a column rather than
+        # falling through to the next workspace. If it ever fell through, focus
+        # would have changed, nav would report no desk change, and the grep
+        # below would fail here rather than on somebody's machine.
+        zde nav down 2>&1 | tee /tmp/nav-down.txt
+        grep -qx 'haven.winit.db' /tmp/nav-down.txt
+
+        # And with two windows stacked in one column the same key stays put,
+        # moving focus inside the workspace. niri opens the second in its own
+        # column, so it has to be consumed into the first.
+        nirimsg action focus-workspace vshop.winit.foot >/dev/null
+        first=$(focused_window)
+        foot -e sleep 600 >/tmp/foot2.log 2>&1 &
+        second_window() { [ -n "$(focused_window)" ] && [ "$(focused_window)" != "$first" ]; }
+        if ! waitfor 60 second_window; then
+          echo "the second window never took focus:"; cat /tmp/foot2.log; exit 1
+        fi
+        nirimsg action consume-or-expel-window-left >/dev/null
+        # From the top of the stack, so down has somewhere to go regardless of
+        # which end consuming left focus on.
+        nirimsg action focus-window-top >/dev/null
+        top=$(focused_window)
+        zde nav down 2>&1 | tee /tmp/nav-stack.txt
+        [ ! -s /tmp/nav-stack.txt ] # nothing about the desk changed
+        [ -n "$top" ] && [ "$(focused_window)" != "$top" ] || {
+          echo "nav down stayed on window $top instead of the one below it"
+          exit 1
+        }
+
         echo "live compositor check passed"
   '';
 in

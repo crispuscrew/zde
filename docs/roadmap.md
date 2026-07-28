@@ -62,6 +62,17 @@ usable.
   config driving a real compositor. The smoke test settles the static half -
   niri's own parser accepts the tree, its includes resolve, and every emitted
   action name is real - which is not the same as running it.
+- nav with a layer-shell surface up: one holding keyboard focus reads as
+  nothing focused at all, so a press spends itself putting focus back on a
+  window instead of going anywhere. Nothing zde ships reaches that yet - the
+  desk switcher is the surface that will, and it should be tried the day it
+  exists.
+- nav latency, by hand on real hardware rather than by arithmetic: one Mod+j
+  spawns a `zde`, and behind it zded asks niri for the focused window, moves
+  it, asks again, and on a rotation re-reads the map and the focused name a
+  further three and two times. Every one is a unix socket round trip, so the
+  spawn should dominate - but "should" is why this is on the list. Fold the
+  reads into one pass only if a finger says to.
 - include precedence: two files binding the same chord is accepted without
   complaint, so which one wins is unverified. zded releasing a desk's clashing
   bind through `dynamic.kdl` depends on the answer being "the last include".
