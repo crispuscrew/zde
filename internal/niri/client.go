@@ -51,6 +51,7 @@ type Window struct {
 	ID          uint64  `json:"id"`
 	AppID       *string `json:"app_id"`
 	WorkspaceID *uint64 `json:"workspace_id"`
+	IsFocused   bool    `json:"is_focused"`
 }
 
 // Output is niri's output, narrowed to its name. Which outputs exist is the
@@ -230,6 +231,36 @@ func (c *Client) Windows() ([]Window, error) {
 		return nil, fmt.Errorf("niri: Windows: %w", err)
 	}
 	return out, nil
+}
+
+// FocusedWindow is niri's focused window id, 0 when nothing is focused - an
+// empty workspace, or a session that has not been touched yet.
+func (c *Client) FocusedWindow() (uint64, error) {
+	windows, err := c.Windows()
+	if err != nil {
+		return 0, err
+	}
+	for _, w := range windows {
+		if w.IsFocused {
+			return w.ID, nil
+		}
+	}
+	return 0, nil
+}
+
+// FocusWindowVertically moves focus one window down or up the stack the
+// focused window is in.
+//
+// It is niri's FocusWindowDown/Up, not the OrWorkspace variants: at the end of
+// a stack this does nothing at all, which is the answer zde needs. What
+// happens at that edge is a desk-level decision (docs/model.md, invariant 4),
+// and niri is not the one to make it.
+func (c *Client) FocusWindowVertically(down bool) error {
+	action := "FocusWindowUp"
+	if down {
+		action = "FocusWindowDown"
+	}
+	return c.Action(map[string]any{action: map[string]any{}}, action)
 }
 
 // FirstApps is the app of the first window on each workspace, by workspace id.

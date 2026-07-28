@@ -118,6 +118,24 @@ func (compositor) FocusedName() (string, error) {
 	return c.FocusedName()
 }
 
+func (compositor) FocusedWindow() (uint64, error) {
+	c, err := niri.Dial()
+	if err != nil {
+		return 0, err
+	}
+	defer c.Close()
+	return c.FocusedWindow()
+}
+
+func (compositor) FocusWindowVertically(down bool) error {
+	c, err := niri.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	return c.FocusWindowVertically(down)
+}
+
 func (compositor) FocusWorkspace(name string) error {
 	c, err := niri.Dial()
 	if err != nil {

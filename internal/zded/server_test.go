@@ -23,6 +23,11 @@ type fakeCompositor struct {
 	apps    map[uint64]string
 	empty   map[string][]uint64 // output -> empty workspace ids
 
+	focusedWindow uint64
+	// nextInStack is what a vertical window move lands on, 0 for the end of
+	// the stack - niri's own answer to whether there is a window that way.
+	nextInStack uint64
+
 	mu      sync.Mutex
 	calls   []string         // what was asked to be focused, in order
 	base    []desk.Workspace // what exists before any naming
@@ -31,6 +36,7 @@ type fakeCompositor struct {
 	reads   int
 	renames []string
 	adopted []string
+	moves   []bool // vertical window moves asked for, down is true
 	failOn  string
 }
 
@@ -65,6 +71,36 @@ func (f *fakeCompositor) FocusWorkspace(name string) error {
 	}
 	f.calls = append(f.calls, name)
 	return nil
+}
+
+func (f *fakeCompositor) FocusedWindow() (uint64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return 0, f.err
+	}
+	return f.focusedWindow, nil
+}
+
+// FocusWindowVertically behaves like niri: it moves focus along the stack, and
+// at the end of one it does nothing at all.
+func (f *fakeCompositor) FocusWindowVertically(down bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	f.moves = append(f.moves, down)
+	if f.nextInStack != 0 {
+		f.focusedWindow = f.nextInStack
+	}
+	return nil
+}
+
+func (f *fakeCompositor) windowMoves() []bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]bool(nil), f.moves...)
 }
 
 func (f *fakeCompositor) EmptyByOutput() (map[string][]uint64, error) {
@@ -489,6 +525,110 @@ func TestDeskSwitchStopsOnFailure(t *testing.T) {
 	}
 	if got := niri.focusCalls(); len(got) != 0 {
 		t.Errorf("kept going after a failure: %v", got)
+	}
+}
+
+// Down is down: inside a stack it is the window below, and the desk is not
+// disturbed by a key that never left the workspace.
+func TestNavDownTakesTheWindowBelowFirst(t *testing.T) {
+	niri := &fakeCompositor{
+		m:             twoDesks(),
+		focused:       "haven.DP-1.db",
+		focusedWindow: 1,
+		nextInStack:   2, // there is a window below
+	}
+	s := New("test", nil, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var focused []string
+	if err := c.Call("nav.down", &focused); err != nil {
+		t.Fatal(err)
+	}
+	if len(focused) != 0 {
+		t.Errorf("nav.down answered %v, want nothing: the desk did not change", focused)
+	}
+	if got := niri.windowMoves(); !slices.Equal(got, []bool{true}) {
+		t.Errorf("window moves = %v, want one downward", got)
+	}
+	if got := niri.focusCalls(); len(got) != 0 {
+		t.Errorf("rotated to %v with a window still below", got)
+	}
+}
+
+// The end of the stack is where the axis stops being about windows. niri
+// having moved nothing is the whole signal - zde does not model the layout to
+// work it out.
+func TestNavDownRotatesAtTheEndOfTheStack(t *testing.T) {
+	niri := &fakeCompositor{
+		m:             twoDesks(),
+		focused:       "haven.DP-1.db",
+		focusedWindow: 1,
+		nextInStack:   0, // nothing below: niri moves nothing
+	}
+	s := New("test", nil, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var focused []string
+	if err := c.Call("nav.down", &focused); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(focused, []string{"vshop.DP-1.code"}) {
+		t.Errorf("nav.down left %v focused, want the desk after haven", focused)
+	}
+}
+
+// Up is the mirror, and rotates backwards rather than forwards.
+func TestNavUpRotatesBackwards(t *testing.T) {
+	niri := &fakeCompositor{
+		m:             twoDesks(),
+		focused:       "vshop.DP-1.code",
+		focusedWindow: 1,
+	}
+	s := New("test", nil, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var focused []string
+	if err := c.Call("nav.up", &focused); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(focused, []string{"haven.DP-1.db"}) {
+		t.Errorf("nav.up left %v focused, want the desk before vshop", focused)
+	}
+	if got := niri.windowMoves(); !slices.Equal(got, []bool{false}) {
+		t.Errorf("window moves = %v, want one upward", got)
+	}
+}
+
+// An empty workspace has no stack to walk, so the axis is about desks from the
+// first keypress. Nothing focused before and nothing after is not "focus
+// moved".
+func TestNavOnAnEmptyWorkspaceRotates(t *testing.T) {
+	niri := &fakeCompositor{
+		m:             twoDesks(),
+		focused:       "haven.DP-1.db",
+		focusedWindow: 0, // nothing is focused
+	}
+	s := New("test", nil, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var focused []string
+	if err := c.Call("nav.down", &focused); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(focused, []string{"vshop.DP-1.code"}) {
+		t.Errorf("nav.down left %v focused, want the next desk", focused)
 	}
 }
 
