@@ -424,6 +424,12 @@ func (s *Server) snapshot(args []string) Response {
 	default:
 		return Response{Error: "desk.snapshot takes one desk name, or none for the one you are on"}
 	}
+	if target == desk.Regulars {
+		// Standing on the regulars is one key away now, so this is a thing
+		// people will do by accident. The manifest layer refuses it too, but
+		// in words about a manifest nobody asked for.
+		return Response{Error: "the regulars are not a desk, so there is no manifest to write: they are named into, never declared"}
+	}
 
 	d, err := manifest.FromMap(m, target)
 	if err != nil {
@@ -613,17 +619,21 @@ func (s *Server) carry(m *desk.Map, target string) (string, error) {
 // the manifest layer would have rejected.
 func (s *Server) regulars() Response {
 	resp := s.switchDesk(desk.Regulars)
-	if resp.Error == "" {
-		return resp
-	}
-	// Only when the band is genuinely empty. A compositor that cannot be read,
-	// a focus that failed partway - those are their own errors and keep their
-	// own words.
-	m, err := s.niri.DeskMap()
-	if err != nil || len(m.Regulars()) > 0 {
+	// Only the one refusal that means the band is not there. A manifest that
+	// will not parse, a compositor that cannot be read, a focus that failed
+	// partway: those keep their own words, because advice about how to make
+	// regulars would send the people who hit them looking in the wrong place.
+	if resp.Error != noSuchBand(desk.Regulars) {
 		return resp
 	}
 	return Response{Error: "no regulars yet: name a workspace " + desk.Regulars + ".<monitor>.<label> into the band, which is the only way they are made"}
+}
+
+// noSuchBand is the refusal for a desk that has no workspaces and nothing
+// declaring any. One place, so that reading it back to decide what a failure
+// meant cannot drift from writing it.
+func noSuchBand(target string) string {
+	return "desk " + target + " has no workspaces and no manifest that declares any"
 }
 
 // rotate switches to the desk beside the one you are on. Which way is the
@@ -729,7 +739,7 @@ func (s *Server) switchFrom(target, from string) Response {
 	if len(plan) == 0 {
 		// Nothing to focus is not the same as a failed switch, but it is not
 		// a switch either: say so rather than pretending the desk is up.
-		return Response{Error: "desk " + target + " has no workspaces and no manifest that declares any"}
+		return Response{Error: noSuchBand(target)}
 	}
 
 	// Where we are now, before anything moves, so desk.last has somewhere to

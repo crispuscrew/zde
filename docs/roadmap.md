@@ -62,6 +62,10 @@ usable.
   config driving a real compositor. The smoke test settles the static half -
   niri's own parser accepts the tree, its includes resolve, and every emitted
   action name is real - which is not the same as running it.
+- work goes into the regulars and cannot come out. Adoption names into the
+  band while you stand on it, and nothing takes a workspace back: the rotation
+  steps over it, a switch reaches only the first workspace per monitor, and it
+  cannot be written down. A band you can only add to is a band that fills up.
 - how anyone makes their regulars. A manifest cannot declare them (the
   manifest layer refuses the reserved name) and adoption names into the desk
   you are on, so today the band exists only if a workspace is named into it by

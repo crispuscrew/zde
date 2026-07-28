@@ -268,14 +268,22 @@ let
         zde desk last 2>&1 | tee /tmp/reg-back.txt
         grep -q 'haven.winit' /tmp/reg-back.txt
 
-        # And the rotation steps over them. Alphabetically the regulars sit
-        # between haven and vshop, so a rotation that did not exclude them
-        # would land on them on the very first step from either side.
+        # And the rotation steps over them, in both directions and in both
+        # senses. From the band, which is in no rotation, forward is the first
+        # desk and back is the last; were the regulars in it they would be an
+        # index in the middle, and both of these would answer the other desk.
         zde desk regulars >/dev/null
         zde desk next 2>&1 | tee /tmp/reg-next.txt
         grep -q 'haven.winit' /tmp/reg-next.txt
-        zde desk next 2>&1 | tee /tmp/reg-next2.txt
-        grep -q 'vshop.winit' /tmp/reg-next2.txt
+        zde desk regulars >/dev/null
+        zde desk prev 2>&1 | tee /tmp/reg-prev.txt
+        grep -q 'vshop.winit' /tmp/reg-prev.txt
+
+        # The step that would actually land on them: alphabetically the
+        # regulars sit between haven and vshop, so going back from vshop is
+        # where a rotation that stopped excluding them would arrive.
+        zde desk prev 2>&1 | tee /tmp/reg-prev2.txt
+        grep -q 'haven.winit' /tmp/reg-prev2.txt
 
         echo "live compositor check passed"
   '';
