@@ -35,6 +35,24 @@ func SwitchPlan(m *Map, target string, lastActive map[string]string) []Name {
 	return plan
 }
 
+// Landing is where a window carried to another desk should come down: the
+// workspace that desk's band remembers on this monitor, or the first of the
+// band there. A window changes desks without changing screens, because the
+// screen it is on is where the person looking at it is looking.
+//
+// False when the desk owns nothing on this monitor. Putting the window on
+// another screen is a decision, not a fallback this can make quietly, so it
+// says so and lets the caller make it.
+func Landing(m *Map, target, monitor, slot string) (Name, bool) {
+	owned := m.Workspaces(target)
+	for _, n := range owned {
+		if n.Monitor == monitor {
+			return pick(owned, monitor, slot), true
+		}
+	}
+	return Name{}, false
+}
+
 // pick is the remembered workspace on this monitor if the desk still owns it,
 // and the first of the band otherwise.
 func pick(owned []Name, monitor, slot string) Name {

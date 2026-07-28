@@ -28,6 +28,29 @@ func TestSwitchPlanOnePerMonitor(t *testing.T) {
 	}
 }
 
+// A window carried to another desk comes down on the screen it was already on,
+// at the workspace that desk's band remembers there.
+func TestLandingStaysOnTheScreen(t *testing.T) {
+	m := twoMonitorDesk()
+	got, ok := Landing(m, "vshop", "DP-1", "code")
+	if !ok || got.String() != "vshop.DP-1.code" {
+		t.Errorf("landing = %v %v, want the remembered workspace on DP-1", got, ok)
+	}
+	// Nothing remembered there: the first of the band on that screen.
+	got, ok = Landing(m, "vshop", "DP-1", "")
+	if !ok || got.String() != "vshop.DP-1.agent" {
+		t.Errorf("landing = %v %v, want the first of the band on DP-1", got, ok)
+	}
+}
+
+// A desk that owns nothing on this screen has nowhere here to put it, and says
+// so rather than picking another monitor quietly.
+func TestLandingOnADeskNotOnThisScreen(t *testing.T) {
+	if got, ok := Landing(twoMonitorDesk(), "haven", "HDMI-A-1", ""); ok {
+		t.Errorf("landing = %v, want none: haven owns nothing on HDMI-A-1", got)
+	}
+}
+
 // Invariant 5: coming back to a desk puts each monitor where you left it, not
 // at the top of the strip.
 func TestSwitchPlanRestoresLastActive(t *testing.T) {

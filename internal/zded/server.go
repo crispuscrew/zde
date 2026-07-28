@@ -34,9 +34,15 @@ type Compositor interface {
 	// FocusWorkspace focuses one by name, which is what makes its monitor
 	// show it.
 	FocusWorkspace(name string) error
+	// FocusedOutput is the monitor the focused workspace is on. A window
+	// carried to another desk stays on the screen it was on.
+	FocusedOutput() (string, error)
 	// FocusedWindow is the focused window's id, 0 when none is. Whether it
 	// changes is how nav tells a window below from the end of the stack.
 	FocusedWindow() (uint64, error)
+	// MoveWindowToWorkspace carries the focused window to a workspace by
+	// name, leaving focus where it was.
+	MoveWindowToWorkspace(name string) error
 	// FocusWindowVertically moves focus one window along the stack, and does
 	// nothing at the end of it.
 	FocusWindowVertically(down bool) error
@@ -257,6 +263,14 @@ func (s *Server) Dispatch(req Request) Response {
 			return Response{Error: req.Method + " takes no arguments"}
 		}
 		return s.nav(req.Method == "nav.down")
+	case "desk.move-window":
+		if len(req.Args) != 1 || (req.Args[0] != "next" && req.Args[0] != "prev") {
+			return Response{Error: "desk.move-window takes next or prev"}
+		}
+		if req.Args[0] == "next" {
+			return s.moveWindow(desk.Next)
+		}
+		return s.moveWindow(desk.Prev)
 	case "desk.next", "desk.prev":
 		if len(req.Args) != 0 {
 			return Response{Error: req.Method + " takes no arguments"}
@@ -460,6 +474,123 @@ func (s *Server) nav(down bool) Response {
 	return s.rotate(desk.Prev)
 }
 
+// moveWindow carries the focused window to the desk beside this one and goes
+// with it. Shift on the nav axis means "bring the focused window along"
+// (common/keymap/keymap.yaml, the grid), so this is the rotation with cargo
+// rather than a verb of its own - which is also why focus follows: you are
+// moving, and the window is coming.
+//
+// The window lands on the screen it was already on. A desk is not a monitor
+// (docs/model.md, section 1), so changing desks should not move anyone's work
+// to another display; where the target desk owns nothing on that screen, its
+// own first workspace takes it, because a window with nowhere to land is worse
+// than one that landed somewhere the desk actually owns.
+//
+// Nothing focused is not a refusal. There is no window to bring, so the key
+// means what it does without one: go to the desk beside this one.
+func (s *Server) moveWindow(step func(rotation []string, from string) string) Response {
+	m, err := s.niri.DeskMap()
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	rotation := m.Rotation()
+	if len(rotation) == 0 {
+		return Response{Error: "no desks to move a window between yet"}
+	}
+	from := s.activeDesk(m)
+	to := step(rotation, from)
+	if to == from {
+		// One desk: nowhere to carry it, and nowhere to follow it to.
+		return ok([]string{})
+	}
+	// Before the window moves, not after. ensureDeclared is what makes a
+	// manifest's workspaces exist, so running it later would let the window
+	// land by the map as it was and the switch arrive by the map as it became
+	// - and its errors would strand a window that had already left, on a desk
+	// nothing could then reach.
+	if err := s.ensureDeclared(to); err != nil {
+		return Response{Error: err.Error()}
+	}
+	if m, err = s.niri.DeskMap(); err != nil {
+		return Response{Error: err.Error()}
+	}
+	landed, err := s.carry(m, to)
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	// from is the desk this started on, asked for before the window moved.
+	// Afterwards the answer could be the destination, and then desk.last would
+	// take the user back to where they already are.
+	resp := s.switchFrom(to, from)
+	if resp.Error != "" && landed != "" {
+		// The window has already gone. Saying where turns a dead end into
+		// something the user can act on.
+		resp.Error = "the window is on " + landed + ", but " + resp.Error
+	}
+	return resp
+}
+
+// landingSlots is where a desk's monitors are entered: the workspace the
+// journal remembers for each, and for a monitor it has never seen, the order
+// the manifest was written in. A manifest lists workspaces in the order the
+// person who wrote it wanted them, and the map cannot know that - it sorts
+// names, because niri's strip order is niri's to say and does not reach us
+// yet.
+//
+// One answer for the switch and for a window being carried, deliberately.
+// Reading it in two places is how a window comes to land on a workspace the
+// switch is not looking at, which is a window nobody can find (docs/model.md,
+// invariant 2).
+func (s *Server) landingSlots(target string) map[string]string {
+	slots := map[string]string{}
+	if s.jrn != nil {
+		for monitor, slot := range s.jrn.State().LastActive[target] {
+			slots[monitor] = slot
+		}
+	}
+	if d := s.manifestFor(target); d != nil {
+		for _, n := range d.Workspaces() {
+			if _, remembered := slots[n.Monitor]; !remembered {
+				slots[n.Monitor] = n.Slot
+			}
+		}
+	}
+	return slots
+}
+
+// carry moves the focused window onto the target desk and answers with where
+// it put it. Empty, and no error, when there was no window to move.
+func (s *Server) carry(m *desk.Map, target string) (string, error) {
+	window, err := s.niri.FocusedWindow()
+	if err != nil {
+		return "", err
+	}
+	if window == 0 {
+		return "", nil
+	}
+	monitor, err := s.niri.FocusedOutput()
+	if err != nil {
+		return "", err
+	}
+	slots := s.landingSlots(target)
+	landing, onThisScreen := desk.Landing(m, target, monitor, slots[monitor])
+	if !onThisScreen {
+		// The desk owns nothing on this screen, so this is the one case where
+		// a window does change monitors. It goes where a switch would enter
+		// the desk, by the same slots, because landing anywhere else would put
+		// it off the screen the switch is about to show.
+		plan := desk.SwitchPlan(m, target, slots)
+		if len(plan) == 0 {
+			return "", fmt.Errorf("desk %s has no workspaces to move a window to", target)
+		}
+		landing = plan[0]
+	}
+	if err := s.niri.MoveWindowToWorkspace(landing.String()); err != nil {
+		return "", err
+	}
+	return landing.String(), nil
+}
+
 // rotate switches to the desk beside the one you are on. Which way is the
 // caller's to say; everything else the two directions do is the same, down to
 // the rotation being a loop with no ends to fall off.
@@ -545,7 +676,13 @@ func (s *Server) manifestFor(target string) *manifest.Desk {
 
 // switchDesk brings a desk up on every monitor it owns workspaces on, and
 // records where it left from so desk.last can come back.
-func (s *Server) switchDesk(target string) Response {
+func (s *Server) switchDesk(target string) Response { return s.switchFrom(target, "") }
+
+// switchFrom is a switch that already knows the desk it is leaving. Empty
+// means work it out, which is what every caller wants except move-window: that
+// one has to ask before it moves the window, because a moved window can be
+// what the answer is read off afterwards.
+func (s *Server) switchFrom(target, from string) Response {
 	if err := s.ensureDeclared(target); err != nil {
 		return Response{Error: err.Error()}
 	}
@@ -553,25 +690,7 @@ func (s *Server) switchDesk(target string) Response {
 	if err != nil {
 		return Response{Error: err.Error()}
 	}
-	lastActive := map[string]string{}
-	if s.jrn != nil {
-		for monitor, slot := range s.jrn.State().LastActive[target] {
-			lastActive[monitor] = slot
-		}
-	}
-	// Where the journal has no memory of a monitor - a desk being switched to
-	// for the first time - the manifest's own order decides where you land.
-	// It lists workspaces in the order the person who wrote it wanted them,
-	// and the map cannot know that: it sorts names, because niri's strip order
-	// is niri's to say and does not reach us yet.
-	if d := s.manifestFor(target); d != nil {
-		for _, n := range d.Workspaces() {
-			if _, remembered := lastActive[n.Monitor]; !remembered {
-				lastActive[n.Monitor] = n.Slot
-			}
-		}
-	}
-	plan := desk.SwitchPlan(m, target, lastActive)
+	plan := desk.SwitchPlan(m, target, s.landingSlots(target))
 	if len(plan) == 0 {
 		// Nothing to focus is not the same as a failed switch, but it is not
 		// a switch either: say so rather than pretending the desk is up.
@@ -580,7 +699,9 @@ func (s *Server) switchDesk(target string) Response {
 
 	// Where we are now, before anything moves, so desk.last has somewhere to
 	// go back to. A failure to read it is not worth refusing the switch over.
-	from := s.activeDesk(m)
+	if from == "" {
+		from = s.activeDesk(m)
+	}
 
 	for _, n := range plan {
 		if err := s.niri.FocusWorkspace(n.String()); err != nil {
