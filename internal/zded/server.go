@@ -279,6 +279,14 @@ func (s *Server) Dispatch(req Request) Response {
 			return Response{Error: "desk.move-window-to takes one desk name"}
 		}
 		return s.moveWindowTo(req.Args[0])
+	case "workspace.next", "workspace.prev":
+		if len(req.Args) != 0 {
+			return Response{Error: req.Method + " takes no arguments"}
+		}
+		if req.Method == "workspace.next" {
+			return s.scroll(1)
+		}
+		return s.scroll(-1)
 	case "desk.regulars":
 		if len(req.Args) != 0 {
 			return Response{Error: "desk.regulars takes no arguments"}
@@ -672,6 +680,55 @@ func bandAdvice(target string, resp Response) Response {
 // meant cannot drift from writing it.
 func noSuchBand(target string) string {
 	return "desk " + target + " has no workspaces and no manifest that declares any"
+}
+
+// scroll moves one workspace along the band of the desk you are on, on the
+// screen you are looking at, and stops at its ends.
+//
+// This is invariant 4 made of code: the band is the whole range a scroll can
+// reach, so leaving a desk is always a desk-level action - next, prev, a name,
+// the regulars - and never something you arrive at by holding a key down.
+//
+// niri's own workspace scrolling would cross into another desk's workspaces,
+// which is why zde works out the destination and focuses it by name rather
+// than asking niri to move one along.
+//
+// The answer is where it went, or nothing when the band ended there. A caller
+// that cannot tell those apart would show a workspace change that never
+// happened.
+func (s *Server) scroll(by int) Response {
+	m, err := s.niri.DeskMap()
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	on := s.activeDesk(m)
+	if on == "" {
+		return Response{Error: "no desk to scroll inside: nothing here belongs to one yet"}
+	}
+	monitor, err := s.niri.FocusedOutput()
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	band := m.Band(on, monitor)
+	// The focused name may not parse - an unnamed workspace is in no band, and
+	// BandStep reads that as being outside it, which it is.
+	focused, err := s.niri.FocusedName()
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	from, _ := desk.ParseName(focused)
+	to, moved := desk.BandStep(band, from, by)
+	if !moved {
+		return ok([]string{})
+	}
+	if err := s.niri.FocusWorkspace(to.String()); err != nil {
+		return Response{Error: err.Error()}
+	}
+	if s.jrn != nil {
+		// Where the desk was left, so coming back lands here (invariant 5).
+		s.jrn.SetActive(to)
+	}
+	return ok([]string{to.String()})
 }
 
 // rotate switches to the desk beside the one you are on. Which way is the

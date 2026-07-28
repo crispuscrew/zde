@@ -35,6 +35,8 @@ func run(args []string) error {
 		return focusDesk("desk.move-window", args[2])
 	case len(args) == 3 && args[0] == "desk" && args[1] == "move-window-to":
 		return focusDesk("desk.move-window-to", args[2])
+	case len(args) == 2 && args[0] == "workspace" && (args[1] == "next" || args[1] == "prev"):
+		return focusDesk("workspace." + args[1])
 	case len(args) == 2 && args[0] == "nav" && (args[1] == "down" || args[1] == "up"):
 		return focusDesk("nav." + args[1])
 	case len(args) == 2 && args[0] == "desk" && (args[1] == "next" || args[1] == "prev"):
@@ -173,6 +175,8 @@ func usage() {
   zde status             what zded and the compositor are doing
   zde desk list          the desks that exist right now
   zde desk switch NAME   bring a desk up on every monitor it owns
+  zde workspace next|prev
+                         one along this desk's band, stopping at its ends
   zde nav down|up        the window along the stack, else the desk beside this
   zde desk move-window next|prev
                          carry the focused window to the desk beside, and go

@@ -312,6 +312,22 @@ let
           echo "window $moved did not come back out: focus is on $(focused_window)"; exit 1
         }
 
+        # Band-clamped scrolling, which is invariant 4 with a real strip under
+        # it: haven's workspace and the regulars sit immediately after vshop's
+        # in niri's own order, so a scroll that did not clamp would reach them
+        # within a few steps. Walk further than the band is long and check that
+        # nothing outside vshop ever came back.
+        zde desk switch vshop >/dev/null
+        : > /tmp/ws-walk.txt
+        for i in $(seq 8); do zde workspace next >>/tmp/ws-walk.txt 2>&1; done
+        [ -s /tmp/ws-walk.txt ] || { echo "the scroll never moved at all"; exit 1; }
+        if grep -qv '^vshop\.winit\.' /tmp/ws-walk.txt; then
+          echo "a scroll left the desk:"; cat /tmp/ws-walk.txt; exit 1
+        fi
+        # And the end of the band is silent rather than wrapping round.
+        zde workspace next 2>&1 | tee /tmp/ws-end.txt
+        [ ! -s /tmp/ws-end.txt ] || { echo "the band did not end"; exit 1; }
+
         echo "live compositor check passed"
   '';
 in
