@@ -114,6 +114,8 @@ type Server struct {
 	niri    Compositor
 	desks   Desks
 
+	notifier Notifier
+
 	mu sync.Mutex
 	ln net.Listener
 }
@@ -707,19 +709,13 @@ func (s *Server) queueAdd(text string) Response {
 // spec has room for. Nothing else in zde uses the narrow one, and the numbers
 // would have to pass four billion notifications in one journal's life to
 // disagree.
-func (s *Server) Arrived(n attn.Notification) (uint32, error) {
+func (s *Server) Arrived(n attn.Notification) (uint64, error) {
 	if s.jrn == nil {
 		return 0, errors.New("no journal, so nothing can be kept")
 	}
-	if n.Replaces != 0 {
-		// One download, many updates, one item. The spec's own mechanism, and
-		// without honouring it a progress bar becomes a hundred reminders.
-		if err := s.jrn.Done(uint64(n.Replaces)); err != nil {
-			return 0, err
-		}
-	}
 	it, err := s.jrn.Queue(journal.Item{
 		Text:   n.Text,
+		Body:   n.Body,
 		Desk:   s.whereWeAre(),
 		From:   n.From,
 		Urgent: n.Urgent,
@@ -727,16 +723,26 @@ func (s *Server) Arrived(n attn.Notification) (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
-	return uint32(it.ID), nil
+	return it.ID, nil
 }
 
-// Closed is attn.Sink: an app taking its own notification back.
-func (s *Server) Closed(id uint32) error {
+// Closed is attn.Sink: an app taking its own notification back. attn has
+// already checked the item was that sender's to close.
+func (s *Server) Closed(id uint64) error {
 	if s.jrn == nil {
 		return nil
 	}
-	return s.jrn.Done(uint64(id))
+	return s.jrn.Done(id)
 }
+
+// Notifier is told when something leaves the queue by a route the sender did
+// not ask for, so it can say so on the bus. A client blocked on a
+// notification's closure has no other way to learn it is gone.
+type Notifier interface{ Dismissed(id uint64) }
+
+// Watching sets who to tell. Called once at startup, before anything is
+// serving, so there is nothing to lock against.
+func (s *Server) Watching(n Notifier) { s.notifier = n }
 
 // whereWeAre is the desk to file something arriving against, and never an
 // error: a notification with no desk still waits, and one refused because niri
@@ -787,6 +793,10 @@ func (s *Server) queueDone(id string) Response {
 	}
 	if err := s.jrn.Done(n); err != nil {
 		return Response{Error: err.Error()}
+	}
+	if s.notifier != nil {
+		// Whoever sent it may be waiting to hear that it is gone.
+		s.notifier.Dismissed(n)
 	}
 	return ok([]string{})
 }

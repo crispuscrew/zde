@@ -78,6 +78,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "zded: notifications: %v\n", err)
 	} else {
 		defer notifier.Close()
+		// So that finishing something with `zde queue done` tells whoever sent
+		// it. A client blocked on its closure has no other way to find out.
+		srv.Watching(notifier)
 		fmt.Fprintln(os.Stderr, "zded: notifications: listening")
 	}
 

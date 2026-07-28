@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"unicode"
 
 	"github.com/godbus/dbus/v5"
@@ -26,8 +27,16 @@ const (
 	specLevel = "1.2"
 )
 
-// summaryMax bounds what one notification can put on one line of the queue. An
-// app that sends an essay gets the first sentence of it.
+// The spec's reasons for NotificationClosed. A client that waits for one -
+// notify-send --wait does - waits for ever if it never comes.
+const (
+	ReasonDismissed = 2 // taken off by the person, which for zde is queue done
+	ReasonClosed    = 3 // the sending app called CloseNotification
+)
+
+// summaryMax bounds what one notification puts on one line of the queue,
+// counted the way a person counts: in characters. An app that sends an essay
+// gets the front of it.
 const summaryMax = 300
 
 // Notification is what an app said, narrowed to what the queue keeps.
@@ -44,22 +53,22 @@ type Notification struct {
 	// Text is one printable line: the summary, or the first line of the body
 	// when there is no summary.
 	Text string
+	// Body is the rest of what was sent, kept because a notification is meant
+	// to land in history with its full text (docs/vision.md, principle 3) and
+	// the notification center that will show it does not exist yet.
+	Body string
 	// Urgent is the spec's urgency 2 (critical). Apps use it for what should
 	// interrupt rather than wait, and attn's modes will read it.
 	Urgent bool
-	// Replaces is the id of a notification this supersedes, 0 for none. Apps
-	// use it for progress: one download, many updates, one queue item.
-	Replaces uint32
 }
 
 // Sink is where a notification goes. attn does not own the queue - the journal
 // does, through zded - so this is the little of it that arriving needs.
 type Sink interface {
 	// Arrived puts one on the queue and answers with the id to address it by.
-	Arrived(Notification) (uint32, error)
-	// Closed takes one off, by an id Arrived gave out. An id nobody is waiting
-	// on is not an error: it is not waiting either way.
-	Closed(id uint32) error
+	Arrived(Notification) (uint64, error)
+	// Closed takes one off, by an id Arrived gave out.
+	Closed(id uint64) error
 }
 
 // Server owns the notification bus name for as long as it is open.
@@ -67,6 +76,23 @@ type Server struct {
 	conn    *dbus.Conn
 	sink    Sink
 	version string
+	// emit sends NotificationClosed. A field rather than a call on the
+	// connection so that what is emitted can be watched without a bus.
+	emit func(id uint64, reason uint32)
+
+	mu sync.Mutex
+	// mine is what each connection has called its own notifications: sender
+	// and the id it used, to the queue item that became. It is what stops one
+	// app closing another's - and anybody's closing a reminder a person typed.
+	mine map[owned]uint64
+}
+
+// owned is a notification as its sender addresses it. The sender is the bus's
+// own name for the connection, handed out by the bus rather than claimed by
+// the peer, so unlike the app name in a notification it cannot be borrowed.
+type owned struct {
+	sender dbus.Sender
+	id     uint32
 }
 
 // Serve connects to the session bus and takes the notification name.
@@ -81,8 +107,25 @@ func Serve(sink Sink, version string) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("session bus: %w", err)
 	}
-	s := &Server{conn: conn, sink: sink, version: version}
-	if err := conn.ExportAll(s, busPath, busIface); err != nil {
+	s := &Server{conn: conn, sink: sink, version: version, mine: map[owned]uint64{}}
+	s.emit = func(id uint64, reason uint32) {
+		conn.Emit(busPath, busIface+".NotificationClosed", uint32(id), reason)
+	}
+	// Exported through a type that has these four methods and nothing else.
+	// ExportAll puts every exported method of what it is given on the bus, so
+	// handing it the Server would publish Close - and anything on the session
+	// bus could then end notifications for the rest of the session by calling
+	// it. That bus is exactly the surface a sandboxed app is meant to have
+	// (docs/vision.md, principle 7), so this is reachable by design.
+	iface := &notifications{server: s}
+	if err := conn.ExportAll(iface, busPath, busIface); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	// What the diagnostic tools read. Without it gdbus cannot call Notify
+	// without being told every argument's type by hand, which is a poor
+	// welcome for whoever is finding out why notifications are not arriving.
+	if err := conn.Export(introspectable(), busPath, "org.freedesktop.DBus.Introspectable"); err != nil {
 		conn.Close()
 		return nil, err
 	}
@@ -101,13 +144,44 @@ func Serve(sink Sink, version string) (*Server, error) {
 	return s, nil
 }
 
-// Close gives up the name and the connection.
+// Close gives up the name and the connection. Not on the bus: see Serve.
 func (s *Server) Close() error { return s.conn.Close() }
+
+// Dismissed says a notification is gone for a reason the sender did not ask
+// for - somebody finished it. A client blocked on its closure (notify-send
+// --wait is one) waits for exactly this.
+func (s *Server) Dismissed(id uint64) {
+	s.forget(id)
+	s.emitClosed(id, ReasonDismissed)
+}
+
+func (s *Server) emitClosed(id uint64, reason uint32) {
+	if s.emit == nil {
+		return
+	}
+	s.emit(id, reason)
+}
+
+// forget drops every name a sender had for an item that no longer exists, so
+// the map does not grow for the life of the session.
+func (s *Server) forget(id uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k, v := range s.mine {
+		if v == id {
+			delete(s.mine, k)
+		}
+	}
+}
+
+// notifications is the object on the bus: these four methods and nothing else.
+type notifications struct{ server *Server }
 
 // Notify is the spec's one method that matters. The arguments are its order,
 // not ours: icon, actions and timeout are accepted and dropped, because a
 // queue has nowhere to put them until the notification center exists.
-func (s *Server) Notify(
+func (n *notifications) Notify(
+	sender dbus.Sender,
 	app string,
 	replaces uint32,
 	icon string,
@@ -117,49 +191,100 @@ func (s *Server) Notify(
 	hints map[string]dbus.Variant,
 	timeout int32,
 ) (uint32, *dbus.Error) {
+	s := n.server
 	text := oneLine(summary)
+	rest := oneLine(body)
 	if text == "" {
 		// Some apps put everything in the body. Something is better than an
 		// item that says nothing at all.
-		text = oneLine(body)
+		text, rest = rest, ""
 	}
 	if text == "" {
 		return 0, dbus.MakeFailedError(errors.New("a notification with neither summary nor body says nothing"))
 	}
+
+	// Replacing is how one download stays one queue item through a hundred
+	// updates. Only this sender's own notifications can be replaced, and only
+	// by the name this sender gave them: ids are the journal's and small, so
+	// without that an app could replace a reminder somebody typed.
+	if replaces != 0 {
+		if old, ok := s.lookup(owned{sender, replaces}); ok {
+			if err := s.sink.Closed(old); err != nil {
+				return 0, dbus.MakeFailedError(err)
+			}
+			s.forget(old)
+		}
+	}
+
 	id, err := s.sink.Arrived(Notification{
-		From:     oneLine(app),
-		Text:     text,
-		Urgent:   urgency(hints) == 2,
-		Replaces: replaces,
+		From:   claim(app, sender),
+		Text:   text,
+		Body:   rest,
+		Urgent: urgency(hints) == 2,
 	})
 	if err != nil {
 		return 0, dbus.MakeFailedError(err)
 	}
-	return id, nil
+
+	s.mu.Lock()
+	// Under both names: the one the server gave, which the spec says to use,
+	// and the one the sender asked for, because reusing a fixed id is what
+	// every volume OSD in the world does (notify-send -r 42, and dunstify's
+	// -r before it).
+	s.mine[owned{sender, uint32(id)}] = id
+	if replaces != 0 {
+		s.mine[owned{sender, replaces}] = id
+	}
+	s.mu.Unlock()
+	return uint32(id), nil
 }
 
 // CloseNotification is how an app takes back its own notification - a download
-// that finished, a message read elsewhere.
-func (s *Server) CloseNotification(id uint32) *dbus.Error {
-	if err := s.sink.Closed(id); err != nil {
-		return dbus.MakeFailedError(err)
+// that finished, a message read elsewhere. Its own: an id it was never given
+// closes nothing, which is what keeps this from being a way to delete other
+// people's reminders.
+func (n *notifications) CloseNotification(sender dbus.Sender, id uint32) *dbus.Error {
+	s := n.server
+	if item, ok := s.lookup(owned{sender, id}); ok {
+		if err := s.sink.Closed(item); err != nil {
+			return dbus.MakeFailedError(err)
+		}
+		s.forget(item)
 	}
 	// The spec wants the signal whether or not anything was there to close.
-	// Reason 3: closed by a call to CloseNotification.
-	s.conn.Emit(busPath, busIface+".NotificationClosed", id, uint32(3))
+	s.emitClosed(uint64(id), ReasonClosed)
 	return nil
 }
 
-// GetCapabilities says what this server does, and only that. Claiming "body"
-// markup or "actions" would make apps send buttons nothing can press
-// (docs/roadmap.md, cross-cutting: where a mechanism is partial, say so).
-func (s *Server) GetCapabilities() ([]string, *dbus.Error) {
+// GetCapabilities says what this server does, and only that. Claiming actions
+// would make apps send buttons nothing can press (docs/roadmap.md,
+// cross-cutting: where a mechanism is partial, say so).
+func (n *notifications) GetCapabilities() ([]string, *dbus.Error) {
 	return []string{"body", "persistence"}, nil
 }
 
 // GetServerInformation is what an app reads to decide what to send.
-func (s *Server) GetServerInformation() (name, vendor, version, spec string, err *dbus.Error) {
-	return "zded", "zde", s.version, specLevel, nil
+func (n *notifications) GetServerInformation() (name, vendor, version, spec string, err *dbus.Error) {
+	return "zded", "zde", n.server.version, specLevel, nil
+}
+
+func (s *Server) lookup(k owned) (uint64, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id, ok := s.mine[k]
+	return id, ok
+}
+
+// claim is what to record as the sender. The app's own name for itself when it
+// gave one, and the bus's name for the connection when it did not - a dash in
+// the queue means a person typed it, so an app that sends nothing, or sends a
+// dash, must not land in that column looking hand-written.
+func claim(app string, sender dbus.Sender) string {
+	app = oneLine(app)
+	if app == "" || app == "-" {
+		return string(sender)
+	}
+	return app
 }
 
 // urgency reads the spec's hint: 0 low, 1 normal, 2 critical.
@@ -187,27 +312,79 @@ func urgency(hints map[string]dbus.Variant) byte {
 // add` does with the same problem - and deliberately. A person typing a
 // reminder can be told to try again; an app's notification is the only copy
 // there will ever be of something that already happened.
+//
+// What is dropped leaves a space behind it, so a control character between two
+// words does not join them. Zero-width joiners stay: they are invisible and
+// unprintable, and without them a family emoji arrives as three people.
 func oneLine(s string) string {
 	var b strings.Builder
+	kept := 0
 	space := false
 	for _, r := range s {
 		switch {
-		case r == '\n' || r == '\r' || r == '\t' || unicode.IsSpace(r):
+		case unicode.IsSpace(r):
 			space = b.Len() > 0
-		case unicode.IsPrint(r):
-			if space {
-				b.WriteByte(' ')
-				space = false
-			}
-			b.WriteRune(r)
+			continue
+		case r == '‍' || unicode.IsPrint(r):
+		default:
+			// Something was here. A word boundary is a better guess at what it
+			// meant than joining what sat on either side of it.
+			space = b.Len() > 0
+			continue
 		}
-		if b.Len() > summaryMax {
+		if space {
+			b.WriteByte(' ')
+			kept++
+			space = false
+		}
+		if kept >= summaryMax {
 			break
 		}
+		b.WriteRune(r)
+		kept++
 	}
-	out := []rune(b.String())
-	if len(out) > summaryMax {
-		out = out[:summaryMax]
-	}
-	return strings.TrimSpace(string(out))
+	return strings.TrimSpace(b.String())
 }
+
+// introspectable is the XML the diagnostic tools read, written out rather than
+// generated: the four methods and the one signal, in the spec's own types.
+func introspectable() introspectXML {
+	return introspectXML(`<node>
+  <interface name="` + busIface + `">
+    <method name="Notify">
+      <arg name="app_name" type="s" direction="in"/>
+      <arg name="replaces_id" type="u" direction="in"/>
+      <arg name="app_icon" type="s" direction="in"/>
+      <arg name="summary" type="s" direction="in"/>
+      <arg name="body" type="s" direction="in"/>
+      <arg name="actions" type="as" direction="in"/>
+      <arg name="hints" type="a{sv}" direction="in"/>
+      <arg name="expire_timeout" type="i" direction="in"/>
+      <arg name="id" type="u" direction="out"/>
+    </method>
+    <method name="CloseNotification">
+      <arg name="id" type="u" direction="in"/>
+    </method>
+    <method name="GetCapabilities">
+      <arg name="capabilities" type="as" direction="out"/>
+    </method>
+    <method name="GetServerInformation">
+      <arg name="name" type="s" direction="out"/>
+      <arg name="vendor" type="s" direction="out"/>
+      <arg name="version" type="s" direction="out"/>
+      <arg name="spec_version" type="s" direction="out"/>
+    </method>
+    <signal name="NotificationClosed">
+      <arg name="id" type="u"/>
+      <arg name="reason" type="u"/>
+    </signal>
+  </interface>
+</node>`)
+}
+
+// introspectXML answers the one method org.freedesktop.DBus.Introspectable
+// has. Written rather than pulled in: the generator lives in a subpackage of
+// the bus library, and this is a constant string.
+type introspectXML string
+
+func (x introspectXML) Introspect() (string, *dbus.Error) { return string(x), nil }

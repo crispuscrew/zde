@@ -36,6 +36,7 @@ type entry struct {
 	To      string `json:"to,omitempty"`
 	ID      uint64 `json:"id,omitempty"`
 	Text    string `json:"text,omitempty"`
+	Body    string `json:"body,omitempty"`
 	From    string `json:"from,omitempty"`
 	Urgent  bool   `json:"urgent,omitempty"`
 }
@@ -78,6 +79,10 @@ type Item struct {
 	// From is what sent it, as it described itself. Empty when a person typed
 	// it. Nothing verifies it - see internal/attn.
 	From string `json:"from,omitempty"`
+	// Body is the rest of what was sent, kept but not shown: a notification is
+	// meant to land in history with its full text (docs/vision.md, principle
+	// 3), and the notification center that will show it does not exist yet.
+	Body string `json:"body,omitempty"`
 	// Urgent is the sender's claim that this should interrupt rather than
 	// wait. It is a claim too, and attn's modes are what will act on it.
 	Urgent bool `json:"urgent,omitempty"`
@@ -195,7 +200,7 @@ func (j *Journal) apply(e entry) {
 			j.skipped++
 			return
 		}
-		j.state.Queue = append(j.state.Queue, Item{ID: e.ID, Text: e.Text, Desk: e.Desk, From: e.From, Urgent: e.Urgent})
+		j.state.Queue = append(j.state.Queue, Item{ID: e.ID, Text: e.Text, Body: e.Body, Desk: e.Desk, From: e.From, Urgent: e.Urgent})
 		if e.ID > j.lastID {
 			j.lastID = e.ID
 		}
@@ -302,7 +307,7 @@ func (j *Journal) Queue(it Item) (Item, error) {
 	defer j.mu.Unlock()
 	it.ID = j.lastID + 1
 	if err := j.recordLocked(entry{
-		Kind: kindQueued, ID: it.ID, Text: it.Text, Desk: it.Desk, From: it.From, Urgent: it.Urgent,
+		Kind: kindQueued, ID: it.ID, Text: it.Text, Body: it.Body, Desk: it.Desk, From: it.From, Urgent: it.Urgent,
 	}); err != nil {
 		return Item{}, err
 	}
@@ -395,7 +400,7 @@ func (j *Journal) compactLocked() error {
 	// what queue-jump goes to.
 	for _, it := range j.state.Queue {
 		if err := write(entry{
-			Kind: kindQueued, ID: it.ID, Text: it.Text, Desk: it.Desk, From: it.From, Urgent: it.Urgent,
+			Kind: kindQueued, ID: it.ID, Text: it.Text, Body: it.Body, Desk: it.Desk, From: it.From, Urgent: it.Urgent,
 		}); err != nil {
 			return err
 		}

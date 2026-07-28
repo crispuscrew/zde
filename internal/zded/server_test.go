@@ -2281,21 +2281,61 @@ func TestNotificationArrivesOnTheQueue(t *testing.T) {
 	}
 }
 
-// One download, many updates, one item.
-func TestNotificationReplacesTheOneItSupersedes(t *testing.T) {
+// Replacing is attn's to decide - it is the half that knows which sender owns
+// which id - so what the daemon has to get right is doing as it is told.
+func TestNotificationClosedTakesTheRightOneOff(t *testing.T) {
 	s, jrn, _ := queueTestServer(t, "vshop.DP-1.code")
 	first, err := s.Arrived(attn.Notification{From: "curl", Text: "downloading 1%"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Arrived(attn.Notification{From: "curl", Text: "downloading 90%", Replaces: first}); err != nil {
+	if _, err := s.Arrived(attn.Notification{From: "curl", Text: "downloading 90%"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Closed(first); err != nil {
 		t.Fatal(err)
 	}
 	q := jrn.State().Queue
 	if len(q) != 1 || q[0].Text != "downloading 90%" {
-		t.Errorf("queue = %+v, want one item saying the newest thing", q)
+		t.Errorf("queue = %+v, want the superseded one gone and the newest left", q)
 	}
 }
+
+// The body is kept even though nothing shows it, so the notification center
+// has it when it exists.
+func TestNotificationKeepsTheBody(t *testing.T) {
+	s, jrn, _ := queueTestServer(t, "vshop.DP-1.code")
+	if _, err := s.Arrived(attn.Notification{From: "ci", Text: "the build failed", Body: "on the third try"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := jrn.State().Queue[0].Body; got != "on the third try" {
+		t.Errorf("body = %q, want what was sent with it", got)
+	}
+}
+
+// Whoever sent something may be waiting to hear it is gone, and queue done is
+// the route that tells them.
+func TestQueueDoneTellsTheSender(t *testing.T) {
+	s, jrn, _ := queueTestServer(t, "vshop.DP-1.code")
+	told := []uint64{}
+	s.Watching(tellTale{&told})
+	it, _ := jrn.Queue(journal.Item{Text: "waiting on you", From: "app"})
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.Call("queue.done", nil, strconv.FormatUint(it.ID, 10)); err != nil {
+		t.Fatal(err)
+	}
+	if len(told) != 1 || told[0] != it.ID {
+		t.Errorf("told %v, want the id that was finished", told)
+	}
+}
+
+type tellTale struct{ ids *[]uint64 }
+
+func (t tellTale) Dismissed(id uint64) { *t.ids = append(*t.ids, id) }
 
 // An app taking its own notification back.
 func TestNotificationClosed(t *testing.T) {
