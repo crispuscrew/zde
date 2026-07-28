@@ -695,6 +695,45 @@ func TestMoveWindowCarriesItAndFollows(t *testing.T) {
 	}
 }
 
+// The window has to land where the switch is about to look. A desk being
+// entered for the first time takes its order from the manifest, not from the
+// alphabet, so a carry that consulted only the journal would put the window
+// one workspace away from the person who carried it - on the right desk, and
+// nowhere they can see.
+func TestMoveWindowLandsWhereTheSwitchLooks(t *testing.T) {
+	m, err := manifest.Parse([]byte("name: vshop\nmonitors:\n  DP-1: { workspaces: [notes, code] }\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	niri := &fakeCompositor{
+		m: desk.Rebuild([]desk.Workspace{
+			{Name: "haven.DP-1.db", Output: "DP-1"},
+			{Name: "vshop.DP-1.code", Output: "DP-1"},  // first alphabetically
+			{Name: "vshop.DP-1.notes", Output: "DP-1"}, // first in the manifest
+		}, []string{"DP-1"}),
+		focused:       "haven.DP-1.db",
+		output:        "DP-1",
+		focusedWindow: 7,
+	}
+	s := New("test", nil, niri, fixedDesks{"vshop": m})
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var focused []string
+	if err := c.Call("desk.move-window", &focused, "next"); err != nil {
+		t.Fatal(err)
+	}
+	carried := niri.carryCalls()
+	if !slices.Equal(carried, []string{"vshop.DP-1.notes"}) {
+		t.Errorf("carried the window to %v, want the workspace the manifest enters on", carried)
+	}
+	if !slices.Equal(focused, carried) {
+		t.Errorf("the window went to %v and the switch went to %v", carried, focused)
+	}
+}
+
 // A desk is not a monitor, but a desk that owns nothing on this screen cannot
 // take the window there. Somewhere it owns beats nowhere.
 func TestMoveWindowToADeskNotOnThisScreen(t *testing.T) {

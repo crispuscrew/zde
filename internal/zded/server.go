@@ -509,6 +509,34 @@ func (s *Server) moveWindow(step func(rotation []string, from string) string) Re
 	return s.switchDesk(to)
 }
 
+// landingSlots is where a desk's monitors are entered: the workspace the
+// journal remembers for each, and for a monitor it has never seen, the order
+// the manifest was written in. A manifest lists workspaces in the order the
+// person who wrote it wanted them, and the map cannot know that - it sorts
+// names, because niri's strip order is niri's to say and does not reach us
+// yet.
+//
+// One answer for the switch and for a window being carried, deliberately.
+// Reading it in two places is how a window comes to land on a workspace the
+// switch is not looking at, which is a window nobody can find (docs/model.md,
+// invariant 2).
+func (s *Server) landingSlots(target string) map[string]string {
+	slots := map[string]string{}
+	if s.jrn != nil {
+		for monitor, slot := range s.jrn.State().LastActive[target] {
+			slots[monitor] = slot
+		}
+	}
+	if d := s.manifestFor(target); d != nil {
+		for _, n := range d.Workspaces() {
+			if _, remembered := slots[n.Monitor]; !remembered {
+				slots[n.Monitor] = n.Slot
+			}
+		}
+	}
+	return slots
+}
+
 // carry moves the focused window onto the target desk, and is quiet when there
 // is no window to move.
 func (s *Server) carry(m *desk.Map, target string) error {
@@ -523,11 +551,7 @@ func (s *Server) carry(m *desk.Map, target string) error {
 	if err != nil {
 		return err
 	}
-	slot := ""
-	if s.jrn != nil {
-		slot = s.jrn.State().LastActive[target][monitor]
-	}
-	landing, onThisScreen := desk.Landing(m, target, monitor, slot)
+	landing, onThisScreen := desk.Landing(m, target, monitor, s.landingSlots(target)[monitor])
 	if !onThisScreen {
 		// The desk owns nothing on this screen. Its first workspace is where
 		// the window goes, which does move it to another monitor - said here
@@ -634,25 +658,7 @@ func (s *Server) switchDesk(target string) Response {
 	if err != nil {
 		return Response{Error: err.Error()}
 	}
-	lastActive := map[string]string{}
-	if s.jrn != nil {
-		for monitor, slot := range s.jrn.State().LastActive[target] {
-			lastActive[monitor] = slot
-		}
-	}
-	// Where the journal has no memory of a monitor - a desk being switched to
-	// for the first time - the manifest's own order decides where you land.
-	// It lists workspaces in the order the person who wrote it wanted them,
-	// and the map cannot know that: it sorts names, because niri's strip order
-	// is niri's to say and does not reach us yet.
-	if d := s.manifestFor(target); d != nil {
-		for _, n := range d.Workspaces() {
-			if _, remembered := lastActive[n.Monitor]; !remembered {
-				lastActive[n.Monitor] = n.Slot
-			}
-		}
-	}
-	plan := desk.SwitchPlan(m, target, lastActive)
+	plan := desk.SwitchPlan(m, target, s.landingSlots(target))
 	if len(plan) == 0 {
 		// Nothing to focus is not the same as a failed switch, but it is not
 		// a switch either: say so rather than pretending the desk is up.
