@@ -255,6 +255,12 @@ let
         # machine without them tells you to do.
         for i in $(seq 10); do nirimsg action focus-workspace-down >/dev/null; done
         nirimsg action set-workspace-name regulars.winit.comms >/dev/null
+
+        # Naming the band left focus sitting on it, so the desk to come back to
+        # is chosen here rather than inherited: what is being checked is
+        # reaching the regulars from somewhere and landing back on that
+        # somewhere, which needs the somewhere to be known.
+        zde desk switch haven >/dev/null
         zde desk regulars 2>&1 | tee /tmp/reg.txt
         grep -qx 'regulars.winit.comms' /tmp/reg.txt
 
