@@ -70,7 +70,8 @@ func Parse(raw []byte) (*Keymap, error) {
 		return nil, fmt.Errorf("keymap: no binds")
 	}
 	km := &Keymap{}
-	seen := map[string]string{} // canonical chord -> action
+	seen := map[string]string{}    // canonical chord -> action
+	pressed := map[string]string{} // what fingers do -> action
 	for i, b := range src.Binds {
 		bind, err := resolve(b)
 		if err != nil {
@@ -82,6 +83,13 @@ func Parse(raw []byte) (*Keymap, error) {
 			return nil, fmt.Errorf("keymap: bind %d: %s bound to both %q and %q", i+1, bind.Key, prev, bind.Action)
 		}
 		seen[bind.Key] = bind.Action
+		// And two chords a hand cannot tell apart are one chord, whatever the
+		// input layer turns them into: the daemon can map a physical chord to
+		// one key, so a second claim on it is a cheatsheet row that lies.
+		if prev, dup := pressed[bind.Pressed()]; dup {
+			return nil, fmt.Errorf("keymap: bind %d: %s is pressed for both %q and %q", i+1, bind.Pressed(), prev, bind.Action)
+		}
+		pressed[bind.Pressed()] = bind.Action
 		km.Binds = append(km.Binds, bind)
 	}
 	return km, nil
@@ -127,6 +135,12 @@ func resolve(src sourceBind) (Bind, error) {
 // the daemon rewrites a chord, and niri would be listening for the wrong one.
 func checkVia(via, key string) (string, error) {
 	if via == "" {
+		if inputLayerKey(key) {
+			// Nobody can press it. The key exists so the input layer has
+			// something to emit, and without the chord that produces it the
+			// cheatsheet prints a key no keyboard has.
+			return "", fmt.Errorf("key %s is the input layer's: say which chord produces it with via", key)
+		}
 		return "", nil
 	}
 	if strings.ContainsAny(via, "|\n`") {
@@ -227,9 +241,13 @@ func hardwareKey(key string) bool {
 // an ordinary key press and binds it like any other.
 //
 // They are exempt from going through Mod for the same reason the media keys
-// are: nothing else can produce them, so there is nothing to collide with. The
-// chord a person actually presses is the bind's `via`, and that is what the
-// cheatsheet shows.
+// are: no keyboard has them, so nothing else presses them. The chord a person
+// actually presses is the bind's `via`, and that is what the cheatsheet shows.
+//
+// Reaching niri as themselves takes the fkeys:basic_13-24 xkb option, which
+// niri/config.kdl sets. Without it the default layout gives these keycodes
+// XF86Tools, XF86Launch5 and the like - and F20 gives XF86AudioMicMute, which
+// this keymap binds. The bind would load and never fire.
 func inputLayerKey(key string) bool {
 	switch key {
 	case "F13", "F14", "F15", "F16", "F17", "F18", "F19", "F20":

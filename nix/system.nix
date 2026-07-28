@@ -9,6 +9,9 @@
 }:
 let
   cfg = config.zde;
+  # Shared with the flake's check, so the config that runs and the config that
+  # is checked cannot come apart (nix/input.nix).
+  inputLayer = import ./input.nix;
 in
 {
   options.zde = {
@@ -61,7 +64,7 @@ in
             # Every keyboard, including ones plugged in later. One instance, so
             # there is nothing to race with over a device.
             devices = [ ];
-            config = builtins.readFile ../input/kanata.kbd;
+            inherit (inputLayer) extraDefCfg config;
           };
         };
 

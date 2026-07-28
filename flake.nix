@@ -45,6 +45,27 @@
           ];
         }
       );
+
+      # The input layer, checked the way the machine will read it. kanata's own
+      # --check is the only thing that knows whether a config parses, and the
+      # NixOS module runs it - but only when a system is built, which nothing
+      # in CI does. This runs it on every check instead.
+      inputLayer = import ./nix/input.nix;
+      inputCheck =
+        pkgs:
+        let
+          kbd = pkgs.writeText "kanata.kbd" ''
+            (defcfg
+              ${inputLayer.extraDefCfg}
+              linux-continue-if-no-devs-found yes)
+
+            ${inputLayer.config}
+          '';
+        in
+        pkgs.runCommand "zde-input" { nativeBuildInputs = [ pkgs.kanata ]; } ''
+          kanata --cfg ${kbd} --check --debug
+          touch "$out"
+        '';
     in
     {
       # Layer 0 (docs/delivery.md). A plain path module: it needs nothing from
@@ -103,6 +124,7 @@
         {
           zde = zdeTools pkgs;
           zde-config = zdeConfig pkgs;
+          zde-input = inputCheck pkgs;
           # Evaluation only: discarding the string context keeps the system
           # closure out of the build, so this costs an eval and nothing else.
           # It is what catches a bad option or a typo in nix/system.nix and

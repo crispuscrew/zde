@@ -25,6 +25,14 @@ input {
             // inherited - where that gets wired in is on the roadmap.
             // Language switching is bound to system.layout-switch (niri's
             // switch-layout action).
+
+            // The input layer emits F13 and up for chords niri cannot hear,
+            // and niri resolves binds by keysym. Without this, those keycodes
+            // carry XF86Tools, XF86Launch5 and friends instead - and F20
+            // carries XF86AudioMicMute, which this keymap already binds
+            // elsewhere. The config would load, the bind would never fire,
+            // and nothing anywhere would say why.
+            options "fkeys:basic_13-24"
         }
     }
     touchpad {

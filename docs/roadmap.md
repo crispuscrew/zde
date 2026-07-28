@@ -104,11 +104,16 @@ turned "when someone has hardware" into something anyone can do this evening.
   instead is the open half.
 - caps:hyper landing in a usable modifier (stock xkb folds Hyper into Mod4).
 - kanata mouse-button interception (fallback: evsieve).
-- held Tab reaching niri as F13, on a keyboard. The config is checked when the
-  system is built and the daemon starts with no devices in a VM, so what is
-  left is the part only fingers can answer: whether 200ms is the right line
-  between a tap and a hold, and whether a fast typist's Tab ever starts the
-  band layer by accident.
+- held Tab, on a keyboard. The config is checked on every CI run and the
+  daemon starts with no devices in a VM, so what is left is the part only
+  fingers answer: whether 200ms is the right line between a tap and a hold,
+  and whether fast typing ever starts the band layer by accident.
+- what a dual-role Tab costs. Held past the timeout it sends no Tab at all, so
+  holding Tab to autorepeat an indent stops working, and Mod+Tab held open
+  rather than tapped sends niri nothing. Tapping is unaffected, and the
+  switcher is a tap. If the cost lands wrong, the escapes are a longer
+  timeout, a tap-hold variant that waits for another key, or moving the layer
+  off Tab.
 - Quickshell under multi-monitor hotplug (swap path exists).
 - netns stats readable without ask 6, as a degraded first cut.
 - NixOS: greetd reaching niri-session on real hardware (CI only evaluates the
