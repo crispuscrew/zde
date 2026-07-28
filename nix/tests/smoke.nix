@@ -226,6 +226,17 @@ let
           exit 1
         }
 
+        # Shift on the same axis: the window comes along, and so do you. Both
+        # halves are in one assertion - the desk that answers is the one we
+        # arrived on, and the window focused there is the one we brought.
+        carried=$(focused_window)
+        zde desk move-window next 2>&1 | tee /tmp/move.txt
+        grep -qx 'haven.winit.db' /tmp/move.txt
+        [ "$(focused_window)" = "$carried" ] || {
+          echo "window $carried did not come along: focus is on $(focused_window)"
+          nirimsg windows; exit 1
+        }
+
         echo "live compositor check passed"
   '';
 in

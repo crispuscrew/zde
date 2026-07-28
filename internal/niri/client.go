@@ -193,6 +193,36 @@ func (c *Client) FocusedName() (string, error) {
 	return "", nil
 }
 
+// FocusedOutput is the monitor the focused workspace is on, empty if nothing
+// is focused. A window carried to another desk needs it: the desk changes, the
+// screen does not.
+func (c *Client) FocusedOutput() (string, error) {
+	all, err := c.Workspaces()
+	if err != nil {
+		return "", err
+	}
+	for _, w := range all {
+		if w.Focused {
+			return deref(w.Output), nil
+		}
+	}
+	return "", nil
+}
+
+// MoveWindowToWorkspace moves the focused window to a workspace by name.
+//
+// focus stays with the workspace it came from: a desk switch follows, and that
+// moves every monitor at once (docs/model.md, invariant 1). Letting niri
+// follow the window would move one screen and leave the rest behind.
+func (c *Client) MoveWindowToWorkspace(name string) error {
+	return c.Action(map[string]any{
+		"MoveWindowToWorkspace": map[string]any{
+			"reference": map[string]any{"Name": name},
+			"focus":     false,
+		},
+	}, "MoveWindowToWorkspace "+name)
+}
+
 // Workspaces lists every workspace niri knows about.
 func (c *Client) Workspaces() ([]Workspace, error) {
 	payload, err := c.request("Workspaces", "Workspaces")

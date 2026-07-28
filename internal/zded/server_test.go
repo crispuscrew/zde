@@ -23,6 +23,7 @@ type fakeCompositor struct {
 	apps    map[uint64]string
 	empty   map[string][]uint64 // output -> empty workspace ids
 
+	output        string // the monitor the focused workspace is on
 	focusedWindow uint64
 	// nextInStack is what a vertical window move lands on, 0 for the end of
 	// the stack - niri's own answer to whether there is a window that way.
@@ -36,7 +37,8 @@ type fakeCompositor struct {
 	reads   int
 	renames []string
 	adopted []string
-	moves   []bool // vertical window moves asked for, down is true
+	moves   []bool   // vertical window moves asked for, down is true
+	carried []string // workspaces the focused window was moved to
 	failOn  string
 }
 
@@ -95,6 +97,29 @@ func (f *fakeCompositor) FocusWindowVertically(down bool) error {
 		f.focusedWindow = f.nextInStack
 	}
 	return nil
+}
+
+func (f *fakeCompositor) FocusedOutput() (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	return f.output, nil
+}
+
+func (f *fakeCompositor) MoveWindowToWorkspace(name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	f.carried = append(f.carried, name)
+	return nil
+}
+
+func (f *fakeCompositor) carryCalls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.carried...)
 }
 
 func (f *fakeCompositor) windowMoves() []bool {
@@ -629,6 +654,111 @@ func TestNavOnAnEmptyWorkspaceRotates(t *testing.T) {
 	}
 	if !slices.Equal(focused, []string{"vshop.DP-1.code"}) {
 		t.Errorf("nav.down left %v focused, want the next desk", focused)
+	}
+}
+
+// twoScreens is two desks that both own workspaces on both monitors, which is
+// what makes "the window stays on its screen" a claim that can fail.
+func twoScreens() *desk.Map {
+	return desk.Rebuild([]desk.Workspace{
+		{Name: "haven.DP-1.db", Output: "DP-1"},
+		{Name: "haven.HDMI-A-1.logs", Output: "HDMI-A-1"},
+		{Name: "vshop.DP-1.code", Output: "DP-1"},
+		{Name: "vshop.HDMI-A-1.aux", Output: "HDMI-A-1"},
+	}, []string{"DP-1", "HDMI-A-1"})
+}
+
+// Shift on the axis brings the window along: it lands on the desk beside this
+// one, on the screen it was already on, and focus follows it there.
+func TestMoveWindowCarriesItAndFollows(t *testing.T) {
+	niri := &fakeCompositor{
+		m:             twoScreens(),
+		focused:       "haven.HDMI-A-1.logs",
+		output:        "HDMI-A-1",
+		focusedWindow: 7,
+	}
+	s := New("test", nil, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var focused []string
+	if err := c.Call("desk.move-window", &focused, "next"); err != nil {
+		t.Fatal(err)
+	}
+	if got := niri.carryCalls(); !slices.Equal(got, []string{"vshop.HDMI-A-1.aux"}) {
+		t.Errorf("carried the window to %v, want vshop's band on the screen it was on", got)
+	}
+	if !slices.Equal(focused, []string{"vshop.DP-1.code", "vshop.HDMI-A-1.aux"}) {
+		t.Errorf("left %v focused, want the whole desk it followed the window to", focused)
+	}
+}
+
+// A desk is not a monitor, but a desk that owns nothing on this screen cannot
+// take the window there. Somewhere it owns beats nowhere.
+func TestMoveWindowToADeskNotOnThisScreen(t *testing.T) {
+	niri := &fakeCompositor{
+		m: desk.Rebuild([]desk.Workspace{
+			{Name: "haven.HDMI-A-1.logs", Output: "HDMI-A-1"},
+			{Name: "vshop.DP-1.code", Output: "DP-1"},
+		}, []string{"DP-1", "HDMI-A-1"}),
+		focused:       "haven.HDMI-A-1.logs",
+		output:        "HDMI-A-1",
+		focusedWindow: 7,
+	}
+	s := New("test", nil, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.Call("desk.move-window", nil, "next"); err != nil {
+		t.Fatal(err)
+	}
+	if got := niri.carryCalls(); !slices.Equal(got, []string{"vshop.DP-1.code"}) {
+		t.Errorf("carried the window to %v, want the only workspace vshop has", got)
+	}
+}
+
+// Nothing focused is not a refusal: there is no window to bring, so the key
+// means what it does without one.
+func TestMoveWindowWithNothingToCarry(t *testing.T) {
+	niri := &fakeCompositor{
+		m:             twoScreens(),
+		focused:       "haven.DP-1.db",
+		output:        "DP-1",
+		focusedWindow: 0,
+	}
+	s := New("test", nil, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var focused []string
+	if err := c.Call("desk.move-window", &focused, "next"); err != nil {
+		t.Fatal(err)
+	}
+	if got := niri.carryCalls(); len(got) != 0 {
+		t.Errorf("moved %v with no window focused", got)
+	}
+	if len(focused) == 0 {
+		t.Error("did not switch desks, which is what the key still means")
+	}
+}
+
+func TestMoveWindowNeedsADirection(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoScreens(), focused: "haven.DP-1.db"}, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	for _, args := range [][]string{{}, {"sideways"}, {"next", "prev"}} {
+		if err := c.Call("desk.move-window", nil, args...); err == nil {
+			t.Errorf("desk.move-window %v was accepted", args)
+		}
 	}
 }
 

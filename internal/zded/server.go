@@ -34,9 +34,15 @@ type Compositor interface {
 	// FocusWorkspace focuses one by name, which is what makes its monitor
 	// show it.
 	FocusWorkspace(name string) error
+	// FocusedOutput is the monitor the focused workspace is on. A window
+	// carried to another desk stays on the screen it was on.
+	FocusedOutput() (string, error)
 	// FocusedWindow is the focused window's id, 0 when none is. Whether it
 	// changes is how nav tells a window below from the end of the stack.
 	FocusedWindow() (uint64, error)
+	// MoveWindowToWorkspace carries the focused window to a workspace by
+	// name, leaving focus where it was.
+	MoveWindowToWorkspace(name string) error
 	// FocusWindowVertically moves focus one window along the stack, and does
 	// nothing at the end of it.
 	FocusWindowVertically(down bool) error
@@ -257,6 +263,14 @@ func (s *Server) Dispatch(req Request) Response {
 			return Response{Error: req.Method + " takes no arguments"}
 		}
 		return s.nav(req.Method == "nav.down")
+	case "desk.move-window":
+		if len(req.Args) != 1 || (req.Args[0] != "next" && req.Args[0] != "prev") {
+			return Response{Error: "desk.move-window takes next or prev"}
+		}
+		if req.Args[0] == "next" {
+			return s.moveWindow(desk.Next)
+		}
+		return s.moveWindow(desk.Prev)
 	case "desk.next", "desk.prev":
 		if len(req.Args) != 0 {
 			return Response{Error: req.Method + " takes no arguments"}
@@ -458,6 +472,73 @@ func (s *Server) nav(down bool) Response {
 		return s.rotate(desk.Next)
 	}
 	return s.rotate(desk.Prev)
+}
+
+// moveWindow carries the focused window to the desk beside this one and goes
+// with it. Shift on the nav axis means "bring the focused window along"
+// (common/keymap/keymap.yaml, the grid), so this is the rotation with cargo
+// rather than a verb of its own - which is also why focus follows: you are
+// moving, and the window is coming.
+//
+// The window lands on the screen it was already on. A desk is not a monitor
+// (docs/model.md, section 1), so changing desks should not move anyone's work
+// to another display; where the target desk owns nothing on that screen, its
+// own first workspace takes it, because a window with nowhere to land is worse
+// than one that landed somewhere the desk actually owns.
+//
+// Nothing focused is not a refusal. There is no window to bring, so the key
+// means what it does without one: go to the desk beside this one.
+func (s *Server) moveWindow(step func(rotation []string, from string) string) Response {
+	m, err := s.niri.DeskMap()
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	rotation := m.Rotation()
+	if len(rotation) == 0 {
+		return Response{Error: "no desks to move a window between yet"}
+	}
+	from := s.activeDesk(m)
+	to := step(rotation, from)
+	if to == from {
+		// One desk: nowhere to carry it, and nowhere to follow it to.
+		return ok([]string{})
+	}
+	if err := s.carry(m, to); err != nil {
+		return Response{Error: err.Error()}
+	}
+	return s.switchDesk(to)
+}
+
+// carry moves the focused window onto the target desk, and is quiet when there
+// is no window to move.
+func (s *Server) carry(m *desk.Map, target string) error {
+	window, err := s.niri.FocusedWindow()
+	if err != nil {
+		return err
+	}
+	if window == 0 {
+		return nil
+	}
+	monitor, err := s.niri.FocusedOutput()
+	if err != nil {
+		return err
+	}
+	slot := ""
+	if s.jrn != nil {
+		slot = s.jrn.State().LastActive[target][monitor]
+	}
+	landing, onThisScreen := desk.Landing(m, target, monitor, slot)
+	if !onThisScreen {
+		// The desk owns nothing on this screen. Its first workspace is where
+		// the window goes, which does move it to another monitor - said here
+		// rather than silently, because it is the one case that does.
+		plan := desk.SwitchPlan(m, target, nil)
+		if len(plan) == 0 {
+			return fmt.Errorf("desk %s has no workspaces to move a window to", target)
+		}
+		landing = plan[0]
+	}
+	return s.niri.MoveWindowToWorkspace(landing.String())
 }
 
 // rotate switches to the desk beside the one you are on. Which way is the
