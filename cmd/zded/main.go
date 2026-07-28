@@ -127,6 +127,15 @@ func (compositor) FocusedOutput() (string, error) {
 	return c.FocusedOutput()
 }
 
+func (compositor) FocusedPlace() (string, string, error) {
+	c, err := niri.Dial()
+	if err != nil {
+		return "", "", err
+	}
+	defer c.Close()
+	return c.FocusedPlace()
+}
+
 func (compositor) MoveWindowToWorkspace(name string) error {
 	c, err := niri.Dial()
 	if err != nil {

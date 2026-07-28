@@ -9,7 +9,11 @@ type Workspace struct {
 	// ID is niri's, stable within a session and not across one. It is not
 	// what the map keys on - names are - but a workspace with no name can be
 	// addressed no other way, which is what adoption needs.
-	ID     uint64
+	ID uint64
+	// Idx is where it sits in its output's strip, which is niri's to say and
+	// the only order a scroll can honestly follow. The map's own order sorts
+	// names, and names are not where things are.
+	Idx    uint8
 	Name   string
 	Output string
 }
@@ -36,7 +40,14 @@ type Conflict struct {
 // unexported: the IPC layer and the journal will both hold one, and a shared
 // read model that any caller can reach into and reorder is not one.
 type Map struct {
-	desks     map[string][]Name
+	desks map[string][]Name
+	// at is the output a workspace is on right now, which is not always the
+	// one its name says: an unplugged monitor leaves its workspaces parked on
+	// a survivor with home still recorded in the name (invariant 1).
+	at map[string]string
+	// idx is its place in that output's strip, so a band can be walked in the
+	// order the screen has it rather than the order names sort in.
+	idx       map[string]uint8
 	foreign   []Workspace
 	renames   []Rename
 	conflicts []Conflict
@@ -54,7 +65,7 @@ type Map struct {
 // declares. Pass nil only when the caller genuinely does not know, which
 // disables renaming rather than guessing.
 func Rebuild(workspaces []Workspace, connected []string) *Map {
-	m := &Map{desks: map[string][]Name{}}
+	m := &Map{desks: map[string][]Name{}, at: map[string]string{}, idx: map[string]uint8{}}
 
 	isConnected := make(map[string]bool, len(connected))
 	for _, o := range connected {
@@ -121,6 +132,14 @@ func Rebuild(workspaces []Workspace, connected []string) *Map {
 		}
 		placed[name.String()] = true
 		m.desks[name.Desk] = append(m.desks[name.Desk], name)
+		// Where it is and where it sits, as niri has it. An output niri did
+		// not say falls back to the name, which is the only other answer.
+		where := w.Output
+		if where == "" {
+			where = name.Monitor
+		}
+		m.at[name.String()] = where
+		m.idx[name.String()] = w.Idx
 	}
 
 	for desk := range m.desks {
@@ -182,13 +201,28 @@ func (m *Map) DeskNames() []string {
 //
 // Regulars are in no desk's band: reachable from every desk by an explicit
 // action, never by scrolling into them.
-func (m *Map) Band(desk, monitor string) []Name {
+//
+// The screen is where the workspaces are now, not where their names say they
+// belong. Those disagree exactly when a monitor was unplugged and niri parked
+// its workspaces on a survivor: home stays in the name so it can go back, and
+// a band that read the name would be empty on the only screen left.
+//
+// The order is niri's, because the strip is niri's. The map's own order sorts
+// names, and a scroll that followed it would step over a workspace and then
+// back to it.
+func (m *Map) Band(desk, output string) []Name {
 	var out []Name
 	for _, n := range m.desks[desk] {
-		if n.Monitor == monitor {
+		if m.at[n.String()] == output {
 			out = append(out, n)
 		}
 	}
+	// Stable, so that workspaces niri gave the same index - or none at all,
+	// which is every workspace when the caller built the map by hand - keep
+	// the map's own order instead of an arbitrary one.
+	sort.SliceStable(out, func(i, j int) bool {
+		return m.idx[out[i].String()] < m.idx[out[j].String()]
+	})
 	return out
 }
 

@@ -312,11 +312,16 @@ let
           echo "window $moved did not come back out: focus is on $(focused_window)"; exit 1
         }
 
-        # Band-clamped scrolling, which is invariant 4 with a real strip under
-        # it: haven's workspace and the regulars sit immediately after vshop's
-        # in niri's own order, so a scroll that did not clamp would reach them
-        # within a few steps. Walk further than the band is long and check that
-        # nothing outside vshop ever came back.
+        # Band-clamped scrolling against a real strip. zde names the workspace
+        # it wants rather than asking niri to step, so escaping the desk is
+        # structurally impossible here; what this can catch is the band being
+        # the wrong set - too wide, in the wrong order, or on the wrong screen
+        # - which is what the walk and the focus check below are for.
+        focused_workspace() {
+          nirimsg --json workspaces 2>/dev/null | tr '{' '\n' \
+            | grep '"is_focused":[[:space:]]*true' \
+            | grep -o '"name":[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/'
+        }
         zde desk switch vshop >/dev/null
         : > /tmp/ws-walk.txt
         for i in $(seq 8); do zde workspace next >>/tmp/ws-walk.txt 2>&1; done
@@ -327,6 +332,15 @@ let
         # And the end of the band is silent rather than wrapping round.
         zde workspace next 2>&1 | tee /tmp/ws-end.txt
         [ ! -s /tmp/ws-end.txt ] || { echo "the band did not end"; exit 1; }
+
+        # niri's own answer, not zde's: every check above this line believes
+        # what the daemon said about where it went.
+        landed=$(tail -1 /tmp/ws-walk.txt)
+        here=$(focused_workspace)
+        [ -n "$here" ] || { echo "could not read the focused workspace from niri"; exit 1; }
+        [ "$here" = "$landed" ] || {
+          echo "zde said it focused $landed, niri has $here focused"; exit 1
+        }
 
         echo "live compositor check passed"
   '';

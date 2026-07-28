@@ -37,6 +37,9 @@ type Compositor interface {
 	// FocusedOutput is the monitor the focused workspace is on. A window
 	// carried to another desk stays on the screen it was on.
 	FocusedOutput() (string, error)
+	// FocusedPlace is that workspace's name and output together, from one
+	// reply, so the two cannot describe different moments.
+	FocusedPlace() (name, output string, err error)
 	// FocusedWindow is the focused window's id, 0 when none is. Whether it
 	// changes is how nav tells a window below from the end of the stack.
 	FocusedWindow() (uint64, error)
@@ -701,22 +704,25 @@ func (s *Server) scroll(by int) Response {
 	if err != nil {
 		return Response{Error: err.Error()}
 	}
-	on := s.activeDesk(m)
-	if on == "" {
-		return Response{Error: "no desk to scroll inside: nothing here belongs to one yet"}
-	}
-	monitor, err := s.niri.FocusedOutput()
-	if err != nil {
-		return Response{Error: err.Error()}
-	}
-	band := m.Band(on, monitor)
-	// The focused name may not parse - an unnamed workspace is in no band, and
-	// BandStep reads that as being outside it, which it is.
-	focused, err := s.niri.FocusedName()
+	// One reply for both, and the desk read off the same one. Asked
+	// separately, the name could be from before a drag to another monitor and
+	// the output from after it, and the pair would describe nowhere - which
+	// lands outside every band, and sends the step to an end of one.
+	focused, monitor, err := s.niri.FocusedPlace()
 	if err != nil {
 		return Response{Error: err.Error()}
 	}
 	from, _ := desk.ParseName(focused)
+	on := s.deskOf(m, focused)
+	if on == "" {
+		return Response{Error: "no desk to scroll inside: nothing here belongs to one yet"}
+	}
+	band := m.Band(on, monitor)
+	if len(band) == 0 {
+		// Not the same as the end of a band, which is silent because nothing
+		// is wrong with it. There is nothing here to walk at all.
+		return Response{Error: "desk " + on + " has no workspaces on this screen"}
+	}
 	to, moved := desk.BandStep(band, from, by)
 	if !moved {
 		return ok([]string{})
@@ -784,7 +790,19 @@ func (s *Server) rotate(step func(rotation []string, from string) string) Respon
 // than adoption has any business making.
 func (s *Server) activeDesk(m *desk.Map) string {
 	focused, err := s.niri.FocusedName()
-	if err == nil && focused != "" {
+	if err != nil {
+		// Unreadable is not the same as unnamed, but it leads to the same
+		// place: the journal is the only other answer either way.
+		focused = ""
+	}
+	return s.deskOf(m, focused)
+}
+
+// deskOf is activeDesk with the focused workspace already read. A caller that
+// needs the name for something else too asks once and passes it here, rather
+// than asking again and getting an answer from a different moment.
+func (s *Server) deskOf(m *desk.Map, focused string) string {
+	if focused != "" {
 		n, err := desk.ParseName(focused)
 		if err != nil {
 			return "" // named, but not by us
