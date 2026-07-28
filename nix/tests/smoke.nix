@@ -226,9 +226,16 @@ let
           exit 1
         }
 
-        # Shift on the same axis: the window comes along, and so do you. Both
-        # halves are in one assertion - the desk that answers is the one we
-        # arrived on, and the window focused there is the one we brought.
+        # Shift on the same axis: the window comes along, and so do you.
+        #
+        # The window half is niri's own answer - the focused window id after
+        # the move is read from the compositor, and a carry that moved nothing
+        # would leave haven's empty workspace focused and no window at all. The
+        # desk half is zded's answer rather than niri's, which is the weaker of
+        # the two; and with one screen and two desks this cannot see a carry
+        # that went the wrong way or one that let focus follow it. Those are
+        # pinned in the unit tests, where three desks and a focus-following
+        # compositor are cheap.
         carried=$(focused_window)
         zde desk move-window next 2>&1 | tee /tmp/move.txt
         grep -qx 'haven.winit.db' /tmp/move.txt

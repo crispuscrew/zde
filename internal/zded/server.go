@@ -503,10 +503,31 @@ func (s *Server) moveWindow(step func(rotation []string, from string) string) Re
 		// One desk: nowhere to carry it, and nowhere to follow it to.
 		return ok([]string{})
 	}
-	if err := s.carry(m, to); err != nil {
+	// Before the window moves, not after. ensureDeclared is what makes a
+	// manifest's workspaces exist, so running it later would let the window
+	// land by the map as it was and the switch arrive by the map as it became
+	// - and its errors would strand a window that had already left, on a desk
+	// nothing could then reach.
+	if err := s.ensureDeclared(to); err != nil {
 		return Response{Error: err.Error()}
 	}
-	return s.switchDesk(to)
+	if m, err = s.niri.DeskMap(); err != nil {
+		return Response{Error: err.Error()}
+	}
+	landed, err := s.carry(m, to)
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	// from is the desk this started on, asked for before the window moved.
+	// Afterwards the answer could be the destination, and then desk.last would
+	// take the user back to where they already are.
+	resp := s.switchFrom(to, from)
+	if resp.Error != "" && landed != "" {
+		// The window has already gone. Saying where turns a dead end into
+		// something the user can act on.
+		resp.Error = "the window is on " + landed + ", but " + resp.Error
+	}
+	return resp
 }
 
 // landingSlots is where a desk's monitors are entered: the workspace the
@@ -537,32 +558,37 @@ func (s *Server) landingSlots(target string) map[string]string {
 	return slots
 }
 
-// carry moves the focused window onto the target desk, and is quiet when there
-// is no window to move.
-func (s *Server) carry(m *desk.Map, target string) error {
+// carry moves the focused window onto the target desk and answers with where
+// it put it. Empty, and no error, when there was no window to move.
+func (s *Server) carry(m *desk.Map, target string) (string, error) {
 	window, err := s.niri.FocusedWindow()
 	if err != nil {
-		return err
+		return "", err
 	}
 	if window == 0 {
-		return nil
+		return "", nil
 	}
 	monitor, err := s.niri.FocusedOutput()
 	if err != nil {
-		return err
+		return "", err
 	}
-	landing, onThisScreen := desk.Landing(m, target, monitor, s.landingSlots(target)[monitor])
+	slots := s.landingSlots(target)
+	landing, onThisScreen := desk.Landing(m, target, monitor, slots[monitor])
 	if !onThisScreen {
-		// The desk owns nothing on this screen. Its first workspace is where
-		// the window goes, which does move it to another monitor - said here
-		// rather than silently, because it is the one case that does.
-		plan := desk.SwitchPlan(m, target, nil)
+		// The desk owns nothing on this screen, so this is the one case where
+		// a window does change monitors. It goes where a switch would enter
+		// the desk, by the same slots, because landing anywhere else would put
+		// it off the screen the switch is about to show.
+		plan := desk.SwitchPlan(m, target, slots)
 		if len(plan) == 0 {
-			return fmt.Errorf("desk %s has no workspaces to move a window to", target)
+			return "", fmt.Errorf("desk %s has no workspaces to move a window to", target)
 		}
 		landing = plan[0]
 	}
-	return s.niri.MoveWindowToWorkspace(landing.String())
+	if err := s.niri.MoveWindowToWorkspace(landing.String()); err != nil {
+		return "", err
+	}
+	return landing.String(), nil
 }
 
 // rotate switches to the desk beside the one you are on. Which way is the
@@ -650,7 +676,13 @@ func (s *Server) manifestFor(target string) *manifest.Desk {
 
 // switchDesk brings a desk up on every monitor it owns workspaces on, and
 // records where it left from so desk.last can come back.
-func (s *Server) switchDesk(target string) Response {
+func (s *Server) switchDesk(target string) Response { return s.switchFrom(target, "") }
+
+// switchFrom is a switch that already knows the desk it is leaving. Empty
+// means work it out, which is what every caller wants except move-window: that
+// one has to ask before it moves the window, because a moved window can be
+// what the answer is read off afterwards.
+func (s *Server) switchFrom(target, from string) Response {
 	if err := s.ensureDeclared(target); err != nil {
 		return Response{Error: err.Error()}
 	}
@@ -667,7 +699,9 @@ func (s *Server) switchDesk(target string) Response {
 
 	// Where we are now, before anything moves, so desk.last has somewhere to
 	// go back to. A failure to read it is not worth refusing the switch over.
-	from := s.activeDesk(m)
+	if from == "" {
+		from = s.activeDesk(m)
+	}
 
 	for _, n := range plan {
 		if err := s.niri.FocusWorkspace(n.String()); err != nil {

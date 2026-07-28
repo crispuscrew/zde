@@ -24,6 +24,7 @@ type fakeCompositor struct {
 	empty   map[string][]uint64 // output -> empty workspace ids
 
 	output        string // the monitor the focused workspace is on
+	followFocus   bool   // move the focus with a carried window, as niri can
 	focusedWindow uint64
 	// nextInStack is what a vertical window move lands on, 0 for the end of
 	// the stack - niri's own answer to whether there is a window that way.
@@ -113,6 +114,9 @@ func (f *fakeCompositor) MoveWindowToWorkspace(name string) error {
 		return f.err
 	}
 	f.carried = append(f.carried, name)
+	if f.followFocus {
+		f.focused = name
+	}
 	return nil
 }
 
@@ -784,6 +788,73 @@ func TestMoveWindowWithNothingToCarry(t *testing.T) {
 	}
 	if len(focused) == 0 {
 		t.Error("did not switch desks, which is what the key still means")
+	}
+}
+
+// Which way it carries the window, which two desks cannot show: with a
+// rotation of two, next and prev arrive at the same place. From the middle of
+// three they do not.
+func TestMoveWindowGoesTheWayItWasAsked(t *testing.T) {
+	for _, tc := range []struct{ direction, want string }{
+		{"next", "vshop.DP-1.code"},
+		{"prev", "haven.DP-1.db"},
+	} {
+		niri := &fakeCompositor{
+			m: desk.Rebuild([]desk.Workspace{
+				{Name: "haven.DP-1.db", Output: "DP-1"},
+				{Name: "mid.DP-1.notes", Output: "DP-1"},
+				{Name: "vshop.DP-1.code", Output: "DP-1"},
+			}, []string{"DP-1"}),
+			focused:       "mid.DP-1.notes",
+			output:        "DP-1",
+			focusedWindow: 7,
+		}
+		s := New("test", nil, niri, nil)
+		c, err := DialPath(serve(t, s))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Call("desk.move-window", nil, tc.direction); err != nil {
+			c.Close()
+			t.Fatal(err)
+		}
+		c.Close()
+		if got := niri.carryCalls(); !slices.Equal(got, []string{tc.want}) {
+			t.Errorf("move-window %s carried it to %v, want %s", tc.direction, got, tc.want)
+		}
+	}
+}
+
+// niri is asked not to follow the window, and desk.last is what would quietly
+// break if it ever did: the switch would read the desk it had already been
+// taken to as the desk it was leaving, and Mod+Shift+Tab would bring you back
+// to where you already are. The fake follows focus here to prove the answer
+// does not depend on it.
+func TestMoveWindowRemembersWhereItCameFrom(t *testing.T) {
+	jrn, err := journal.Open(filepath.Join(t.TempDir(), "j.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jrn.Close()
+
+	niri := &fakeCompositor{
+		m:             twoScreens(),
+		focused:       "haven.DP-1.db",
+		output:        "DP-1",
+		focusedWindow: 7,
+		followFocus:   true, // as niri would with focus:true
+	}
+	s := New("test", jrn, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.Call("desk.move-window", nil, "next"); err != nil {
+		t.Fatal(err)
+	}
+	if got := jrn.State().LastDesk; got != "haven" {
+		t.Errorf("last desk %q, want the desk the window was carried out of", got)
 	}
 }
 
