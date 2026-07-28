@@ -121,14 +121,10 @@ func focusDesk(method string, args ...string) error {
 	return nil
 }
 
-func lastDesk() error {
-	c, err := zded.Dial()
-	if err != nil {
-		return err
-	}
-	defer c.Close()
-	return c.Call("desk.last", nil)
-}
+// lastDesk goes back, and says where to. It is a switch like the others and
+// answers like one; throwing that away left the one verb whose whole point is
+// where you end up as the only one that would not say.
+func lastDesk() error { return focusDesk("desk.last") }
 
 func reconcile() error {
 	c, err := zded.Dial()
