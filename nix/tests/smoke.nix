@@ -355,7 +355,24 @@ let
         zde queue 2>&1 | tee /tmp/q-list.txt
         grep -q "^$id	vshop	reply to ilya" /tmp/q-list.txt
 
+        # A second one, newer and on another desk. With one item a queue that
+        # went to the newest and one that went to the oldest are the same
+        # queue, and so are ids counted from the journal and from the length of
+        # the list - so the check that follows would prove neither.
         zde desk switch haven >/dev/null
+        zde queue add look at the build log 2>&1 | tee /tmp/q-add2.txt
+        id2=$(cut -f1 /tmp/q-add2.txt)
+        [ "$id2" != "$id" ] || { echo "both reminders got id $id"; exit 1; }
+        zde queue > /tmp/q-list2.txt 2>&1
+        grep -q "^$id	vshop	" /tmp/q-list2.txt
+        grep -q "^$id2	haven	look at the build log" /tmp/q-list2.txt
+        # Oldest first, which is the order the jump below follows.
+        [ "$(head -1 /tmp/q-list2.txt | cut -f1)" = "$id" ] || {
+          echo "the list is not oldest first:"; cat /tmp/q-list2.txt; exit 1
+        }
+
+        # Standing on haven, where the newer one waits: the jump has to cross
+        # back to vshop, because that is where the older one is.
         zde desk queue-jump 2>&1 | tee /tmp/q-jump.txt
         grep -q 'vshop.winit' /tmp/q-jump.txt
         # Jumping is not finishing: it is still there afterwards.
@@ -363,6 +380,7 @@ let
         grep -q "^$id	" /tmp/q-still.txt
 
         zde queue done "$id"
+        zde queue done "$id2"
         zde queue 2>&1 | tee /tmp/q-empty.txt
         [ ! -s /tmp/q-empty.txt ] || { echo "the queue did not empty:"; cat /tmp/q-empty.txt; exit 1; }
 

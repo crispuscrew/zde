@@ -422,3 +422,56 @@ func TestQueueStateIsACopy(t *testing.T) {
 		t.Errorf("journal item = %q, a caller wrote through the copy", got)
 	}
 }
+
+// Compaction drops the entries the ids were learned from, so it has to carry
+// the counter itself. Otherwise the next reminder takes a number somebody
+// already wrote down next to a different one, and finishing by that number
+// finishes the wrong thing.
+func TestQueueIDsSurviveCompaction(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "j.jsonl")
+	j, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.Queue("older", "vshop")
+	newest, _ := j.Queue("newest, and finished", "vshop")
+	if err := j.Done(newest.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Compact(); err != nil {
+		t.Fatal(err)
+	}
+	j.Close()
+
+	j, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	next, _ := j.Queue("after the compaction", "vshop")
+	if next.ID <= newest.ID {
+		t.Errorf("id %d reuses %d, which was handed out before the compaction", next.ID, newest.ID)
+	}
+}
+
+// An entry that cannot be an item is counted, not shown: a blank row with id 0
+// looks like the queue's own fault, and doctor reports the count.
+func TestQueueSkipsEntriesThatAreNotItems(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "j.jsonl")
+	if err := os.WriteFile(path, []byte(
+		`{"kind":"queued","desk":"vshop"}`+"\n"+
+			`{"kind":"queued","id":2,"text":"a real one","desk":"vshop"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	j, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	if q := j.State().Queue; len(q) != 1 || q[0].Text != "a real one" {
+		t.Errorf("queue = %+v, want only the item that is one", q)
+	}
+	if j.Skipped() != 1 {
+		t.Errorf("skipped = %d, want the unusable entry counted", j.Skipped())
+	}
+}

@@ -45,6 +45,7 @@ const (
 	kindRenamed  = "renamed"  // a workspace was renamed, so entries move with it
 	kindQueued   = "queued"   // something is waiting, and which desk it waits on
 	kindDone     = "done"     // it is not waiting any more
+	kindLastID   = "lastid"   // the highest queue id handed out, so none repeats
 )
 
 // State is what the journal remembers. It is a value: callers get a copy and
@@ -179,7 +180,18 @@ func (j *Journal) apply(e entry) {
 	case kindOnDesk:
 		j.state.OnDesk = e.Desk
 	case kindQueued:
+		if e.ID == 0 || e.Text == "" {
+			// An item with no id cannot be finished and one with no text says
+			// nothing. Counted rather than shown: a blank row with id 0 looks
+			// like the queue's fault, and doctor reports the count.
+			j.skipped++
+			return
+		}
 		j.state.Queue = append(j.state.Queue, Item{ID: e.ID, Text: e.Text, Desk: e.Desk})
+		if e.ID > j.lastID {
+			j.lastID = e.ID
+		}
+	case kindLastID:
 		if e.ID > j.lastID {
 			j.lastID = e.ID
 		}
@@ -372,6 +384,15 @@ func (j *Journal) compactLocked() error {
 	// what queue-jump goes to.
 	for _, it := range j.state.Queue {
 		if err := write(entry{Kind: kindQueued, ID: it.ID, Text: it.Text, Desk: it.Desk}); err != nil {
+			return err
+		}
+	}
+	// And the counter, because compaction drops the entries the ids were
+	// learned from. Without this the highest id in the file is whatever is
+	// still waiting - or nothing at all - and the next reminder takes a number
+	// somebody already wrote down next to a different one.
+	if j.lastID != 0 {
+		if err := write(entry{Kind: kindLastID, ID: j.lastID}); err != nil {
 			return err
 		}
 	}

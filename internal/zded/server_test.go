@@ -2180,3 +2180,82 @@ func TestQueueDone(t *testing.T) {
 		t.Errorf("finishing something already finished was an error: %v", err)
 	}
 }
+
+// The queue outlives the compositor, so a desk it remembers may be gone by the
+// next login. One stale reminder must not hold the key down for every reminder
+// behind it.
+func TestQueueJumpSkipsADeskThatIsGone(t *testing.T) {
+	s, jrn, _ := queueTestServer(t, "vshop.DP-1.code")
+	jrn.Queue("on a desk from last week", "oldproject")
+	jrn.Queue("on haven", "haven")
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var focused []string
+	if err := c.Call("desk.queue-jump", &focused); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(focused, []string{"haven.DP-1.db"}) {
+		t.Errorf("jumped to %v, want the oldest one whose desk is still there", focused)
+	}
+}
+
+// The list is the queue, and the queue is an order: oldest first, the same one
+// queue-jump follows. A list that disagreed would send people to the wrong id.
+func TestQueueListIsOldestFirst(t *testing.T) {
+	s, jrn, _ := queueTestServer(t, "vshop.DP-1.code")
+	first, _ := jrn.Queue("oldest", "vshop")
+	second, _ := jrn.Queue("middle", "haven")
+	third, _ := jrn.Queue("newest", "vshop")
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var q []journal.Item
+	if err := c.Call("queue.list", &q); err != nil {
+		t.Fatal(err)
+	}
+	if len(q) != 3 || q[0].ID != first.ID || q[1].ID != second.ID || q[2].ID != third.ID {
+		t.Errorf("list = %+v, want them oldest first", q)
+	}
+	if q[1].Desk != "haven" {
+		t.Errorf("item = %+v, want the desk it was taken on to survive the wire", q[1])
+	}
+}
+
+// A tab is the CLI's own column separator, so one inside the text prints an
+// item with more columns than it has fields.
+func TestQueueTextIsOnePrintableLine(t *testing.T) {
+	s, _, _ := queueTestServer(t, "vshop.DP-1.code")
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	for _, bad := range []string{"reply\tto ilya", "delete\x7f", "line break"} {
+		if err := c.Call("queue.add", nil, bad); err == nil {
+			t.Errorf("queue.add %q was accepted", bad)
+		}
+	}
+}
+
+// The bound is a number of characters, and says so. Counting bytes gives a
+// reminder written in Cyrillic half the room and tells the writer a number
+// twice what they typed.
+func TestQueueTextBoundCountsCharacters(t *testing.T) {
+	s, _, _ := queueTestServer(t, "vshop.DP-1.code")
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.Call("queue.add", nil, strings.Repeat("я", queueTextMax)); err != nil {
+		t.Errorf("a reminder of %d characters was refused: %v", queueTextMax, err)
+	}
+	if err := c.Call("queue.add", nil, strings.Repeat("я", queueTextMax+1)); err == nil {
+		t.Error("one character over the bound was accepted")
+	}
+}

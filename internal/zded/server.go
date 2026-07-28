@@ -20,6 +20,8 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/crispuscrew/zde/internal/desk"
 	"github.com/crispuscrew/zde/internal/journal"
@@ -683,13 +685,20 @@ func (s *Server) queueAdd(text string) Response {
 		return Response{Error: err.Error()}
 	}
 	// Where from, not where to. A compositor that cannot be read is not a
-	// reason to refuse: the thing still waits, it just waits nowhere in
-	// particular, and a desk can be given to it later.
-	desk := ""
+	// reason to refuse - the thing still waits, it just waits nowhere in
+	// particular, and nothing can give it a desk afterwards, so it is worth
+	// asking twice. The map takes two questions of niri and the focused name
+	// takes one, and the second alone answers this whenever the workspace has
+	// a name.
+	deskName := ""
 	if m, err := s.niri.DeskMap(); err == nil {
-		desk = s.activeDesk(m)
+		deskName = s.activeDesk(m)
+	} else if focused, ferr := s.niri.FocusedName(); ferr == nil {
+		if n, perr := desk.ParseName(focused); perr == nil {
+			deskName = n.Desk
+		}
 	}
-	it, err := s.jrn.Queue(text, desk)
+	it, err := s.jrn.Queue(text, deskName)
 	if err != nil {
 		return Response{Error: err.Error()}
 	}
@@ -703,12 +712,16 @@ func checkQueueText(text string) error {
 	if text == "" {
 		return errors.New("nothing to wait for: say what it is")
 	}
-	if len(text) > queueTextMax {
-		return fmt.Errorf("that is %d characters, and a queue is a list of reminders, not of essays", len(text))
+	// Runes, not bytes: a reminder written in Cyrillic is not half a reminder.
+	if n := utf8.RuneCountInString(text); n > queueTextMax {
+		return fmt.Errorf("that is %d characters, and a queue is a list of reminders, not of essays", n)
 	}
 	for _, r := range text {
-		if r == '\n' || r == '\r' || (r < 0x20 && r != '\t') {
-			return errors.New("one line, no control characters: everything that reads the queue reads it a line at a time")
+		// Printable covers it: a tab is the CLI's own column separator, so one
+		// inside the text would print an item with more columns than it has
+		// fields, and a line separator would split it in two.
+		if !unicode.IsPrint(r) {
+			return errors.New("one printable line: everything that reads the queue reads it a line and a column at a time")
 		}
 	}
 	return nil
@@ -743,12 +756,20 @@ func (s *Server) queueJump() Response {
 	if len(q) == 0 {
 		return Response{Error: "nothing is waiting"}
 	}
+	// A desk the journal remembers may not be there any more: the queue
+	// outlives the compositor, and a fresh session starts with nothing named.
+	// Stepping over those matters more than it looks - the alternative is one
+	// stale reminder holding the key down for every reminder behind it.
+	m, err := s.niri.DeskMap()
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
 	for _, it := range q {
-		if it.Desk != "" {
+		if it.Desk != "" && len(m.Workspaces(it.Desk)) > 0 {
 			return s.switchDesk(it.Desk)
 		}
 	}
-	return Response{Error: "nothing waiting has a desk to jump to: " + strconv.Quote(q[0].Text) + " is first"}
+	return Response{Error: "nothing waiting is on a desk that exists: " + strconv.Quote(q[0].Text) + " is first"}
 }
 
 // regulars brings up the band that belongs to no desk: comms, music, the
