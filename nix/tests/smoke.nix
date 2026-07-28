@@ -342,6 +342,30 @@ let
           echo "zde said it focused $landed, niri has $here focused"; exit 1
         }
 
+        # The queue, which is the half of 0.1 that is not desks. What makes it
+        # a queue rather than a list is that each item knows the desk it was
+        # taken on, so jumping has somewhere to go: added from vshop, jumped to
+        # from haven, and the jump has to cross back.
+        zde desk switch vshop >/dev/null
+        zde queue add reply to ilya about the invoice 2>&1 | tee /tmp/q-add.txt
+        grep -q 'reply to ilya about the invoice' /tmp/q-add.txt
+        id=$(cut -f1 /tmp/q-add.txt)
+        [ -n "$id" ] || { echo "no id came back"; cat /tmp/q-add.txt; exit 1; }
+
+        zde queue 2>&1 | tee /tmp/q-list.txt
+        grep -q "^$id	vshop	reply to ilya" /tmp/q-list.txt
+
+        zde desk switch haven >/dev/null
+        zde desk queue-jump 2>&1 | tee /tmp/q-jump.txt
+        grep -q 'vshop.winit' /tmp/q-jump.txt
+        # Jumping is not finishing: it is still there afterwards.
+        zde queue 2>&1 | tee /tmp/q-still.txt
+        grep -q "^$id	" /tmp/q-still.txt
+
+        zde queue done "$id"
+        zde queue 2>&1 | tee /tmp/q-empty.txt
+        [ ! -s /tmp/q-empty.txt ] || { echo "the queue did not empty:"; cat /tmp/q-empty.txt; exit 1; }
+
         echo "live compositor check passed"
   '';
 in

@@ -16,6 +16,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -290,6 +292,29 @@ func (s *Server) Dispatch(req Request) Response {
 			return s.scroll(1)
 		}
 		return s.scroll(-1)
+	case "queue.add":
+		if len(req.Args) != 1 {
+			return Response{Error: "queue.add takes one line of text"}
+		}
+		return s.queueAdd(req.Args[0])
+	case "queue.list":
+		if len(req.Args) != 0 {
+			return Response{Error: "queue.list takes no arguments"}
+		}
+		if s.jrn == nil {
+			return Response{Error: "no journal, so nothing is waiting"}
+		}
+		return ok(s.jrn.State().Queue)
+	case "queue.done":
+		if len(req.Args) != 1 {
+			return Response{Error: "queue.done takes one id"}
+		}
+		return s.queueDone(req.Args[0])
+	case "desk.queue-jump":
+		if len(req.Args) != 0 {
+			return Response{Error: "desk.queue-jump takes no arguments"}
+		}
+		return s.queueJump()
 	case "desk.regulars":
 		if len(req.Args) != 0 {
 			return Response{Error: "desk.regulars takes no arguments"}
@@ -642,6 +667,88 @@ func (s *Server) carry(m *desk.Map, target string) (string, error) {
 		return "", err
 	}
 	return landing.String(), nil
+}
+
+// queueAdd puts something on the queue, on the desk it was put there from.
+//
+// The desk is the point. A queue that only knew what was waiting would be a
+// list; knowing where each thing waits is what lets a desk show its own and
+// queue-jump go anywhere.
+func (s *Server) queueAdd(text string) Response {
+	if s.jrn == nil {
+		return Response{Error: "no journal, so nothing can be made to wait"}
+	}
+	text = strings.TrimSpace(text)
+	if err := checkQueueText(text); err != nil {
+		return Response{Error: err.Error()}
+	}
+	// Where from, not where to. A compositor that cannot be read is not a
+	// reason to refuse: the thing still waits, it just waits nowhere in
+	// particular, and a desk can be given to it later.
+	desk := ""
+	if m, err := s.niri.DeskMap(); err == nil {
+		desk = s.activeDesk(m)
+	}
+	it, err := s.jrn.Queue(text, desk)
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	return ok(it)
+}
+
+// checkQueueText keeps the queue printable. Every reader of it is line-based -
+// the CLI, and the bar after it - so a newline would turn one item into two,
+// and the second would have no id.
+func checkQueueText(text string) error {
+	if text == "" {
+		return errors.New("nothing to wait for: say what it is")
+	}
+	if len(text) > queueTextMax {
+		return fmt.Errorf("that is %d characters, and a queue is a list of reminders, not of essays", len(text))
+	}
+	for _, r := range text {
+		if r == '\n' || r == '\r' || (r < 0x20 && r != '\t') {
+			return errors.New("one line, no control characters: everything that reads the queue reads it a line at a time")
+		}
+	}
+	return nil
+}
+
+const queueTextMax = 300
+
+func (s *Server) queueDone(id string) Response {
+	if s.jrn == nil {
+		return Response{Error: "no journal, so nothing is waiting"}
+	}
+	n, err := strconv.ParseUint(id, 10, 64)
+	if err != nil {
+		return Response{Error: "queue.done wants the id from the list, not " + strconv.Quote(id)}
+	}
+	if err := s.jrn.Done(n); err != nil {
+		return Response{Error: err.Error()}
+	}
+	return ok([]string{})
+}
+
+// queueJump goes to where the oldest thing waiting is waiting.
+//
+// Oldest, because a queue is a queue: the thing that has been waiting longest
+// is the one being kept waiting. Jumping does not finish it - arriving
+// somewhere is not doing the thing - so the item stays until it is done.
+func (s *Server) queueJump() Response {
+	if s.jrn == nil {
+		return Response{Error: "no journal, so nothing is waiting"}
+	}
+	q := s.jrn.State().Queue
+	if len(q) == 0 {
+		return Response{Error: "nothing is waiting"}
+	}
+	for _, it := range q {
+		if it.Desk != "" {
+			return s.switchDesk(it.Desk)
+		}
+	}
+	return Response{Error: "nothing waiting has a desk to jump to: " + strconv.Quote(q[0].Text) + " is first"}
 }
 
 // regulars brings up the band that belongs to no desk: comms, music, the

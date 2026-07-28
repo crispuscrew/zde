@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/crispuscrew/zde/internal/journal"
 	"github.com/crispuscrew/zde/internal/zded"
 )
 
@@ -41,6 +42,16 @@ func run(args []string) error {
 		return focusDesk("nav." + args[1])
 	case len(args) == 2 && args[0] == "desk" && (args[1] == "next" || args[1] == "prev"):
 		return focusDesk("desk." + args[1])
+	case len(args) >= 3 && args[0] == "queue" && args[1] == "add":
+		// Everything after "add" is the text, so it can be typed without
+		// quoting: zde queue add reply to ilya about the invoice.
+		return queueAdd(strings.Join(args[2:], " "))
+	case len(args) == 1 && args[0] == "queue":
+		return queueList()
+	case len(args) == 3 && args[0] == "queue" && args[1] == "done":
+		return call("queue.done", args[2])
+	case len(args) == 2 && args[0] == "desk" && args[1] == "queue-jump":
+		return focusDesk("desk.queue-jump")
 	case len(args) == 2 && args[0] == "desk" && args[1] == "regulars":
 		return focusDesk("desk.regulars")
 	case len(args) == 2 && args[0] == "desk" && args[1] == "last":
@@ -86,6 +97,53 @@ func status() error {
 		fmt.Printf("journal    %d entries could not be read\n", st.Skipped)
 	}
 	return nil
+}
+
+// queueAdd says what it recorded, with the id needed to finish it.
+func queueAdd(text string) error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	var it journal.Item
+	if err := c.Call("queue.add", &it, text); err != nil {
+		return err
+	}
+	fmt.Printf("%d\t%s\n", it.ID, it.Text)
+	return nil
+}
+
+// queueList prints one item per line, id first, so that finishing one is a
+// copy of what is already on the screen - and so that a bar can read it.
+func queueList() error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	var q []journal.Item
+	if err := c.Call("queue.list", &q); err != nil {
+		return err
+	}
+	for _, it := range q {
+		where := it.Desk
+		if where == "" {
+			where = "-"
+		}
+		fmt.Printf("%d\t%s\t%s\n", it.ID, where, it.Text)
+	}
+	return nil
+}
+
+// call is a verb with nothing to print: it worked, or it says why not.
+func call(method string, args ...string) error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	return c.Call(method, nil, args...)
 }
 
 func deskList() error {
@@ -184,6 +242,10 @@ func usage() {
                          carry it to that desk, the way into the regulars
   zde desk next          the desk after this one, wrapping (regulars excluded)
   zde desk prev          the desk before this one, wrapping
+  zde queue              what is waiting, oldest first
+  zde queue add TEXT     make something wait, on the desk you are on
+  zde queue done ID      it is not waiting any more
+  zde desk queue-jump    go to where the oldest thing waiting is
   zde desk regulars      the band that belongs to no desk (comms, music)
   zde desk last          go back to the desk you came from
   zde desk reconcile     make the workspace names true again

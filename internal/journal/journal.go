@@ -34,6 +34,8 @@ type entry struct {
 	Monitor string `json:"monitor,omitempty"`
 	Slot    string `json:"slot,omitempty"`
 	To      string `json:"to,omitempty"`
+	ID      uint64 `json:"id,omitempty"`
+	Text    string `json:"text,omitempty"`
 }
 
 const (
@@ -41,6 +43,8 @@ const (
 	kindLastDesk = "lastdesk" // the desk to go back to
 	kindOnDesk   = "ondesk"   // the desk you are on now
 	kindRenamed  = "renamed"  // a workspace was renamed, so entries move with it
+	kindQueued   = "queued"   // something is waiting, and which desk it waits on
+	kindDone     = "done"     // it is not waiting any more
 )
 
 // State is what the journal remembers. It is a value: callers get a copy and
@@ -55,6 +59,19 @@ type State struct {
 	// opened onto a fresh workspace has no name yet, and that is exactly when
 	// something has to know which desk it belongs to.
 	OnDesk string
+	// Queue is what is waiting, oldest first. It survives a logout because
+	// what you were interrupted by is worth as much tomorrow morning as it
+	// was last night (docs/model.md, section 3).
+	Queue []Item
+}
+
+// Item is one thing waiting. The desk is where it belongs, which is what
+// separates a queue from a list: attn can show a desk only its own, and
+// queue-jump has somewhere to go.
+type Item struct {
+	ID   uint64 `json:"id"`
+	Text string `json:"text"`
+	Desk string `json:"desk,omitempty"`
 }
 
 func newState() State {
@@ -68,6 +85,7 @@ type Journal struct {
 	path    string
 	file    *os.File
 	state   State
+	lastID  uint64
 	entries int
 	skipped int
 }
@@ -160,6 +178,18 @@ func (j *Journal) apply(e entry) {
 		j.state.LastDesk = e.Desk
 	case kindOnDesk:
 		j.state.OnDesk = e.Desk
+	case kindQueued:
+		j.state.Queue = append(j.state.Queue, Item{ID: e.ID, Text: e.Text, Desk: e.Desk})
+		if e.ID > j.lastID {
+			j.lastID = e.ID
+		}
+	case kindDone:
+		for i, it := range j.state.Queue {
+			if it.ID == e.ID {
+				j.state.Queue = append(j.state.Queue[:i], j.state.Queue[i+1:]...)
+				break
+			}
+		}
 	case kindRenamed:
 		j.applyRename(e)
 	default:
@@ -199,6 +229,7 @@ func (j *Journal) State() State {
 		LastActive: make(map[string]map[string]string, len(j.state.LastActive)),
 		LastDesk:   j.state.LastDesk,
 		OnDesk:     j.state.OnDesk,
+		Queue:      append([]Item(nil), j.state.Queue...),
 	}
 	for d, byMonitor := range j.state.LastActive {
 		m := make(map[string]string, len(byMonitor))
@@ -235,6 +266,32 @@ func (j *Journal) SetOnDesk(name string) error {
 	return j.record(entry{Kind: kindOnDesk, Desk: name})
 }
 
+// Queue records something waiting, on the desk it belongs to, and answers with
+// the item as recorded - the caller needs the id to be able to finish it.
+//
+// Ids come from the journal and never repeat within its life, including across
+// a restart: the replay carries the highest one it saw. A queue whose ids came
+// from the length of itself would hand the same number to two things as soon as
+// one was finished.
+func (j *Journal) Queue(text, desk string) (Item, error) {
+	// One lock over reading the last id and writing the entry that claims the
+	// next one. Two calls that read it before either wrote would both take the
+	// same number, and the second thing to wait would finish the first.
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	it := Item{ID: j.lastID + 1, Text: text, Desk: desk}
+	if err := j.recordLocked(entry{Kind: kindQueued, ID: it.ID, Text: text, Desk: desk}); err != nil {
+		return Item{}, err
+	}
+	return it, nil
+}
+
+// Done takes something off the queue. Unknown ids are not an error: the thing
+// is not waiting any more either way, which is what was asked for.
+func (j *Journal) Done(id uint64) error {
+	return j.record(entry{Kind: kindDone, ID: id})
+}
+
 // Renamed tells the journal a workspace changed name, so any position
 // remembered for it moves too.
 func (j *Journal) Renamed(r desk.Rename) error {
@@ -244,6 +301,10 @@ func (j *Journal) Renamed(r desk.Rename) error {
 func (j *Journal) record(e entry) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	return j.recordLocked(e)
+}
+
+func (j *Journal) recordLocked(e entry) error {
 	line, err := json.Marshal(e)
 	if err != nil {
 		return err
@@ -304,6 +365,13 @@ func (j *Journal) compactLocked() error {
 	}
 	if j.state.OnDesk != "" {
 		if err := write(entry{Kind: kindOnDesk, Desk: j.state.OnDesk}); err != nil {
+			return err
+		}
+	}
+	// In order, because the order is the queue: what has waited longest is
+	// what queue-jump goes to.
+	for _, it := range j.state.Queue {
+		if err := write(entry{Kind: kindQueued, ID: it.ID, Text: it.Text, Desk: it.Desk}); err != nil {
 			return err
 		}
 	}

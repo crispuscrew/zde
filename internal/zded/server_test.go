@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -2018,4 +2019,164 @@ func (f *fakeCompositor) FocusedPlace() (string, string, error) {
 		return "", "", f.err
 	}
 	return f.focused, f.output, nil
+}
+
+// queueTestServer is a daemon with a journal and two desks, which is what a
+// queue needs to be about anything: items belong to desks.
+func queueTestServer(t *testing.T, focused string) (*Server, *journal.Journal, *fakeCompositor) {
+	t.Helper()
+	jrn, err := journal.Open(filepath.Join(t.TempDir(), "j.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { jrn.Close() })
+	niri := &fakeCompositor{m: twoDesks(), focused: focused, output: "DP-1"}
+	return New("test", jrn, niri, nil), jrn, niri
+}
+
+// What is waiting, and where it waits. The desk is what separates a queue from
+// a list.
+func TestQueueAddRecordsTheDeskItCameFrom(t *testing.T) {
+	s, jrn, _ := queueTestServer(t, "vshop.DP-1.code")
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var it journal.Item
+	if err := c.Call("queue.add", &it, "reply to ilya"); err != nil {
+		t.Fatal(err)
+	}
+	if it.Text != "reply to ilya" || it.Desk != "vshop" || it.ID == 0 {
+		t.Errorf("item = %+v, want the text, the desk it was added from, and an id", it)
+	}
+	if q := jrn.State().Queue; len(q) != 1 || q[0].ID != it.ID {
+		t.Errorf("journal queue = %+v, want the item the caller was told about", q)
+	}
+}
+
+// A compositor that cannot be read is not a reason to lose the reminder. It
+// waits nowhere in particular instead.
+func TestQueueAddWithoutACompositor(t *testing.T) {
+	jrn, err := journal.Open(filepath.Join(t.TempDir(), "j.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jrn.Close()
+	s := New("test", jrn, &fakeCompositor{err: errors.New("NIRI_SOCKET is not set")}, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var it journal.Item
+	if err := c.Call("queue.add", &it, "pay the invoice"); err != nil {
+		t.Fatalf("the reminder was refused because niri was down: %v", err)
+	}
+	if it.Desk != "" {
+		t.Errorf("desk = %q, want none: there was no way to know", it.Desk)
+	}
+}
+
+// Everything that reads the queue reads it a line at a time.
+func TestQueueAddRefusesWhatCannotBePrinted(t *testing.T) {
+	s, _, _ := queueTestServer(t, "vshop.DP-1.code")
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	for _, bad := range []string{"", "   ", "two\nlines", "bell\x07", strings.Repeat("x", 301)} {
+		if err := c.Call("queue.add", nil, bad); err == nil {
+			t.Errorf("queue.add %q was accepted", bad)
+		}
+	}
+}
+
+// Jumping goes to where the oldest thing waits, and leaves it waiting:
+// arriving somewhere is not doing the thing.
+func TestQueueJumpGoesToTheOldestAndLeavesIt(t *testing.T) {
+	s, jrn, niri := queueTestServer(t, "vshop.DP-1.code")
+	if _, err := jrn.Queue("first, on haven", "haven"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := jrn.Queue("second, on vshop", "vshop"); err != nil {
+		t.Fatal(err)
+	}
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var focused []string
+	if err := c.Call("desk.queue-jump", &focused); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(focused, []string{"haven.DP-1.db"}) {
+		t.Errorf("jumped to %v, want the desk of the oldest thing waiting", focused)
+	}
+	if got := niri.focusCalls(); len(got) != 1 {
+		t.Errorf("focused %v", got)
+	}
+	if q := jrn.State().Queue; len(q) != 2 {
+		t.Errorf("queue = %+v, want both still waiting: jumping is not finishing", q)
+	}
+}
+
+// An item with no desk cannot be jumped to, but it must not stop the ones that
+// can - the reminder taken while niri was down should not wedge the key.
+func TestQueueJumpSkipsWhatHasNoDesk(t *testing.T) {
+	s, jrn, _ := queueTestServer(t, "vshop.DP-1.code")
+	jrn.Queue("taken while niri was down", "")
+	jrn.Queue("on haven", "haven")
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var focused []string
+	if err := c.Call("desk.queue-jump", &focused); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(focused, []string{"haven.DP-1.db"}) {
+		t.Errorf("jumped to %v, want the oldest one that has somewhere to go", focused)
+	}
+}
+
+func TestQueueJumpWithNothingWaiting(t *testing.T) {
+	s, _, _ := queueTestServer(t, "vshop.DP-1.code")
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	err = c.Call("desk.queue-jump", nil)
+	if err == nil || !strings.Contains(err.Error(), "nothing is waiting") {
+		t.Errorf("got %v, want to be told the queue is empty", err)
+	}
+}
+
+// The id in the list is the id that finishes it.
+func TestQueueDone(t *testing.T) {
+	s, jrn, _ := queueTestServer(t, "vshop.DP-1.code")
+	it, _ := jrn.Queue("reply to ilya", "vshop")
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.Call("queue.done", nil, strconv.FormatUint(it.ID, 10)); err != nil {
+		t.Fatal(err)
+	}
+	if q := jrn.State().Queue; len(q) != 0 {
+		t.Errorf("queue = %+v, want it gone", q)
+	}
+	// Not a number is a mistake worth naming; a number nobody is waiting on is
+	// not, because it is not waiting either way.
+	if err := c.Call("queue.done", nil, "seven-ish"); err == nil {
+		t.Error("queue.done accepted something that is not an id")
+	}
+	if err := c.Call("queue.done", nil, "999"); err != nil {
+		t.Errorf("finishing something already finished was an error: %v", err)
+	}
 }

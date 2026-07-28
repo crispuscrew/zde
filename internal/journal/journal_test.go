@@ -313,3 +313,112 @@ func TestDefaultPathIsState(t *testing.T) {
 		t.Errorf("DefaultPath() = %q, want %q", got, want)
 	}
 }
+
+// The queue outlives the session it was written in: what interrupted you last
+// night is worth the same in the morning.
+func TestQueueSurvivesReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "j.jsonl")
+	j, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := j.Queue("reply to ilya", "vshop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.Queue("pay the invoice", "haven"); err != nil {
+		t.Fatal(err)
+	}
+	j.Close()
+
+	j, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	q := j.State().Queue
+	if len(q) != 2 || q[0].Text != "reply to ilya" || q[0].Desk != "vshop" {
+		t.Fatalf("queue = %+v, want both items oldest first", q)
+	}
+	if err := j.Done(first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if q := j.State().Queue; len(q) != 1 || q[0].Text != "pay the invoice" {
+		t.Errorf("queue = %+v, want the finished one gone", q)
+	}
+}
+
+// Ids are the journal's and never repeat, including after a restart. Numbering
+// from the length of the queue hands the same id to two things as soon as one
+// is finished - and then finishing one finishes the other.
+func TestQueueIDsDoNotRepeat(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "j.jsonl")
+	j, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	one, _ := j.Queue("first", "")
+	if err := j.Done(one.ID); err != nil {
+		t.Fatal(err)
+	}
+	two, _ := j.Queue("second", "")
+	j.Close()
+
+	j, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	three, _ := j.Queue("third", "")
+	if two.ID == one.ID || three.ID == two.ID || three.ID == one.ID {
+		t.Errorf("ids %d, %d, %d: one was handed out twice", one.ID, two.ID, three.ID)
+	}
+}
+
+// Compaction rewrites the journal as the shortest thing that replays to the
+// same state, and the queue's order is part of that state.
+func TestQueueSurvivesCompaction(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "j.jsonl")
+	j, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone, _ := j.Queue("done with this", "vshop")
+	j.Queue("still waiting", "vshop")
+	j.Queue("also waiting", "haven")
+	if err := j.Done(gone.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Compact(); err != nil {
+		t.Fatal(err)
+	}
+	j.Close()
+
+	j, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	q := j.State().Queue
+	if len(q) != 2 || q[0].Text != "still waiting" || q[1].Text != "also waiting" {
+		t.Errorf("queue after compaction = %+v", q)
+	}
+	if n := j.Skipped(); n != 0 {
+		t.Errorf("%d entries could not be read back", n)
+	}
+}
+
+// A caller holding the state cannot reach back into the journal through it.
+func TestQueueStateIsACopy(t *testing.T) {
+	j, err := Open(filepath.Join(t.TempDir(), "j.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	j.Queue("mine", "vshop")
+	st := j.State()
+	st.Queue[0].Text = "theirs"
+	if got := j.State().Queue[0].Text; got != "mine" {
+		t.Errorf("journal item = %q, a caller wrote through the copy", got)
+	}
+}
