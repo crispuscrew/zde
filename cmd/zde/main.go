@@ -33,6 +33,8 @@ func run(args []string) error {
 		return switchDesk(args[2])
 	case len(args) == 3 && args[0] == "desk" && args[1] == "move-window":
 		return focusDesk("desk.move-window", args[2])
+	case len(args) == 3 && args[0] == "desk" && args[1] == "move-window-to":
+		return focusDesk("desk.move-window-to", args[2])
 	case len(args) == 2 && args[0] == "nav" && (args[1] == "down" || args[1] == "up"):
 		return focusDesk("nav." + args[1])
 	case len(args) == 2 && args[0] == "desk" && (args[1] == "next" || args[1] == "prev"):
@@ -174,6 +176,8 @@ func usage() {
   zde nav down|up        the window along the stack, else the desk beside this
   zde desk move-window next|prev
                          carry the focused window to the desk beside, and go
+  zde desk move-window-to NAME
+                         carry it to that desk, the way into the regulars
   zde desk next          the desk after this one, wrapping (regulars excluded)
   zde desk prev          the desk before this one, wrapping
   zde desk regulars      the band that belongs to no desk (comms, music)

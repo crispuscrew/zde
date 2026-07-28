@@ -997,6 +997,108 @@ func TestMoveWindowRemembersWhereItCameFrom(t *testing.T) {
 	}
 }
 
+// Named rather than counted to: how a window reaches a desk that is not
+// beside this one, and the only way one gets into the regulars, which no
+// rotation ever steps onto.
+func TestMoveWindowToADeskByName(t *testing.T) {
+	niri := &fakeCompositor{
+		m: desk.Rebuild([]desk.Workspace{
+			{Name: "haven.DP-1.db", Output: "DP-1"},
+			{Name: "vshop.DP-1.code", Output: "DP-1"},
+			{Name: "regulars.DP-1.comms", Output: "DP-1"},
+		}, []string{"DP-1"}),
+		focused:       "vshop.DP-1.code",
+		output:        "DP-1",
+		focusedWindow: 7,
+	}
+	s := New("test", nil, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var focused []string
+	if err := c.Call("desk.move-window-to", &focused, "regulars"); err != nil {
+		t.Fatal(err)
+	}
+	if got := niri.carryCalls(); !slices.Equal(got, []string{"regulars.DP-1.comms"}) {
+		t.Errorf("carried the window to %v, want the regulars band", got)
+	}
+	if !slices.Equal(focused, []string{"regulars.DP-1.comms"}) {
+		t.Errorf("left %v focused, want the band it followed the window to", focused)
+	}
+}
+
+// The desk you are already on is not a journey. Carrying a window to it would
+// move it off the workspace it is on, to wherever that desk is entered.
+func TestMoveWindowToTheDeskYouAreOn(t *testing.T) {
+	niri := &fakeCompositor{
+		m: desk.Rebuild([]desk.Workspace{
+			{Name: "vshop.DP-1.code", Output: "DP-1"},
+			{Name: "vshop.DP-1.notes", Output: "DP-1"},
+		}, []string{"DP-1"}),
+		focused:       "vshop.DP-1.notes",
+		output:        "DP-1",
+		focusedWindow: 7,
+	}
+	s := New("test", nil, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var focused []string
+	if err := c.Call("desk.move-window-to", &focused, "vshop"); err != nil {
+		t.Fatal(err)
+	}
+	if got := niri.carryCalls(); len(got) != 0 {
+		t.Errorf("carried the window to %v while already on that desk", got)
+	}
+	if len(focused) != 0 {
+		t.Errorf("answered %v, want nothing: nothing moved", focused)
+	}
+}
+
+// A typo is not a desk that is missing, and the two want different things
+// next: one wants spelling, the other wants making.
+func TestMoveWindowToAnImpossibleName(t *testing.T) {
+	niri := &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code", output: "DP-1", focusedWindow: 7}
+	s := New("test", nil, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	for _, name := range []string{"VShop", "has space", "with.dots", ""} {
+		err := c.Call("desk.move-window-to", nil, name)
+		if err == nil || !strings.Contains(err.Error(), "not a desk name") {
+			t.Errorf("move-window-to %q: got %v, want a refusal about the name", name, err)
+		}
+	}
+	if got := niri.carryCalls(); len(got) != 0 {
+		t.Errorf("moved the window to %v on a name that cannot be a desk", got)
+	}
+}
+
+// A desk that could exist but does not keeps the answer about the desk, not
+// about the name.
+func TestMoveWindowToADeskThatIsNotThere(t *testing.T) {
+	niri := &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code", output: "DP-1", focusedWindow: 7}
+	s := New("test", nil, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	err = c.Call("desk.move-window-to", nil, "nowhere")
+	if err == nil || !strings.Contains(err.Error(), "no workspaces") {
+		t.Errorf("got %v, want an answer about the desk", err)
+	}
+	if got := niri.carryCalls(); len(got) != 0 {
+		t.Errorf("moved the window to %v before finding out there was nowhere to put it", got)
+	}
+}
+
 func TestMoveWindowNeedsADirection(t *testing.T) {
 	s := New("test", nil, &fakeCompositor{m: twoScreens(), focused: "haven.DP-1.db"}, nil)
 	c, err := DialPath(serve(t, s))

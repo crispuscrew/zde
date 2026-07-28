@@ -285,6 +285,26 @@ let
         zde desk prev 2>&1 | tee /tmp/reg-prev2.txt
         grep -q 'haven.winit' /tmp/reg-prev2.txt
 
+        # Into the regulars and back out, which is what a desk named rather
+        # than counted to is for. No rotation reaches the band, so without this
+        # a window could go in and never come out again.
+        zde desk switch vshop >/dev/null
+        nirimsg action focus-workspace vshop.winit.foot >/dev/null
+        moved=$(focused_window)
+        [ -n "$moved" ] || {
+          echo "expected a window on vshop.winit.foot to carry:"; nirimsg windows; exit 1
+        }
+        zde desk move-window-to regulars 2>&1 | tee /tmp/mwt-in.txt
+        grep -qx 'regulars.winit.comms' /tmp/mwt-in.txt
+        [ "$(focused_window)" = "$moved" ] || {
+          echo "window $moved did not arrive in the band: focus is on $(focused_window)"; exit 1
+        }
+        zde desk move-window-to vshop 2>&1 | tee /tmp/mwt-out.txt
+        grep -q 'vshop.winit' /tmp/mwt-out.txt
+        [ "$(focused_window)" = "$moved" ] || {
+          echo "window $moved did not come back out: focus is on $(focused_window)"; exit 1
+        }
+
         echo "live compositor check passed"
   '';
 in

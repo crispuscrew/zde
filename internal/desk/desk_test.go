@@ -39,6 +39,22 @@ func TestParseName(t *testing.T) {
 // A name that does not parse is not an error to report at the user, it is a
 // workspace that is not ours - so what matters is that the boundary is drawn
 // in the right place.
+// A desk asked for by name is held to the rule the desk part of a workspace
+// name is held to, or a desk could be asked for that no workspace could ever
+// belong to.
+func TestValidDesk(t *testing.T) {
+	for _, ok := range []string{"vshop", "haven", "regulars", "side-project", "b2b", "1"} {
+		if !ValidDesk(ok) {
+			t.Errorf("ValidDesk(%q) = false, want a desk name", ok)
+		}
+	}
+	for _, bad := range []string{"", "VShop", "has space", "with.dots", "-lead", "trail-", "a--b", strings.Repeat("x", 65)} {
+		if ValidDesk(bad) {
+			t.Errorf("ValidDesk(%q) = true, want refused", bad)
+		}
+	}
+}
+
 func TestParseNameRejects(t *testing.T) {
 	for _, in := range []string{
 		"",                  // niri's unnamed workspaces

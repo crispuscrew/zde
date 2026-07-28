@@ -70,6 +70,17 @@ func NewName(desk, monitor, slot string) (Name, error) {
 	return ParseName(desk + "." + monitor + "." + slot)
 }
 
+// ValidDesk reports whether a string could name a desk - the same rule the
+// desk part of a workspace name is held to, so that a desk asked for by name
+// and a desk read off a workspace are the same kind of thing.
+//
+// It says nothing about whether that desk exists. Telling someone their typo
+// is not a desk name is a different answer from telling them the desk is not
+// there, and they want different things next.
+func ValidDesk(s string) bool {
+	return len(s) <= partMax && namePart.MatchString(s)
+}
+
 // ParseName reads a workspace name. A name that does not parse is not a zde
 // workspace: it belongs to whoever made it, and Rebuild leaves it alone.
 func ParseName(s string) (Name, error) {

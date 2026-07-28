@@ -271,6 +271,14 @@ func (s *Server) Dispatch(req Request) Response {
 			return s.moveWindow(desk.Next)
 		}
 		return s.moveWindow(desk.Prev)
+	case "desk.move-window-to":
+		// A verb of its own rather than another word this one accepts,
+		// because "next" and "prev" are desk names anybody may use, and a
+		// desk you cannot reach because of what you called it is a trap.
+		if len(req.Args) != 1 {
+			return Response{Error: "desk.move-window-to takes one desk name"}
+		}
+		return s.moveWindowTo(req.Args[0])
 	case "desk.regulars":
 		if len(req.Args) != 0 {
 			return Response{Error: "desk.regulars takes no arguments"}
@@ -509,9 +517,28 @@ func (s *Server) moveWindow(step func(rotation []string, from string) string) Re
 		return Response{Error: "no desks to move a window between yet"}
 	}
 	from := s.activeDesk(m)
-	to := step(rotation, from)
+	return s.carryTo(step(rotation, from), from)
+}
+
+// moveWindowTo carries the focused window to a desk by name. Same journey as
+// the rotation makes, with the destination said outright rather than counted
+// to - which is how a window reaches a desk that is not beside this one, and
+// the only way one gets into the regulars or back out of them.
+func (s *Server) moveWindowTo(target string) Response {
+	if !desk.ValidDesk(target) {
+		return Response{Error: "not a desk name: " + target}
+	}
+	m, err := s.niri.DeskMap()
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	return s.carryTo(target, s.activeDesk(m))
+}
+
+// carryTo takes the focused window to a desk and follows it there.
+func (s *Server) carryTo(to, from string) Response {
 	if to == from {
-		// One desk: nowhere to carry it, and nowhere to follow it to.
+		// Already there: nothing to carry it to, and nowhere to follow.
 		return ok([]string{})
 	}
 	// Before the window moves, not after. ensureDeclared is what makes a
@@ -522,7 +549,8 @@ func (s *Server) moveWindow(step func(rotation []string, from string) string) Re
 	if err := s.ensureDeclared(to); err != nil {
 		return Response{Error: err.Error()}
 	}
-	if m, err = s.niri.DeskMap(); err != nil {
+	m, err := s.niri.DeskMap()
+	if err != nil {
 		return Response{Error: err.Error()}
 	}
 	landed, err := s.carry(m, to)
