@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -488,6 +489,171 @@ func TestDeskSwitchStopsOnFailure(t *testing.T) {
 	}
 	if got := niri.focusCalls(); len(got) != 0 {
 		t.Errorf("kept going after a failure: %v", got)
+	}
+}
+
+// Rotating is a desk-level action, so it arrives the way a switch does: the
+// next desk comes up on every monitor it owns, and says which workspaces it
+// left focused.
+func TestDeskNextGoesToTheDeskBeside(t *testing.T) {
+	niri := &fakeCompositor{m: twoDesks(), focused: "haven.DP-1.db"}
+	s := New("test", nil, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var focused []string
+	if err := c.Call("desk.next", &focused); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(focused, []string{"vshop.DP-1.code"}) {
+		t.Errorf("next left %v focused, want the desk after haven", focused)
+	}
+}
+
+// The rotation is a loop: the end joins the beginning rather than stopping.
+func TestDeskPrevWraps(t *testing.T) {
+	niri := &fakeCompositor{m: twoDesks(), focused: "haven.DP-1.db"}
+	s := New("test", nil, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var focused []string
+	if err := c.Call("desk.prev", &focused); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(focused, []string{"vshop.DP-1.code"}) {
+		t.Errorf("prev from the first desk left %v focused, want the last", focused)
+	}
+}
+
+// The regulars are reachable from every desk by their own action and belong to
+// no band, so rotating steps over them rather than into them.
+func TestDeskRotationStepsOverTheRegulars(t *testing.T) {
+	niri := &fakeCompositor{
+		m: desk.Rebuild([]desk.Workspace{
+			{Name: "vshop.DP-1.code", Output: "DP-1"},
+			{Name: "haven.DP-1.db", Output: "DP-1"},
+			{Name: "regulars.DP-1.comms", Output: "DP-1"},
+		}, []string{"DP-1"}),
+		// From the first desk, so the step lands on what comes next rather
+		// than wrapping - wrapping from the last desk reaches the first either
+		// way, and would pass with the regulars still in the rotation.
+		focused: "haven.DP-1.db",
+	}
+	s := New("test", nil, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var focused []string
+	if err := c.Call("desk.next", &focused); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(focused, []string{"vshop.DP-1.code"}) {
+		t.Errorf("next went to %v, want the desk after haven rather than the regulars", focused)
+	}
+}
+
+// On a workspace nothing has named, where you are is the journal's to answer -
+// the same answer adoption spends, so rotating from a fresh workspace goes
+// where the desk you are on says, not back to the beginning.
+func TestDeskNextFromAWorkspaceWithNoName(t *testing.T) {
+	jrn, err := journal.Open(filepath.Join(t.TempDir(), "j.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jrn.Close()
+	// The first desk, so that using the journal and ignoring it give different
+	// answers: from haven the step is vshop, while from nowhere it is haven.
+	jrn.SetOnDesk("haven")
+
+	niri := &fakeCompositor{m: twoDesks(), focused: ""}
+	s := New("test", jrn, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var focused []string
+	if err := c.Call("desk.next", &focused); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(focused, []string{"vshop.DP-1.code"}) {
+		t.Errorf("next left %v focused, want the desk after the one the journal is on", focused)
+	}
+}
+
+// A rotation of one has no desk beside it, and switching to the desk you are
+// already on is not the no-op it looks like: a switch restores that desk's
+// last-active workspace, so pressing next on a single-desk session would
+// scroll you off the workspace you were using and then remember the wrong one.
+func TestDeskNextWithOneDeskStaysPut(t *testing.T) {
+	niri := &fakeCompositor{
+		m: desk.Rebuild([]desk.Workspace{
+			{Name: "vshop.DP-1.code", Output: "DP-1"},
+			{Name: "vshop.DP-1.notes", Output: "DP-1"},
+		}, []string{"DP-1"}),
+		focused: "vshop.DP-1.notes", // not the first of the band
+	}
+	s := New("test", nil, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var focused []string
+	if err := c.Call("desk.next", &focused); err != nil {
+		t.Fatal(err)
+	}
+	if len(focused) != 0 {
+		t.Errorf("next answered %v, want nothing: there is no desk beside this one", focused)
+	}
+	if got := niri.focusCalls(); len(got) != 0 {
+		t.Errorf("focused %v, which would have scrolled off the workspace in use", got)
+	}
+}
+
+// The socket is a wire anything can write to, so a verb that takes nothing
+// says so rather than quietly ignoring what it was handed.
+func TestDeskRotationTakesNoArguments(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks(), focused: "haven.DP-1.db"}, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	for _, method := range []string{"desk.next", "desk.prev"} {
+		err := c.Call(method, nil, "nonsense")
+		if err == nil || !strings.Contains(err.Error(), "takes no arguments") {
+			t.Errorf("%s with an argument: got %v, want a refusal", method, err)
+		}
+	}
+}
+
+// Nothing named yet is not a rotation of nothing to say about: it is a reason
+// to say so, rather than to focus a desk that does not exist.
+func TestDeskNextWithNothingToRotateThrough(t *testing.T) {
+	niri := &fakeCompositor{
+		m:       desk.Rebuild([]desk.Workspace{{Name: "", Output: "DP-1"}}, []string{"DP-1"}),
+		focused: "",
+	}
+	s := New("test", nil, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	err = c.Call("desk.next", nil)
+	if err == nil || !strings.Contains(err.Error(), "no desks") {
+		t.Errorf("got %v, want a refusal that says there is nothing to rotate through", err)
+	}
+	if got := niri.focusCalls(); len(got) != 0 {
+		t.Errorf("focused %v with no desks in the map", got)
 	}
 }
 

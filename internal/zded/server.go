@@ -246,6 +246,14 @@ func (s *Server) Dispatch(req Request) Response {
 			return Response{Error: "desk.switch takes one desk name"}
 		}
 		return s.switchDesk(req.Args[0])
+	case "desk.next", "desk.prev":
+		if len(req.Args) != 0 {
+			return Response{Error: req.Method + " takes no arguments"}
+		}
+		if req.Method == "desk.next" {
+			return s.rotate(desk.Next)
+		}
+		return s.rotate(desk.Prev)
 	case "desk.snapshot":
 		return s.snapshot(req.Args)
 	case "desk.reconcile":
@@ -396,6 +404,36 @@ func (s *Server) snapshot(args []string) Response {
 		return Response{Error: err.Error()}
 	}
 	return ok(path)
+}
+
+// rotate switches to the desk beside the one you are on. Which way is the
+// caller's to say; everything else the two directions do is the same, down to
+// the rotation being a loop with no ends to fall off.
+//
+// Where you are is the same question adoption asks, and gets the same answer:
+// on a workspace nothing has named yet, the journal knows which desk you took
+// it out of. From outside the rotation entirely - the regulars, or a session
+// with nothing named - the step lands on the first desk or the last one, so
+// the key still goes somewhere it can explain.
+func (s *Server) rotate(step func(rotation []string, from string) string) Response {
+	m, err := s.niri.DeskMap()
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	rotation := m.Rotation()
+	if len(rotation) == 0 {
+		return Response{Error: "no desks to rotate through yet"}
+	}
+	from := s.activeDesk(m)
+	to := step(rotation, from)
+	if to == from {
+		// A rotation of one: there is no desk beside this one. Switching to it
+		// anyway is not the no-op it looks like - a switch restores the desk's
+		// last-active workspace, so it would scroll off the workspace you are
+		// on and then remember the wrong one as where you were.
+		return ok([]string{})
+	}
+	return s.switchDesk(to)
 }
 
 // activeDesk is the desk whose band new workspaces belong to.

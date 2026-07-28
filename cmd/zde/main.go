@@ -31,6 +31,8 @@ func run(args []string) error {
 		return deskList()
 	case len(args) == 3 && args[0] == "desk" && args[1] == "switch":
 		return switchDesk(args[2])
+	case len(args) == 2 && args[0] == "desk" && (args[1] == "next" || args[1] == "prev"):
+		return focusDesk("desk." + args[1])
 	case len(args) == 2 && args[0] == "desk" && args[1] == "last":
 		return lastDesk()
 	case len(args) == 2 && args[0] == "desk" && args[1] == "reconcile":
@@ -92,14 +94,19 @@ func deskList() error {
 	return nil
 }
 
-func switchDesk(name string) error {
+func switchDesk(name string) error { return focusDesk("desk.switch", name) }
+
+// focusDesk calls one of the verbs that bring a desk up, and prints the
+// workspaces it left focused - one name per line, the way everything else in
+// zde says a workspace.
+func focusDesk(method string, args ...string) error {
 	c, err := zded.Dial()
 	if err != nil {
 		return err
 	}
 	defer c.Close()
 	var focused []string
-	if err := c.Call("desk.switch", &focused, name); err != nil {
+	if err := c.Call(method, &focused, args...); err != nil {
 		return err
 	}
 	for _, n := range focused {
@@ -162,6 +169,8 @@ func usage() {
   zde status             what zded and the compositor are doing
   zde desk list          the desks that exist right now
   zde desk switch NAME   bring a desk up on every monitor it owns
+  zde desk next          the desk after this one, wrapping (regulars excluded)
+  zde desk prev          the desk before this one, wrapping
   zde desk last          go back to the desk you came from
   zde desk reconcile     make the workspace names true again
   zde desk snapshot [N]  write down the desk you are on, so you can ask for it

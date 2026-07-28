@@ -56,8 +56,8 @@ usable.
   block-out-from granularity; mode mechanism (config-swap vs input layer);
   X11 apps, which need xwayland-satellite (the session leaves XWayland off).
 - keymap: niri key-name casing for punctuation (grave, brackets, semicolon,
-  comma, period); desk next/prev ordering; the panic/block leader sequences
-  (Mod+Escape then L, Mod+Tab then L) via the input daemon, not niri.
+  comma, period); the panic/block leader sequences (Mod+Escape then L, Mod+Tab
+  then L) via the input daemon, not niri.
 - niri config: `nav.*` shelling to zded per keypress feeling instant, and the
   config driving a real compositor. The smoke test settles the static half -
   niri's own parser accepts the tree, its includes resolve, and every emitted
