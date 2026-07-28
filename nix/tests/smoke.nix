@@ -164,6 +164,27 @@ let
         # snapshot newly captures that a hand-written manifest would not have
         # had.
         grep -q 'foot' /tmp/desks/vshop.yaml
+
+        # Rotation, which needs a second desk to be about anything. Declared
+        # here rather than at the top so that everything above it is about one
+        # desk, the way it was written.
+        printf 'name: haven
+    monitors:
+      winit: { workspaces: [db] }
+    '       > /tmp/desks/haven.yaml
+        zde desk switch haven 2>&1 | tee /tmp/haven.txt
+        grep -qx 'haven.winit.db' /tmp/haven.txt
+
+        # Alphabetical, and a loop: from haven forward is vshop, and from
+        # vshop forward again is haven rather than the end of a list.
+        zde desk next 2>&1 | tee /tmp/next.txt
+        grep -q 'vshop.winit' /tmp/next.txt
+        zde desk next 2>&1 | tee /tmp/next2.txt
+        grep -qx 'haven.winit.db' /tmp/next2.txt
+        # And prev is next backwards, wrapping the other way.
+        zde desk prev 2>&1 | tee /tmp/prev.txt
+        grep -q 'vshop.winit' /tmp/prev.txt
+
         echo "live compositor check passed"
   '';
 in
