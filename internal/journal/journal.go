@@ -38,7 +38,8 @@ type entry struct {
 
 const (
 	kindActive   = "active"   // on this desk and monitor, this slot was focused
-	kindLastDesk = "lastdesk" // the desk that was active
+	kindLastDesk = "lastdesk" // the desk to go back to
+	kindOnDesk   = "ondesk"   // the desk you are on now
 	kindRenamed  = "renamed"  // a workspace was renamed, so entries move with it
 )
 
@@ -50,6 +51,10 @@ type State struct {
 	LastActive map[string]map[string]string
 	// LastDesk is the desk to return to, for desk.last.
 	LastDesk string
+	// OnDesk is the desk you are on. Focus alone cannot answer that: a window
+	// opened onto a fresh workspace has no name yet, and that is exactly when
+	// something has to know which desk it belongs to.
+	OnDesk string
 }
 
 func newState() State {
@@ -153,6 +158,8 @@ func (j *Journal) apply(e entry) {
 		j.state.LastActive[e.Desk][e.Monitor] = e.Slot
 	case kindLastDesk:
 		j.state.LastDesk = e.Desk
+	case kindOnDesk:
+		j.state.OnDesk = e.Desk
 	case kindRenamed:
 		j.applyRename(e)
 	default:
@@ -188,7 +195,11 @@ func (j *Journal) applyRename(e entry) {
 func (j *Journal) State() State {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	out := State{LastActive: make(map[string]map[string]string, len(j.state.LastActive)), LastDesk: j.state.LastDesk}
+	out := State{
+		LastActive: make(map[string]map[string]string, len(j.state.LastActive)),
+		LastDesk:   j.state.LastDesk,
+		OnDesk:     j.state.OnDesk,
+	}
 	for d, byMonitor := range j.state.LastActive {
 		m := make(map[string]string, len(byMonitor))
 		for mon, slot := range byMonitor {
@@ -216,6 +227,12 @@ func (j *Journal) SetActive(n desk.Name) error {
 // SetLastDesk records the desk that was active, for desk.last.
 func (j *Journal) SetLastDesk(name string) error {
 	return j.record(entry{Kind: kindLastDesk, Desk: name})
+}
+
+// SetOnDesk records the desk you are on, which is what says who owns a
+// workspace that has no name yet.
+func (j *Journal) SetOnDesk(name string) error {
+	return j.record(entry{Kind: kindOnDesk, Desk: name})
 }
 
 // Renamed tells the journal a workspace changed name, so any position
@@ -282,6 +299,11 @@ func (j *Journal) compactLocked() error {
 	}
 	if j.state.LastDesk != "" {
 		if err := write(entry{Kind: kindLastDesk, Desk: j.state.LastDesk}); err != nil {
+			return err
+		}
+	}
+	if j.state.OnDesk != "" {
+		if err := write(entry{Kind: kindOnDesk, Desk: j.state.OnDesk}); err != nil {
 			return err
 		}
 	}

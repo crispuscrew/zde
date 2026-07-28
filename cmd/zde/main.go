@@ -64,6 +64,9 @@ func status() error {
 	fmt.Printf("zded       %s\n", st.Version)
 	fmt.Printf("compositor %s\n", st.Compositor)
 	fmt.Printf("desks      %d\n", st.Desks)
+	if st.OnDesk != "" {
+		fmt.Printf("on desk    %s\n", st.OnDesk)
+	}
 	if st.LastDesk != "" {
 		fmt.Printf("last desk  %s\n", st.LastDesk)
 	}
