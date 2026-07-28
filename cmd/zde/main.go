@@ -31,6 +31,8 @@ func run(args []string) error {
 		return deskList()
 	case len(args) == 3 && args[0] == "desk" && args[1] == "switch":
 		return switchDesk(args[2])
+	case len(args) == 2 && args[0] == "nav" && (args[1] == "down" || args[1] == "up"):
+		return focusDesk("nav." + args[1])
 	case len(args) == 2 && args[0] == "desk" && (args[1] == "next" || args[1] == "prev"):
 		return focusDesk("desk." + args[1])
 	case len(args) == 2 && args[0] == "desk" && args[1] == "last":
@@ -169,6 +171,7 @@ func usage() {
   zde status             what zded and the compositor are doing
   zde desk list          the desks that exist right now
   zde desk switch NAME   bring a desk up on every monitor it owns
+  zde nav down|up        the window along the stack, else the desk beside this
   zde desk next          the desk after this one, wrapping (regulars excluded)
   zde desk prev          the desk before this one, wrapping
   zde desk last          go back to the desk you came from

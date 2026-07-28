@@ -34,6 +34,12 @@ type Compositor interface {
 	// FocusWorkspace focuses one by name, which is what makes its monitor
 	// show it.
 	FocusWorkspace(name string) error
+	// FocusedWindow is the focused window's id, 0 when none is. Whether it
+	// changes is how nav tells a window below from the end of the stack.
+	FocusedWindow() (uint64, error)
+	// FocusWindowVertically moves focus one window along the stack, and does
+	// nothing at the end of it.
+	FocusWindowVertically(down bool) error
 	// RenameWorkspace corrects a name that no longer tells the truth.
 	RenameWorkspace(from, to string) error
 	// SetWorkspaceNameByID names a workspace that has no name to be
@@ -246,6 +252,11 @@ func (s *Server) Dispatch(req Request) Response {
 			return Response{Error: "desk.switch takes one desk name"}
 		}
 		return s.switchDesk(req.Args[0])
+	case "nav.down", "nav.up":
+		if len(req.Args) != 0 {
+			return Response{Error: req.Method + " takes no arguments"}
+		}
+		return s.nav(req.Method == "nav.down")
 	case "desk.next", "desk.prev":
 		if len(req.Args) != 0 {
 			return Response{Error: req.Method + " takes no arguments"}
@@ -404,6 +415,41 @@ func (s *Server) snapshot(args []string) Response {
 		return Response{Error: err.Error()}
 	}
 	return ok(path)
+}
+
+// nav is the vertical axis, and it is one key for two jobs because that is how
+// the axis reads: down is down. Inside a stack it is the window below; at the
+// end of one it is the next desk (docs/model.md, section 6).
+//
+// Which of the two it is stays niri's to decide, since the layout is niri's.
+// zde asks for the window move and looks at whether anything moved, rather
+// than working out from a layout dump whether a window is there. That costs
+// two round trips and buys never having to model niri's stacking to be right
+// about it - and it is right about the cases a model would get wrong: a
+// floating window, an empty workspace, a single-window column.
+//
+// The answer is the workspaces a desk rotation focused, or nothing at all when
+// focus only moved inside the workspace: what changed about the desk, which is
+// the part a bar has to know.
+func (s *Server) nav(down bool) Response {
+	before, err := s.niri.FocusedWindow()
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	if err := s.niri.FocusWindowVertically(down); err != nil {
+		return Response{Error: err.Error()}
+	}
+	after, err := s.niri.FocusedWindow()
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	if after != before {
+		return ok([]string{})
+	}
+	if down {
+		return s.rotate(desk.Next)
+	}
+	return s.rotate(desk.Prev)
 }
 
 // rotate switches to the desk beside the one you are on. Which way is the

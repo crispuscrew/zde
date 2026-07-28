@@ -185,6 +185,18 @@ let
         zde desk prev 2>&1 | tee /tmp/prev.txt
         grep -q 'vshop.winit' /tmp/prev.txt
 
+        # nav, the axis the model reads as one: the window below first, the
+        # desk after it. The hinge is that niri's FocusWindowDown does nothing
+        # at the end of a column rather than falling through to another
+        # workspace - zde reads "nothing moved" as "that was the end", so if
+        # niri ever fell through instead, focus would have changed, nav would
+        # report no desk change, and these two would fail here rather than on
+        # somebody's machine.
+        zde nav down 2>&1 | tee /tmp/nav-down.txt
+        grep -q 'haven.winit.db' /tmp/nav-down.txt
+        zde nav up 2>&1 | tee /tmp/nav-up.txt
+        grep -q 'vshop.winit' /tmp/nav-up.txt
+
         echo "live compositor check passed"
   '';
 in
