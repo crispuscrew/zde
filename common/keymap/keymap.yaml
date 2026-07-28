@@ -64,6 +64,14 @@ binds:
   - { action: window.close, key: Mod+grave } # backtick
   - { action: window.jump-to, key: Mod+w }
   - { action: workspace.overview, key: Mod+s }
+  # workspace.next/prev walk this desk's band and stop at its ends, which is
+  # what keeps scrolling from leaving a desk. The intended chord is Tab with
+  # j/k and the arrows, and niri cannot express it: its binds are one modifier
+  # set plus one key, and Tab is not a modifier. Held as a layer or read as a
+  # sequence after Mod+Tab, it needs the input daemon - the same one the block
+  # sequence above waits for. The verbs work now via zde workspace next|prev.
+  # - { action: workspace.next, key: Tab+j }   # and Tab+Down
+  # - { action: workspace.prev, key: Tab+k }   # and Tab+Up
   # column stacking: i = in (consume), o = out (expel).
   - { action: window.consume, key: Mod+i }
   - { action: window.expel, key: Mod+o }

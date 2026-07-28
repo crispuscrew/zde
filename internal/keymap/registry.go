@@ -107,8 +107,15 @@ var registry = map[string]Entry{
 	"window.expel":       {Group: "window", Desc: "expel: push the window out of its column (out)", Native: "expel-window-from-column"},
 	"window.jump-to":     {Group: "window", Desc: "jump to any open window by name", Spawn: []string{"zde", "window", "jump-to"}},
 
-	// workspace: niri natives. Numbered switching is gone (desks replace it);
-	// overview zooms out to the whole band.
+	// workspace: numbered switching is gone (desks replace it); overview zooms
+	// out to the whole band.
+	//
+	// next and prev are zde's, not niri's, because niri's own would scroll
+	// out of the desk and into somebody else's workspaces. Clamping to the
+	// band is invariant 4, and it is the difference between a strip you scroll
+	// and a desk you leave on purpose.
+	"workspace.next":     {Group: "workspace", Desc: "one along this desk's band, stopping at its end", Spawn: []string{"zde", "workspace", "next"}},
+	"workspace.prev":     {Group: "workspace", Desc: "one back along this desk's band, stopping at its end", Spawn: []string{"zde", "workspace", "prev"}},
 	"workspace.overview": {Group: "workspace", Desc: "toggle the overview (zoom out to all workspaces)", Native: "toggle-overview"},
 
 	// launch: zlg is zinc's launcher; the rest goes through zde. "terminal"

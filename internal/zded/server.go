@@ -37,6 +37,9 @@ type Compositor interface {
 	// FocusedOutput is the monitor the focused workspace is on. A window
 	// carried to another desk stays on the screen it was on.
 	FocusedOutput() (string, error)
+	// FocusedPlace is that workspace's name and output together, from one
+	// reply, so the two cannot describe different moments.
+	FocusedPlace() (name, output string, err error)
 	// FocusedWindow is the focused window's id, 0 when none is. Whether it
 	// changes is how nav tells a window below from the end of the stack.
 	FocusedWindow() (uint64, error)
@@ -279,6 +282,14 @@ func (s *Server) Dispatch(req Request) Response {
 			return Response{Error: "desk.move-window-to takes one desk name"}
 		}
 		return s.moveWindowTo(req.Args[0])
+	case "workspace.next", "workspace.prev":
+		if len(req.Args) != 0 {
+			return Response{Error: req.Method + " takes no arguments"}
+		}
+		if req.Method == "workspace.next" {
+			return s.scroll(1)
+		}
+		return s.scroll(-1)
 	case "desk.regulars":
 		if len(req.Args) != 0 {
 			return Response{Error: "desk.regulars takes no arguments"}
@@ -674,6 +685,58 @@ func noSuchBand(target string) string {
 	return "desk " + target + " has no workspaces and no manifest that declares any"
 }
 
+// scroll moves one workspace along the band of the desk you are on, on the
+// screen you are looking at, and stops at its ends.
+//
+// This is invariant 4 made of code: the band is the whole range a scroll can
+// reach, so leaving a desk is always a desk-level action - next, prev, a name,
+// the regulars - and never something you arrive at by holding a key down.
+//
+// niri's own workspace scrolling would cross into another desk's workspaces,
+// which is why zde works out the destination and focuses it by name rather
+// than asking niri to move one along.
+//
+// The answer is where it went, or nothing when the band ended there. A caller
+// that cannot tell those apart would show a workspace change that never
+// happened.
+func (s *Server) scroll(by int) Response {
+	m, err := s.niri.DeskMap()
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	// One reply for both, and the desk read off the same one. Asked
+	// separately, the name could be from before a drag to another monitor and
+	// the output from after it, and the pair would describe nowhere - which
+	// lands outside every band, and sends the step to an end of one.
+	focused, monitor, err := s.niri.FocusedPlace()
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	from, _ := desk.ParseName(focused)
+	on := s.deskOf(m, focused)
+	if on == "" {
+		return Response{Error: "no desk to scroll inside: nothing here belongs to one yet"}
+	}
+	band := m.Band(on, monitor)
+	if len(band) == 0 {
+		// Not the same as the end of a band, which is silent because nothing
+		// is wrong with it. There is nothing here to walk at all.
+		return Response{Error: "desk " + on + " has no workspaces on this screen"}
+	}
+	to, moved := desk.BandStep(band, from, by)
+	if !moved {
+		return ok([]string{})
+	}
+	if err := s.niri.FocusWorkspace(to.String()); err != nil {
+		return Response{Error: err.Error()}
+	}
+	if s.jrn != nil {
+		// Where the desk was left, so coming back lands here (invariant 5).
+		s.jrn.SetActive(to)
+	}
+	return ok([]string{to.String()})
+}
+
 // rotate switches to the desk beside the one you are on. Which way is the
 // caller's to say; everything else the two directions do is the same, down to
 // the rotation being a loop with no ends to fall off.
@@ -727,7 +790,19 @@ func (s *Server) rotate(step func(rotation []string, from string) string) Respon
 // than adoption has any business making.
 func (s *Server) activeDesk(m *desk.Map) string {
 	focused, err := s.niri.FocusedName()
-	if err == nil && focused != "" {
+	if err != nil {
+		// Unreadable is not the same as unnamed, but it leads to the same
+		// place: the journal is the only other answer either way.
+		focused = ""
+	}
+	return s.deskOf(m, focused)
+}
+
+// deskOf is activeDesk with the focused workspace already read. A caller that
+// needs the name for something else too asks once and passes it here, rather
+// than asking again and getting an answer from a different moment.
+func (s *Server) deskOf(m *desk.Map, focused string) string {
+	if focused != "" {
 		n, err := desk.ParseName(focused)
 		if err != nil {
 			return "" // named, but not by us

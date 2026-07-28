@@ -209,6 +209,26 @@ func (c *Client) FocusedOutput() (string, error) {
 	return "", nil
 }
 
+// FocusedPlace is the focused workspace's name and the output it is on, from
+// one reply.
+//
+// Asked separately they are two replies with a gap in between, and the gap is
+// long enough for a workspace to be dragged to another monitor - which leaves
+// a name saying one screen and an output saying another, a pair that describes
+// nowhere. Whatever moves, these two agree with each other.
+func (c *Client) FocusedPlace() (name, output string, err error) {
+	all, err := c.Workspaces()
+	if err != nil {
+		return "", "", err
+	}
+	for _, w := range all {
+		if w.Focused {
+			return deref(w.Name), deref(w.Output), nil
+		}
+	}
+	return "", "", nil
+}
+
 // MoveWindowToWorkspace moves the focused window to a workspace by name.
 //
 // focus stays with the workspace it came from: a desk switch follows, and that
@@ -405,7 +425,7 @@ func (c *Client) DeskMap() (*desk.Map, error) {
 func AsDeskWorkspaces(in []Workspace) []desk.Workspace {
 	out := make([]desk.Workspace, 0, len(in))
 	for _, w := range in {
-		out = append(out, desk.Workspace{ID: w.ID, Name: deref(w.Name), Output: deref(w.Output)})
+		out = append(out, desk.Workspace{ID: w.ID, Idx: w.Idx, Name: deref(w.Name), Output: deref(w.Output)})
 	}
 	return out
 }

@@ -661,6 +661,228 @@ func TestNavOnAnEmptyWorkspaceRotates(t *testing.T) {
 	}
 }
 
+// twoBands is one desk with a band of three on one screen, and another desk's
+// workspace sitting right next to it in niri's strip - which is what a scroll
+// must not wander into.
+func twoBands() *desk.Map {
+	return desk.Rebuild([]desk.Workspace{
+		{Name: "vshop.DP-1.code", Output: "DP-1"},
+		{Name: "vshop.DP-1.logs", Output: "DP-1"},
+		{Name: "vshop.DP-1.notes", Output: "DP-1"},
+		{Name: "haven.DP-1.db", Output: "DP-1"},
+	}, []string{"DP-1"})
+}
+
+func TestWorkspaceNextWalksTheBand(t *testing.T) {
+	jrn, err := journal.Open(filepath.Join(t.TempDir(), "j.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jrn.Close()
+
+	niri := &fakeCompositor{m: twoBands(), focused: "vshop.DP-1.code", output: "DP-1"}
+	s := New("test", jrn, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var focused []string
+	if err := c.Call("workspace.next", &focused); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(focused, []string{"vshop.DP-1.logs"}) {
+		t.Errorf("next went to %v, want the next of the band", focused)
+	}
+	if got := niri.focusCalls(); !slices.Equal(got, []string{"vshop.DP-1.logs"}) {
+		t.Errorf("focused %v", got)
+	}
+	// Invariant 5: the desk remembers where it was left.
+	if got := jrn.State().LastActive["vshop"]["DP-1"]; got != "logs" {
+		t.Errorf("last active = %q, want where the scroll left the desk", got)
+	}
+}
+
+// The end of the band is the end of the scroll. haven.DP-1.db is right there
+// in niri's strip, and belongs to a desk you did not ask to leave.
+func TestWorkspaceNextStopsAtTheBandEnd(t *testing.T) {
+	niri := &fakeCompositor{m: twoBands(), focused: "vshop.DP-1.notes", output: "DP-1"}
+	s := New("test", nil, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var focused []string
+	if err := c.Call("workspace.next", &focused); err != nil {
+		t.Fatal(err)
+	}
+	if len(focused) != 0 {
+		t.Errorf("answered %v, want nothing: the band ends there", focused)
+	}
+	if got := niri.focusCalls(); len(got) != 0 {
+		t.Errorf("focused %v, which is another desk's workspace", got)
+	}
+}
+
+// On a workspace nothing has named, the desk is the journal's answer and the
+// near end of its band is the way back in.
+func TestWorkspaceNextFromAWorkspaceWithNoName(t *testing.T) {
+	jrn, err := journal.Open(filepath.Join(t.TempDir(), "j.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jrn.Close()
+	jrn.SetOnDesk("vshop")
+
+	niri := &fakeCompositor{m: twoBands(), focused: "", output: "DP-1"}
+	s := New("test", jrn, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var focused []string
+	if err := c.Call("workspace.prev", &focused); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(focused, []string{"vshop.DP-1.notes"}) {
+		t.Errorf("prev went to %v, want the last of the band", focused)
+	}
+}
+
+// A band on another screen is not this one. Scrolling walks the screen you are
+// looking at, because the strip does (docs/model.md, section 1).
+func TestWorkspaceNextStaysOnItsScreen(t *testing.T) {
+	niri := &fakeCompositor{
+		m: desk.Rebuild([]desk.Workspace{
+			{Name: "vshop.DP-1.code", Output: "DP-1"},
+			{Name: "vshop.HDMI-A-1.aux", Output: "HDMI-A-1"},
+		}, []string{"DP-1", "HDMI-A-1"}),
+		focused: "vshop.DP-1.code",
+		output:  "DP-1",
+	}
+	s := New("test", nil, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var focused []string
+	if err := c.Call("workspace.next", &focused); err != nil {
+		t.Fatal(err)
+	}
+	if len(focused) != 0 {
+		t.Errorf("answered %v, want nothing: DP-1's band is one workspace long", focused)
+	}
+}
+
+// Undocking parks a desk's workspaces on the screen that is left, with home
+// still in their names so they can go back. Scrolling has to follow them
+// there, or these keys go dead at exactly the moment somebody unplugs a
+// monitor - silently, while every other desk verb keeps working.
+func TestWorkspaceNextAfterAMonitorGoesAway(t *testing.T) {
+	niri := &fakeCompositor{
+		m: desk.Rebuild([]desk.Workspace{
+			{Idx: 1, Name: "vshop.DP-1.code", Output: "eDP-1"},
+			{Idx: 2, Name: "vshop.DP-1.notes", Output: "eDP-1"},
+		}, []string{"eDP-1"}), // DP-1 is gone; both are parked on the laptop
+		focused: "vshop.DP-1.code",
+		output:  "eDP-1",
+	}
+	s := New("test", nil, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var focused []string
+	if err := c.Call("workspace.next", &focused); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(focused, []string{"vshop.DP-1.notes"}) {
+		t.Errorf("next went to %v, want the band where the workspaces actually are", focused)
+	}
+}
+
+// A scroll niri refused is a failure, not a move. Writing it down would leave
+// the desk remembering a workspace it was never on.
+func TestWorkspaceNextWhenNiriRefuses(t *testing.T) {
+	jrn, err := journal.Open(filepath.Join(t.TempDir(), "j.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jrn.Close()
+
+	niri := &fakeCompositor{
+		m:       twoBands(),
+		focused: "vshop.DP-1.code",
+		output:  "DP-1",
+		failOn:  "vshop.DP-1.logs",
+	}
+	s := New("test", jrn, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.Call("workspace.next", nil); err == nil {
+		t.Fatal("a refused scroll was reported as a move")
+	}
+	if got := jrn.State().LastActive["vshop"]["DP-1"]; got != "" {
+		t.Errorf("last active = %q, want nothing written for a move that did not happen", got)
+	}
+}
+
+// Nothing here belongs to a desk yet, so there is no band to be inside of.
+func TestWorkspaceNextWithNoDesk(t *testing.T) {
+	niri := &fakeCompositor{
+		m:       desk.Rebuild([]desk.Workspace{{ID: 1, Idx: 1, Output: "DP-1"}}, []string{"DP-1"}),
+		focused: "",
+		output:  "DP-1",
+	}
+	s := New("test", nil, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	err = c.Call("workspace.next", nil)
+	if err == nil || !strings.Contains(err.Error(), "no desk to scroll inside") {
+		t.Errorf("got %v, want a refusal that says why there is nowhere to go", err)
+	}
+}
+
+// The desk is real and this screen has none of it. That is not the quiet end
+// of a band, it is nothing to walk at all, and saying so beats a key that
+// looks broken.
+func TestWorkspaceNextWithNothingOnThisScreen(t *testing.T) {
+	jrn, err := journal.Open(filepath.Join(t.TempDir(), "j.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jrn.Close()
+	jrn.SetOnDesk("vshop")
+
+	niri := &fakeCompositor{
+		m: desk.Rebuild([]desk.Workspace{
+			{Idx: 1, Name: "vshop.DP-1.code", Output: "DP-1"},
+		}, []string{"DP-1", "HDMI-A-1"}),
+		focused: "", // an unnamed workspace, on the other screen
+		output:  "HDMI-A-1",
+	}
+	s := New("test", jrn, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	err = c.Call("workspace.next", nil)
+	if err == nil || !strings.Contains(err.Error(), "on this screen") {
+		t.Errorf("got %v, want a refusal about this screen", err)
+	}
+}
+
 // The regulars are reachable from any desk by their own key, and coming back
 // is what makes reaching for them cheap: desk.last has to know where you were.
 func TestDeskRegularsGoesThereAndRemembers(t *testing.T) {
@@ -1787,4 +2009,13 @@ func TestDefaultSocketNeedsRuntimeDir(t *testing.T) {
 	if err != nil || got != "/run/user/1000/zde/zded.sock" {
 		t.Errorf("DefaultSocket() = %q, %v", got, err)
 	}
+}
+
+func (f *fakeCompositor) FocusedPlace() (string, string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return "", "", f.err
+	}
+	return f.focused, f.output, nil
 }
