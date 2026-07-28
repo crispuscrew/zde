@@ -62,6 +62,15 @@ usable.
   config driving a real compositor. The smoke test settles the static half -
   niri's own parser accepts the tree, its includes resolve, and every emitted
   action name is real - which is not the same as running it.
+- how anyone makes their regulars. A manifest cannot declare them (the
+  manifest layer refuses the reserved name) and adoption names into the desk
+  you are on, so today the band exists only if a workspace is named into it by
+  hand through niri. The key that reaches them works; the way to have them in
+  the first place is missing, and belongs with the desk verbs that move work
+  between bands.
+- a single unreadable file in the desks directory takes every manifest with
+  it: the loader fails the whole read, and the caller swallows the error, so
+  desks silently stop being declared. Worth failing one file at a time.
 - nav with a layer-shell surface up: one holding keyboard focus reads as
   nothing focused at all, so a press spends itself putting focus back on a
   window instead of going anywhere. Nothing zde ships reaches that yet - the

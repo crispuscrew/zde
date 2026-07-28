@@ -245,12 +245,16 @@ let
         }
 
         # The regulars: a band reachable from anywhere by its own key, and
-        # never scrolled into by anything else. Declared last, so everything
-        # above it ran on a machine that had none.
-        printf 'name: regulars
-    monitors:
-      winit: { workspaces: [comms] }
-    '       > /tmp/desks/regulars.yaml
+        # never scrolled into by anything else. Made last, so everything above
+        # it ran on a machine that had none.
+        #
+        # Not declared, because they cannot be: a manifest named regulars is
+        # refused where manifests are read - the regulars are the band that is
+        # not a desk. Naming a workspace into the band is the only way they
+        # come into being, so that is what this does, and what the error on a
+        # machine without them tells you to do.
+        for i in $(seq 10); do nirimsg action focus-workspace-down >/dev/null; done
+        nirimsg action set-workspace-name regulars.winit.comms >/dev/null
         zde desk regulars 2>&1 | tee /tmp/reg.txt
         grep -qx 'regulars.winit.comms' /tmp/reg.txt
 

@@ -606,17 +606,24 @@ func (s *Server) carry(m *desk.Map, target string) (string, error) {
 // never scrolled into by accident, and desk.last brings you back, so reaching
 // for music does not cost you your place.
 //
-// They exist the way any desk does - a manifest, or workspaces named into
-// them. Saying so when there are none beats a refusal that reads like a bug.
+// They come into being by being named into, and only that way: a manifest
+// named regulars is refused where manifests are read, because the regulars are
+// not a desk. Saying that when there are none beats a refusal that reads like
+// a desk went missing - and beats the manifest advice this used to give, which
+// the manifest layer would have rejected.
 func (s *Server) regulars() Response {
 	resp := s.switchDesk(desk.Regulars)
-	if resp.Error != "" {
-		m, err := s.niri.DeskMap()
-		if err == nil && len(m.Regulars()) == 0 && s.manifestFor(desk.Regulars) == nil {
-			return Response{Error: "no regulars yet: declare them in a desk manifest named regulars, or name a workspace into the band"}
-		}
+	if resp.Error == "" {
+		return resp
 	}
-	return resp
+	// Only when the band is genuinely empty. A compositor that cannot be read,
+	// a focus that failed partway - those are their own errors and keep their
+	// own words.
+	m, err := s.niri.DeskMap()
+	if err != nil || len(m.Regulars()) > 0 {
+		return resp
+	}
+	return Response{Error: "no regulars yet: name a workspace " + desk.Regulars + ".<monitor>.<label> into the band, which is the only way they are made"}
 }
 
 // rotate switches to the desk beside the one you are on. Which way is the
