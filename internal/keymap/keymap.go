@@ -20,14 +20,28 @@ type sourceFile struct {
 type sourceBind struct {
 	Action string `yaml:"action"`
 	Key    string `yaml:"key"`
+	// Via is the chord a person presses, when it is not the one niri sees.
+	// The input daemon turns it into Key, because niri binds one modifier set
+	// plus one key and cannot express a held Tab or a sequence.
+	Via string `yaml:"via"`
 }
 
 // Bind is one resolved chord -> action pair.
 type Bind struct {
 	Action string // as written, e.g. "window.focus left"
 	Key    string // niri chord, e.g. "Mod+Left"
+	Via    string // what is pressed to produce Key, "" when they are the same
 	Arg    string // parametric argument, "" for exact actions
 	Entry  Entry
+}
+
+// Pressed is the chord to tell someone about: what their fingers do, which is
+// the input daemon's chord when there is one and niri's otherwise.
+func (b Bind) Pressed() string {
+	if b.Via != "" {
+		return b.Via
+	}
+	return b.Key
 }
 
 type Keymap struct {
@@ -81,8 +95,12 @@ func resolve(src sourceBind) (Bind, error) {
 		return Bind{}, fmt.Errorf("%q: %w", src.Action, err)
 	}
 	key := c.String()
+	via, err := checkVia(src.Via, key)
+	if err != nil {
+		return Bind{}, fmt.Errorf("%q: %w", src.Action, err)
+	}
 	if e, ok := registry[src.Action]; ok && !e.parametric() {
-		return Bind{Action: src.Action, Key: key, Entry: e}, nil
+		return Bind{Action: src.Action, Key: key, Via: via, Entry: e}, nil
 	}
 	id, arg, found := strings.Cut(src.Action, " ")
 	if !found {
@@ -98,7 +116,26 @@ func resolve(src sourceBind) (Bind, error) {
 	if err := checkArg(e, arg); err != nil {
 		return Bind{}, fmt.Errorf("%q: %w", src.Action, err)
 	}
-	return Bind{Action: src.Action, Key: key, Arg: arg, Entry: e}, nil
+	return Bind{Action: src.Action, Key: key, Via: via, Arg: arg, Entry: e}, nil
+}
+
+// checkVia validates the pressed chord. It is never written into KDL - niri
+// only ever sees Key - so what it has to survive is the cheatsheet's table,
+// where a pipe or a newline would break the row it sits in.
+//
+// A via that is not on an input-layer key is a mistake worth catching: it says
+// the daemon rewrites a chord, and niri would be listening for the wrong one.
+func checkVia(via, key string) (string, error) {
+	if via == "" {
+		return "", nil
+	}
+	if strings.ContainsAny(via, "|\n`") {
+		return "", fmt.Errorf("via %q: no pipes, backticks or newlines, it goes in the cheatsheet table", via)
+	}
+	if !inputLayerKey(key) {
+		return "", fmt.Errorf("via %q: only for keys the input daemon emits, not %s", via, key)
+	}
+	return via, nil
 }
 
 func checkArg(e Entry, arg string) error {
@@ -182,5 +219,21 @@ func parseChord(s string) (chord, error) {
 }
 
 func hardwareKey(key string) bool {
-	return key == "Print" || strings.HasPrefix(key, "XF86")
+	return key == "Print" || strings.HasPrefix(key, "XF86") || inputLayerKey(key)
+}
+
+// inputLayerKey is one of the keys no keyboard has. The input daemon emits
+// them for chords niri cannot express - a held Tab, a sequence - so niri sees
+// an ordinary key press and binds it like any other.
+//
+// They are exempt from going through Mod for the same reason the media keys
+// are: nothing else can produce them, so there is nothing to collide with. The
+// chord a person actually presses is the bind's `via`, and that is what the
+// cheatsheet shows.
+func inputLayerKey(key string) bool {
+	switch key {
+	case "F13", "F14", "F15", "F16", "F17", "F18", "F19", "F20":
+		return true
+	}
+	return false
 }

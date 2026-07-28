@@ -1,0 +1,32 @@
+;; zde - the input layer.
+;;
+;; niri binds one modifier set plus one key. Everything the keymap wants that
+;; is not that shape lives here: a key held as a layer, and later the leader
+;; sequences and the modes (docs/roadmap.md, 0.2).
+;;
+;; It does not know about zde. It rewrites physical keys into keys no keyboard
+;; has - F13 upwards - and niri binds those like any other. The chord a person
+;; presses is written next to the bind in common/keymap/keymap.yaml as its
+;; `via`, and that is what the cheatsheet shows.
+;;
+;; This file is checked at build time: the NixOS module runs kanata --check
+;; over it, so a config that does not parse fails the build rather than the
+;; session. What it cannot check is whether the keys do the right thing, which
+;; wants a keyboard (docs/roadmap.md, verify list).
+
+(defsrc
+  tab j k up down)
+
+(deflayer base
+  @tab j k up down)
+
+;; Held Tab walks this desk's band. j and k are the vim axis, the arrows are
+;; the same thing for a hand that is not on home row. Tapped, Tab is Tab: the
+;; switcher is Mod+Tab and stays that way.
+(deflayer band
+  _ f13 f14 f14 f13)
+
+(defalias
+  ;; 200ms to decide. Below that a fast typist's Tab starts a layer; well above
+  ;; it, Tab feels sticky. It is the number to change first if either happens.
+  tab (tap-hold 200 200 tab (layer-while-held band)))

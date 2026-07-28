@@ -1,6 +1,7 @@
 package keymap
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -237,8 +238,11 @@ func TestShippedKeymap(t *testing.T) {
 		if !strings.Contains(kdl, "\n    "+b.Key+" ") {
 			t.Errorf("%s (%s) is missing from the generated binds", b.Key, b.Action)
 		}
-		if !strings.Contains(cheat, "| `"+b.Key+"` |") {
-			t.Errorf("%s (%s) is missing from the cheatsheet", b.Key, b.Action)
+		// The cheatsheet prints what is pressed, which is the chord the input
+		// daemon rewrites when there is one - niri's key would be no use to
+		// anybody looking a binding up.
+		if !strings.Contains(cheat, "| `"+b.Pressed()+"` |") {
+			t.Errorf("%s (%s) is missing from the cheatsheet", b.Pressed(), b.Action)
 		}
 	}
 	// Every group that has binds must have a section, or binds are being
@@ -246,6 +250,56 @@ func TestShippedKeymap(t *testing.T) {
 	for _, b := range km.Binds {
 		if !strings.Contains(cheat, "## "+b.Entry.Group+"\n") {
 			t.Errorf("cheatsheet has no section for group %q", b.Entry.Group)
+		}
+	}
+}
+
+// A chord the input daemon rewrites has two halves: the key niri binds, and
+// the one the fingers press. The config must carry the first and the
+// cheatsheet the second, or one of the two is a lie.
+func TestViaChordIsPressedNotBound(t *testing.T) {
+	km, err := Parse([]byte("binds:\n  - { action: workspace.next, key: F13, via: Tab+j }\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := km.Binds[0]
+	if b.Key != "F13" || b.Via != "Tab+j" || b.Pressed() != "Tab+j" {
+		t.Fatalf("bind = %+v", b)
+	}
+	if kdl := EmitKDL(km); !strings.Contains(kdl, "\n    F13 ") || strings.Contains(kdl, "Tab+j") {
+		t.Errorf("niri must be told F13 and never Tab+j:\n%s", kdl)
+	}
+	if cheat := EmitCheatsheet(km); !strings.Contains(cheat, "| `Tab+j` |") || strings.Contains(cheat, "| `F13` |") {
+		t.Errorf("the cheatsheet must say Tab+j and never F13:\n%s", cheat)
+	}
+}
+
+// Without a via, nothing changes: what niri binds is what gets pressed.
+func TestWithoutViaTheChordIsItself(t *testing.T) {
+	km, err := Parse([]byte("binds:\n  - { action: desk.regulars, key: Mod+r }\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := km.Binds[0].Pressed(); got != "Mod+r" {
+		t.Errorf("pressed = %q, want the chord itself", got)
+	}
+}
+
+// A via on a chord niri can hear says the daemon rewrites something it does
+// not, and niri would be listening for the wrong key.
+func TestViaOnlyOnKeysTheDaemonEmits(t *testing.T) {
+	_, err := Parse([]byte("binds:\n  - { action: desk.regulars, key: Mod+r, via: Tab+r }\n"))
+	if err == nil || !strings.Contains(err.Error(), "only for keys the input daemon emits") {
+		t.Errorf("got %v, want a refusal", err)
+	}
+}
+
+// The cheatsheet is a markdown table and a via is written into a cell of it.
+func TestViaCannotBreakTheCheatsheet(t *testing.T) {
+	for _, bad := range []string{"Tab+j | rm -rf", "Tab+`j`", "Tab\nj"} {
+		src := "binds:\n  - { action: workspace.next, key: F13, via: " + strconv.Quote(bad) + " }\n"
+		if _, err := Parse([]byte(src)); err == nil {
+			t.Errorf("via %q was accepted", bad)
 		}
 	}
 }

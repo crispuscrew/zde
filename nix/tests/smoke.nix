@@ -532,6 +532,13 @@ pkgs.testers.runNixOSTest {
       machine.succeed("test -x /run/current-system/sw/bin/niri-session")
       machine.succeed("test -f /run/current-system/sw/share/xdg-desktop-portal/niri-portals.conf")
 
+      # The input layer is up. There is no keyboard in here to intercept, and
+      # that is the point of the check: kanata is told to carry on when it
+      # finds no devices, so a running unit means the binary started and took
+      # our config. Whether held Tab actually reaches niri as F13 wants a
+      # keyboard, and stays on the roadmap's verify list.
+      machine.wait_for_unit("kanata-zde.service")
+
       # niri's user units reached systemd. This is what stands between a login
       # and a greeter that silently takes it straight back: niri-session starts
       # niri.service, and a build that installs those units where NixOS does not

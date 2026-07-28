@@ -72,7 +72,10 @@ func EmitCheatsheet(km *Keymap) string {
 			if bind.Arg != "" {
 				desc += " " + bind.Arg
 			}
-			b.WriteString("| `" + bind.Key + "` | `" + bind.Action + "` | " + desc + " |\n")
+			// What the fingers do, not what niri hears: for a chord the input
+			// daemon rewrites, those are different, and only one of them is
+			// any use to somebody looking a key up.
+			b.WriteString("| `" + bind.Pressed() + "` | `" + bind.Action + "` | " + desc + " |\n")
 		}
 	}
 	return b.String()
