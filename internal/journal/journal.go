@@ -36,6 +36,8 @@ type entry struct {
 	To      string `json:"to,omitempty"`
 	ID      uint64 `json:"id,omitempty"`
 	Text    string `json:"text,omitempty"`
+	From    string `json:"from,omitempty"`
+	Urgent  bool   `json:"urgent,omitempty"`
 }
 
 const (
@@ -73,6 +75,12 @@ type Item struct {
 	ID   uint64 `json:"id"`
 	Text string `json:"text"`
 	Desk string `json:"desk,omitempty"`
+	// From is what sent it, as it described itself. Empty when a person typed
+	// it. Nothing verifies it - see internal/attn.
+	From string `json:"from,omitempty"`
+	// Urgent is the sender's claim that this should interrupt rather than
+	// wait. It is a claim too, and attn's modes are what will act on it.
+	Urgent bool `json:"urgent,omitempty"`
 }
 
 func newState() State {
@@ -187,7 +195,7 @@ func (j *Journal) apply(e entry) {
 			j.skipped++
 			return
 		}
-		j.state.Queue = append(j.state.Queue, Item{ID: e.ID, Text: e.Text, Desk: e.Desk})
+		j.state.Queue = append(j.state.Queue, Item{ID: e.ID, Text: e.Text, Desk: e.Desk, From: e.From, Urgent: e.Urgent})
 		if e.ID > j.lastID {
 			j.lastID = e.ID
 		}
@@ -278,21 +286,24 @@ func (j *Journal) SetOnDesk(name string) error {
 	return j.record(entry{Kind: kindOnDesk, Desk: name})
 }
 
-// Queue records something waiting, on the desk it belongs to, and answers with
-// the item as recorded - the caller needs the id to be able to finish it.
+// Queue records something waiting and answers with it as recorded. The caller
+// fills in everything but the id, which is the journal's to give: it needs the
+// id back to be able to finish the thing later.
 //
 // Ids come from the journal and never repeat within its life, including across
 // a restart: the replay carries the highest one it saw. A queue whose ids came
 // from the length of itself would hand the same number to two things as soon as
 // one was finished.
-func (j *Journal) Queue(text, desk string) (Item, error) {
+func (j *Journal) Queue(it Item) (Item, error) {
 	// One lock over reading the last id and writing the entry that claims the
 	// next one. Two calls that read it before either wrote would both take the
 	// same number, and the second thing to wait would finish the first.
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	it := Item{ID: j.lastID + 1, Text: text, Desk: desk}
-	if err := j.recordLocked(entry{Kind: kindQueued, ID: it.ID, Text: text, Desk: desk}); err != nil {
+	it.ID = j.lastID + 1
+	if err := j.recordLocked(entry{
+		Kind: kindQueued, ID: it.ID, Text: it.Text, Desk: it.Desk, From: it.From, Urgent: it.Urgent,
+	}); err != nil {
 		return Item{}, err
 	}
 	return it, nil
@@ -383,7 +394,9 @@ func (j *Journal) compactLocked() error {
 	// In order, because the order is the queue: what has waited longest is
 	// what queue-jump goes to.
 	for _, it := range j.state.Queue {
-		if err := write(entry{Kind: kindQueued, ID: it.ID, Text: it.Text, Desk: it.Desk}); err != nil {
+		if err := write(entry{
+			Kind: kindQueued, ID: it.ID, Text: it.Text, Desk: it.Desk, From: it.From, Urgent: it.Urgent,
+		}); err != nil {
 			return err
 		}
 	}

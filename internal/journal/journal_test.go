@@ -322,11 +322,11 @@ func TestQueueSurvivesReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := j.Queue("reply to ilya", "vshop")
+	first, err := j.Queue(Item{Text: "reply to ilya", Desk: "vshop"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := j.Queue("pay the invoice", "haven"); err != nil {
+	if _, err := j.Queue(Item{Text: "pay the invoice", Desk: "haven"}); err != nil {
 		t.Fatal(err)
 	}
 	j.Close()
@@ -357,11 +357,11 @@ func TestQueueIDsDoNotRepeat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	one, _ := j.Queue("first", "")
+	one, _ := j.Queue(Item{Text: "first", Desk: ""})
 	if err := j.Done(one.ID); err != nil {
 		t.Fatal(err)
 	}
-	two, _ := j.Queue("second", "")
+	two, _ := j.Queue(Item{Text: "second", Desk: ""})
 	j.Close()
 
 	j, err = Open(path)
@@ -369,7 +369,7 @@ func TestQueueIDsDoNotRepeat(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer j.Close()
-	three, _ := j.Queue("third", "")
+	three, _ := j.Queue(Item{Text: "third", Desk: ""})
 	if two.ID == one.ID || three.ID == two.ID || three.ID == one.ID {
 		t.Errorf("ids %d, %d, %d: one was handed out twice", one.ID, two.ID, three.ID)
 	}
@@ -383,9 +383,9 @@ func TestQueueSurvivesCompaction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gone, _ := j.Queue("done with this", "vshop")
-	j.Queue("still waiting", "vshop")
-	j.Queue("also waiting", "haven")
+	gone, _ := j.Queue(Item{Text: "done with this", Desk: "vshop"})
+	j.Queue(Item{Text: "still waiting", Desk: "vshop"})
+	j.Queue(Item{Text: "also waiting", Desk: "haven"})
 	if err := j.Done(gone.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -415,7 +415,7 @@ func TestQueueStateIsACopy(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer j.Close()
-	j.Queue("mine", "vshop")
+	j.Queue(Item{Text: "mine", Desk: "vshop"})
 	st := j.State()
 	st.Queue[0].Text = "theirs"
 	if got := j.State().Queue[0].Text; got != "mine" {
@@ -433,8 +433,8 @@ func TestQueueIDsSurviveCompaction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	j.Queue("older", "vshop")
-	newest, _ := j.Queue("newest, and finished", "vshop")
+	j.Queue(Item{Text: "older", Desk: "vshop"})
+	newest, _ := j.Queue(Item{Text: "newest, and finished", Desk: "vshop"})
 	if err := j.Done(newest.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -448,7 +448,7 @@ func TestQueueIDsSurviveCompaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer j.Close()
-	next, _ := j.Queue("after the compaction", "vshop")
+	next, _ := j.Queue(Item{Text: "after the compaction", Desk: "vshop"})
 	if next.ID <= newest.ID {
 		t.Errorf("id %d reuses %d, which was handed out before the compaction", next.ID, newest.ID)
 	}

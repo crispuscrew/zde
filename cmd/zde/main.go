@@ -126,14 +126,25 @@ func queueList() error {
 	if err := c.Call("queue.list", &q); err != nil {
 		return err
 	}
+	// id, urgency, desk, sender, text - tab separated, text last because it is
+	// the only field that can be long, so a reader splitting on tabs has every
+	// column it wants before it. A dash is "nothing here", which for the
+	// sender means a person typed it.
 	for _, it := range q {
-		where := it.Desk
-		if where == "" {
-			where = "-"
+		urgent := "."
+		if it.Urgent {
+			urgent = "!"
 		}
-		fmt.Printf("%d\t%s\t%s\n", it.ID, where, it.Text)
+		fmt.Printf("%d\t%s\t%s\t%s\t%s\n", it.ID, urgent, dash(it.Desk), dash(it.From), it.Text)
 	}
 	return nil
+}
+
+func dash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }
 
 // call is a verb with nothing to print: it worked, or it says why not.
@@ -243,6 +254,7 @@ func usage() {
   zde desk next          the desk after this one, wrapping (regulars excluded)
   zde desk prev          the desk before this one, wrapping
   zde queue              what is waiting, oldest first
+                         (id, urgency, desk, sender, text - tab separated)
   zde queue add TEXT     make something wait, on the desk you are on
   zde queue done ID      it is not waiting any more
   zde desk queue-jump    go to where the oldest thing waiting is

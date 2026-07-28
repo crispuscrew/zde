@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/crispuscrew/zde/internal/attn"
 	"github.com/crispuscrew/zde/internal/desk"
 	"github.com/crispuscrew/zde/internal/journal"
 	"github.com/crispuscrew/zde/internal/manifest"
@@ -2097,10 +2098,10 @@ func TestQueueAddRefusesWhatCannotBePrinted(t *testing.T) {
 // arriving somewhere is not doing the thing.
 func TestQueueJumpGoesToTheOldestAndLeavesIt(t *testing.T) {
 	s, jrn, niri := queueTestServer(t, "vshop.DP-1.code")
-	if _, err := jrn.Queue("first, on haven", "haven"); err != nil {
+	if _, err := jrn.Queue(journal.Item{Text: "first, on haven", Desk: "haven"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := jrn.Queue("second, on vshop", "vshop"); err != nil {
+	if _, err := jrn.Queue(journal.Item{Text: "second, on vshop", Desk: "vshop"}); err != nil {
 		t.Fatal(err)
 	}
 	c, err := DialPath(serve(t, s))
@@ -2127,8 +2128,8 @@ func TestQueueJumpGoesToTheOldestAndLeavesIt(t *testing.T) {
 // can - the reminder taken while niri was down should not wedge the key.
 func TestQueueJumpSkipsWhatHasNoDesk(t *testing.T) {
 	s, jrn, _ := queueTestServer(t, "vshop.DP-1.code")
-	jrn.Queue("taken while niri was down", "")
-	jrn.Queue("on haven", "haven")
+	jrn.Queue(journal.Item{Text: "taken while niri was down", Desk: ""})
+	jrn.Queue(journal.Item{Text: "on haven", Desk: "haven"})
 	c, err := DialPath(serve(t, s))
 	if err != nil {
 		t.Fatal(err)
@@ -2159,7 +2160,7 @@ func TestQueueJumpWithNothingWaiting(t *testing.T) {
 // The id in the list is the id that finishes it.
 func TestQueueDone(t *testing.T) {
 	s, jrn, _ := queueTestServer(t, "vshop.DP-1.code")
-	it, _ := jrn.Queue("reply to ilya", "vshop")
+	it, _ := jrn.Queue(journal.Item{Text: "reply to ilya", Desk: "vshop"})
 	c, err := DialPath(serve(t, s))
 	if err != nil {
 		t.Fatal(err)
@@ -2186,8 +2187,8 @@ func TestQueueDone(t *testing.T) {
 // behind it.
 func TestQueueJumpSkipsADeskThatIsGone(t *testing.T) {
 	s, jrn, _ := queueTestServer(t, "vshop.DP-1.code")
-	jrn.Queue("on a desk from last week", "oldproject")
-	jrn.Queue("on haven", "haven")
+	jrn.Queue(journal.Item{Text: "on a desk from last week", Desk: "oldproject"})
+	jrn.Queue(journal.Item{Text: "on haven", Desk: "haven"})
 	c, err := DialPath(serve(t, s))
 	if err != nil {
 		t.Fatal(err)
@@ -2206,9 +2207,9 @@ func TestQueueJumpSkipsADeskThatIsGone(t *testing.T) {
 // queue-jump follows. A list that disagreed would send people to the wrong id.
 func TestQueueListIsOldestFirst(t *testing.T) {
 	s, jrn, _ := queueTestServer(t, "vshop.DP-1.code")
-	first, _ := jrn.Queue("oldest", "vshop")
-	second, _ := jrn.Queue("middle", "haven")
-	third, _ := jrn.Queue("newest", "vshop")
+	first, _ := jrn.Queue(journal.Item{Text: "oldest", Desk: "vshop"})
+	second, _ := jrn.Queue(journal.Item{Text: "middle", Desk: "haven"})
+	third, _ := jrn.Queue(journal.Item{Text: "newest", Desk: "vshop"})
 	c, err := DialPath(serve(t, s))
 	if err != nil {
 		t.Fatal(err)
@@ -2257,5 +2258,70 @@ func TestQueueTextBoundCountsCharacters(t *testing.T) {
 	}
 	if err := c.Call("queue.add", nil, strings.Repeat("я", queueTextMax+1)); err == nil {
 		t.Error("one character over the bound was accepted")
+	}
+}
+
+// A notification becomes a queue item on the desk it arrived on, with what
+// sent it recorded as the claim it is.
+func TestNotificationArrivesOnTheQueue(t *testing.T) {
+	s, jrn, _ := queueTestServer(t, "vshop.DP-1.code")
+	id, err := s.Arrived(attn.Notification{From: "Fractal", Text: "Ilya: about the invoice", Urgent: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := jrn.State().Queue
+	if len(q) != 1 {
+		t.Fatalf("queue = %+v", q)
+	}
+	if q[0].Text != "Ilya: about the invoice" || q[0].Desk != "vshop" || q[0].From != "Fractal" || !q[0].Urgent {
+		t.Errorf("item = %+v, want the text, the desk it arrived on, the claim, and the urgency", q[0])
+	}
+	if uint64(id) != q[0].ID {
+		t.Errorf("answered with id %d, queued %d: the app could not close it", id, q[0].ID)
+	}
+}
+
+// One download, many updates, one item.
+func TestNotificationReplacesTheOneItSupersedes(t *testing.T) {
+	s, jrn, _ := queueTestServer(t, "vshop.DP-1.code")
+	first, err := s.Arrived(attn.Notification{From: "curl", Text: "downloading 1%"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Arrived(attn.Notification{From: "curl", Text: "downloading 90%", Replaces: first}); err != nil {
+		t.Fatal(err)
+	}
+	q := jrn.State().Queue
+	if len(q) != 1 || q[0].Text != "downloading 90%" {
+		t.Errorf("queue = %+v, want one item saying the newest thing", q)
+	}
+}
+
+// An app taking its own notification back.
+func TestNotificationClosed(t *testing.T) {
+	s, jrn, _ := queueTestServer(t, "vshop.DP-1.code")
+	id, _ := s.Arrived(attn.Notification{From: "app", Text: "transient"})
+	if err := s.Closed(id); err != nil {
+		t.Fatal(err)
+	}
+	if q := jrn.State().Queue; len(q) != 0 {
+		t.Errorf("queue = %+v, want it taken back", q)
+	}
+}
+
+// niri being unreadable must not lose the notification: it is the only copy
+// there will ever be of something that already happened.
+func TestNotificationArrivesWithoutACompositor(t *testing.T) {
+	jrn, err := journal.Open(filepath.Join(t.TempDir(), "j.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jrn.Close()
+	s := New("test", jrn, &fakeCompositor{err: errors.New("NIRI_SOCKET is not set")}, nil)
+	if _, err := s.Arrived(attn.Notification{From: "app", Text: "the build failed"}); err != nil {
+		t.Fatalf("the notification was lost because niri was down: %v", err)
+	}
+	if q := jrn.State().Queue; len(q) != 1 || q[0].Desk != "" {
+		t.Errorf("queue = %+v, want it kept with no desk", q)
 	}
 }
