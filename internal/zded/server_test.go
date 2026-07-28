@@ -491,6 +491,43 @@ func TestDeskSwitchStopsOnFailure(t *testing.T) {
 	}
 }
 
+// A switch that failed is not a desk you are on. The journal answer is what
+// adoption spends on a workspace with no name of its own, and what desk.last
+// goes back to, so recording a desk that was never reached files the next
+// window into it and sends desk.last somewhere the user has never been.
+func TestDeskSwitchThatFailsLeavesTheDeskYouAreOnAlone(t *testing.T) {
+	jrn, err := journal.Open(filepath.Join(t.TempDir(), "j.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jrn.Close()
+	jrn.SetOnDesk("vshop")
+
+	niri := &fakeCompositor{
+		m: desk.Rebuild([]desk.Workspace{
+			{ID: 1, Name: "vshop.DP-1.code", Output: "DP-1"},
+			{ID: 2, Name: "haven.DP-1.db", Output: "DP-1"},
+		}, []string{"DP-1"}),
+		focused: "", // on a fresh workspace nothing has named
+		failOn:  "haven.DP-1.db",
+	}
+	s := New("test", jrn, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.Call("desk.switch", nil, "haven"); err == nil {
+		t.Fatal("a failed focus was reported as a switch")
+	}
+	if got := jrn.State().OnDesk; got != "vshop" {
+		t.Errorf("on desk %q after a switch that failed, want vshop", got)
+	}
+	if got := jrn.State().LastDesk; got != "" {
+		t.Errorf("last desk %q after a switch that never happened", got)
+	}
+}
+
 func TestDeskSwitchNeedsAName(t *testing.T) {
 	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
 	c, err := DialPath(serve(t, s))

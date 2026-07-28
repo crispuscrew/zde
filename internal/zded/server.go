@@ -490,9 +490,6 @@ func (s *Server) switchDesk(target string) Response {
 	// go back to. A failure to read it is not worth refusing the switch over.
 	from := s.activeDesk(m)
 
-	if s.jrn != nil {
-		s.jrn.SetOnDesk(target)
-	}
 	for _, n := range plan {
 		if err := s.niri.FocusWorkspace(n.String()); err != nil {
 			// Partway through: some monitors have moved. Report it rather
@@ -501,6 +498,10 @@ func (s *Server) switchDesk(target string) Response {
 		}
 	}
 	if s.jrn != nil {
+		// Only now, with every monitor moved. A switch that failed partway is
+		// not a desk you are on, and this is the answer adoption spends on
+		// workspaces that have no name of their own yet.
+		s.jrn.SetOnDesk(target)
 		for _, n := range plan {
 			s.jrn.SetActive(n)
 		}
