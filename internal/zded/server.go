@@ -271,6 +271,14 @@ func (s *Server) Dispatch(req Request) Response {
 			return s.moveWindow(desk.Next)
 		}
 		return s.moveWindow(desk.Prev)
+	case "desk.move-window-to":
+		// A verb of its own rather than another word this one accepts,
+		// because "next" and "prev" are desk names anybody may use, and a
+		// desk you cannot reach because of what you called it is a trap.
+		if len(req.Args) != 1 {
+			return Response{Error: "desk.move-window-to takes one desk name"}
+		}
+		return s.moveWindowTo(req.Args[0])
 	case "desk.regulars":
 		if len(req.Args) != 0 {
 			return Response{Error: "desk.regulars takes no arguments"}
@@ -509,9 +517,28 @@ func (s *Server) moveWindow(step func(rotation []string, from string) string) Re
 		return Response{Error: "no desks to move a window between yet"}
 	}
 	from := s.activeDesk(m)
-	to := step(rotation, from)
+	return s.carryTo(step(rotation, from), from)
+}
+
+// moveWindowTo carries the focused window to a desk by name. Same journey as
+// the rotation makes, with the destination said outright rather than counted
+// to - which is how a window reaches a desk that is not beside this one, and
+// the only way one gets into the regulars or back out of them.
+func (s *Server) moveWindowTo(target string) Response {
+	if !desk.ValidDesk(target) {
+		return Response{Error: "not a desk name: " + target}
+	}
+	m, err := s.niri.DeskMap()
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	return bandAdvice(target, s.carryTo(target, s.activeDesk(m)))
+}
+
+// carryTo takes the focused window to a desk and follows it there.
+func (s *Server) carryTo(to, from string) Response {
 	if to == from {
-		// One desk: nowhere to carry it, and nowhere to follow it to.
+		// Already there: nothing to carry it to, and nowhere to follow.
 		return ok([]string{})
 	}
 	// Before the window moves, not after. ensureDeclared is what makes a
@@ -522,7 +549,8 @@ func (s *Server) moveWindow(step func(rotation []string, from string) string) Re
 	if err := s.ensureDeclared(to); err != nil {
 		return Response{Error: err.Error()}
 	}
-	if m, err = s.niri.DeskMap(); err != nil {
+	m, err := s.niri.DeskMap()
+	if err != nil {
 		return Response{Error: err.Error()}
 	}
 	landed, err := s.carry(m, to)
@@ -592,7 +620,10 @@ func (s *Server) carry(m *desk.Map, target string) (string, error) {
 		// it off the screen the switch is about to show.
 		plan := desk.SwitchPlan(m, target, slots)
 		if len(plan) == 0 {
-			return "", fmt.Errorf("desk %s has no workspaces to move a window to", target)
+			// The same refusal a switch would give, in the same words: both
+			// mean the desk is not there, and one of them gets translated for
+			// the band that cannot be declared.
+			return "", errors.New(noSuchBand(target))
 		}
 		landing = plan[0]
 	}
@@ -618,12 +649,19 @@ func (s *Server) carry(m *desk.Map, target string) (string, error) {
 // a desk went missing - and beats the manifest advice this used to give, which
 // the manifest layer would have rejected.
 func (s *Server) regulars() Response {
-	resp := s.switchDesk(desk.Regulars)
-	// Only the one refusal that means the band is not there. A manifest that
-	// will not parse, a compositor that cannot be read, a focus that failed
-	// partway: those keep their own words, because advice about how to make
-	// regulars would send the people who hit them looking in the wrong place.
-	if resp.Error != noSuchBand(desk.Regulars) {
+	return bandAdvice(desk.Regulars, s.switchDesk(desk.Regulars))
+}
+
+// bandAdvice replaces the refusal for a desk that is not there with the one
+// that says how to have it, and only for the regulars: the generic answer
+// offers a manifest, and the regulars are the one band a manifest cannot
+// declare, so it is advice that cannot be taken.
+//
+// Only that refusal. A manifest that will not parse, a compositor that cannot
+// be read, a focus that failed partway: those keep their own words, because
+// this advice would send the people who hit them looking in the wrong place.
+func bandAdvice(target string, resp Response) Response {
+	if target != desk.Regulars || resp.Error != noSuchBand(target) {
 		return resp
 	}
 	return Response{Error: "no regulars yet: name a workspace " + desk.Regulars + ".<monitor>.<label> into the band, which is the only way they are made"}

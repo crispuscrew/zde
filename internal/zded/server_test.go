@@ -997,6 +997,128 @@ func TestMoveWindowRemembersWhereItCameFrom(t *testing.T) {
 	}
 }
 
+// Named rather than counted to: how a window reaches a desk that is not
+// beside this one, and the only way one gets into the regulars, which no
+// rotation ever steps onto.
+func TestMoveWindowToADeskByName(t *testing.T) {
+	niri := &fakeCompositor{
+		m: desk.Rebuild([]desk.Workspace{
+			{Name: "haven.DP-1.db", Output: "DP-1"},
+			{Name: "vshop.DP-1.code", Output: "DP-1"},
+			{Name: "regulars.DP-1.comms", Output: "DP-1"},
+		}, []string{"DP-1"}),
+		focused:       "vshop.DP-1.code",
+		output:        "DP-1",
+		focusedWindow: 7,
+	}
+	s := New("test", nil, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var focused []string
+	if err := c.Call("desk.move-window-to", &focused, "regulars"); err != nil {
+		t.Fatal(err)
+	}
+	if got := niri.carryCalls(); !slices.Equal(got, []string{"regulars.DP-1.comms"}) {
+		t.Errorf("carried the window to %v, want the regulars band", got)
+	}
+	if !slices.Equal(focused, []string{"regulars.DP-1.comms"}) {
+		t.Errorf("left %v focused, want the band it followed the window to", focused)
+	}
+}
+
+// The desk you are already on is not a journey. Carrying a window to it would
+// move it off the workspace it is on, to wherever that desk is entered.
+func TestMoveWindowToTheDeskYouAreOn(t *testing.T) {
+	niri := &fakeCompositor{
+		m: desk.Rebuild([]desk.Workspace{
+			{Name: "vshop.DP-1.code", Output: "DP-1"},
+			{Name: "vshop.DP-1.notes", Output: "DP-1"},
+		}, []string{"DP-1"}),
+		focused:       "vshop.DP-1.notes",
+		output:        "DP-1",
+		focusedWindow: 7,
+	}
+	s := New("test", nil, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var focused []string
+	if err := c.Call("desk.move-window-to", &focused, "vshop"); err != nil {
+		t.Fatal(err)
+	}
+	if got := niri.carryCalls(); len(got) != 0 {
+		t.Errorf("carried the window to %v while already on that desk", got)
+	}
+	if len(focused) != 0 {
+		t.Errorf("answered %v, want nothing: nothing moved", focused)
+	}
+}
+
+// A typo is not a desk that is missing, and the two want different things
+// next: one wants spelling, the other wants making.
+func TestMoveWindowToAnImpossibleName(t *testing.T) {
+	niri := &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code", output: "DP-1", focusedWindow: 7}
+	s := New("test", nil, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	for _, name := range []string{"VShop", "has space", "with.dots", ""} {
+		err := c.Call("desk.move-window-to", nil, name)
+		if err == nil || !strings.Contains(err.Error(), "not a desk name") {
+			t.Errorf("move-window-to %q: got %v, want a refusal about the name", name, err)
+		}
+	}
+	if got := niri.carryCalls(); len(got) != 0 {
+		t.Errorf("moved the window to %v on a name that cannot be a desk", got)
+	}
+}
+
+// Carrying into a band that is not there is the same dead end as reaching for
+// it, so it gets the same way out. The generic refusal offers a manifest, and
+// the regulars are the one band a manifest cannot declare.
+func TestMoveWindowToTheRegularsWhenThereAreNone(t *testing.T) {
+	niri := &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code", output: "DP-1", focusedWindow: 7}
+	s := New("test", nil, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	err = c.Call("desk.move-window-to", nil, "regulars")
+	if err == nil || !strings.Contains(err.Error(), "no regulars yet") {
+		t.Errorf("got %v, want the answer that says how to have a band", err)
+	}
+	if got := niri.carryCalls(); len(got) != 0 {
+		t.Errorf("moved the window to %v with no band to put it in", got)
+	}
+}
+
+// A desk that could exist but does not keeps the answer about the desk, not
+// about the name.
+func TestMoveWindowToADeskThatIsNotThere(t *testing.T) {
+	niri := &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code", output: "DP-1", focusedWindow: 7}
+	s := New("test", nil, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	err = c.Call("desk.move-window-to", nil, "nowhere")
+	if err == nil || !strings.Contains(err.Error(), "no workspaces") {
+		t.Errorf("got %v, want an answer about the desk", err)
+	}
+	if got := niri.carryCalls(); len(got) != 0 {
+		t.Errorf("moved the window to %v before finding out there was nowhere to put it", got)
+	}
+}
+
 func TestMoveWindowNeedsADirection(t *testing.T) {
 	s := New("test", nil, &fakeCompositor{m: twoScreens(), focused: "haven.DP-1.db"}, nil)
 	c, err := DialPath(serve(t, s))
@@ -1388,6 +1510,48 @@ func TestSwitchCreatesDeclaredWorkspaces(t *testing.T) {
 	}
 	if got := niri.focusCalls(); len(got) != 1 || got[0] != "vshop.DP-1.code" {
 		t.Errorf("focused %v, want the first of the new band", got)
+	}
+}
+
+// A window carried to a desk that exists only as a manifest has to wait for
+// that manifest to become workspaces. Carry first and there is nowhere to put
+// it - or worse, somewhere stale, while the switch that follows goes to what
+// was just created and leaves the window behind on a workspace nobody is
+// looking at.
+func TestMoveWindowToADeskThatIsOnlyAManifest(t *testing.T) {
+	d, err := manifest.Parse([]byte("name: vshop\nmonitors: { DP-1: { workspaces: [code] } }"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	niri := &fakeCompositor{
+		base:          []desk.Workspace{{ID: 1, Name: "haven.DP-1.db", Output: "DP-1"}},
+		empty:         map[string][]uint64{"DP-1": {10}},
+		nextID:        10,
+		focused:       "haven.DP-1.db",
+		output:        "DP-1",
+		focusedWindow: 7,
+	}
+	niri.remap()
+	s := New("test", nil, niri, fixedDesks{"vshop": d})
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	var focused []string
+	if err := c.Call("desk.move-window-to", &focused, "vshop"); err != nil {
+		t.Fatal(err)
+	}
+	if got := niri.adoptCalls(); !slices.Equal(got, []string{"vshop.DP-1.code"}) {
+		t.Errorf("created %v, want the declared workspace made before the window needed it", got)
+	}
+	carried := niri.carryCalls()
+	if !slices.Equal(carried, []string{"vshop.DP-1.code"}) {
+		t.Errorf("carried the window to %v, want the workspace the manifest declares", carried)
+	}
+	if !slices.Equal(focused, carried) {
+		t.Errorf("the window went to %v and the switch went to %v", carried, focused)
 	}
 }
 
