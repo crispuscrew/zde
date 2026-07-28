@@ -428,6 +428,14 @@ func (s *Server) snapshot(args []string) Response {
 // about it - and it is right about the cases a model would get wrong: a
 // floating window, an empty workspace, a single-window column.
 //
+// Two things it cannot see, both worth knowing before trusting it. A window
+// that closes between the two reads can make a move look like an edge, and
+// then the desk turns when all the user asked for was the window below. And a
+// layer-shell surface holding keyboard focus reads as nothing focused at all,
+// so a press spends itself putting focus back on a window instead of going
+// anywhere. Neither is reachable from what zde ships today - the desk switcher
+// is the surface that will reach the second one (docs/roadmap.md).
+//
 // The answer is the workspaces a desk rotation focused, or nothing at all when
 // focus only moved inside the workspace: what changed about the desk, which is
 // the part a bar has to know.

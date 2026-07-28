@@ -632,6 +632,43 @@ func TestNavOnAnEmptyWorkspaceRotates(t *testing.T) {
 	}
 }
 
+// Down and up have to be opposites, and a rotation of two cannot show it: with
+// two desks the step lands on the other one whichever way it goes. From the
+// middle of three they part company.
+func TestNavDirectionsAreOpposites(t *testing.T) {
+	threeDesks := func() *desk.Map {
+		return desk.Rebuild([]desk.Workspace{
+			{Name: "haven.DP-1.db", Output: "DP-1"},
+			{Name: "mid.DP-1.notes", Output: "DP-1"},
+			{Name: "vshop.DP-1.code", Output: "DP-1"},
+		}, []string{"DP-1"})
+	}
+	for _, tc := range []struct{ method, want string }{
+		{"nav.down", "vshop.DP-1.code"},
+		{"nav.up", "haven.DP-1.db"},
+	} {
+		niri := &fakeCompositor{
+			m:             threeDesks(),
+			focused:       "mid.DP-1.notes",
+			focusedWindow: 1, // the end of its stack, so the desk turns
+		}
+		s := New("test", nil, niri, nil)
+		c, err := DialPath(serve(t, s))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var focused []string
+		if err := c.Call(tc.method, &focused); err != nil {
+			c.Close()
+			t.Fatal(err)
+		}
+		c.Close()
+		if !slices.Equal(focused, []string{tc.want}) {
+			t.Errorf("%s from the middle desk left %v focused, want %s", tc.method, focused, tc.want)
+		}
+	}
+}
+
 // Rotating is a desk-level action, so it arrives the way a switch does: the
 // next desk comes up on every monitor it owns, and says which workspaces it
 // left focused.
