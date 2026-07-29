@@ -1,5 +1,8 @@
-# A machine running zde. Start here:
+# A machine running zde. Start here, in a new empty directory - `nix flake
+# init` refuses to overwrite, so run in /etc/nixos it half-applies and leaves
+# a flake pointing at somebody else's configuration.nix:
 #
+#   mkdir ~/zdebox && cd ~/zdebox
 #   nix flake init -t github:crispuscrew/zde#host
 #   sudo nixos-generate-config --show-hardware-config > hardware-configuration.nix
 #   $EDITOR flake.nix configuration.nix      # the user, the hostname
@@ -50,7 +53,9 @@
       ...
     }:
     let
-      # Yours. The name has to match the user in configuration.nix.
+      # Yours. Both have a twin in configuration.nix that nothing checks:
+      # `user` must match users.users.<name> there, and `host` must match
+      # networking.hostName.
       user = "you";
       host = "zdebox";
     in

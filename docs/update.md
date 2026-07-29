@@ -35,12 +35,23 @@ nix flake update nixpkgs         # or just one
 ```
 
 To a new NixOS release, twice a year: edit both URLs in `flake.nix` to the new
-release (`nixos-XX.YY` and `release-XX.YY`), then `nix flake update`. Three
+release (`nixos-XX.YY` and `release-XX.YY`), then `nix flake update`. Five
 other places name the release and none of them can read the flake, so they
-move by hand in the same commit: `testedRelease` in `nix/system.nix` (what the
-build-time warning compares against) and the two input URLs in
-`templates/host/flake.nix` (what a new machine starts pinned to). Read the
-release notes for renames - the 25.05 to 26.05 move alone renamed
+move by hand in the same commit:
+
+- `testedRelease` in `nix/system.nix`, what the build-time warning compares
+  against. Forget this one and zde warns at every correctly pinned machine
+  that *it* is wrong. `checks.zde-nixos-eval` fails if you do, which is what
+  that assertion is for.
+- the two input URLs in `templates/host/flake.nix`.
+- `system.stateVersion` in `templates/host/configuration.nix` and
+  `home.stateVersion` in `templates/host/flake.nix`. These are the exception
+  to the rule below: in a template they are not a machine's creation stamp but
+  what every *new* machine will be created at, and a stranger installing on
+  27.05 should not start out declaring 26.05.
+- the table at the top of this file.
+
+Read the release notes for renames - the 25.05 to 26.05 move alone renamed
 `greetd.tuigreet` to `tuigreet` and `nixfmt-rfc-style` to `nixfmt`, both of
 which are eval warnings rather than errors and are easy to miss.
 
@@ -111,7 +122,10 @@ What survives and what does not:
   activation. This is safe by design - the journal is replayed on the way back
   up, which is what the desks are rebuilt from - but it is a real restart: a
   `zde` running at that instant gets a closed socket rather than an answer.
-- The portals restart with it, so a screencast in flight dies.
+- The portals are restarted too, but on their own schedule rather than zded's:
+  they are NixOS-level user units, so they go when their own packages change,
+  which is a nixpkgs bump and not a zde one. A screencast in flight dies with
+  them.
 
 To try it before committing to it:
 
