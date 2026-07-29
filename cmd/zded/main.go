@@ -18,7 +18,11 @@ import (
 	"github.com/crispuscrew/zde/internal/zded"
 )
 
-const version = "0.1.0"
+// Set at link time by the derivation that builds this (nix/zde.nix), so the
+// version a running daemon reports and the version in the store path are the
+// same string. A `go build` with no ldflags says so rather than claiming a
+// release it is not.
+var version = "dev"
 
 func main() {
 	socket := flag.String("socket", "", "listen here instead of $XDG_RUNTIME_DIR/zde/zded.sock")

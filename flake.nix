@@ -17,6 +17,7 @@
 
   outputs =
     {
+      self,
       nixpkgs,
       home-manager,
       ...
@@ -42,14 +43,25 @@
             ./nix/system.nix
             home-manager.nixosModules.home-manager
             ./nix/live.nix
+            # Which commit is on the stick, readable from the booted image
+            # with `nixos-version --configuration-revision`. That answer is
+            # worth its cost, and the cost is real: the revision is part of
+            # the system, so every commit - a doc, a comment - invalidates the
+            # ISO and it builds again from scratch. Nothing in CI builds it,
+            # so this is paid by whoever is making a stick, and only when they
+            # have committed since the last one.
+            { system.configurationRevision = self.rev or self.dirtyRev or "dirty"; }
           ];
         }
       );
     in
     {
       # Layer 0 (docs/delivery.md). A plain path module: it needs nothing from
-      # this flake, which is what keeps it importable twice without conflict
-      # and usable from a config that never heard of zde's flake.
+      # this flake, which is what makes it importable from a config that never
+      # heard of zde's flake, and what makes importing it twice from the same
+      # path harmless. (Twice from two different store paths is not: the
+      # module system refuses a second declaration of zde.enable, whatever
+      # this file does.)
       nixosModules.zde = ./nix/system.nix;
 
       # Layer 1: the user environment. One module, shared by the NixOS
@@ -130,5 +142,18 @@
       });
 
       formatter = forAll (pkgs: pkgs.nixfmt);
+
+      # nix flake init -t github:crispuscrew/zde#host
+      #
+      # The one output that fixes the pin. zde's modules are evaluated by
+      # whichever nixpkgs imports them, so this flake's lock says nothing
+      # about what a machine runs - the lock in the user's own flake does, and
+      # this is where that lock comes from already pointing at the release zde
+      # is tested against (docs/update.md).
+      templates.host = {
+        path = ./templates/host;
+        description = "A machine running zde: both layers, pinned to the tested nixpkgs";
+      };
+      templates.default = self.templates.host;
     };
 }
