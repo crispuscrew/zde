@@ -186,8 +186,16 @@ let
         # outside. So the bar answers for itself, over quickshell's own IPC.
         # Addressed by pid, so this needs neither the instance id nor the store
         # path the unit was built with.
+        # --pid belongs to `ipc`, not before it: quickshell rejects it outright
+        # in front of the subcommand. And stderr is kept rather than dropped,
+        # because a failing call otherwise sets an empty answer that fails the
+        # comparison below with nothing to say why - which is exactly how this
+        # cost a CI round trip.
         barpid=$(sctl show -p MainPID --value zde-bar.service)
-        barq() { XDG_RUNTIME_DIR=$mgr quickshell --pid "$barpid" ipc call queue "$1" 2>/dev/null | tr -d '\n'; }
+        barq() {
+          XDG_RUNTIME_DIR=$mgr quickshell ipc --pid "$barpid" call queue "$1" 2>&1 |
+            tr -d '\n' || true
+        }
 
         # Height and reserved space first: zero of either is a surface the
         # compositor lists and a person cannot see, or one that quietly covers
