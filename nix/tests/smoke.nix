@@ -95,7 +95,12 @@ let
         mgr=/run/user/$(id -u)
         sctl() { XDG_RUNTIME_DIR=$mgr systemctl --user "$@"; }
         sctl import-environment NIRI_SOCKET
-        sctl start graphical-session.target
+        # Pulled in rather than started: graphical-session.target refuses a
+        # manual start, by design - it is meant to arrive as somebody's
+        # dependency, which on a login is niri.service. NixOS ships this stand-in
+        # for sessions that do not speak systemd, and it binds to the target the
+        # same way, so what starts here is the real one.
+        sctl start nixos-fake-graphical-session.target
         zded_unit() { sctl is-active --quiet zded.service; }
         if ! waitfor 30 zded_unit; then
           echo "the target came up and zded did not follow it:"
@@ -110,8 +115,10 @@ let
 
         # PartOf, which is what keeps one session's daemon out of the next
         # one's way: the target going down takes zded with it, and zded on its
-        # way out takes its socket.
-        sctl stop graphical-session.target
+        # way out takes its socket. Ending the session is ending what held the
+        # target up - graphical-session.target is StopWhenUnneeded, so letting
+        # go of it is how a session ends rather than stopping it by name.
+        sctl stop nixos-fake-graphical-session.target
         gone() { ! sctl is-active --quiet zded.service; }
         if ! waitfor 15 gone; then
           echo "the session ended and zded stayed:"
