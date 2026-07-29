@@ -101,10 +101,21 @@ let
         # for sessions that do not speak systemd, and it binds to the target the
         # same way, so what starts here is the real one.
         sctl start nixos-fake-graphical-session.target
-        zded_unit() { sctl is-active --quiet zded.service; }
-        if ! waitfor 30 zded_unit; then
+        # Active and listening, not just active. systemd calls a Type=simple
+        # unit active the moment it has forked, which is before zded has bound
+        # anything - so waiting on the unit alone and then asking zde a question
+        # is a race, and one this test lost on its third run after passing
+        # twice. The socket is the readiness signal zded actually has.
+        #
+        # It is a real property of the system and not only of the test: anything
+        # the session starts alongside zded can be up before the socket is. The
+        # bar tolerates it by saying so and asking again; socket activation
+        # would remove it, and would mean zded taking a passed fd.
+        zded_up() { sctl is-active --quiet zded.service && [ -S "$mgr/zde/zded.sock" ]; }
+        if ! waitfor 30 zded_up; then
           echo "the target came up and zded did not follow it:"
           sctl status zded.service || true
+          ls -la "$mgr/zde" 2>&1 || true
           journalctl --user -u zded.service --no-pager | tail -20; exit 1
         fi
         # And it can see the compositor, which is the whole reason the unit
