@@ -110,7 +110,9 @@ guesses. Owns the kill switch and the per-app cut.
 3. Instance naming in zcr: `run --instance`, `app@instance` addressing.
 4. Per-instance filtered DBus socket (notifications + MPRIS); doubles as
    attribution (principle 6).
-5. `Inherits:`, resolved at validate time, with `zcc show --resolved`.
+5. `Inherits:`, resolved at validate time. **Landed** in zinc 0.7, as
+   `zc validate <app> --resolved` (the tool asked for here as `zcc` was
+   renamed `zc` in that release).
 6. Counters on the generated nft rules plus netns enumeration, for netview.
 
 ## 5. Scenario catalog
