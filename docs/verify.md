@@ -68,6 +68,42 @@ virgl - not headless, not through VNC. So the screenshot mode trades the
 session for a picture, which is the right trade for "does this image boot" and
 no use for anything after it.
 
+### Your host is already using Super
+
+It will be, and then no `Mod` chord reaches the guest, which is most of the
+keymap. Two ways out.
+
+**Ctrl+Alt+G** in the qemu window toggles an input grab, and while it holds,
+Super goes to the guest. Whether it works is the host's decision, not qemu's:
+it needs the host compositor to honour keyboard-shortcuts-inhibit (KDE does,
+GNOME does not).
+
+When the host will not let go, move `Mod` in the guest instead. `dynamic.kdl` is
+the one file in the generated config that is writable, niri reloads it the
+moment it is written, and `input` is a section niri *merges* rather than
+replaces - so this works on a running session, from the guest's own terminal:
+
+```sh
+cat >> ~/.config/niri/dynamic.kdl <<'EOF'
+input {
+    keyboard {
+        xkb {
+            options "altwin:swap_lalt_lwin,fkeys:basic_13-24"
+        }
+    }
+}
+EOF
+```
+
+Left Alt is `Mod` from then on, and it costs nothing: no zde chord uses Alt. If
+your keyboard has a Menu key, `altwin:menu_win` is gentler - it makes Menu act
+as Super and leaves Alt where it was.
+
+Keep every option you need in that one string. xkb options are a single field,
+and a later `input` block replaces it rather than appending, so writing only the
+swap on an image built from `feat/input-layer` would silently drop
+`fkeys:basic_13-24` and take the band keys with it.
+
 What a VM can answer: the session coming up, the input layer (kanata grabs the
 guest's keyboard, and whether a keysym arrives as F13 or as `XF86Tools` is
 decided entirely inside the guest), notifications, the queue, adoption, the
