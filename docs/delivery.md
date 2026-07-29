@@ -41,10 +41,15 @@ cost is the script alone.
 
 ## Artifacts
 
-- flake outputs: `nixosModules.zde`, `homeModules.zde`, `packages`, `checks`,
-  devShells, formatter; later `nixosConfigurations.zde`, the ISO.
+- flake outputs: `nixosModules.zde`, `homeModules.zde`,
+  `nixosConfigurations.zde-live`, `packages`, `checks`, devShells, formatter.
+- `zde-live.iso` (`nix build .#zde-iso`, [`nix/live.nix`](../nix/live.nix)): a
+  live image that boots into zde and touches no disk. Not an installer - it
+  exists so the by-hand list ([`verify.md`](verify.md)) has a machine to run
+  on, which is the one thing CI cannot provide. Too big to build per pull
+  request, so CI checks that it still evaluates and nothing more.
 - `zde.iso`: a NixOS installer preseeded with the zde configuration, CI-built
-  and checksummed. Later polish: a live session booting straight into zde.
+  and checksummed. Once 0.1 is usable.
 - `install.sh`: the portable bootstrapper, checksummed alongside.
 
 ## Sequencing
@@ -74,6 +79,10 @@ throwaway host with both layers on (`nix/test-host.nix`), which is what catches
 a module error, but it builds nothing. The smoke test (`nix build .#zde-smoke`,
 its own workflow) boots that host in QEMU and checks that the greeter is up,
 the session pieces are installed where systemd and the portals look for them,
-home-manager wrote the generated config, and niri's own parser accepts it. The
-compositor itself never starts there - a build sandbox has no GPU and niri has
-no software renderer - so a running session stays a real-hardware item.
+home-manager wrote the generated config, and niri's own parser accepts it. A
+compositor does run there, nested inside a headless cage on llvmpipe, so zded
+and zde are exercised against real niri IPC rather than a fake.
+
+What that VM has no way to be is a machine: no GPU, no keyboard, one screen,
+nobody watching. Everything that needs one is [`verify.md`](verify.md), and
+`zde-live.iso` above is how it gets one.

@@ -443,6 +443,17 @@ pkgs.testers.runNixOSTest {
     # asserted by a user who is actually subject to it - root is not.
     users.users.intruder.isNormalUser = true;
 
+    # A host's own binds, through the seam that exists for them: local.kdl,
+    # included after the generated ones. The live image (nix/live.nix) puts a
+    # terminal on a key this way, because nothing in the keymap can open one
+    # yet - so niri accepting a second binds block is load-bearing rather than
+    # incidental, and the niri validate below is what keeps it that way.
+    home-manager.users.zde.zde.niri.extraConfig = ''
+      binds {
+          Mod+Return { spawn "foot"; }
+      }
+    '';
+
     # cage hosts the nested niri; mesa's software rasteriser is what both of
     # them render with.
     environment.systemPackages = [
