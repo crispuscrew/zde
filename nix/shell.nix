@@ -23,17 +23,21 @@ runCommand "zde-shell"
     # on exactly the mistakes it exists to catch. Verified by making both
     # kinds and watching them fail.
     #
-    # --uncreatable-type disable is the one exemption, and it is metadata
-    # rather than a defect: PanelWindow is exported from PanelWindowInterface
-    # with isCreatable false, because Quickshell substitutes the platform
-    # implementation (wlr-layer-shell here) at runtime. qmllint reads the
-    # interface and says it cannot be built; Quickshell builds it anyway.
+    # Every file, not shell.qml by name. The day this grows a second one, a
+    # list that names one would keep passing and the derivation would ship a
+    # shell that cannot load.
+    #
+    # PanelWindow's uncreatable-type warning is suppressed where it happens,
+    # with a comment, rather than by turning the category off here: as a
+    # category it would also hide a real attempt to instantiate Quickshell
+    # itself or a DataStream, and those do fail at load.
     ${qt6.qtdeclarative}/bin/qmllint \
       -I ${quickshell}/lib/qt-6/qml \
       -I ${qt6.qtdeclarative}/lib/qt-6/qml \
-      --uncreatable-type disable \
       --max-warnings 0 \
-      ${../shell}/shell.qml
+      ${../shell}/*.qml
 
-    install -Dm444 ${../shell}/shell.qml "$out/share/zde/shell/shell.qml"
+    for f in ${../shell}/*.qml; do
+      install -Dm444 "$f" "$out/share/zde/shell/$(basename "$f")"
+    done
   ''

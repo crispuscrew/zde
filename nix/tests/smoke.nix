@@ -165,9 +165,12 @@ let
         # "something appeared" - quickshell names its surfaces after itself, and
         # a check that passes on any layer surface at all would pass on a
         # notification popup or on whatever comes next.
+        # zde-bar is our namespace and not quickshell's default, which is the
+        # point: the default would match any quickshell instance on the machine,
+        # and would keep matching after zde grew a second surface.
         bar_layer() {
           nirimsg --json layers >/tmp/layers.txt 2>&1 &&
-            grep -q '"namespace":"quickshell"' /tmp/layers.txt
+            grep -q '"namespace":"zde-bar"' /tmp/layers.txt
         }
         if ! waitfor 60 bar_layer; then
           echo "the bar never reached the screen:"
@@ -177,19 +180,50 @@ let
         fi
         cat /tmp/layers.txt
 
-        # What it is for: the queue, seen without asking. The bar reads zded
-        # over the same socket `zde` uses, so an item added here has to show up
-        # in what the bar knows - and the only way to ask a bar what it knows is
-        # to watch it draw, which no test can do. So this asserts the half that
-        # is assertable: the bar is still up and still connected after the queue
-        # changes underneath it, which is where a parser that chokes on a real
-        # item would show.
-        XDG_RUNTIME_DIR=$mgr zde queue add something for the bar to count >/dev/null
-        sleep 4
-        sctl is-active --quiet zde-bar.service || {
-          echo "the bar died when the queue changed:"
-          journalctl --user -u zde-bar.service --no-pager | tail -25; exit 1
+        # And then what it shows, which is the half a layer surface says nothing
+        # about: a bar that never read the queue, one stuck on a number from
+        # five minutes ago, and one doing its job all look identical from
+        # outside. So the bar answers for itself, over quickshell's own IPC.
+        # Addressed by pid, so this needs neither the instance id nor the store
+        # path the unit was built with.
+        barpid=$(sctl show -p MainPID --value zde-bar.service)
+        barq() { XDG_RUNTIME_DIR=$mgr quickshell --pid "$barpid" ipc call queue "$1" 2>/dev/null | tr -d '\n'; }
+
+        # Height and reserved space first: zero of either is a surface the
+        # compositor lists and a person cannot see, or one that quietly covers
+        # the top of every window.
+        geom=$(barq geometry)
+        [ "$geom" = "26 26" ] || {
+          echo "the bar came up as height/zone '$geom', wanted '26 26'"; exit 1
         }
+
+        # Then the count, against a queue that changes underneath it. "0 0"
+        # before, "1 0" after: the poll is two seconds, so this waits rather
+        # than sleeping once and hoping.
+        empty=$(barq count)
+        [ "$empty" = "0 0" ] || { echo "the bar says '$empty' for an empty queue"; exit 1; }
+        XDG_RUNTIME_DIR=$mgr zde queue add something for the bar to count >/dev/null
+        counted() { [ "$(barq count)" = "1 0" ]; }
+        if ! waitfor 20 counted; then
+          echo "the queue has one item and the bar says '$(barq count)'"
+          sctl status zde-bar.service || true
+          journalctl --user -u zde-bar.service --no-pager | tail -25; exit 1
+        fi
+
+        # And that it comes back. zded is restarted by every home-manager switch
+        # that changes it, and the bar's own unit is not restarted with it - so a
+        # socket that does not redial leaves the bar blind for the rest of the
+        # session. It did, until this test existed.
+        sctl restart zded.service
+        if ! waitfor 30 zded_up; then
+          echo "zded did not come back:"; sctl status zded.service || true; exit 1
+        fi
+        recovered() { [ "$(barq count)" = "1 0" ]; }
+        if ! waitfor 30 recovered; then
+          echo "zded restarted and the bar never reconnected: '$(barq count)'"
+          journalctl --user -u zde-bar.service --no-pager | tail -25; exit 1
+        fi
+
         XDG_RUNTIME_DIR=$mgr zde queue 2>&1 | tee /tmp/bar-queue.txt
         grep -q 'something for the bar to count' /tmp/bar-queue.txt
         id=$(grep 'something for the bar' /tmp/bar-queue.txt | cut -f1)

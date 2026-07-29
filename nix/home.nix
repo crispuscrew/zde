@@ -152,11 +152,15 @@ in
       Service = {
         ExecStart = "${pkgs.quickshell}/bin/quickshell -p ${zdeShell}/share/zde/shell/shell.qml";
         # A bar is the one thing whose absence is obvious, so restarting it is
-        # never a surprise. Slower than zded's second: QML that fails to load
-        # fails identically every time, and a tight loop on that only fills a
-        # journal.
+        # never a surprise. One second, the same as zded, and not the three it
+        # was: systemd gives up after 5 starts inside 10 seconds, and at three
+        # seconds apart it can never see 5 in a window - so QML that fails
+        # identically every time would have restarted for ever instead of
+        # failing, leaving a runtime log directory behind on each try. Measured
+        # on a transient unit: 3s spacing was still restarting after 45
+        # seconds, 1s spacing gave up at 5.
         Restart = "on-failure";
-        RestartSec = 3;
+        RestartSec = 1;
       };
       Install.WantedBy = [ "graphical-session.target" ];
     };
