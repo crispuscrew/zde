@@ -23,10 +23,50 @@ nix build .#zde-iso          # gigabytes, and the better part of an hour
 sudo dd if=result/iso/zde-live.iso of=/dev/sdX bs=4M status=progress oflag=sync
 ```
 
+On a machine with no nix, build it in a container and take the file out - the
+image is self-contained, so only the build needs nix:
+
+```sh
+podman run -d --name zde-nix -v "$PWD":/w docker.io/nixos/nix sleep infinity
+podman exec zde-nix sh -lc 'cd /w && nix build .#zde-iso --no-link --print-out-paths'
+podman cp zde-nix:<that path>/iso/zde-live.iso ./zde-live.iso
+```
+
 Build it from the branch you mean to test. `dev` has the desks, the queue and
 notifications; **the input layer is on `feat/input-layer` and is most of section
 2**, so if that branch is still open, build from it and do the whole list in one
 boot.
+
+### In a VM first
+
+Most of this list does not need the metal, and a VM turns a boot into a minute
+instead of a stick. The one thing that matters is the virtual GPU:
+
+```sh
+qemu-system-x86_64 -enable-kvm -m 4096 -smp 4 \
+  -device virtio-vga-gl -display gtk,gl=on \
+  -drive file=zde-live.iso,media=cdrom,readonly=on -boot d
+```
+
+**`-vga std` does not work**, and fails in a way worth recognising: niri comes
+up, opens its Wayland and IPC sockets, and never draws, leaving the console
+text on screen. Its log says it - `failed to initialize renderer, falling back
+to primary gpu: software EGL renderers are skipped`, then `no allocator
+available for device`. That is a display-only virtual card, not a broken
+image. `virtio-vga-gl` gives virgl, and niri initialises against it the way it
+would against real hardware.
+
+What a VM can answer: the session coming up, the input layer (kanata grabs the
+guest's keyboard, and whether a keysym arrives as F13 or as `XF86Tools` is
+decided entirely inside the guest), notifications, the queue, adoption, the
+desk invariants, and two *virtual* screens with `virtio-vga-gl,max_outputs=2`.
+
+What it cannot: latency, which is meaningless under virtio and a software
+renderer; a real GPU, which is the thing that decides between a session and a
+black screen; docking and undocking; the lid, the battery, and any keyboard
+you would actually plug in.
+
+### Then
 
 Boot the stick, log in at the greeter as **zde / zde**, and open a terminal
 with **Mod+Return** (Mod is the Super/Windows key). That bind belongs to the
