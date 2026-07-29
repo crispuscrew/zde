@@ -176,6 +176,15 @@ Every one is a socket round trip, so the process spawn should dominate.
 The VM has one output, so everything about the second is unverified, and the
 desk model is defined in terms of monitors (docs/model.md, invariant 1).
 
+- **A bar on each screen**, and the right width on each. The panels are built
+  from niri's output list, so this is also the unplug test: pull a screen and
+  its bar should go with it, leaving the other one alone. The VM has done that
+  with two virtual outputs (`dev/vm.sh --screens 2`); what it has not done is a
+  real monitor with a different resolution and scale.
+- **What the bar reserves.** It asks for 26 pixels at the top of every output
+  and the smoke test only checks that it asked. Whether niri actually kept
+  windows out of that strip is a thing to look at: if a window's title bar is
+  under the bar, the exclusive zone is not being honoured.
 - A desk whose manifest names two monitors comes up on both.
 - `Mod+bracketleft` / `bracketright` move between them; `Mod+Shift+` the same
   carries the window.
@@ -235,10 +244,11 @@ show up in use.
 
 Not bugs, do not report them:
 
-- **The shell**: no bar, no picker, no notification centre, no desk switcher.
-  Pressed as a key, `Mod+Tab` does nothing visible - it lists the desks on a
-  stdout nobody is reading, which is the honest thing it can do without a
-  surface (`zde desk switcher` in a terminal shows the same list).
+- **Most of the shell**: there is a bar now, and no picker, no notification
+  centre, no desk switcher. Pressed as a key, `Mod+Tab` does nothing visible -
+  it lists the desks on a stdout nobody is reading, which is the honest thing it
+  can do without a surface (`zde desk switcher` in a terminal shows the same
+  list).
 - **Most of the cheatsheet.** A bind whose command is not written yet prints
   usage to a stderr nobody reads, so the key is silent and so is the machine.
   What is live today, and nothing else:
