@@ -17,6 +17,7 @@
 
   outputs =
     {
+      self,
       nixpkgs,
       home-manager,
       ...
@@ -42,6 +43,7 @@
             ./nix/system.nix
             home-manager.nixosModules.home-manager
             ./nix/live.nix
+            { system.configurationRevision = self.rev or self.dirtyRev or "dirty"; }
           ];
         }
       );
@@ -130,5 +132,18 @@
       });
 
       formatter = forAll (pkgs: pkgs.nixfmt);
+
+      # nix flake init -t github:crispuscrew/zde#host
+      #
+      # The one output that fixes the pin. zde's modules are evaluated by
+      # whichever nixpkgs imports them, so this flake's lock says nothing
+      # about what a machine runs - the lock in the user's own flake does, and
+      # this is where that lock comes from already pointing at the release zde
+      # is tested against (docs/update.md).
+      templates.host = {
+        path = ./templates/host;
+        description = "A machine running zde: both layers, pinned to the tested nixpkgs";
+      };
+      templates.default = self.templates.host;
     };
 }

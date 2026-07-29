@@ -35,7 +35,11 @@ nix flake update nixpkgs         # or just one
 ```
 
 To a new NixOS release, twice a year: edit both URLs in `flake.nix` to the new
-release (`nixos-XX.YY` and `release-XX.YY`), then `nix flake update`. Read the
+release (`nixos-XX.YY` and `release-XX.YY`), then `nix flake update`. Three
+other places name the release and none of them can read the flake, so they
+move by hand in the same commit: `testedRelease` in `nix/system.nix` (what the
+build-time warning compares against) and the two input URLs in
+`templates/host/flake.nix` (what a new machine starts pinned to). Read the
 release notes for renames - the 25.05 to 26.05 move alone renamed
 `greetd.tuigreet` to `tuigreet` and `nixfmt-rfc-style` to `nixfmt`, both of
 which are eval warnings rather than errors and are easy to miss.
@@ -77,6 +81,14 @@ nix flake update zde                    # in your machine's flake
 sudo nixos-rebuild switch --flake .#<host>
 ```
 
+That flake is the one that matters, and not only for the disks. **A module is
+evaluated by whichever nixpkgs imports it**, so the lock in this repo pins what
+CI tests and says nothing about what your machine runs: import zde from a flake
+on unstable and zde is built against unstable, whatever `flake.lock` here says.
+`nix flake init -t github:crispuscrew/zde#host` writes a flake that starts on
+the tested release with the `follows` already wired, and layer 0 warns at build
+time if the release underneath it is not the one zde is tested against.
+
 `switch` builds the new generation, activates it, and restarts what changed.
 Layer 1 comes with it: home-manager runs as part of the system generation, so
 the generated `~/.config/niri/config.kdl` is replaced in the same step.
@@ -88,9 +100,18 @@ What survives and what does not:
   its config on write, so binds change under you, in a session whose binary is
   the older one. Log out and back in after a niri bump.
 - `nixos-rebuild boot` stages the generation for the next reboot instead,
-  which is the honest choice for a kernel or mesa update.
+  which is the honest choice for a kernel or mesa update. It really does touch
+  nothing: `switch-to-configuration boot` installs the bootloader and exits
+  before it looks at a single unit.
 - greetd is `restartIfChanged = false` upstream, so a rebuild will not drop you
-  out of a session it is holding.
+  out of a session it is holding. niri carries the same flag, for the same
+  reason, in its own nixpkgs module.
+- **zded is restarted**, mid-session, by any switch that changes it. It is a
+  home-manager unit, and home-manager restarts its changed user units during
+  activation. This is safe by design - the journal is replayed on the way back
+  up, which is what the desks are rebuilt from - but it is a real restart: a
+  `zde` running at that instant gets a closed socket rather than an answer.
+- The portals restart with it, so a screencast in flight dies.
 
 To try it before committing to it:
 

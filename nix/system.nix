@@ -9,6 +9,12 @@
 }:
 let
   cfg = config.zde;
+
+  # The nixpkgs release zde is built and tested against. It moves with the
+  # flake's own input, by hand, on a release bump (docs/update.md, Bumping) -
+  # this module is a plain path module and cannot read the flake that carries
+  # it, which is the same reason the warning below is worth having at all.
+  testedRelease = "26.05";
 in
 {
   options.zde = {
@@ -18,6 +24,19 @@ in
 
   config = lib.mkMerge [
     (lib.mkIf cfg.enable {
+      # Which nixpkgs is actually evaluating this. zde pins one in its own
+      # flake and that pin binds nothing here: a module is evaluated by
+      # whichever nixpkgs imports it, so a machine on unstable runs zde
+      # against unstable and zde's lock never gets a vote. That is fine, and
+      # untested, and the only bad version of it is the silent one - a
+      # renamed option or a moved niri surfaces three layers down as
+      # something inexplicable. The template (nix flake init -t
+      # github:crispuscrew/zde#host) is how to not be here.
+      warnings = lib.optional (config.system.nixos.release != testedRelease) ''
+        zde is tested against nixos-${testedRelease}, and this system is ${config.system.nixos.release}.
+        Nothing is known to be broken; nothing is known to work either.
+      '';
+
       # Rootless podman: what zcr runs apps with.
       virtualisation.podman.enable = true;
 
