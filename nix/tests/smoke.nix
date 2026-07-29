@@ -117,6 +117,19 @@ let
         # software one, set on the manager rather than in the unit so that the
         # unit stays honest about what it needs.
         sctl set-environment QT_QUICK_BACKEND=software
+
+        # Nothing is on a layer yet, which is what makes "the bar is on a
+        # layer" mean anything further down. It has to be asked before the
+        # target starts, because the target is what starts the bar - asking
+        # afterwards is asking whether the thing that just happened had not
+        # happened yet. The json form, because the human one prints nothing at
+        # all for an empty list and "nothing" is not something to grep for.
+        nirimsg --json layers 2>&1 | tee /tmp/layers-before.txt
+        if [ "$(cat /tmp/layers-before.txt)" != "[]" ]; then
+          echo "something was already on a layer before the session started:"
+          cat /tmp/layers-before.txt; exit 1
+        fi
+
         # Pulled in rather than started: graphical-session.target refuses a
         # manual start, by design - it is meant to arrive as somebody's
         # dependency, which on a login is niri.service. NixOS ships this stand-in
@@ -147,18 +160,15 @@ let
         grep -qx 'compositor connected' /tmp/unit-status.txt
 
         # And the bar, which the same target starts. Asserted against niri
-        # rather than against systemd: a unit that is active proves quickshell
-        # did not exit, and what a bar has to do is be on the screen. niri lists
-        # layer-shell surfaces, and before this there were none - the check
-        # above the wait is what makes the one below it mean anything.
-        # The json form, because the human one prints nothing at all for an
-        # empty list and "nothing" is not something to grep for.
-        nirimsg --json layers 2>&1 | tee /tmp/layers-before.txt
-        if [ "$(cat /tmp/layers-before.txt)" != "[]" ]; then
-          echo "something was already on a layer before the bar started:"
-          cat /tmp/layers-before.txt; exit 1
-        fi
-        bar_layer() { nirimsg --json layers >/tmp/layers.txt 2>&1 && grep -q namespace /tmp/layers.txt; }
+        # rather than against systemd: an active unit proves quickshell did not
+        # exit, and what a bar has to do is be on the screen. By name, not by
+        # "something appeared" - quickshell names its surfaces after itself, and
+        # a check that passes on any layer surface at all would pass on a
+        # notification popup or on whatever comes next.
+        bar_layer() {
+          nirimsg --json layers >/tmp/layers.txt 2>&1 &&
+            grep -q '"namespace":"quickshell"' /tmp/layers.txt
+        }
         if ! waitfor 60 bar_layer; then
           echo "the bar never reached the screen:"
           cat /tmp/layers.txt
