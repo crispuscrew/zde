@@ -113,7 +113,7 @@ Modes gate which actions are live.
 | monitor | `focus <dir>`, `move-window <dir>`, `move-workspace <dir>` |
 | workspace | `next`/`prev` (band-clamped), `overview` |
 | window | `focus <dir>`, `move <dir>`, `resize`, `preset-width`, `consume`/`expel`, `float`, `fullscreen`, `close`, `capture-block`, `jump-to` (fuzzy over all windows; travels the hierarchy) |
-| launch | `launcher.open` (zlg), `palette.open` (run any action by name), `app.launch <name>`, `app.launch-at <name>` (prompts for a directory), `app.launch-here` (context fills the slot), `app.jump-or-launch`, `app.new-instance` (always fresh) |
+| launch | `launcher.open` (zlg), `palette.open` (run any action by name, and answer an expression typed in place of one), `app.launch <name>`, `app.launch-at <name>` (prompts for a directory), `app.launch-here` (context fills the slot), `app.jump-or-launch`, `app.new-instance` (always fresh) |
 | ask | `oneshot`, `panel`, `escalate`, `local` |
 | pass | `open` (trusted secrets window; types into the focused field, never the clipboard), `type` (trusted window only) |
 | clip | `history`, `clear` |

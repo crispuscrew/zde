@@ -24,6 +24,19 @@ attribution; asks 5-6 land with their consumers.
   switch, mic OSD.
 - launch surfaces: palette, zlg, jump / jump-or-launch / new-instance,
   launch-here.
+- calc, in the palette: type an expression where you would type an action name,
+  and the answer is the first row - Enter copies it, and nothing has opened a
+  window. It belongs to the palette rather than beside it because the whole
+  point is not choosing a calculator first, and it is listed here rather than
+  in 0.1 because there is no palette until this phase.
+  - The engine is `qalc` (qalculate's CLI) in a zinc container with no network,
+    which is what buys units, hex, and precision without zde parsing anything
+    itself: a hand-rolled parser is the kind of thing that is wrong quietly.
+    Fail closed - no engine, no calc row, and the palette says so rather than
+    guessing.
+  - A window for the sums that outgrow one line stays a normal app: a
+    calculator on a desk, launched like anything else, not a second surface for
+    the shell to own.
 - modes via the input-layer daemon + device remap profiles.
 - security set: guest, panic + decoy, zen, lock-preset, capture-block,
   `net.kill`.
