@@ -78,6 +78,50 @@ let
         fi
         echo "niri is up on $NIRI_SOCKET"
 
+        # First, the way a login actually starts the daemon, because everything
+        # after this line starts it by hand and a person never does. niri is up
+        # and this test is standing where niri stands: it imports the
+        # environment into the user manager and brings up the target, which is
+        # what niri --session does on its way to telling systemd it is ready.
+        # Then zded has to appear on its own.
+        #
+        # Its own runtime dir is the manager's, not this script's, so the
+        # daemon that comes up listens somewhere else than the one below and
+        # the two never meet.
+        # systemctl --user reaches the manager through XDG_RUNTIME_DIR, and
+        # this script has pointed that at a directory of its own. So every call
+        # here says where the manager actually is, rather than the script
+        # moving to it and taking niri's socket path with it.
+        mgr=/run/user/$(id -u)
+        sctl() { XDG_RUNTIME_DIR=$mgr systemctl --user "$@"; }
+        sctl import-environment NIRI_SOCKET
+        sctl start graphical-session.target
+        zded_unit() { sctl is-active --quiet zded.service; }
+        if ! waitfor 30 zded_unit; then
+          echo "the target came up and zded did not follow it:"
+          sctl status zded.service || true
+          journalctl --user -u zded.service --no-pager | tail -20; exit 1
+        fi
+        # And it can see the compositor, which is the whole reason the unit
+        # waits for the target rather than racing niri: NIRI_SOCKET is in the
+        # environment only after niri has put it there.
+        XDG_RUNTIME_DIR=$mgr zde status 2>&1 | tee /tmp/unit-status.txt
+        grep -qx 'compositor connected' /tmp/unit-status.txt
+
+        # PartOf, which is what keeps one session's daemon out of the next
+        # one's way: the target going down takes zded with it, and zded on its
+        # way out takes its socket.
+        sctl stop graphical-session.target
+        gone() { ! sctl is-active --quiet zded.service; }
+        if ! waitfor 15 gone; then
+          echo "the session ended and zded stayed:"
+          sctl status zded.service || true; exit 1
+        fi
+        socket_gone() { [ ! -e "$mgr/zde/zded.sock" ]; }
+        if ! waitfor 15 socket_gone; then
+          echo "zded left $mgr/zde/zded.sock behind for the next session"; exit 1
+        fi
+
         # A session bus, so zded can be the notification server on it. Started
         # before zded because zded takes the name at startup and carries on
         # without one - which is the right behaviour and also means a bus
@@ -563,24 +607,16 @@ pkgs.testers.runNixOSTest {
           "test -L /home/zde/.config/systemd/user/graphical-session.target.wants/zded.service"
       )
 
-      # And it starts, from the unit rather than from a shell. linger runs the
-      # user manager without a login, which is what lets this be asked at all:
-      # su gives no session (the podman check at the end leans on the same
-      # fact from the other side).
+      # That is the precise-cause check, and on its own it is a weak one: a
+      # unit can be wanted by the target and still be wrong in every way that
+      # matters. Starting it the way a login does needs a compositor to import
+      # an environment from, so it happens in the live check below, where there
+      # is one. What this does is give the user manager the linger that check
+      # needs - su gives no session (the podman check at the end of this file
+      # leans on the same fact from the other side).
       uid = machine.succeed("id -u zde").strip()
-      user = "su -l zde -c 'XDG_RUNTIME_DIR=/run/user/" + uid + " systemctl --user %s'"
       machine.succeed("loginctl enable-linger zde")
       machine.wait_until_succeeds(f"systemctl is-active user@{uid}.service")
-      machine.succeed(user % "start zded.service")
-      machine.wait_until_succeeds(f"test -S /run/user/{uid}/zde/zded.sock")
-      # Listening is not still running: zded that took the socket and then
-      # died would leave the file behind, and the next session would find a
-      # stale socket rather than a daemon.
-      machine.succeed(user % "show -p SubState --value zded.service | grep -qx running")
-      # Stopped again so everything below has one daemon and one journal. Two
-      # appending to the same file is a corruption this test would have to be
-      # unlucky to catch and unluckier to diagnose.
-      machine.succeed(user % "stop zded.service")
 
       # zded comes up and answers its socket. There is no compositor in a
       # build sandbox, which is the point: the daemon everyone asks why the

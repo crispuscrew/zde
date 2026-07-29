@@ -94,8 +94,8 @@ answer is whether the keys feel right under fingers.
   for a hand off home row.
 - **200ms is the number to argue with.** Type fast and see whether a Tab ever
   starts the layer by accident; hold deliberately and see whether Tab feels
-  sticky. It is one number in
-  [`input/kanata.kbd`](../input/kanata.kbd) and this is the only way to pick it.
+  sticky. It is one number in `input/kanata.kbd` (on that branch, not on
+  `dev`), and this is the only way to pick it.
 - **Tab autorepeat is gone** - tap-hold eats it. Find out over an hour whether
   anything you do needs a held Tab that repeats.
 - **F13 and F14 arrive as themselves.** The default xkb map turns FK13 into
@@ -186,12 +186,22 @@ Not bugs, do not report them:
 - **The shell**: no bar, no picker, no notification centre, no desk switcher.
   Pressed as a key, `Mod+Tab` does nothing visible - it lists the desks on a
   stdout nobody is reading, which is the honest thing it can do without a
-  surface (`zde desk switcher` in a terminal shows the same list). Every bind
-  that spawns `zde ask`, `zde clip`, `zde capture`, `zde media`, `zde system`,
-  `zde palette`, `zde window jump-to` or `zlg` does nothing, silently. What is
-  live today: the desk group, `zde workspace next|prev`, `zde nav up|down`,
-  the queue, `zde status`, and the niri natives (columns, monitors,
-  fullscreen, overview).
+  surface (`zde desk switcher` in a terminal shows the same list).
+- **Most of the cheatsheet.** A bind whose command is not written yet prints
+  usage to a stderr nobody reads, so the key is silent and so is the machine.
+  What is live today, and nothing else:
+
+  | Works | Silent |
+  |---|---|
+  | `Mod+j`/`k` and the arrows (nav) | `Mod+Shift+Escape` (panic), `Mod+Shift+z` (zen) |
+  | `Mod+Shift+j`/`k` (move window) | `Mod+a`, `Mod+Shift+a` (ask) |
+  | `Mod+r` (regulars), `Mod+u` (queue jump) | `Mod+v`, `Mod+Shift+v` (clip, pass) |
+  | `Mod+Shift+Tab` (last desk) | `Mod+g`, `Mod+semicolon` (launcher, palette) |
+  | `zde workspace next\|prev`, `zde desk *`, `zde queue *`, `zde status` | `Mod+t`, `Mod+e` (launch), `Mod+w` (jump to window) |
+  | the niri natives: columns, monitors, fullscreen, float, close, overview, consume/expel | `Mod+m` (modes), `Mod+n`, `Mod+slash`, `Mod+c`, `Mod+p`, `Mod+q`, and the rest of the system group |
+
+  `Mod+Shift+Escape` is worth singling out: panic is the key you reach for
+  first when something goes wrong, and it is one of the silent ones.
 - **Modes** (`Mod+m`) and the leader sequences for panic and block. They wait
   on the input layer landing.
 - **Brightness** (`Mod+b`, `Mod+Shift+b`): layer 0 installs no udev rules for

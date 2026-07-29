@@ -30,11 +30,11 @@
       zdeTools = pkgs: pkgs.callPackage ./nix/zde.nix { };
       zdeConfig = pkgs: pkgs.callPackage ./nix/zde-config.nix { };
 
-      # The live image (nix/live.nix), as one host the flake then offers three
-      # ways: a nixosConfiguration to build or inspect, the ISO as a package,
-      # and an eval-only check. Both layers, the same modules a real machine
-      # imports.
-      liveFor =
+      # The live image (nix/live.nix): both layers, the same modules a real
+      # machine imports. Built once per system and shared by the two outputs
+      # that want it, because evaluating a NixOS host with an ISO on top is not
+      # cheap enough to do twice for the same answer.
+      live = nixpkgs.lib.genAttrs systems (
         system:
         nixpkgs.lib.nixosSystem {
           inherit system;
@@ -43,7 +43,8 @@
             home-manager.nixosModules.home-manager
             ./nix/live.nix
           ];
-        };
+        }
+      );
     in
     {
       # Layer 0 (docs/delivery.md). A plain path module: it needs nothing from
@@ -58,7 +59,7 @@
       # The live image as a host, so it can be inspected, overridden, or
       # rebuilt from by a machine that wants zde without an install script yet
       # (docs/delivery.md, sequencing).
-      nixosConfigurations.zde-live = liveFor "x86_64-linux";
+      nixosConfigurations.zde-live = live.x86_64-linux;
 
       packages = forAll (pkgs: {
         zde = zdeTools pkgs;
@@ -77,9 +78,10 @@
 
         # The USB stick (nix build .#zde-iso). A package for the same reason
         # the smoke test is one - it is gigabytes and an hour, and no pull
-        # request should wait for it. What CI does check is that it still
-        # evaluates (checks.zde-iso-eval).
-        zde-iso = (liveFor pkgs.stdenv.hostPlatform.system).config.system.build.isoImage;
+        # request should wait for it. Being one is also what keeps it checked:
+        # nix flake check instantiates every package, so a broken isoImage.*
+        # fails CI here without anything being built.
+        zde-iso = live.${pkgs.stdenv.hostPlatform.system}.config.system.build.isoImage;
       });
 
       # Built by nix flake check in CI: compiles the tools, assembles the niri
@@ -110,15 +112,10 @@
           zde-nixos-eval = pkgs.runCommand "zde-nixos-eval" { } ''
             echo ${builtins.unsafeDiscardStringContext testHost.config.system.build.toplevel.drvPath} > "$out"
           '';
-
-          # The same trick for the live image, and pointed at the ISO rather
-          # than at the system: nix flake check evaluates every
-          # nixosConfiguration's toplevel on its own, which is the half that
-          # would still pass with isoImage.* broken. This is the half that
-          # would send someone to burn a stick and find out.
-          zde-iso-eval = pkgs.runCommand "zde-iso-eval" { } ''
-            echo ${builtins.unsafeDiscardStringContext (liveFor pkgs.stdenv.hostPlatform.system).config.system.build.isoImage.drvPath} > "$out"
-          '';
+          # There is deliberately no check for the live image beside this one.
+          # It would be dead weight: nix flake check instantiates
+          # packages.zde-iso, which is the whole ISO derivation, so a broken
+          # isoImage.* already fails there. Checked by breaking it.
         }
       );
 

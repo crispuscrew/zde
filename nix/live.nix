@@ -35,12 +35,17 @@
   # copy this line into a machine that does.
   users.users.zde.password = "zde";
 
-  # nmtui and bluetuith work off these; the wifi item on the list needs them
-  # before anything else on it can be done from a cafe.
-  users.users.zde.extraGroups = [
-    "networkmanager"
-    "video"
-  ];
+  # And with that password, no ssh. The installer profile turns sshd on and
+  # opens port 22, reasoning in its own comment that the accounts it makes have
+  # empty passwords, which sshd refuses. This image breaks that assumption: zde
+  # has a real password, written down in a public document. Left alone, joining
+  # a cafe network to do the wifi items would hand the session user to everyone
+  # else on it.
+  services.openssh.enable = lib.mkForce false;
+
+  # nmtui works off this; the network items on the list need it before anything
+  # else on the list can be done away from a desk.
+  users.users.zde.extraGroups = [ "networkmanager" ];
 
   # The instruments the list asks for. wev is how "is this key arriving as F13
   # or as XF86Tools" gets answered; notify-send is the well-behaved client to
@@ -51,6 +56,13 @@
     pkgs.libnotify
   ];
 
+  # The minimal CD turns fontconfig off, which leaves the fonts it installs
+  # unreachable: with no /etc/fonts every client falls back to the one face
+  # compiled into fontconfig itself, and that face is proportional. The first
+  # thing anyone does on this image is open a terminal, so a monospace font
+  # that resolves is not a nicety here.
+  fonts.fontconfig.enable = lib.mkForce true;
+
   # A terminal, and a key that opens it. Nothing in the keymap does yet: every
   # launch bind spawns a zde subcommand that lands with the shell (roadmap
   # 0.1), so a session on this image would come up with no way to type into
@@ -58,23 +70,15 @@
   # uses, so it clashes with nothing and needs no explaining.
   #
   # This is the image's own bind and not zde's. It goes through the seam a
-  # host has for exactly this - local.kdl, included after the generated binds
-  # - and niri accepts the second binds block (checked by hand against
-  # niri validate, which is the static half of the include-precedence question
-  # in docs/roadmap.md).
+  # host has for exactly this: local.kdl, included after the generated binds.
+  # A later binds block does not replace the earlier ones - niri keeps them and
+  # swaps only the keys the new block names (niri-config, the "binds" arm),
+  # which is the same behaviour zded's dynamic.kdl will lean on.
   home-manager.users.zde.zde.niri.extraConfig = ''
     binds {
         Mod+Return { spawn "foot"; }
     }
   '';
-
-  # The installer profile autologins `nixos` on a getty, and greetd takes tty1
-  # away from getty rather than from all of them. So Ctrl+Alt+F2 is a shell on
-  # a machine whose session did not come up, which is where the log for why
-  # lives: journalctl -b -u greetd, and --user -M zde@ for zded.
-  #
-  # Named here because a live image that cannot be debugged from the console
-  # is a reboot per question.
 
   # zde-live.iso rather than nixos-minimal-<version>-x86_64-linux.iso, so a
   # stick says what it is. mkForce: the CD names it after the distro.

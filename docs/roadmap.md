@@ -90,12 +90,14 @@ turned "when someone has hardware" into something anyone can do this evening.
   further three and two times. Every one is a unix socket round trip, so the
   spawn should dominate - but "should" is why this is on the list. Fold the
   reads into one pass only if a finger says to.
-- include precedence: two files binding the same chord is accepted without
-  complaint - `niri validate` says a second `binds` block is fine and says
-  nothing about the clash - so which one wins at runtime is still unverified.
-  zded releasing a desk's clashing bind through `dynamic.kdl` depends on the
-  answer being "the last include". The static half is now pinned by the smoke
-  test, because the live image puts its terminal on a key this way.
+- include precedence: answered, in niri's own source rather than by argument.
+  A later `binds` block keeps the binds already read and replaces only the
+  keys it names again, which upstream did deliberately so that dots can be
+  imported and then overridden. So the last include wins, per key, which is
+  what zded releasing a desk's clashing bind through `dynamic.kdl` needs.
+  `niri validate` accepts the second block and says nothing about the clash;
+  the live image puts its terminal on a key this way, so the smoke test now
+  pins it. What is left is watching it happen on a running compositor.
 - keyboard layout: the config sets no xkb layout, so the session falls back to
   us while the greeter uses the console keymap. `local.kdl` is where a host's
   layout goes now; whether it should be derived from the system's own setting

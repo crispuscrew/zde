@@ -47,7 +47,9 @@ cost is the script alone.
   live image that boots into zde and touches no disk. Not an installer - it
   exists so the by-hand list ([`verify.md`](verify.md)) has a machine to run
   on, which is the one thing CI cannot provide. Too big to build per pull
-  request, so CI checks that it still evaluates and nothing more.
+  request: being a flake package is what keeps it checked anyway, since
+  `nix flake check` instantiates every package and a broken image fails there
+  without anything being built.
 - `zde.iso`: a NixOS installer preseeded with the zde configuration, CI-built
   and checksummed. Once 0.1 is usable.
 - `install.sh`: the portable bootstrapper, checksummed alongside.
