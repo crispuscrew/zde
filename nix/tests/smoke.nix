@@ -97,7 +97,20 @@ let
         # niri names its IPC socket after the Wayland display it opened, so the
         # display comes back out of the socket path. The bar needs it: it is a
         # Wayland client, where zded only needs the IPC socket.
-        export WAYLAND_DISPLAY=$(basename "$NIRI_SOCKET" | cut -d. -f2)
+        #
+        # Absolute, which is the part that matters here. A bare "wayland-1" is
+        # resolved against XDG_RUNTIME_DIR, and the two directories in this
+        # script are not the same one: niri opened its socket in the script's
+        # own runtime dir, and the unit below runs with the user manager's.
+        # Pointed at the wrong directory, Qt does not report a missing socket -
+        # it fails to initialise its Wayland plugin and aborts with a backtrace
+        # about platform plugins, which is a long way from the cause.
+        # libwayland takes an absolute WAYLAND_DISPLAY as the socket itself.
+        export WAYLAND_DISPLAY="$XDG_RUNTIME_DIR/$(basename "$NIRI_SOCKET" | cut -d. -f2)"
+        if [ ! -S "$WAYLAND_DISPLAY" ]; then
+          echo "niri's IPC socket is $NIRI_SOCKET but there is no wayland socket at $WAYLAND_DISPLAY:"
+          ls -la "$XDG_RUNTIME_DIR"; exit 1
+        fi
         sctl import-environment NIRI_SOCKET WAYLAND_DISPLAY
         # This machine has no GPU and QtQuick defaults to wanting one. On real
         # hardware the bar gets the same renderer niri does; here it gets Qt's
