@@ -94,7 +94,42 @@ let
         # moving to it and taking niri's socket path with it.
         mgr=/run/user/$(id -u)
         sctl() { XDG_RUNTIME_DIR=$mgr systemctl --user "$@"; }
-        sctl import-environment NIRI_SOCKET
+        # niri names its IPC socket after the Wayland display it opened, so the
+        # display comes back out of the socket path. The bar needs it: it is a
+        # Wayland client, where zded only needs the IPC socket.
+        #
+        # Absolute, which is the part that matters here. A bare "wayland-1" is
+        # resolved against XDG_RUNTIME_DIR, and the two directories in this
+        # script are not the same one: niri opened its socket in the script's
+        # own runtime dir, and the unit below runs with the user manager's.
+        # Pointed at the wrong directory, Qt does not report a missing socket -
+        # it fails to initialise its Wayland plugin and aborts with a backtrace
+        # about platform plugins, which is a long way from the cause.
+        # libwayland takes an absolute WAYLAND_DISPLAY as the socket itself.
+        export WAYLAND_DISPLAY="$XDG_RUNTIME_DIR/$(basename "$NIRI_SOCKET" | cut -d. -f2)"
+        if [ ! -S "$WAYLAND_DISPLAY" ]; then
+          echo "niri's IPC socket is $NIRI_SOCKET but there is no wayland socket at $WAYLAND_DISPLAY:"
+          ls -la "$XDG_RUNTIME_DIR"; exit 1
+        fi
+        sctl import-environment NIRI_SOCKET WAYLAND_DISPLAY
+        # This machine has no GPU and QtQuick defaults to wanting one. On real
+        # hardware the bar gets the same renderer niri does; here it gets Qt's
+        # software one, set on the manager rather than in the unit so that the
+        # unit stays honest about what it needs.
+        sctl set-environment QT_QUICK_BACKEND=software
+
+        # Nothing is on a layer yet, which is what makes "the bar is on a
+        # layer" mean anything further down. It has to be asked before the
+        # target starts, because the target is what starts the bar - asking
+        # afterwards is asking whether the thing that just happened had not
+        # happened yet. The json form, because the human one prints nothing at
+        # all for an empty list and "nothing" is not something to grep for.
+        nirimsg --json layers 2>&1 | tee /tmp/layers-before.txt
+        if [ "$(cat /tmp/layers-before.txt)" != "[]" ]; then
+          echo "something was already on a layer before the session started:"
+          cat /tmp/layers-before.txt; exit 1
+        fi
+
         # Pulled in rather than started: graphical-session.target refuses a
         # manual start, by design - it is meant to arrive as somebody's
         # dependency, which on a login is niri.service. NixOS ships this stand-in
@@ -124,6 +159,84 @@ let
         XDG_RUNTIME_DIR=$mgr zde status 2>&1 | tee /tmp/unit-status.txt
         grep -qx 'compositor connected' /tmp/unit-status.txt
 
+        # And the bar, which the same target starts. Asserted against niri
+        # rather than against systemd: an active unit proves quickshell did not
+        # exit, and what a bar has to do is be on the screen. By name, not by
+        # "something appeared" - quickshell names its surfaces after itself, and
+        # a check that passes on any layer surface at all would pass on a
+        # notification popup or on whatever comes next.
+        # zde-bar is our namespace and not quickshell's default, which is the
+        # point: the default would match any quickshell instance on the machine,
+        # and would keep matching after zde grew a second surface.
+        bar_layer() {
+          nirimsg --json layers >/tmp/layers.txt 2>&1 &&
+            grep -q '"namespace":"zde-bar"' /tmp/layers.txt
+        }
+        if ! waitfor 60 bar_layer; then
+          echo "the bar never reached the screen:"
+          cat /tmp/layers.txt
+          sctl status zde-bar.service || true
+          journalctl --user -u zde-bar.service --no-pager | tail -25; exit 1
+        fi
+        cat /tmp/layers.txt
+
+        # And then what it shows, which is the half a layer surface says nothing
+        # about: a bar that never read the queue, one stuck on a number from
+        # five minutes ago, and one doing its job all look identical from
+        # outside. So the bar answers for itself, over quickshell's own IPC.
+        # Addressed by pid, so this needs neither the instance id nor the store
+        # path the unit was built with.
+        # --pid belongs to `ipc`, not before it: quickshell rejects it outright
+        # in front of the subcommand. And stderr is kept rather than dropped,
+        # because a failing call otherwise sets an empty answer that fails the
+        # comparison below with nothing to say why - which is exactly how this
+        # cost a CI round trip.
+        barpid=$(sctl show -p MainPID --value zde-bar.service)
+        barq() {
+          XDG_RUNTIME_DIR=$mgr quickshell ipc --pid "$barpid" call queue "$1" 2>&1 |
+            tr -d '\n' || true
+        }
+
+        # Height and reserved space first: zero of either is a surface the
+        # compositor lists and a person cannot see, or one that quietly covers
+        # the top of every window.
+        geom=$(barq geometry)
+        [ "$geom" = "26 26" ] || {
+          echo "the bar came up as height/zone '$geom', wanted '26 26'"; exit 1
+        }
+
+        # Then the count, against a queue that changes underneath it. "0 0"
+        # before, "1 0" after: the poll is two seconds, so this waits rather
+        # than sleeping once and hoping.
+        empty=$(barq count)
+        [ "$empty" = "0 0" ] || { echo "the bar says '$empty' for an empty queue"; exit 1; }
+        XDG_RUNTIME_DIR=$mgr zde queue add something for the bar to count >/dev/null
+        counted() { [ "$(barq count)" = "1 0" ]; }
+        if ! waitfor 20 counted; then
+          echo "the queue has one item and the bar says '$(barq count)'"
+          sctl status zde-bar.service || true
+          journalctl --user -u zde-bar.service --no-pager | tail -25; exit 1
+        fi
+
+        # And that it comes back. zded is restarted by every home-manager switch
+        # that changes it, and the bar's own unit is not restarted with it - so a
+        # socket that does not redial leaves the bar blind for the rest of the
+        # session. It did, until this test existed.
+        sctl restart zded.service
+        if ! waitfor 30 zded_up; then
+          echo "zded did not come back:"; sctl status zded.service || true; exit 1
+        fi
+        recovered() { [ "$(barq count)" = "1 0" ]; }
+        if ! waitfor 30 recovered; then
+          echo "zded restarted and the bar never reconnected: '$(barq count)'"
+          journalctl --user -u zde-bar.service --no-pager | tail -25; exit 1
+        fi
+
+        XDG_RUNTIME_DIR=$mgr zde queue 2>&1 | tee /tmp/bar-queue.txt
+        grep -q 'something for the bar to count' /tmp/bar-queue.txt
+        id=$(grep 'something for the bar' /tmp/bar-queue.txt | cut -f1)
+        XDG_RUNTIME_DIR=$mgr zde queue done "$id" >/dev/null
+
         # PartOf, which is what keeps one session's daemon out of the next
         # one's way: the target going down takes zded with it, and zded on its
         # way out takes its socket. Ending the session is ending what held the
@@ -138,6 +251,18 @@ let
         socket_gone() { [ ! -e "$mgr/zde/zded.sock" ]; }
         if ! waitfor 15 socket_gone; then
           echo "zded left $mgr/zde/zded.sock behind for the next session"; exit 1
+        fi
+        # The bar goes with it, and takes its surface off the screen. A bar left
+        # behind by a session that ended is a strip drawn over the next one.
+        bar_gone() { ! sctl is-active --quiet zde-bar.service; }
+        if ! waitfor 15 bar_gone; then
+          echo "the session ended and the bar stayed:"
+          sctl status zde-bar.service || true; exit 1
+        fi
+        layers_gone() { [ "$(nirimsg --json layers 2>/dev/null)" = "[]" ]; }
+        if ! waitfor 15 layers_gone; then
+          echo "the bar stopped and its surface is still on the screen:"
+          nirimsg --json layers; exit 1
         fi
 
         # A session bus, so zded can be the notification server on it. Started
@@ -183,9 +308,9 @@ let
         # names a workspace after what is in it.
         #
         # foot is a Wayland client that starts without a GPU, which not many
-        # do. It has to talk to niri rather than to the cage hosting it, and
-        # niri names its IPC socket after the Wayland display it opened.
-        export WAYLAND_DISPLAY=$(basename "$NIRI_SOCKET" | cut -d. -f2)
+        # do. It has to talk to niri rather than to the cage hosting it, which
+        # is what WAYLAND_DISPLAY above is for - exported where the bar needed
+        # it first, and read out of niri's socket name either way.
         # Past the end of the strip, onto the empty workspace niri keeps there.
         # That is where a new workspace comes from in real use, and it is
         # unnamed until something claims it.

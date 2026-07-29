@@ -12,7 +12,12 @@
     # upstream names as the usual cause of a black screen from a TTY. The lock
     # is the pin: niri moves when nixpkgs does, by hand (docs/update.md). It
     # goes back to being its own input the day zde needs a niri that stable
-    # does not carry. Quickshell will need exactly that when the shell lands.
+    # does not carry.
+    #
+    # Quickshell was expected to need exactly that when the shell landed, and
+    # it did not: stable carries 0.3.0, so the bar builds from the same
+    # nixpkgs as everything else and there is still nothing here but these
+    # two.
   };
 
   outputs =
@@ -30,6 +35,7 @@
       # home module (nix/*.nix) so the flake and layer 1 build the same thing.
       zdeTools = pkgs: pkgs.callPackage ./nix/zde.nix { };
       zdeConfig = pkgs: pkgs.callPackage ./nix/zde-config.nix { };
+      zdeShell = pkgs: pkgs.callPackage ./nix/shell.nix { };
 
       # The live image (nix/live.nix): both layers, the same modules a real
       # machine imports. Built once per system and shared by the two outputs
@@ -78,6 +84,7 @@
       packages = forAll (pkgs: {
         zde = zdeTools pkgs;
         zde-config = zdeConfig pkgs;
+        zde-shell = zdeShell pkgs;
         default = zdeTools pkgs;
 
         # The QEMU smoke test (nix build .#zde-smoke). A package and not a
@@ -117,6 +124,10 @@
         {
           zde = zdeTools pkgs;
           zde-config = zdeConfig pkgs;
+          # The bar's QML, checked by qmllint with the imports resolved. It is
+          # a check and not only a package because it is cheap and because
+          # quickshell has none of its own (nix/shell.nix).
+          zde-shell = zdeShell pkgs;
           # Evaluation only: discarding the string context keeps the system
           # closure out of the build, so this costs an eval and nothing else.
           # It is what catches a bad option or a typo in nix/system.nix and

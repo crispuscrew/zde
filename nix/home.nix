@@ -13,6 +13,7 @@ let
   # keymap source of truth. Same derivation the flake exposes.
   zdeConfig = pkgs.callPackage ./zde-config.nix { };
   zdeTools = pkgs.callPackage ./zde.nix { };
+  zdeShell = pkgs.callPackage ./shell.nix { };
 
   # What dynamic.kdl says before zded has written anything into it. niri treats
   # a missing include as a fatal error, so this file has to exist from the
@@ -97,6 +98,10 @@ in
       zdeTools # zded, zde
       pkgs.brightnessctl # system.brightness-up/dn
       pkgs.wireplumber # wpctl, for audio.*
+      # The bar runs from the store path in its unit, so this is not what
+      # starts it. It is `qs log` and `qs list`, which are the only way to find
+      # out why a bar is not on screen.
+      pkgs.quickshell
     ];
 
     # The daemon, started with the session. Every bind in the desk group is a
@@ -121,6 +126,39 @@ in
         # It answers keys. A daemon that died on one bad reply and stayed dead
         # would leave every desk key silent until the next login, and the
         # journal it replays on the way back up is what makes restarting safe.
+        Restart = "on-failure";
+        RestartSec = 1;
+      };
+      Install.WantedBy = [ "graphical-session.target" ];
+    };
+
+    # The bar. Same shape as zded and for the same reasons, with one addition:
+    # it wants zded, because everything it has to say comes from there. It
+    # survives zded not being up - it says so on the bar instead, which is more
+    # use than an empty strip - but starting them in the wrong order would mean
+    # a bar that reads "not answering" for its first two seconds of every
+    # login.
+    systemd.user.services.zde-bar = {
+      Unit = {
+        Description = "the zde bar: the queue, and the clock";
+        Documentation = "https://github.com/crispuscrew/zde";
+        PartOf = [ "graphical-session.target" ];
+        After = [
+          "graphical-session.target"
+          "zded.service"
+        ];
+        Wants = [ "zded.service" ];
+      };
+      Service = {
+        ExecStart = "${pkgs.quickshell}/bin/quickshell -p ${zdeShell}/share/zde/shell/shell.qml";
+        # A bar is the one thing whose absence is obvious, so restarting it is
+        # never a surprise. One second, the same as zded, and not the three it
+        # was: systemd gives up after 5 starts inside 10 seconds, and at three
+        # seconds apart it can never see 5 in a window - so QML that fails
+        # identically every time would have restarted for ever instead of
+        # failing, leaving a runtime log directory behind on each try. Measured
+        # on a transient unit: 3s spacing was still restarting after 45
+        # seconds, 1s spacing gave up at 5.
         Restart = "on-failure";
         RestartSec = 1;
       };
