@@ -29,6 +29,8 @@ reach out.
   verify-in-prototype list.
 - [`docs/delivery.md`](docs/delivery.md) - how zde ships: NixOS reference,
   portable path, ISO.
+- [`docs/verify.md`](docs/verify.md) - the by-hand list: what only a real
+  machine can answer, and the live image to answer it on.
 - [`docs/glossary.md`](docs/glossary.md) - the terms; every doc uses only
   these words.
 
