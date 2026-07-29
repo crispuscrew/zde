@@ -17,6 +17,7 @@ on:
       - flake.lock
       - nix/**
       - niri/**
+      - input/**
       - common/keymap/**
       - cmd/**
       - internal/**
@@ -29,6 +30,7 @@ on:
       - flake.lock
       - nix/**
       - niri/**
+      - input/**
       - common/keymap/**
       - cmd/**
       - internal/**

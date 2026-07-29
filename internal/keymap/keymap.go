@@ -20,14 +20,28 @@ type sourceFile struct {
 type sourceBind struct {
 	Action string `yaml:"action"`
 	Key    string `yaml:"key"`
+	// Via is the chord a person presses, when it is not the one niri sees.
+	// The input daemon turns it into Key, because niri binds one modifier set
+	// plus one key and cannot express a held Tab or a sequence.
+	Via string `yaml:"via"`
 }
 
 // Bind is one resolved chord -> action pair.
 type Bind struct {
 	Action string // as written, e.g. "window.focus left"
 	Key    string // niri chord, e.g. "Mod+Left"
+	Via    string // what is pressed to produce Key, "" when they are the same
 	Arg    string // parametric argument, "" for exact actions
 	Entry  Entry
+}
+
+// Pressed is the chord to tell someone about: what their fingers do, which is
+// the input daemon's chord when there is one and niri's otherwise.
+func (b Bind) Pressed() string {
+	if b.Via != "" {
+		return b.Via
+	}
+	return b.Key
 }
 
 type Keymap struct {
@@ -56,7 +70,8 @@ func Parse(raw []byte) (*Keymap, error) {
 		return nil, fmt.Errorf("keymap: no binds")
 	}
 	km := &Keymap{}
-	seen := map[string]string{} // canonical chord -> action
+	seen := map[string]string{}    // canonical chord -> action
+	pressed := map[string]string{} // what fingers do -> action
 	for i, b := range src.Binds {
 		bind, err := resolve(b)
 		if err != nil {
@@ -68,6 +83,13 @@ func Parse(raw []byte) (*Keymap, error) {
 			return nil, fmt.Errorf("keymap: bind %d: %s bound to both %q and %q", i+1, bind.Key, prev, bind.Action)
 		}
 		seen[bind.Key] = bind.Action
+		// And two chords a hand cannot tell apart are one chord, whatever the
+		// input layer turns them into: the daemon can map a physical chord to
+		// one key, so a second claim on it is a cheatsheet row that lies.
+		if prev, dup := pressed[bind.Pressed()]; dup {
+			return nil, fmt.Errorf("keymap: bind %d: %s is pressed for both %q and %q", i+1, bind.Pressed(), prev, bind.Action)
+		}
+		pressed[bind.Pressed()] = bind.Action
 		km.Binds = append(km.Binds, bind)
 	}
 	return km, nil
@@ -81,8 +103,12 @@ func resolve(src sourceBind) (Bind, error) {
 		return Bind{}, fmt.Errorf("%q: %w", src.Action, err)
 	}
 	key := c.String()
+	via, err := checkVia(src.Via, key)
+	if err != nil {
+		return Bind{}, fmt.Errorf("%q: %w", src.Action, err)
+	}
 	if e, ok := registry[src.Action]; ok && !e.parametric() {
-		return Bind{Action: src.Action, Key: key, Entry: e}, nil
+		return Bind{Action: src.Action, Key: key, Via: via, Entry: e}, nil
 	}
 	id, arg, found := strings.Cut(src.Action, " ")
 	if !found {
@@ -98,7 +124,32 @@ func resolve(src sourceBind) (Bind, error) {
 	if err := checkArg(e, arg); err != nil {
 		return Bind{}, fmt.Errorf("%q: %w", src.Action, err)
 	}
-	return Bind{Action: src.Action, Key: key, Arg: arg, Entry: e}, nil
+	return Bind{Action: src.Action, Key: key, Via: via, Arg: arg, Entry: e}, nil
+}
+
+// checkVia validates the pressed chord. It is never written into KDL - niri
+// only ever sees Key - so what it has to survive is the cheatsheet's table,
+// where a pipe or a newline would break the row it sits in.
+//
+// A via that is not on an input-layer key is a mistake worth catching: it says
+// the daemon rewrites a chord, and niri would be listening for the wrong one.
+func checkVia(via, key string) (string, error) {
+	if via == "" {
+		if inputLayerKey(key) {
+			// Nobody can press it. The key exists so the input layer has
+			// something to emit, and without the chord that produces it the
+			// cheatsheet prints a key no keyboard has.
+			return "", fmt.Errorf("key %s is the input layer's: say which chord produces it with via", key)
+		}
+		return "", nil
+	}
+	if strings.ContainsAny(via, "|\n`") {
+		return "", fmt.Errorf("via %q: no pipes, backticks or newlines, it goes in the cheatsheet table", via)
+	}
+	if !inputLayerKey(key) {
+		return "", fmt.Errorf("via %q: only for keys the input daemon emits, not %s", via, key)
+	}
+	return via, nil
 }
 
 func checkArg(e Entry, arg string) error {
@@ -182,5 +233,25 @@ func parseChord(s string) (chord, error) {
 }
 
 func hardwareKey(key string) bool {
-	return key == "Print" || strings.HasPrefix(key, "XF86")
+	return key == "Print" || strings.HasPrefix(key, "XF86") || inputLayerKey(key)
+}
+
+// inputLayerKey is one of the keys no keyboard has. The input daemon emits
+// them for chords niri cannot express - a held Tab, a sequence - so niri sees
+// an ordinary key press and binds it like any other.
+//
+// They are exempt from going through Mod for the same reason the media keys
+// are: no keyboard has them, so nothing else presses them. The chord a person
+// actually presses is the bind's `via`, and that is what the cheatsheet shows.
+//
+// Reaching niri as themselves takes the fkeys:basic_13-24 xkb option, which
+// niri/config.kdl sets. Without it the default layout gives these keycodes
+// XF86Tools, XF86Launch5 and the like - and F20 gives XF86AudioMicMute, which
+// this keymap binds. The bind would load and never fire.
+func inputLayerKey(key string) bool {
+	switch key {
+	case "F13", "F14", "F15", "F16", "F17", "F18", "F19", "F20":
+		return true
+	}
+	return false
 }
