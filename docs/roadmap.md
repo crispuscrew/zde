@@ -52,6 +52,10 @@ usable.
 
 ## Verify in prototype
 
+The open questions. How to actually answer them, on which machine and in what
+order, is [`verify.md`](verify.md) - and the live image it describes is what
+turned "when someone has hardware" into something anyone can do this evening.
+
 - niri: runtime workspace renaming (adoption + monitor moves);
   block-out-from granularity; mode mechanism (config-swap vs input layer);
   X11 apps, which need xwayland-satellite (the session leaves XWayland off).
@@ -86,9 +90,14 @@ usable.
   further three and two times. Every one is a unix socket round trip, so the
   spawn should dominate - but "should" is why this is on the list. Fold the
   reads into one pass only if a finger says to.
-- include precedence: two files binding the same chord is accepted without
-  complaint, so which one wins is unverified. zded releasing a desk's clashing
-  bind through `dynamic.kdl` depends on the answer being "the last include".
+- include precedence: answered, in niri's own source rather than by argument.
+  A later `binds` block keeps the binds already read and replaces only the
+  keys it names again, which upstream did deliberately so that dots can be
+  imported and then overridden. So the last include wins, per key, which is
+  what zded releasing a desk's clashing bind through `dynamic.kdl` needs.
+  `niri validate` accepts the second block and says nothing about the clash;
+  the live image puts its terminal on a key this way, so the smoke test now
+  pins it. What is left is watching it happen on a running compositor.
 - keyboard layout: the config sets no xkb layout, so the session falls back to
   us while the greeter uses the console keymap. `local.kdl` is where a host's
   layout goes now; whether it should be derived from the system's own setting

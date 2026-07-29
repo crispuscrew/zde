@@ -78,6 +78,57 @@ let
         fi
         echo "niri is up on $NIRI_SOCKET"
 
+        # First, the way a login actually starts the daemon, because everything
+        # after this line starts it by hand and a person never does. niri is up
+        # and this test is standing where niri stands: it imports the
+        # environment into the user manager and brings up the target, which is
+        # what niri --session does on its way to telling systemd it is ready.
+        # Then zded has to appear on its own.
+        #
+        # Its own runtime dir is the manager's, not this script's, so the
+        # daemon that comes up listens somewhere else than the one below and
+        # the two never meet.
+        # systemctl --user reaches the manager through XDG_RUNTIME_DIR, and
+        # this script has pointed that at a directory of its own. So every call
+        # here says where the manager actually is, rather than the script
+        # moving to it and taking niri's socket path with it.
+        mgr=/run/user/$(id -u)
+        sctl() { XDG_RUNTIME_DIR=$mgr systemctl --user "$@"; }
+        sctl import-environment NIRI_SOCKET
+        # Pulled in rather than started: graphical-session.target refuses a
+        # manual start, by design - it is meant to arrive as somebody's
+        # dependency, which on a login is niri.service. NixOS ships this stand-in
+        # for sessions that do not speak systemd, and it binds to the target the
+        # same way, so what starts here is the real one.
+        sctl start nixos-fake-graphical-session.target
+        zded_unit() { sctl is-active --quiet zded.service; }
+        if ! waitfor 30 zded_unit; then
+          echo "the target came up and zded did not follow it:"
+          sctl status zded.service || true
+          journalctl --user -u zded.service --no-pager | tail -20; exit 1
+        fi
+        # And it can see the compositor, which is the whole reason the unit
+        # waits for the target rather than racing niri: NIRI_SOCKET is in the
+        # environment only after niri has put it there.
+        XDG_RUNTIME_DIR=$mgr zde status 2>&1 | tee /tmp/unit-status.txt
+        grep -qx 'compositor connected' /tmp/unit-status.txt
+
+        # PartOf, which is what keeps one session's daemon out of the next
+        # one's way: the target going down takes zded with it, and zded on its
+        # way out takes its socket. Ending the session is ending what held the
+        # target up - graphical-session.target is StopWhenUnneeded, so letting
+        # go of it is how a session ends rather than stopping it by name.
+        sctl stop nixos-fake-graphical-session.target
+        gone() { ! sctl is-active --quiet zded.service; }
+        if ! waitfor 15 gone; then
+          echo "the session ended and zded stayed:"
+          sctl status zded.service || true; exit 1
+        fi
+        socket_gone() { [ ! -e "$mgr/zde/zded.sock" ]; }
+        if ! waitfor 15 socket_gone; then
+          echo "zded left $mgr/zde/zded.sock behind for the next session"; exit 1
+        fi
+
         # A session bus, so zded can be the notification server on it. Started
         # before zded because zded takes the name at startup and carries on
         # without one - which is the right behaviour and also means a bus
@@ -443,6 +494,17 @@ pkgs.testers.runNixOSTest {
     # asserted by a user who is actually subject to it - root is not.
     users.users.intruder.isNormalUser = true;
 
+    # A host's own binds, through the seam that exists for them: local.kdl,
+    # included after the generated ones. The live image (nix/live.nix) puts a
+    # terminal on a key this way, because nothing in the keymap can open one
+    # yet - so niri accepting a second binds block is load-bearing rather than
+    # incidental, and the niri validate below is what keeps it that way.
+    home-manager.users.zde.zde.niri.extraConfig = ''
+      binds {
+          Mod+Return { spawn "foot"; }
+      }
+    '';
+
     # cage hosts the nested niri; mesa's software rasteriser is what both of
     # them render with.
     environment.systemPackages = [
@@ -542,6 +604,26 @@ pkgs.testers.runNixOSTest {
           and machine.execute(f"su -l zde -c 'command -v {c}'")[0] != 0
       ]
       assert missing == [], f"binds spawn commands that are not installed: {missing}"
+
+      # The unit that starts the daemon with the session. Every check in this
+      # file runs zded by hand, which is the one thing a person never does:
+      # on a login it is niri that brings up graphical-session.target, and
+      # this is what has to be hanging off it. Without the symlink the session
+      # comes up with every desk key silent and nothing to say why.
+      machine.succeed(
+          "test -L /home/zde/.config/systemd/user/graphical-session.target.wants/zded.service"
+      )
+
+      # That is the precise-cause check, and on its own it is a weak one: a
+      # unit can be wanted by the target and still be wrong in every way that
+      # matters. Starting it the way a login does needs a compositor to import
+      # an environment from, so it happens in the live check below, where there
+      # is one. What this does is give the user manager the linger that check
+      # needs - su gives no session (the podman check at the end of this file
+      # leans on the same fact from the other side).
+      uid = machine.succeed("id -u zde").strip()
+      machine.succeed("loginctl enable-linger zde")
+      machine.wait_until_succeeds(f"systemctl is-active user@{uid}.service")
 
       # zded comes up and answers its socket. There is no compositor in a
       # build sandbox, which is the point: the daemon everyone asks why the
