@@ -16,8 +16,12 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/crispuscrew/zde/internal/desk"
 	"github.com/crispuscrew/zde/internal/journal"
@@ -290,6 +294,29 @@ func (s *Server) Dispatch(req Request) Response {
 			return s.scroll(1)
 		}
 		return s.scroll(-1)
+	case "queue.add":
+		if len(req.Args) != 1 {
+			return Response{Error: "queue.add takes one line of text"}
+		}
+		return s.queueAdd(req.Args[0])
+	case "queue.list":
+		if len(req.Args) != 0 {
+			return Response{Error: "queue.list takes no arguments"}
+		}
+		if s.jrn == nil {
+			return Response{Error: "no journal, so nothing is waiting"}
+		}
+		return ok(s.jrn.State().Queue)
+	case "queue.done":
+		if len(req.Args) != 1 {
+			return Response{Error: "queue.done takes one id"}
+		}
+		return s.queueDone(req.Args[0])
+	case "desk.queue-jump":
+		if len(req.Args) != 0 {
+			return Response{Error: "desk.queue-jump takes no arguments"}
+		}
+		return s.queueJump()
 	case "desk.regulars":
 		if len(req.Args) != 0 {
 			return Response{Error: "desk.regulars takes no arguments"}
@@ -642,6 +669,107 @@ func (s *Server) carry(m *desk.Map, target string) (string, error) {
 		return "", err
 	}
 	return landing.String(), nil
+}
+
+// queueAdd puts something on the queue, on the desk it was put there from.
+//
+// The desk is the point. A queue that only knew what was waiting would be a
+// list; knowing where each thing waits is what lets a desk show its own and
+// queue-jump go anywhere.
+func (s *Server) queueAdd(text string) Response {
+	if s.jrn == nil {
+		return Response{Error: "no journal, so nothing can be made to wait"}
+	}
+	text = strings.TrimSpace(text)
+	if err := checkQueueText(text); err != nil {
+		return Response{Error: err.Error()}
+	}
+	// Where from, not where to. A compositor that cannot be read is not a
+	// reason to refuse - the thing still waits, it just waits nowhere in
+	// particular, and nothing can give it a desk afterwards, so it is worth
+	// asking twice. The map takes two questions of niri and the focused name
+	// takes one, and the second alone answers this whenever the workspace has
+	// a name.
+	deskName := ""
+	if m, err := s.niri.DeskMap(); err == nil {
+		deskName = s.activeDesk(m)
+	} else if focused, ferr := s.niri.FocusedName(); ferr == nil {
+		if n, perr := desk.ParseName(focused); perr == nil {
+			deskName = n.Desk
+		}
+	}
+	it, err := s.jrn.Queue(text, deskName)
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	return ok(it)
+}
+
+// checkQueueText keeps the queue printable. Every reader of it is line-based -
+// the CLI, and the bar after it - so a newline would turn one item into two,
+// and the second would have no id.
+func checkQueueText(text string) error {
+	if text == "" {
+		return errors.New("nothing to wait for: say what it is")
+	}
+	// Runes, not bytes: a reminder written in Cyrillic is not half a reminder.
+	if n := utf8.RuneCountInString(text); n > queueTextMax {
+		return fmt.Errorf("that is %d characters, and a queue is a list of reminders, not of essays", n)
+	}
+	for _, r := range text {
+		// Printable covers it: a tab is the CLI's own column separator, so one
+		// inside the text would print an item with more columns than it has
+		// fields, and a line separator would split it in two.
+		if !unicode.IsPrint(r) {
+			return errors.New("one printable line: everything that reads the queue reads it a line and a column at a time")
+		}
+	}
+	return nil
+}
+
+const queueTextMax = 300
+
+func (s *Server) queueDone(id string) Response {
+	if s.jrn == nil {
+		return Response{Error: "no journal, so nothing is waiting"}
+	}
+	n, err := strconv.ParseUint(id, 10, 64)
+	if err != nil {
+		return Response{Error: "queue.done wants the id from the list, not " + strconv.Quote(id)}
+	}
+	if err := s.jrn.Done(n); err != nil {
+		return Response{Error: err.Error()}
+	}
+	return ok([]string{})
+}
+
+// queueJump goes to where the oldest thing waiting is waiting.
+//
+// Oldest, because a queue is a queue: the thing that has been waiting longest
+// is the one being kept waiting. Jumping does not finish it - arriving
+// somewhere is not doing the thing - so the item stays until it is done.
+func (s *Server) queueJump() Response {
+	if s.jrn == nil {
+		return Response{Error: "no journal, so nothing is waiting"}
+	}
+	q := s.jrn.State().Queue
+	if len(q) == 0 {
+		return Response{Error: "nothing is waiting"}
+	}
+	// A desk the journal remembers may not be there any more: the queue
+	// outlives the compositor, and a fresh session starts with nothing named.
+	// Stepping over those matters more than it looks - the alternative is one
+	// stale reminder holding the key down for every reminder behind it.
+	m, err := s.niri.DeskMap()
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	for _, it := range q {
+		if it.Desk != "" && len(m.Workspaces(it.Desk)) > 0 {
+			return s.switchDesk(it.Desk)
+		}
+	}
+	return Response{Error: "nothing waiting is on a desk that exists: " + strconv.Quote(q[0].Text) + " is first"}
 }
 
 // regulars brings up the band that belongs to no desk: comms, music, the
