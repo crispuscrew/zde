@@ -15,6 +15,41 @@ same zinc base and the same `common/` material, but it is not maintained here.
 If you want to maintain a hypr version, you are welcome - open an issue or
 reach out.
 
+## Where it is
+
+Early: the spatial model works, and most of what you would press does not.
+
+**Working.** Desks over niri's workspaces - declared in a manifest, adopted
+from whatever you open, rotated between, scrolled within a band a desk cannot
+be scrolled out of, and carried into and back out of the shared regulars. A
+queue you can drop a reminder into and jump back to where it was written.
+`zded` holds the session's notification name, so an app that has never heard
+of zde arrives on the desk you were standing on instead of in a popup nobody
+was looking at. One keymap file generates the niri binds and the cheatsheet
+together, so the two cannot drift.
+
+**Missing.** The shell: no bar, no picker, no notification centre, no desk
+switcher - which is what most of the cheatsheet is waiting on, and a bind
+whose command is not written yet is a key that does nothing, silently.
+[`docs/verify.md`](docs/verify.md) has the live-versus-silent split key by
+key; [`docs/roadmap.md`](docs/roadmap.md) has the order the rest arrives in.
+
+## Try it
+
+There is no installer yet, and nothing here belongs on a machine you work on.
+What there is is a live image: it boots, it touches no disk, and everything
+under the session is the same two layers a real install would get.
+
+```sh
+nix build .#zde-iso     # gigabytes, and the better part of an hour
+```
+
+Boot `result/iso/zde-live.iso` in a VM or write it to a stick, log in as
+**zde / zde**, and open a terminal with **Mod+Return**.
+[`docs/verify.md`](docs/verify.md) is what to try on it, in the order worth
+trying, and it says plainly what is expected to be missing so an evening is
+not spent rediscovering that.
+
 ## License
 
 [Apache-2.0](LICENSE). Third-party attributions: [`NOTICE.md`](NOTICE.md).
@@ -40,8 +75,12 @@ reach out.
   compositor-neutral so a future hypr variant could reuse it.
   `common/keymap/keymap.yaml` is the keymap source of truth.
 - `niri/` - pieces that only make sense for niri.
-- `cmd/`, `internal/` - the Go tools (`zde-keymap` generates the niri binds
-  and the cheatsheet; zded and friends land here later).
+- `cmd/`, `internal/` - the Go tools: `zded`, the daemon that owns the journal
+  and answers the one socket; `zde`, the client every desk bind spawns; and
+  `zde-keymap`, which generates the binds and the cheatsheet from the keymap.
+- `nix/` - what the flake is made of: the system module (layer 0), the
+  home-manager module (layer 1), the live image, and the QEMU test that boots
+  the lot and drives a real compositor through it.
 
 Apps (wherever they live) follow the same shape under `apps/<name>/`:
 
