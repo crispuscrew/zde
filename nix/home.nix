@@ -91,7 +91,8 @@ in
     # binaries too: a bind whose command is not installed is a key that does
     # nothing, silently. The smoke test checks the two against each other.
     #
-    # Grows with roadmap 0.1: the shell, and zcr/zcc/zlt.
+    # Grows with roadmap 0.1: the shell, and zinc's own tools (zcr, zc, zlt) -
+    # which zde does not pin, package or install today.
     home.packages = [
       zdeTools # zded, zde
       pkgs.brightnessctl # system.brightness-up/dn

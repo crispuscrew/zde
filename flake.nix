@@ -68,9 +68,11 @@
       # reference and the portable path (docs/delivery.md).
       homeModules.zde = ./nix/home.nix;
 
-      # The live image as a host, so it can be inspected, overridden, or
-      # rebuilt from by a machine that wants zde without an install script yet
-      # (docs/delivery.md, sequencing).
+      # The live image as a host, so it can be inspected and overridden. Not a
+      # machine to rebuild from, whatever its being a nixosConfiguration
+      # suggests: it is the installer CD with a tmpfs root, no disk layout, and
+      # a password printed in a public document. What a real machine starts
+      # from is templates.host below.
       nixosConfigurations.zde-live = live.x86_64-linux;
 
       packages = forAll (pkgs: {
