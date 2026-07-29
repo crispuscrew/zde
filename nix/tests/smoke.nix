@@ -543,6 +543,34 @@ pkgs.testers.runNixOSTest {
       ]
       assert missing == [], f"binds spawn commands that are not installed: {missing}"
 
+      # The unit that starts the daemon with the session. Every check in this
+      # file runs zded by hand, which is the one thing a person never does:
+      # on a login it is niri that brings up graphical-session.target, and
+      # this is what has to be hanging off it. Without the symlink the session
+      # comes up with every desk key silent and nothing to say why.
+      machine.succeed(
+          "test -L /home/zde/.config/systemd/user/graphical-session.target.wants/zded.service"
+      )
+
+      # And it starts, from the unit rather than from a shell. linger runs the
+      # user manager without a login, which is what lets this be asked at all:
+      # su gives no session (the podman check at the end leans on the same
+      # fact from the other side).
+      uid = machine.succeed("id -u zde").strip()
+      user = "su -l zde -c 'XDG_RUNTIME_DIR=/run/user/" + uid + " systemctl --user %s'"
+      machine.succeed("loginctl enable-linger zde")
+      machine.wait_until_succeeds(f"systemctl is-active user@{uid}.service")
+      machine.succeed(user % "start zded.service")
+      machine.wait_until_succeeds(f"test -S /run/user/{uid}/zde/zded.sock")
+      # Listening is not still running: zded that took the socket and then
+      # died would leave the file behind, and the next session would find a
+      # stale socket rather than a daemon.
+      machine.succeed(user % "show -p SubState --value zded.service | grep -qx running")
+      # Stopped again so everything below has one daemon and one journal. Two
+      # appending to the same file is a corruption this test would have to be
+      # unlucky to catch and unluckier to diagnose.
+      machine.succeed(user % "stop zded.service")
+
       # zded comes up and answers its socket. There is no compositor in a
       # build sandbox, which is the point: the daemon everyone asks why the
       # session is broken has to run, and say so, when niri is not there.

@@ -12,6 +12,7 @@ let
   # The niri config, the generated binds and the cheatsheet, built from the
   # keymap source of truth. Same derivation the flake exposes.
   zdeConfig = pkgs.callPackage ./zde-config.nix { };
+  zdeTools = pkgs.callPackage ./zde.nix { };
 
   # What dynamic.kdl says before zded has written anything into it. niri treats
   # a missing include as a fatal error, so this file has to exist from the
@@ -90,11 +91,39 @@ in
     # binaries too: a bind whose command is not installed is a key that does
     # nothing, silently. The smoke test checks the two against each other.
     #
-    # Grows with roadmap 0.1: the zded service, the shell, and zcr/zcc/zlt.
+    # Grows with roadmap 0.1: the shell, and zcr/zcc/zlt.
     home.packages = [
-      (pkgs.callPackage ./zde.nix { }) # zded, zde
+      zdeTools # zded, zde
       pkgs.brightnessctl # system.brightness-up/dn
       pkgs.wireplumber # wpctl, for audio.*
     ];
+
+    # The daemon, started with the session. Every bind in the desk group is a
+    # `zde` that talks to it, so without this the session comes up and none of
+    # them answers.
+    #
+    # Hung off graphical-session.target rather than niri.service: niri is
+    # Before= that target and imports WAYLAND_DISPLAY and NIRI_SOCKET into the
+    # user manager on its way up, so a unit that waits for the target starts
+    # into an environment that can already find the compositor. PartOf takes it
+    # down with the session, which is what keeps a zded from an old session
+    # from holding the socket the next one wants.
+    systemd.user.services.zded = {
+      Unit = {
+        Description = "zde daemon: the journal, the desks, and the socket everything asks";
+        Documentation = "https://github.com/crispuscrew/zde";
+        PartOf = [ "graphical-session.target" ];
+        After = [ "graphical-session.target" ];
+      };
+      Service = {
+        ExecStart = "${zdeTools}/bin/zded";
+        # It answers keys. A daemon that died on one bad reply and stayed dead
+        # would leave every desk key silent until the next login, and the
+        # journal it replays on the way back up is what makes restarting safe.
+        Restart = "on-failure";
+        RestartSec = 1;
+      };
+      Install.WantedBy = [ "graphical-session.target" ];
+    };
   };
 }
