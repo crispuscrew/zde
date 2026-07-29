@@ -40,26 +40,38 @@ boot.
 ### In a VM first
 
 Most of this list does not need the metal, and a VM turns a boot into a minute
-instead of a stick. The one thing that matters is the virtual GPU:
+instead of a stick. [`dev/vm.sh`](../dev/vm.sh) runs one. It needs no nix, only
+qemu and KVM, so it runs on whatever machine you are sitting at:
 
 ```sh
-qemu-system-x86_64 -enable-kvm -m 4096 -smp 4 \
-  -device virtio-vga-gl -display gtk,gl=on \
-  -drive file=zde-live.iso,media=cdrom,readonly=on -boot d
+dev/vm.sh                       # a window, one screen
+dev/vm.sh --screens 2           # two outputs, for the band-per-screen items
+dev/vm.sh --uefi                # boot the way your own hardware does
+dev/vm.sh --disk zde.qcow2      # a disk to try installing onto
+dev/vm.sh --boot-shot boot.png  # one screenshot: did it boot at all
 ```
 
-**`-vga std` does not work**, and fails in a way worth recognising: niri comes
-up, opens its Wayland and IPC sockets, and never draws, leaving the console
-text on screen. Its log says it - `failed to initialize renderer, falling back
-to primary gpu: software EGL renderers are skipped`, then `no allocator
-available for device`. That is a display-only virtual card, not a broken
-image. `virtio-vga-gl` gives virgl, and niri initialises against it the way it
-would against real hardware.
+What the script really encodes is the **virtual GPU**, because getting that
+wrong produces the most misleading failure in the whole exercise. With a
+display-only card - `-vga std`, or virtio without `gl=on` - niri comes up,
+opens its Wayland and IPC sockets, and never draws, leaving the console text on
+screen. That looks exactly like the black screen this project is most afraid
+of. Its log is the tell: `failed to initialize renderer, falling back to
+primary gpu: software EGL renderers are skipped`, then `no allocator available
+for device`. niri skips software EGL on purpose. `virtio-vga-gl` plus `gl=on`
+gives virgl, and niri initialises against it the way it would against a real
+card.
+
+That is also why `--boot-shot` stops at the greeter and says so: a screenshot
+off the qemu monitor needs a surface in main memory, and there is none behind
+virgl - not headless, not through VNC. So the screenshot mode trades the
+session for a picture, which is the right trade for "does this image boot" and
+no use for anything after it.
 
 What a VM can answer: the session coming up, the input layer (kanata grabs the
 guest's keyboard, and whether a keysym arrives as F13 or as `XF86Tools` is
 decided entirely inside the guest), notifications, the queue, adoption, the
-desk invariants, and two *virtual* screens with `virtio-vga-gl,max_outputs=2`.
+desk invariants, and two *virtual* screens with `--screens 2`.
 
 What it cannot: latency, which is meaningless under virtio and a software
 renderer; a real GPU, which is the thing that decides between a session and a

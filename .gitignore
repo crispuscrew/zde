@@ -1,5 +1,11 @@
 /zde-keymap
 /out/
 
+# nix build's symlink. It points into a store path that exists on one
+# machine, so committing it (which happened once) makes a dangling link
+# everywhere else.
+/result
+/result-*
+
 # Local tool state, not the project's
 .claude/settings.local.json*
