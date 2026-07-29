@@ -78,6 +78,13 @@ let
         fi
         echo "niri is up on $NIRI_SOCKET"
 
+        # A session bus, so zded can be the notification server on it. Started
+        # before zded because zded takes the name at startup and carries on
+        # without one - which is the right behaviour and also means a bus
+        # started afterwards would leave notifications going nowhere.
+        eval "$(dbus-launch --sh-syntax)"
+        export DBUS_SESSION_BUS_ADDRESS
+
         zded -journal /tmp/live.jsonl -desks /tmp/desks >/tmp/zded-live.log 2>&1 &
         for i in $(seq 30); do
           [ -S "$XDG_RUNTIME_DIR/zde/zded.sock" ] && break
@@ -353,7 +360,7 @@ let
         [ -n "$id" ] || { echo "no id came back"; cat /tmp/q-add.txt; exit 1; }
 
         zde queue 2>&1 | tee /tmp/q-list.txt
-        grep -q "^$id	vshop	reply to ilya" /tmp/q-list.txt
+        grep -q "^$id	.	vshop	-	reply to ilya" /tmp/q-list.txt
 
         # A second one, newer and on another desk. With one item a queue that
         # went to the newest and one that went to the oldest are the same
@@ -364,8 +371,8 @@ let
         id2=$(cut -f1 /tmp/q-add2.txt)
         [ "$id2" != "$id" ] || { echo "both reminders got id $id"; exit 1; }
         zde queue > /tmp/q-list2.txt 2>&1
-        grep -q "^$id	vshop	" /tmp/q-list2.txt
-        grep -q "^$id2	haven	look at the build log" /tmp/q-list2.txt
+        grep -q "^$id	.	vshop	-	" /tmp/q-list2.txt
+        grep -q "^$id2	.	haven	-	look at the build log" /tmp/q-list2.txt
         # Oldest first, which is the order the jump below follows.
         [ "$(head -1 /tmp/q-list2.txt | cut -f1)" = "$id" ] || {
           echo "the list is not oldest first:"; cat /tmp/q-list2.txt; exit 1
@@ -378,6 +385,27 @@ let
         # Jumping is not finishing: it is still there afterwards.
         zde queue 2>&1 | tee /tmp/q-still.txt
         grep -q "^$id	" /tmp/q-still.txt
+
+        # A notification from something that has never heard of zde. This is
+        # the whole point of zded being the notification server rather than
+        # talking to one: notify-send speaks the freedesktop spec at whatever
+        # holds the bus name, and what it says lands on the desk it arrived on
+        # instead of on a popup nobody was looking at.
+        zde desk switch vshop >/dev/null
+        notify-send --urgency=critical "the build failed" "on the third try"
+        arrived() { zde queue >/tmp/q-notify.txt 2>&1 && grep -q 'the build failed' /tmp/q-notify.txt; }
+        if ! waitfor 15 arrived; then
+          echo "the notification never reached the queue:"
+          cat /tmp/q-notify.txt /tmp/zded-live.log; exit 1
+        fi
+        # Urgent, on the desk it arrived on, and attributed to what claimed to
+        # send it - the claim being all anybody has until zinc gives each app
+        # its own bus socket.
+        grep -q '	!	vshop	notify-send	the build failed' /tmp/q-notify.txt || {
+          echo "the notification arrived wrong:"; cat /tmp/q-notify.txt; exit 1
+        }
+        nid=$(grep 'the build failed' /tmp/q-notify.txt | cut -f1)
+        zde queue done "$nid"
 
         zde queue done "$id"
         zde queue done "$id2"
@@ -420,6 +448,8 @@ pkgs.testers.runNixOSTest {
     environment.systemPackages = [
       pkgs.cage
       pkgs.foot # a Wayland client that runs without a GPU, for adoption
+      pkgs.dbus # dbus-launch, for a session bus to be the notification server on
+      pkgs.libnotify # notify-send: an app that has never heard of zde
     ];
 
     virtualisation = {

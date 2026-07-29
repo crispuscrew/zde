@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/crispuscrew/zde/internal/attn"
 	"github.com/crispuscrew/zde/internal/desk"
 	"github.com/crispuscrew/zde/internal/journal"
 	"github.com/crispuscrew/zde/internal/manifest"
@@ -68,6 +69,20 @@ func main() {
 		stopWatching()
 		srv.Close()
 	}()
+
+	// The session's notification server, if this session has a bus and nobody
+	// else has taken the name. Not fatal either way: zded runs the desks
+	// whether or not anything can send it a notification, and a daemon that
+	// refused to start because of a bus would take the desks down with it.
+	if notifier, err := attn.Serve(srv, version); err != nil {
+		fmt.Fprintf(os.Stderr, "zded: notifications: %v\n", err)
+	} else {
+		defer notifier.Close()
+		// So that finishing something with `zde queue done` tells whoever sent
+		// it. A client blocked on its closure has no other way to find out.
+		srv.Watching(notifier)
+		fmt.Fprintln(os.Stderr, "zded: notifications: listening")
+	}
 
 	// Keep the names true while the session runs, rather than only when
 	// someone asks. This is also what makes zded worth having running: a
