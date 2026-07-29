@@ -81,6 +81,8 @@ not spent rediscovering that.
 - `nix/` - what the flake is made of: the system module (layer 0), the
   home-manager module (layer 1), the live image, and the QEMU test that boots
   the lot and drives a real compositor through it.
+- `dev/` - things for whoever is working on zde rather than running it.
+  `dev/vm.sh` boots the live image in a VM and needs no nix, only qemu.
 
 Apps (wherever they live) follow the same shape under `apps/<name>/`:
 
