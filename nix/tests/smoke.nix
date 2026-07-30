@@ -235,7 +235,14 @@ let
         # answering what those tests expect.
         nirimsg action set-workspace-name probe.winit.one >/dev/null
         ondesk() { XDG_RUNTIME_DIR=$mgr zde status 2>/dev/null | grep '^on desk' || true; }
-        before_picker=$(ondesk)
+        # What a switch moves: the focused workspace. Asked of niri rather than
+        # of zded, because zded's idea of the desk you are on also changes when
+        # the watcher notices a workspace being named - which happens moments
+        # after this block names one, and is not the picker's doing.
+        focusedws() {
+          nirimsg --json workspaces 2>/dev/null | tr '{' '\n' |
+            grep '"is_focused":[[:space:]]*true' | grep -o '"name":"[^"]*"' | head -1
+        }
         [ "$(pickerq state)" = "closed" ] || {
           echo "the picker is open before anything asked for it: $(pickerq state)"; exit 1
         }
@@ -274,18 +281,16 @@ let
         # Dismissing, before choosing: the way out that changes nothing. It is
         # the path Escape takes, and without this the whole hide-without-picking
         # branch is dead code as far as CI is concerned.
+        before_dismiss=$(focusedws)
         [ "$(pickerq dismiss)" = "closed" ] || { echo "dismiss said $(pickerq dismiss)"; exit 1; }
         dismissed() { [ "$(pickerq state)" = "closed" ] && [ "$(nirimsg --json layers 2>/dev/null | grep -c zde-picker)" = "0" ]; }
         if ! waitfor 15 dismissed; then
           echo "the picker was dismissed and is still there: $(pickerq state)"
           nirimsg --json layers; exit 1
         fi
-        # And nothing moved: dismissing is not choosing. Compared with what it
-        # was before rather than against a desk name, because the watcher has
-        # been running all along and what zded thinks it is on before the picker
-        # opens is its business, not this test's.
-        [ "$(ondesk)" = "$before_picker" ] || {
-          echo "dismissing the picker moved zded from '$before_picker' to '$(ondesk)'"; exit 1
+        # And nothing moved: dismissing is not choosing.
+        [ "$(focusedws)" = "$before_dismiss" ] || {
+          echo "dismissing the picker moved focus from $before_dismiss to $(focusedws)"; exit 1
         }
 
         # Then open it again for the half that does choose.
