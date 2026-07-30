@@ -124,6 +124,7 @@ Log in at the greeter. Then, in order:
 
 ```sh
 zde status              # zded up, compositor connected, zinc yes
+zde doctor              # every check on one screen, if any of that looks wrong
 zde app list            # what Mod+t and Mod+e will run
 ```
 
@@ -186,12 +187,31 @@ It will. In descending order of how much it hurts:
 
 - **A key did nothing.** Most likely it is one of the silent ones; check the
   table in [`verify.md`](verify.md) before assuming a fault.
-- **The session is wrong but the machine is fine.** `zde status` first: it says
-  whether zded is up, whether it can see the compositor, whether a shell is
-  listening (no shell is the whole diagnosis for a session where `Mod+Tab`
-  prints a list instead of drawing a picker), whether notifications are ours,
-  whether `zcr` is on the session's PATH, how many things are queued, and which
-  manifests it could not read.
+- **The session is wrong but the machine is fine.** `zde doctor` first. One line
+  per check, on one screen, because this is the moment when there is no second
+  machine to look anything up on:
+
+  ```
+  ok    zded          0.1.0, socket at /run/user/1000/zde/zded.sock
+  ok    compositor    connected
+  warn  shell         not listening: Mod+Tab prints a list instead of a picker
+  fail  notify        org.freedesktop.Notifications is owned by dunst, pid 812
+  ```
+
+  It covers the daemon and the socket it is on, whether it can see the
+  compositor, whether a shell is listening (no shell is the whole diagnosis for
+  a session where `Mod+Tab` prints a list instead of drawing a picker), who has
+  the notification name when it is not zded, whether zinc is on this machine at
+  all, whether the units a login starts are up, which manifests it could not
+  read, and whether the screen lock could accept a password - which is the one
+  worth running before you need it, since a locker with no PAM service takes the
+  screen and then refuses every password. `warn` is a session you can work in
+  and `fail` is not, so the exit status counts only the failures. Paste the
+  whole thing into a bug report.
+
+  `zde status` is the same daemon answering a narrower question: what it is
+  doing now - the desk you are on, how many things are queued, and whether the
+  shell, the notification name and zinc are there.
 
   Then `Ctrl+Alt+F2` is a text console you can log into with the same password:
   `journalctl --user -u zded`, `systemctl --user restart zded`, and

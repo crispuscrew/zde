@@ -328,6 +328,26 @@ func TestStatusWithoutCompositor(t *testing.T) {
 	}
 }
 
+// Whether layer 2 is on this machine (docs/delivery.md), which `zde doctor`
+// reports and nothing else can answer: the daemon's PATH is the session's, so
+// it is the answer for the keys that launch things rather than for whichever
+// shell somebody is typing in. Asked per call rather than at startup, so a
+// switch that installs zinc does not need a restart to be believed.
+func TestStatusFindsZcrOnTheSessionsPath(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
+	dir := t.TempDir()
+	t.Setenv("PATH", dir)
+	if s.status().Zinc {
+		t.Error("status claims zcr with an empty PATH")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "zcr"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !s.status().Zinc {
+		t.Error("zcr is on the PATH and status does not say so")
+	}
+}
+
 // A method that does need the compositor fails, with niri's reason, rather
 // than reporting an empty desktop.
 func TestDeskListWithoutCompositor(t *testing.T) {
