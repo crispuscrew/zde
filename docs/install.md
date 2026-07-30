@@ -126,6 +126,7 @@ Log in at the greeter. Then, in order:
 zde status              # zded up, compositor connected, zinc yes
 zde doctor              # every check on one screen, if any of that looks wrong
 zde app list            # what Mod+t and Mod+e will run
+zde keys                # every bind, one per line (Mod+slash shows this too)
 ```
 
 Two desks, which is the smallest number that makes the model do anything:
@@ -185,8 +186,10 @@ so a manifest's instance is declared and not yet started.
 
 It will. In descending order of how much it hurts:
 
-- **A key did nothing.** Most likely it is one of the silent ones; check the
-  table in [`verify.md`](verify.md) before assuming a fault.
+- **A key did nothing.** Most likely it is one of the silent ones. `Mod+slash`
+  opens the keymap in a pager, and `zde keys` prints the same list from a
+  terminal: what every key is bound to, one per line. The table in
+  [`verify.md`](verify.md) says which of them are wired to something yet.
 - **The session is wrong but the machine is fine.** `zde doctor` first. One line
   per check, on one screen, because this is the moment when there is no second
   machine to look anything up on:

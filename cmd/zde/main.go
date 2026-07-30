@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -40,6 +41,8 @@ func run(args []string) error {
 			return fmt.Errorf("nothing to lock the screen with: %w", err)
 		}
 		return nil
+	case len(args) == 1 && args[0] == "keys":
+		return keys()
 	case len(args) == 2 && args[0] == "app" && args[1] == "list":
 		return appList()
 	case len(args) == 2 && args[0] == "desk" && args[1] == "switcher":
@@ -129,6 +132,38 @@ func launch(name string) error {
 		return fmt.Errorf("%s is configured to run %q, which is not there: %w", name, argv[0], err)
 	}
 	return syscall.Exec(bin, argv, os.Environ())
+}
+
+// keys prints the keymap, which is the answer to "what does this desktop do".
+//
+// It is a file rather than something rendered here on purpose: the binds a
+// machine actually has were generated at build time from the same keymap
+// (nix/zde-config.nix), so the list somebody reads and the binds niri loaded
+// come from one build and cannot disagree. A `zde` that rendered its own could
+// be a version behind the config and would say so confidently.
+//
+// Mod+slash spawns a terminal on this (zde.apps.help). Printing to a stderr no
+// keypress has is what it did before, which on a desktop where most keys are
+// still silent is the worst key to have chosen for that.
+func keys() error {
+	path := keymapPath()
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return fmt.Errorf("no keymap at %s: layer 1 installs it, so this is a zde "+
+			"whose home-manager module has not been activated", path)
+	}
+	if err != nil {
+		return err
+	}
+	_, err = os.Stdout.Write(data)
+	return err
+}
+
+func keymapPath() string {
+	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
+		return filepath.Join(dir, "zde", "keymap.txt")
+	}
+	return filepath.Join(os.Getenv("HOME"), ".config", "zde", "keymap.txt")
 }
 
 // appList is how somebody finds out what their machine can start, which is
@@ -470,6 +505,8 @@ func usage() {
                          open the window picker (Mod+w); prints the list when
                          no shell is up - id, workspace, app, title - and with
                          an id goes straight to that window, desk and all
+  zde keys               the whole keymap, one key per line (Mod+slash opens
+                         this in a terminal)
   zde desk switch NAME   bring a desk up on every monitor it owns
   zde workspace next|prev
                          one along this desk's band, stopping at its ends

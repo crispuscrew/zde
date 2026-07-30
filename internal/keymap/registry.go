@@ -140,9 +140,21 @@ var registry = map[string]Entry{
 	"clip.history": {Group: "clip", Desc: "clipboard history", Spawn: []string{"zde", "clip", "history"}},
 
 	// capture: screenshots and the replay clip.
-	"capture.shot-region": {Group: "capture", Desc: "screenshot a region", Spawn: []string{"zde", "capture", "region"}},
-	"capture.shot-window": {Group: "capture", Desc: "screenshot the focused window", Spawn: []string{"zde", "capture", "window"}},
-	"capture.shot-full":   {Group: "capture", Desc: "screenshot the whole output", Spawn: []string{"zde", "capture", "full"}},
+	//
+	// The screenshots are niri's own. They were `zde capture ...` here, which
+	// is a command nothing has written, so three bound keys did nothing at all
+	// while the compositor underneath them had been taking screenshots the
+	// whole time. What zde would add - a send-to, a desk-aware filename, the
+	// replay clip - is 0.2 work, and none of it is a reason for Print to be
+	// dead until then. The day zde owns capture, these go back to being
+	// spawns and the keys keep working across the change.
+	//
+	// niri's own defaults decide where a shot lands (screenshot-path) and put
+	// it on the clipboard either way, which is the behaviour anybody who has
+	// used niri already expects.
+	"capture.shot-region": {Group: "capture", Desc: "screenshot a region (niri's picker)", Native: "screenshot"},
+	"capture.shot-window": {Group: "capture", Desc: "screenshot the focused window", Native: "screenshot-window"},
+	"capture.shot-full":   {Group: "capture", Desc: "screenshot the whole output", Native: "screenshot-screen"},
 
 	// media: through zde so the media target decides who plays
 	// (docs/vision.md, media targeting). The target auto-routes to the
@@ -177,13 +189,17 @@ var registry = map[string]Entry{
 
 	// system: raw tools until zde grows its own (brightnessctl now; layout
 	// switch is a niri native). The rest routes through zde.
-	"system.lock":          {Group: "system", Desc: "lock the screen", Spawn: []string{"zde", "system", "lock"}},
-	"system.quiet":         {Group: "system", Desc: "toggle quiet (do not disturb)", Spawn: []string{"zde", "system", "quiet"}},
-	"system.power":         {Group: "system", Desc: "the power menu", Spawn: []string{"zde", "system", "power"}},
-	"system.connections":   {Group: "system", Desc: "connections: bluetooth, wifi, ethernet", Spawn: []string{"zde", "system", "connections"}},
-	"system.calendar":      {Group: "system", Desc: "the calendar and clock widget", Spawn: []string{"zde", "system", "calendar"}},
-	"system.wallpapers":    {Group: "system", Desc: "the wallpapers widget", Spawn: []string{"zde", "system", "wallpapers"}},
-	"system.help":          {Group: "system", Desc: "the help widget (the keybind cheatsheet)", Spawn: []string{"zde", "help"}},
+	"system.lock":        {Group: "system", Desc: "lock the screen", Spawn: []string{"zde", "system", "lock"}},
+	"system.quiet":       {Group: "system", Desc: "toggle quiet (do not disturb)", Spawn: []string{"zde", "system", "quiet"}},
+	"system.power":       {Group: "system", Desc: "the power menu", Spawn: []string{"zde", "system", "power"}},
+	"system.connections": {Group: "system", Desc: "connections: bluetooth, wifi, ethernet", Spawn: []string{"zde", "system", "connections"}},
+	"system.calendar":    {Group: "system", Desc: "the calendar and clock widget", Spawn: []string{"zde", "system", "calendar"}},
+	"system.wallpapers":  {Group: "system", Desc: "the wallpapers widget", Spawn: []string{"zde", "system", "wallpapers"}},
+	// help is a terminal on the keymap, not a widget: `zde help` printed usage
+	// to a stderr no keypress has, so the one key whose job is to say which
+	// keys work was itself one of the silent ones. It goes back to being a
+	// surface when the shell has one; the action does not change when it does.
+	"system.help":          {Group: "system", Desc: "the keymap, in a terminal", Spawn: []string{"zde", "app", "launch", "help"}},
 	"system.brightness-up": {Group: "system", Desc: "brightness up", Spawn: []string{"brightnessctl", "set", "5%+"}, Repeat: true, WhenLocked: true},
 	"system.brightness-dn": {Group: "system", Desc: "brightness down", Spawn: []string{"brightnessctl", "set", "5%-"}, Repeat: true, WhenLocked: true},
 	"system.layout-switch": {Group: "system", Desc: "switch keyboard layout (language)", Native: "switch-layout \"next\""},

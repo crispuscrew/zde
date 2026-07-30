@@ -62,6 +62,40 @@ func TestEmitCheatsheet(t *testing.T) {
 	}
 }
 
+// The text rendering is what a key shows somebody, so what it must not do is
+// arrive with markdown in it. Tab separated for the same reason every other zde
+// list is: one grep answers "what is that key".
+func TestEmitText(t *testing.T) {
+	km, err := Parse([]byte(sample))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := EmitText(km)
+	for _, want := range []string{
+		"desk\n",
+		"  Mod+Tab\tdesk.switcher\topen the desk switcher\n",
+		"  Mod+t\tapp.launch terminal\tlaunch terminal\n",
+		"  Mod+Shift+e\tapp.launch-at editor\tprompt for a location, then launch editor\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("text keymap is missing %q:\n%s", want, got)
+		}
+	}
+	if strings.ContainsAny(got, "|`") {
+		t.Errorf("text keymap carries markdown:\n%s", got)
+	}
+	// Same order as the action map and the markdown, so the two readings of one
+	// list cannot disagree about where a thing is.
+	if strings.Index(got, "desk\n") > strings.Index(got, "window\n") {
+		t.Error("text keymap groups out of action-map order")
+	}
+	// The first group starts the file: a leading blank line is what a naive
+	// separator produces, and it costs a screen line in a pager.
+	if strings.HasPrefix(got, "\n") {
+		t.Error("text keymap starts with a blank line")
+	}
+}
+
 func TestErrors(t *testing.T) {
 	cases := []struct {
 		name, yaml, want string
