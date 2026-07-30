@@ -456,6 +456,20 @@ let
           zde app list; nirimsg windows; exit 1
         fi
 
+        # And close it again. Everything below this line was written for a strip
+        # with a known set of windows on it - the move-window checks in
+        # particular expect the workspace they land on to be empty - and a
+        # terminal left running here is a window on whichever workspace was
+        # focused when it started. It failed exactly that way once.
+        nirimsg action close-window >/dev/null
+        closed() {
+          [ "$(nirimsg --json windows | grep -c '"id"' || true)" -le "$before_terminal" ]
+        }
+        if ! waitfor 30 closed; then
+          echo "the launched terminal would not close, and later checks need the strip as it was:"
+          nirimsg windows; exit 1
+        fi
+
         # And a name nobody configured says what is configured, rather than
         # failing in a way that leaves somebody wondering whether they typed it
         # wrong or their machine has none.
