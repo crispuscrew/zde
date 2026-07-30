@@ -88,8 +88,9 @@ pins zde as an input. So a machine takes an update in two steps - move the
 pin, then rebuild.
 
 ```
-nix flake update zde                    # in your machine's flake
-sudo nixos-rebuild switch --flake .#<host>
+cd /etc/nixos                           # wherever your machine's flake lives
+sudo nix flake update zde
+sudo nixos-rebuild switch --flake .#zdebox
 ```
 
 That flake is the one that matters, and not only for the disks. **A module is

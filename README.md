@@ -48,6 +48,15 @@ nix build .#zde-iso     # gigabytes, and the better part of an hour
 Boot `result/iso/zde-live.iso` in a VM or write it to a stick, log in as
 **zde / zde**, and open a terminal with **Mod+Return**. To keep it,
 [`docs/install.md`](docs/install.md) is the runbook.
+
+Once installed, an update is two deliberate steps and nothing automatic
+([`docs/update.md`](docs/update.md)):
+
+```sh
+cd /etc/nixos
+sudo nix flake update zde
+sudo nixos-rebuild switch --flake .#zdebox
+```
 [`docs/verify.md`](docs/verify.md) is what to try on it, in the order worth
 trying, and it says plainly what is expected to be missing so an evening is
 not spent rediscovering that.

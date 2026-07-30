@@ -17,7 +17,8 @@
 # Updating is two steps, and the order matters (docs/update.md in the zde
 # repo): move the pin, then rebuild.
 #
-#   nix flake update zde
+#   cd /etc/nixos
+#   sudo nix flake update zde
 #   sudo nixos-rebuild switch --flake .#zdebox
 {
   description = "A machine running zde";
