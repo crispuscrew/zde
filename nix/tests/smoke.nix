@@ -469,6 +469,13 @@ let
         # the end of the strip, open something, let adoption name it. vshop
         # already has a foot workspace and its snapshot declares it, so this one
         # is adopted as foot-2 - undeclared, which is what makes it movable.
+        #
+        # The desk is said out loud rather than inherited from the block above.
+        # Adoption names into the desk you are on, and the tests before this one
+        # left haven active, so a workspace opened here without switching first
+        # is adopted into haven - which is what happened when this was written,
+        # and cost a CI round trip to a name that never appeared.
+        zde desk switch vshop >/dev/null
         for i in $(seq 10); do nirimsg action focus-workspace-down >/dev/null; done
         foot -e sleep 600 >/tmp/foot3.log 2>&1 &
         promoted() { nirimsg workspaces >/tmp/ws3.txt 2>&1 && grep -q 'vshop.winit.foot-2' /tmp/ws3.txt; }
