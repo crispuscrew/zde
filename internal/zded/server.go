@@ -298,6 +298,11 @@ func (s *Server) Dispatch(req Request) Response {
 			return Response{Error: "desk.move-window-to takes one desk name"}
 		}
 		return s.moveWindowTo(req.Args[0])
+	case "desk.move-workspace-to":
+		if len(req.Args) != 1 {
+			return Response{Error: "desk.move-workspace-to takes one desk name"}
+		}
+		return s.moveWorkspaceTo(req.Args[0])
 	case "workspace.next", "workspace.prev":
 		if len(req.Args) != 0 {
 			return Response{Error: req.Method + " takes no arguments"}
@@ -586,6 +591,85 @@ func (s *Server) moveWindowTo(target string) Response {
 	return bandAdvice(target, s.carryTo(target, s.activeDesk(m)))
 }
 
+// moveWorkspaceTo hands the focused workspace, and everything in it, to another
+// band. This is how the regulars come into being and how work comes back out of
+// them, which were the same missing verb: a manifest cannot declare the band
+// (the manifest layer refuses the reserved name) and adoption names into the
+// desk you are standing on, so until now the only way to have regulars at all
+// was to name a workspace by hand through niri, and nothing brought one back.
+//
+// It is a rename, because the name is the ownership record. Nothing else has to
+// change hands, and you do not go anywhere: you were standing on that workspace
+// and you still are - what changed is which band it belongs to, which is why
+// the journal is told you are now on the target.
+func (s *Server) moveWorkspaceTo(target string) Response {
+	if !desk.ValidDesk(target) {
+		return Response{Error: "not a desk name: " + target}
+	}
+	name, _, err := s.niri.FocusedPlace()
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	if name == "" {
+		return Response{Error: "no workspace is focused, so there is none to move"}
+	}
+	from, err := desk.ParseName(name)
+	if err != nil {
+		// An unnamed workspace has no label to keep and no band to leave. niri
+		// keeps an empty one at the end of every strip and adoption will not
+		// claim it, so this is also what someone gets for trying to move the
+		// scratch space - and the way out of both is the same.
+		return Response{Error: "the focused workspace is " + strconv.Quote(name) +
+			", which is not a zde name: put something in it so it is adopted, and move that"}
+	}
+	if from.Desk == target {
+		return Response{Error: name + " is already in " + target}
+	}
+	// A slot its own manifest declares would come straight back: ensureDeclared
+	// makes a declared workspace exist on the next switch or reconcile, so the
+	// move would look undone by something the person cannot see. Refusing names
+	// the file to edit instead.
+	if d := s.manifestFor(from.Desk); d != nil && declaresSlot(d, from.Monitor, from.Slot) {
+		return Response{Error: "desk " + from.Desk + " declares " + from.Slot + " on " + from.Monitor +
+			": remove it from that manifest first, or it comes back on the next switch"}
+	}
+	m, err := s.niri.DeskMap()
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	to, made := desk.MoveTo(m, from, target)
+	if !made {
+		return Response{Error: "no workspace name can be made for " + from.Slot + " in " + target}
+	}
+	if err := s.niri.RenameWorkspace(from.String(), to.String()); err != nil {
+		return Response{Error: err.Error()}
+	}
+	if s.jrn != nil {
+		s.jrn.Renamed(desk.Rename{From: from, To: to})
+		// You are standing in the target band now, and desk.last should come
+		// back to where you were. The desk you left keeps a last-active slot
+		// naming a workspace it no longer owns, which needs no correcting: a
+		// switch falls back to the first workspace of the band when the
+		// remembered one is not there (desk.Landing).
+		s.jrn.SetOnDesk(target)
+		s.jrn.SetActive(to)
+		if from.Desk != target {
+			s.jrn.SetLastDesk(from.Desk)
+		}
+	}
+	return ok([]string{to.String()})
+}
+
+// declaresSlot reports whether a manifest puts this slot on this monitor.
+func declaresSlot(d *manifest.Desk, monitor, slot string) bool {
+	for _, w := range d.Monitors[monitor].Workspaces {
+		if w == slot {
+			return true
+		}
+	}
+	return false
+}
+
 // carryTo takes the focused window to a desk and follows it there.
 func (s *Server) carryTo(to, from string) Response {
 	if to == from {
@@ -871,7 +955,7 @@ func bandAdvice(target string, resp Response) Response {
 	if target != desk.Regulars || resp.Error != noSuchBand(target) {
 		return resp
 	}
-	return Response{Error: "no regulars yet: name a workspace " + desk.Regulars + ".<monitor>.<label> into the band, which is the only way they are made"}
+	return Response{Error: "no regulars yet: stand on a workspace you want to keep and run `zde desk move-workspace-to " + desk.Regulars + "`"}
 }
 
 // noSuchBand is the refusal for a desk that has no workspaces and nothing

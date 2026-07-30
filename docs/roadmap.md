@@ -79,16 +79,22 @@ turned "when someone has hardware" into something anyone can do this evening.
   config driving a real compositor. The smoke test settles the static half -
   niri's own parser accepts the tree, its includes resolve, and every emitted
   action name is real - which is not the same as running it.
-- work goes into the regulars and cannot come out. Adoption names into the
-  band while you stand on it, and nothing takes a workspace back: the rotation
-  steps over it, a switch reaches only the first workspace per monitor, and it
-  cannot be written down. A band you can only add to is a band that fills up.
-- how anyone makes their regulars. A manifest cannot declare them (the
-  manifest layer refuses the reserved name) and adoption names into the desk
-  you are on, so today the band exists only if a workspace is named into it by
-  hand through niri. The key that reaches them works; the way to have them in
-  the first place is missing, and belongs with the desk verbs that move work
-  between bands.
+- work goes into the regulars and comes out one window at a time
+  (`desk.move-window-to`) or a whole workspace at a time
+  (`desk.move-workspace-to`), which is the answer to a band that only fills up.
+  What is unverified is whether that is enough in practice: adoption still
+  names into the band while you stand on it, so work arrives there faster than
+  anybody moves it out, and the rotation stepping over the band means a
+  workspace parked in it is out of the way rather than in your path.
+- how anyone makes their regulars: answered by `desk.move-workspace-to`, which
+  hands the focused workspace to another band. A manifest still cannot declare
+  the regulars and adoption still names into the desk you are on, so this verb
+  is the only way the band comes into being - and being a rename in either
+  direction, it is also how work leaves a band that would otherwise only fill
+  up. What is left of the item is the shape of it in use: whether promoting a
+  workspace is the thing people reach for, or whether they want to name an
+  empty one and fill it afterwards, which this refuses because an empty
+  workspace is never adopted and so has no name to move.
 - a single unreadable file in the desks directory takes every manifest with
   it: the loader fails the whole read, and the caller swallows the error, so
   desks silently stop being declared. Worth failing one file at a time.
