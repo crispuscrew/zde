@@ -668,6 +668,14 @@ pkgs.testers.runNixOSTest {
       machine.succeed("test -x /run/current-system/sw/bin/niri-session")
       machine.succeed("test -f /run/current-system/sw/share/xdg-desktop-portal/niri-portals.conf")
 
+      # The backlight rules reached udev, which is the difference between the
+      # brightness keys working and failing for everyone who is not root. They
+      # arrive only through services.udev.packages: installing brightnessctl
+      # the package, which layer 1 does, puts its rules somewhere nothing
+      # reads. Asserted on the file udev actually loads.
+      machine.succeed("test -e /etc/udev/rules.d/90-brightnessctl.rules")
+      machine.succeed("grep -q 'chgrp video' /etc/udev/rules.d/90-brightnessctl.rules")
+
       # niri's user units reached systemd. This is what stands between a login
       # and a greeter that silently takes it straight back: niri-session starts
       # niri.service, and a build that installs those units where NixOS does not
