@@ -46,7 +46,8 @@ nix build .#zde-iso     # gigabytes, and the better part of an hour
 ```
 
 Boot `result/iso/zde-live.iso` in a VM or write it to a stick, log in as
-**zde / zde**, and open a terminal with **Mod+Return**.
+**zde / zde**, and open a terminal with **Mod+Return**. To keep it,
+[`docs/install.md`](docs/install.md) is the runbook.
 [`docs/verify.md`](docs/verify.md) is what to try on it, in the order worth
 trying, and it says plainly what is expected to be missing so an evening is
 not spent rediscovering that.
@@ -67,6 +68,8 @@ not spent rediscovering that.
   portable path, ISO.
 - [`docs/verify.md`](docs/verify.md) - the by-hand list: what only a real
   machine can answer, and the live image to answer it on.
+- [`docs/install.md`](docs/install.md) - putting it on a machine and using it,
+  including what "early" means before you give it a disk.
 - [`docs/glossary.md`](docs/glossary.md) - the terms; every doc uses only
   these words.
 
