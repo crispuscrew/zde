@@ -66,6 +66,29 @@ in
       };
     };
 
+    apps = lib.mkOption {
+      type = lib.types.attrsOf (lib.types.listOf lib.types.str);
+      default = { };
+      example = {
+        terminal = [ "alacritty" ];
+        editor = [
+          "foot"
+          "-e"
+          "hx"
+        ];
+      };
+      description = ''
+        What the keymap's logical names run. `Mod+t` is `app.launch terminal`
+        and `Mod+e` is `app.launch editor`, because the keymap binds actions
+        rather than programs - so this is where a machine says which terminal
+        it means, without editing the keymap everything else is generated from.
+
+        An argv rather than a command line, so nothing has to agree about
+        quoting. These become zinc apps launched by zcr in a sandbox
+        (docs/delivery.md, layer 2); they are host commands until it arrives.
+      '';
+    };
+
     niri.extraConfig = lib.mkOption {
       type = lib.types.lines;
       default = "";
@@ -84,6 +107,19 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    # A terminal, and the name the keymap uses for one. Defaults rather than
+    # requirements: a desktop whose Mod+t does nothing is not one anybody can
+    # start using, and foot is small, starts without a GPU, and is what the live
+    # image and the tests already run. Name another and this stops being used.
+    zde.apps = {
+      terminal = lib.mkDefault [ (lib.getExe pkgs.foot) ];
+      editor = lib.mkDefault [
+        (lib.getExe pkgs.foot)
+        "-e"
+        "nvim"
+      ];
+    };
+
     # The niri config, and the binds it includes. Regenerated on every switch,
     # so keymap.yaml is the only place binds are edited (the file itself says
     # "Do not edit"). Forced, because niri writes a default config.kdl itself
@@ -119,6 +155,10 @@ in
       };
       # The cheatsheet the help widget (system.help) shows.
       "zde/keymap-cheatsheet.md".source = "${zdeConfig}/keymap-cheatsheet.md";
+
+      # What `zde app launch` reads. Generated, because the keymap's names and
+      # the machine's programs are two different things and this is the seam.
+      "zde/apps.json".text = builtins.toJSON cfg.apps;
     };
 
     # dynamic.kdl is the seam zded writes through, so home-manager seeds it and
@@ -141,6 +181,7 @@ in
     # which zde does not pin, package or install today.
     home.packages = [
       zdeTools # zded, zde
+      pkgs.foot # the default terminal, and what Mod+t runs unless told otherwise
       pkgs.brightnessctl # system.brightness-up/dn
       pkgs.wireplumber # wpctl, for audio.*
       # The bar runs from the store path in its unit, so this is not what
