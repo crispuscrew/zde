@@ -158,6 +158,21 @@ let
         # environment only after niri has put it there.
         XDG_RUNTIME_DIR=$mgr zde status 2>&1 | tee /tmp/unit-status.txt
         grep -qx 'compositor connected' /tmp/unit-status.txt
+        # The bar is up and listening, so status has to say so. Waited for rather
+        # than asked once: the target starts zded and the bar together, and Qt
+        # takes a second or two to reach the socket, so a single question here
+        # asks whether something that is still starting has started.
+        #
+        # This is the line somebody reads when a key drew nothing, and it is only
+        # worth having if it is true in both directions - the false case is
+        # asserted further down on the zded that has no shell at all.
+        shell_seen() {
+          XDG_RUNTIME_DIR=$mgr zde status 2>/dev/null | grep -qx 'shell      yes'
+        }
+        if ! waitfor 30 shell_seen; then
+          echo "the bar is running and status does not say a shell is listening:"
+          XDG_RUNTIME_DIR=$mgr zde status; sctl status zde-bar.service || true; exit 1
+        fi
 
         # And the bar, which the same target starts. Asserted against niri
         # rather than against systemd: an active unit proves quickshell did not
@@ -404,6 +419,19 @@ let
         # A desk that exists only as a manifest is created and entered.
         zde desk switch vshop 2>&1 | tee /tmp/switch.txt
         grep -qx 'vshop.winit.code' /tmp/switch.txt
+
+        # No shell on this zded, and status says so. Between this and the line
+        # above, the fact is asserted in both directions - a status field that is
+        # always "yes" answers nothing.
+        zde status 2>&1 | tee /tmp/status-noshell.txt
+        grep -qx 'shell      no' /tmp/status-noshell.txt || {
+          echo "no shell is listening and status does not say so:"
+          cat /tmp/status-noshell.txt; exit 1
+        }
+        grep -q '^notify' /tmp/status-noshell.txt || {
+          echo "status does not say whether notifications are ours:"
+          cat /tmp/status-noshell.txt; exit 1
+        }
 
         # The switcher with nothing listening, which is this zded: the session
         # target was stopped above, so there is no shell here. The key still has

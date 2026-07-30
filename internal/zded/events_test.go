@@ -343,3 +343,37 @@ func TestBroadcastDropsAListenerThatStoppedReading(t *testing.T) {
 		t.Errorf("the second broadcast still waited %v", took)
 	}
 }
+
+// `zde status` is what somebody runs when a key did nothing and there is no
+// second machine to look anything up on. Whether a shell is listening is the
+// whole diagnosis for a session where Mod+Tab prints a list instead of drawing
+// a picker, so it has to be in there - and it has to be false when there is
+// none, which is the answer that gets tested least and matters most.
+func TestStatusSaysWhetherAShellIsListening(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code"}, nil)
+
+	if st := s.status(); st.Shell {
+		t.Error("nothing is listening and status says a shell is")
+	}
+	s.listen(&sink{w: &recorder{}})
+	if st := s.status(); !st.Shell {
+		t.Error("a shell is listening and status says none is")
+	}
+}
+
+// The notification server is the other half of a quiet session: without the bus
+// name, everything an app sends goes to whoever has it, or nowhere.
+func TestStatusSaysWhetherNotificationsAreOurs(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
+	if st := s.status(); st.Notifications {
+		t.Error("no notifier and status claims notifications are handled")
+	}
+	s.Watching(stubNotifier{})
+	if st := s.status(); !st.Notifications {
+		t.Error("a notifier is watching and status says notifications are not handled")
+	}
+}
+
+type stubNotifier struct{}
+
+func (stubNotifier) Dismissed(uint64) {}
