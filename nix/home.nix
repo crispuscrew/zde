@@ -118,6 +118,18 @@ in
         "-e"
         "nvim"
       ];
+      # A machine that leaves the house needs this working on its first day,
+      # and it is one of the few keys whose absence is discovered at the worst
+      # possible moment. swaylock because niri's own module already configures
+      # PAM for it (nixpkgs, programs/wayland/wayland-session.nix), so it can
+      # actually authenticate: a locker that cannot is a locker that locks you
+      # out rather than locking your screen.
+      lock = lib.mkDefault [
+        (lib.getExe pkgs.swaylock)
+        "--daemonize"
+        "--ignore-empty-password"
+        "--show-failed-attempts"
+      ];
     };
 
     # The niri config, and the binds it includes. Regenerated on every switch,
@@ -182,6 +194,7 @@ in
     home.packages = [
       zdeTools # zded, zde
       pkgs.foot # the default terminal, and what Mod+t runs unless told otherwise
+      pkgs.swaylock # the default screen lock (Mod+Ctrl+semicolon)
       pkgs.brightnessctl # system.brightness-up/dn
       pkgs.wireplumber # wpctl, for audio.*
       # The bar runs from the store path in its unit, so this is not what

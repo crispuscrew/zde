@@ -31,6 +31,13 @@ func run(args []string) error {
 	switch {
 	case len(args) == 3 && args[0] == "app" && args[1] == "launch":
 		return launch(args[2])
+	case len(args) == 2 && args[0] == "system" && args[1] == "lock":
+		// The same resolution as any other launch: locking a screen is running
+		// a program, and which one a machine has is the machine's business.
+		if err := launch("lock"); err != nil {
+			return fmt.Errorf("nothing to lock the screen with: %w", err)
+		}
+		return nil
 	case len(args) == 2 && args[0] == "app" && args[1] == "list":
 		return appList()
 	case len(args) == 2 && args[0] == "desk" && args[1] == "switcher":
@@ -339,6 +346,7 @@ func usage() {
   zde desk list          the desks that exist right now
   zde desk switcher      open the picker; prints the list when no shell is up
   zde app launch NAME    run what this machine calls that (Mod+t, Mod+e)
+  zde system lock        lock the screen (Mod+Ctrl+semicolon)
   zde app list           what it can start
   zde desk switch NAME   bring a desk up on every monitor it owns
   zde workspace next|prev
