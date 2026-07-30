@@ -28,9 +28,10 @@ of zde arrives on the desk you were standing on instead of in a popup nobody
 was looking at. One keymap file generates the niri binds and the cheatsheet
 together, so the two cannot drift.
 
-**Missing.** The shell: no bar, no picker, no notification centre, no desk
-switcher - which is what most of the cheatsheet is waiting on, and a bind
-whose command is not written yet is a key that does nothing, silently.
+**Missing.** Most of the shell: there is a bar and a desk picker, and no
+notification centre, no palette, no launcher - which is what most of the
+cheatsheet is waiting on, and a bind whose command is not written yet is a key
+that does nothing, silently.
 [`docs/verify.md`](docs/verify.md) has the live-versus-silent split key by
 key; [`docs/roadmap.md`](docs/roadmap.md) has the order the rest arrives in.
 

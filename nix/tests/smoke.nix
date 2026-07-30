@@ -196,6 +196,10 @@ let
           XDG_RUNTIME_DIR=$mgr quickshell ipc --pid "$barpid" call queue "$1" 2>&1 |
             tr -d '\n' || true
         }
+        pickerq() {
+          XDG_RUNTIME_DIR=$mgr quickshell ipc --pid "$barpid" call picker "$@" 2>&1 |
+            tr -d '\n' || true
+        }
 
         # Height and reserved space first: zero of either is a surface the
         # compositor lists and a person cannot see, or one that quietly covers
@@ -216,6 +220,109 @@ let
           echo "the queue has one item and the bar says '$(barq count)'"
           sctl status zde-bar.service || true
           journalctl --user -u zde-bar.service --no-pager | tail -25; exit 1
+        fi
+
+        # The picker: the surface Mod+Tab opens. A key spawns `zde desk switcher`,
+        # zded tells whoever is listening, and the shell draws it - so this
+        # exercises the whole path, including the event stream that did not exist
+        # until the picker needed it.
+        #
+        # A desk to pick, first. Nothing is named yet at this point in the test,
+        # and a picker with no desks is a refusal rather than a surface. Named
+        # `probe` and unnamed again afterwards, because a desk left behind here
+        # would join the rotation the later tests count on: alphabetically it
+        # would sit between haven and vshop, and `desk next` would stop
+        # answering what those tests expect.
+        nirimsg action set-workspace-name probe.winit.one >/dev/null
+        ondesk() { XDG_RUNTIME_DIR=$mgr zde status 2>/dev/null | grep '^on desk' || true; }
+        # What a switch moves: the focused workspace. Asked of niri rather than
+        # of zded, because zded's idea of the desk you are on also changes when
+        # the watcher notices a workspace being named - which happens moments
+        # after this block names one, and is not the picker's doing.
+        focusedws() {
+          nirimsg --json workspaces 2>/dev/null | tr '{' '\n' |
+            grep '"is_focused":[[:space:]]*true' | grep -o '"name":"[^"]*"' | head -1
+        }
+        [ "$(pickerq state)" = "closed" ] || {
+          echo "the picker is open before anything asked for it: $(pickerq state)"; exit 1
+        }
+        XDG_RUNTIME_DIR=$mgr zde desk switcher 2>&1 | tee /tmp/switcher.txt
+        # Nothing printed: with a shell listening, the surface is the answer. The
+        # list is what it prints when nobody is, which is checked further down on
+        # the zded that has no shell.
+        [ ! -s /tmp/switcher.txt ] || {
+          echo "a shell was listening and the switcher printed the list anyway:"
+          cat /tmp/switcher.txt; exit 1
+        }
+        # Exactly what it should be showing: one desk, and the one we are on. A
+        # match on "open" alone would pass a picker that came up empty, or one
+        # that does not know where you are - which is what Enter lands on.
+        picker_open() { [ "$(pickerq state)" = "open 1 probe" ]; }
+        if ! waitfor 20 picker_open; then
+          echo "the picker never opened with the right contents: $(pickerq state)"
+          journalctl --user -u zde-bar.service --no-pager | tail -20; exit 1
+        fi
+        # On the screen, and named ours: the bar is on a layer too, so this looks
+        # for the picker's own namespace rather than any surface at all.
+        nirimsg --json layers 2>&1 | tee /tmp/layers-picker.txt
+        grep -q '"namespace":"zde-picker"' /tmp/layers-picker.txt || {
+          echo "the picker says it is open and niri has no such layer:"
+          cat /tmp/layers-picker.txt; exit 1
+        }
+        # And it has the keyboard, which is the half that makes it usable and the
+        # half nothing else here would notice: driving it through IPC works just
+        # as well with the keyboard never taken. niri prints the interactivity in
+        # the same reply, so this costs nothing.
+        grep -q '"keyboard_interactivity":"Exclusive"' /tmp/layers-picker.txt || {
+          echo "the picker is on screen without the keyboard, so no key would reach it:"
+          cat /tmp/layers-picker.txt; exit 1
+        }
+
+        # Dismissing, before choosing: the way out that changes nothing. It is
+        # the path Escape takes, and without this the whole hide-without-picking
+        # branch is dead code as far as CI is concerned.
+        before_dismiss=$(focusedws)
+        [ "$(pickerq dismiss)" = "closed" ] || { echo "dismiss said $(pickerq dismiss)"; exit 1; }
+        dismissed() { [ "$(pickerq state)" = "closed" ] && [ "$(nirimsg --json layers 2>/dev/null | grep -c zde-picker)" = "0" ]; }
+        if ! waitfor 15 dismissed; then
+          echo "the picker was dismissed and is still there: $(pickerq state)"
+          nirimsg --json layers; exit 1
+        fi
+        # And nothing moved: dismissing is not choosing.
+        [ "$(focusedws)" = "$before_dismiss" ] || {
+          echo "dismissing the picker moved focus from $before_dismiss to $(focusedws)"; exit 1
+        }
+
+        # Then open it again for the half that does choose.
+        XDG_RUNTIME_DIR=$mgr zde desk switcher >/dev/null
+        if ! waitfor 20 picker_open; then
+          echo "the picker did not reopen: $(pickerq state)"; exit 1
+        fi
+
+        # And choosing takes you there. Through the same IPC, because a machine
+        # with no input devices cannot press Enter - what is being checked is the
+        # wiring behind the key: the shell asks zded, zded switches the desk.
+        [ "$(pickerq pick probe)" = "picked" ] || {
+          echo "choosing probe from the picker: $(pickerq pick probe)"; exit 1
+        }
+        landed() { case "$(ondesk)" in *probe*) return 0 ;; *) return 1 ;; esac; }
+        if ! waitfor 20 landed; then
+          echo "the picker chose probe and zded is on '$(ondesk)'"; exit 1
+        fi
+        # And it closed itself on the way, surface and all.
+        shut() { [ "$(pickerq state)" = "closed" ] && [ "$(nirimsg --json layers 2>/dev/null | grep -c zde-picker)" = "0" ]; }
+        if ! waitfor 15 shut; then
+          echo "the picker chose a desk and stayed on screen: $(pickerq state)"
+          nirimsg --json layers; exit 1
+        fi
+        # And the probe desk goes away again, so the rotation tests further down
+        # see the two desks they were written for.
+        nirimsg action focus-workspace probe.winit.one >/dev/null
+        nirimsg action unset-workspace-name >/dev/null
+        nirimsg workspaces 2>&1 | tee /tmp/ws-probe.txt
+        if grep -q 'probe.winit.one' /tmp/ws-probe.txt; then
+          echo "the probe desk outlived its test and will join the rotation:"
+          cat /tmp/ws-probe.txt; exit 1
         fi
 
         # And that it comes back. zded is restarted by every home-manager switch
@@ -289,6 +396,20 @@ let
         # A desk that exists only as a manifest is created and entered.
         zde desk switch vshop 2>&1 | tee /tmp/switch.txt
         grep -qx 'vshop.winit.code' /tmp/switch.txt
+
+        # The switcher with nothing listening, which is this zded: the session
+        # target was stopped above, so there is no shell here. The key still has
+        # to do something, so it prints the desks and marks the one you are on -
+        # which is what it did before there was a picker to open.
+        zde desk switcher 2>&1 | tee /tmp/switcher-noshell.txt
+        grep -q 'vshop' /tmp/switcher-noshell.txt || {
+          echo "no shell to show the picker and the switcher printed nothing:"
+          cat /tmp/switcher-noshell.txt; exit 1
+        }
+        grep -q '(here)' /tmp/switcher-noshell.txt || {
+          echo "the printed list does not say which desk you are on:"
+          cat /tmp/switcher-noshell.txt; exit 1
+        }
 
         # And it still works with a broken manifest sitting beside it, which is
         # the ordinary state of a directory somebody edits by hand. One bad file

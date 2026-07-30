@@ -127,6 +127,7 @@ type Server struct {
 	mu       sync.Mutex
 	ln       net.Listener
 	problems []string
+	subs     map[*sink]struct{}
 }
 
 func New(version string, jrn *journal.Journal, compositor Compositor, desks Desks) *Server {
@@ -217,6 +218,13 @@ func (s *Server) handle(conn net.Conn) {
 		writeResponse(conn, Response{Error: "not permitted"})
 		return
 	}
+	// Every write to this connection goes through the sink, because two of them
+	// can now happen at once: a reply to something asked, and an event pushed
+	// while that reply is being written. Interleaved, they would produce one
+	// line that is neither.
+	k := &sink{w: conn}
+	defer s.unlisten(k)
+
 	r := bufio.NewReader(conn)
 	for {
 		line, err := r.ReadBytes('\n')
@@ -225,10 +233,22 @@ func (s *Server) handle(conn net.Conn) {
 		}
 		var req Request
 		if err := json.Unmarshal(line, &req); err != nil {
-			writeResponse(conn, Response{Error: "malformed request"})
+			k.reply(Response{Error: "malformed request"})
 			continue
 		}
-		writeResponse(conn, s.Dispatch(req))
+		if req.Method == MethodEvents {
+			// The connection stays a connection: it keeps answering requests,
+			// and events arrive on it as well. A client that wanted a second
+			// socket for them can have one, and one that does not need not.
+			if len(req.Args) != 0 {
+				k.reply(Response{Error: MethodEvents + " takes no arguments"})
+				continue
+			}
+			s.listen(k)
+			k.reply(ok("listening"))
+			continue
+		}
+		k.reply(s.Dispatch(req))
 	}
 }
 
@@ -266,6 +286,18 @@ func (s *Server) Dispatch(req Request) Response {
 	switch req.Method {
 	case "status":
 		return ok(s.status())
+	case MethodEvents:
+		// Handled by the connection rather than here, because subscribing is a
+		// thing a connection becomes and not a question with an answer (see
+		// handle). Named here so it is a method zded has rather than one it has
+		// never heard of - which is what anything checking the protocol from
+		// outside will ask.
+		return Response{Error: "events is asked of a connection, and this one is not keeping it open"}
+	case "desk.switcher":
+		if len(req.Args) != 0 {
+			return Response{Error: "desk.switcher takes no arguments"}
+		}
+		return s.switcher()
 	case "desk.list":
 		m, err := s.niri.DeskMap()
 		if err != nil {

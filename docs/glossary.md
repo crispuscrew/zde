@@ -14,7 +14,7 @@ paragraph, it gets an entry here or it does not ship.
 | **instance** | one running copy of an app (`app@name`); same config, own state |
 | **inherited app** | an app YAML that extends another (`Inherits:`); its own security posture |
 | **queue** | everything waiting for your action: agent approvals, dialogs, urgent windows |
-| **picker** | the left/right visual desk chooser |
+| **picker** | the visual desk chooser: a list on the screen you are looking at, driven by up/down, `j`/`k`, or a digit |
 | **panic** | one action: decoy desk + mute + silence |
 | **decoy** | the harmless desk panic switches to |
 | **zen** | hide bar, borders, gaps; content only |
