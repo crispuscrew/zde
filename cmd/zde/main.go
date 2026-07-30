@@ -6,8 +6,11 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
+	"syscall"
 
+	"github.com/crispuscrew/zde/internal/apps"
 	"github.com/crispuscrew/zde/internal/journal"
 	"github.com/crispuscrew/zde/internal/zded"
 )
@@ -26,6 +29,10 @@ func main() {
 
 func run(args []string) error {
 	switch {
+	case len(args) == 3 && args[0] == "app" && args[1] == "launch":
+		return launch(args[2])
+	case len(args) == 2 && args[0] == "app" && args[1] == "list":
+		return appList()
 	case len(args) == 2 && args[0] == "desk" && args[1] == "switcher":
 		return switcher()
 	case len(args) == 3 && args[0] == "desk" && args[1] == "switch":
@@ -72,6 +79,46 @@ func run(args []string) error {
 		usage()
 		return fmt.Errorf("zde: unknown command %q", strings.Join(args, " "))
 	}
+}
+
+// launch runs what this machine calls that name. It replaces this process
+// rather than starting a child and waiting: the key that spawned `zde` wants a
+// terminal, not a `zde` sitting behind one for as long as it lives.
+//
+// Nothing here talks to zded. Launching is not the daemon's business today, and
+// when it becomes zcr's it will not be this process's either.
+func launch(name string) error {
+	all, err := apps.Load(apps.DefaultPath())
+	if err != nil {
+		return err
+	}
+	argv, err := all.Argv(name)
+	if err != nil {
+		return err
+	}
+	bin, err := exec.LookPath(argv[0])
+	if err != nil {
+		return fmt.Errorf("%s is configured to run %q, which is not there: %w", name, argv[0], err)
+	}
+	return syscall.Exec(bin, argv, os.Environ())
+}
+
+// appList is how somebody finds out what their machine can start, which is
+// otherwise only discoverable by pressing keys and watching nothing happen.
+func appList() error {
+	all, err := apps.Load(apps.DefaultPath())
+	if err != nil {
+		return err
+	}
+	names := all.Names()
+	if len(names) == 0 {
+		return fmt.Errorf("nothing is configured to run: set zde.apps in your home-manager config")
+	}
+	for _, n := range names {
+		argv, _ := all.Argv(n)
+		fmt.Printf("%s\t%s\n", n, strings.Join(argv, " "))
+	}
+	return nil
 }
 
 func status() error {
@@ -291,6 +338,8 @@ func usage() {
   zde status             what zded and the compositor are doing
   zde desk list          the desks that exist right now
   zde desk switcher      open the picker; prints the list when no shell is up
+  zde app launch NAME    run what this machine calls that (Mod+t, Mod+e)
+  zde app list           what it can start
   zde desk switch NAME   bring a desk up on every monitor it owns
   zde workspace next|prev
                          one along this desk's band, stopping at its ends

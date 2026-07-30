@@ -433,6 +433,34 @@ let
           cat /tmp/status-noshell.txt; exit 1
         }
 
+        # Mod+t, which is `zde app launch terminal`. The one thing a desktop has
+        # to be able to do: until this existed, a session could be entered and
+        # nothing could be started from it, and the live image carried a bind of
+        # its own just so somebody could type.
+        #
+        # Asserted on a window appearing, not on the config file existing: the
+        # name has to resolve, the binary has to be there, and exec has to
+        # replace this process with it.
+        before_terminal=$(nirimsg --json windows | grep -c '"id"' || true)
+        zde app launch terminal &
+        more_windows() {
+          [ "$(nirimsg --json windows | grep -c '"id"' || true)" -gt "$before_terminal" ]
+        }
+        if ! waitfor 60 more_windows; then
+          echo "zde app launch terminal started nothing:"
+          zde app list; nirimsg windows; exit 1
+        fi
+
+        # And a name nobody configured says what is configured, rather than
+        # failing in a way that leaves somebody wondering whether they typed it
+        # wrong or their machine has none.
+        if zde app launch nosuchthing 2>&1 | tee /tmp/nosuch.txt; then
+          echo "launched an app that is not configured"; exit 1
+        fi
+        grep -q 'terminal' /tmp/nosuch.txt || {
+          echo "the refusal does not say what this machine can start:"; cat /tmp/nosuch.txt; exit 1
+        }
+
         # The switcher with nothing listening, which is this zded: the session
         # target was stopped above, so there is no shell here. The key still has
         # to do something, so it prints the desks and marks the one you are on -
