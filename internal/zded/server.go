@@ -71,14 +71,17 @@ type Compositor interface {
 // because a desk written while the session runs should be usable without
 // restarting the daemon - and because snapshot writes one back.
 type Desks interface {
-	All() (map[string]*manifest.Desk, error)
+	// All returns what it could read, what it could not, and an error only if
+	// the directory itself is unreadable. A broken manifest is one desk's
+	// problem (internal/manifest, LoadDir).
+	All() (map[string]*manifest.Desk, []manifest.Problem, error)
 	Save(*manifest.Desk) (string, error)
 }
 
 // noDesks is a machine with nothing declared, which is where everyone starts.
 type noDesks struct{}
 
-func (noDesks) All() (map[string]*manifest.Desk, error) { return nil, nil }
+func (noDesks) All() (map[string]*manifest.Desk, []manifest.Problem, error) { return nil, nil, nil }
 func (noDesks) Save(*manifest.Desk) (string, error) {
 	return "", fmt.Errorf("no desks directory to write to")
 }
@@ -105,6 +108,11 @@ type Status struct {
 	OnDesk     string `json:"onDesk,omitempty"`
 	LastDesk   string `json:"lastDesk,omitempty"`
 	Skipped    int    `json:"journalSkipped"`
+	// Manifests that could not be read, most recently seen. A desk quietly
+	// missing is the failure this exists to stop being quiet: the daemon
+	// carries on with the manifests that do work, and says here which ones it
+	// gave up on.
+	BadManifests []string `json:"badManifests,omitempty"`
 }
 
 // Server answers the zde socket.
@@ -116,8 +124,9 @@ type Server struct {
 
 	notifier Notifier
 
-	mu sync.Mutex
-	ln net.Listener
+	mu       sync.Mutex
+	ln       net.Listener
+	problems []string
 }
 
 func New(version string, jrn *journal.Journal, compositor Compositor, desks Desks) *Server {
@@ -414,10 +423,11 @@ func (s *Server) reconcile() Response {
 // by what is declared, so a compositor that stops producing empties ends it
 // rather than spinning.
 func (s *Server) ensureDeclared(target string) error {
-	all, err := s.desks.All()
+	all, problems, err := s.desks.All()
 	if err != nil {
 		return fmt.Errorf("reading manifests: %w", err)
 	}
+	s.rememberProblems(problems)
 	declared, ok := all[target]
 	if !ok {
 		return nil // no manifest: the desk is whatever is already named into it
@@ -1011,10 +1021,15 @@ func (s *Server) deskOf(m *desk.Map, focused string) string {
 // manifestFor is the desk's manifest, or nil if it has none. A desk without
 // one is not an error: it is whatever has been named into it.
 func (s *Server) manifestFor(target string) *manifest.Desk {
-	all, err := s.desks.All()
+	// A manifest that will not parse is not a reason to treat every desk as
+	// undeclared, which is what returning nothing here used to mean: the error
+	// was dropped, the map with it, and adoption quietly stopped placing
+	// workspaces anywhere.
+	all, problems, err := s.desks.All()
 	if err != nil {
 		return nil
 	}
+	s.rememberProblems(problems)
 	return all[target]
 }
 
@@ -1093,7 +1108,24 @@ func (s *Server) status() Status {
 		st.LastDesk = js.LastDesk
 		st.Skipped = s.jrn.Skipped()
 	}
+	s.mu.Lock()
+	st.BadManifests = append([]string(nil), s.problems...)
+	s.mu.Unlock()
 	return st
+}
+
+// rememberProblems keeps what the last manifest read could not use, so that
+// `zde status` can say so. Replaced rather than accumulated: the list is the
+// state of the directory now, and a manifest somebody has since fixed should
+// stop being mentioned.
+func (s *Server) rememberProblems(problems []manifest.Problem) {
+	list := make([]string, 0, len(problems))
+	for _, p := range problems {
+		list = append(list, p.String())
+	}
+	s.mu.Lock()
+	s.problems = list
+	s.mu.Unlock()
 }
 
 func ok(v any) Response {

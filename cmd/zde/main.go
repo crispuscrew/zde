@@ -96,6 +96,12 @@ func status() error {
 	if st.Skipped > 0 {
 		fmt.Printf("journal    %d entries could not be read\n", st.Skipped)
 	}
+	// The desks that are not there. Printed last and one per line, because this
+	// is the answer to "why is my desk gone", and a count would send someone
+	// looking through the directory for which one.
+	for _, bad := range st.BadManifests {
+		fmt.Printf("manifest   %s\n", bad)
+	}
 	return nil
 }
 
