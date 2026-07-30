@@ -61,6 +61,15 @@
     pkgs.libnotify
   ];
 
+  # Flakes, because this image is what somebody installs zde from and zde is
+  # delivered as one. Without them the first command of the install runbook -
+  # nix flake init -t github:crispuscrew/zde#host - fails on an experimental
+  # feature, which is a poor way to meet a new system.
+  nix.settings.experimental-features = [
+    "nix-command"
+    "flakes"
+  ];
+
   # The minimal CD turns fontconfig off, which leaves the fonts it installs
   # unreachable: with no /etc/fonts every client falls back to the one face
   # compiled into fontconfig itself, and that face is proportional. The first

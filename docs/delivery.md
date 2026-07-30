@@ -60,7 +60,8 @@ cost is the script alone.
   `nix flake check` instantiates every package and a broken image fails there
   without anything being built.
 - `zde.iso`: a NixOS installer preseeded with the zde configuration, CI-built
-  and checksummed. Once 0.1 is usable.
+  and checksummed. Once 0.1 is usable. Until then the live image installs a
+  machine by hand, which is [`install.md`](install.md).
 - `install.sh`: the portable bootstrapper, checksummed alongside.
 
 ## Sequencing
