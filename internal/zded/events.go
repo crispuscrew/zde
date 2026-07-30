@@ -4,7 +4,17 @@ import (
 	"encoding/json"
 	"io"
 	"sync"
+	"time"
 )
+
+// sendWait is how long a listener has to take a line before it stops being a
+// listener. A healthy client on a unix socket takes it immediately; one that has
+// stopped reading - a frozen shell that has not closed its socket - would
+// otherwise block the write for ever, and with it every later broadcast, so
+// pressing Mod+Tab would cost five seconds and a leaked goroutine each time
+// until the session ended. Measured before this existed: 276 events filled the
+// buffer and the 277th never returned.
+const sendWait = 200 * time.Millisecond
 
 // Events are how zded stops being a thing that only answers questions.
 //
@@ -32,6 +42,12 @@ type Event struct {
 // EventPicker asks the shell to show the desk switcher.
 const EventPicker = "picker"
 
+// MethodEvents is the request that turns a connection into a listener. One
+// constant because two places name it: the connection loop, which is where it is
+// really handled, and the dispatcher, which knows the name so that anything
+// checking the protocol from outside does not read it as a method zded lacks.
+const MethodEvents = "events"
+
 // sink is one connection, with the lock that keeps a reply and an event from
 // interleaving halfway through a line.
 type sink struct {
@@ -54,6 +70,12 @@ func (k *sink) send(ev Event) error {
 	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	// Bounded, and cleared afterwards so the reply path is not left with a
+	// deadline it never asked for.
+	if d, ok := k.w.(interface{ SetWriteDeadline(time.Time) error }); ok {
+		d.SetWriteDeadline(time.Now().Add(sendWait))
+		defer d.SetWriteDeadline(time.Time{})
+	}
 	_, err = k.w.Write(append(line, '\n'))
 	return err
 }
@@ -80,8 +102,11 @@ func (s *Server) unlisten(k *sink) {
 // no shell running, `zde desk switcher` has to fall back to printing a list
 // rather than asking a surface that does not exist to appear.
 //
-// A listener whose write fails is dropped: a dead connection that keeps its
+// A listener whose write fails or stalls is dropped: a connection that keeps its
 // place in the list is a slow leak and a broadcast that lies about its reach.
+// Dropping a stalled one is also what keeps the answer useful - a shell that has
+// stopped reading is a shell that will not draw, and the caller needs to hear
+// that nothing was shown so it can print the list itself.
 func (s *Server) broadcast(ev Event) int {
 	s.mu.Lock()
 	subs := make([]*sink, 0, len(s.subs))
@@ -101,12 +126,25 @@ func (s *Server) broadcast(ev Event) int {
 	return sent
 }
 
+// listeners is how many connections are listening. For tests, and for anything
+// later that wants to know whether the shell is there.
+func (s *Server) listeners() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.subs)
+}
+
 // Switcher is what `desk.switcher` answers: the desks, and whether a surface
 // took the job of showing them.
 type Switcher struct {
-	// Shown is true when at least one listener was told to open the picker. The
-	// caller prints the list itself when it is false, which is what the key
-	// does on a machine with no shell running.
+	// Shown is true when at least one listener took the line. That is a
+	// listener accepting bytes, not a surface appearing: a shell that reads and
+	// then fails to draw still counts here, and only an acknowledgement from the
+	// shell could tell the difference. What it does catch is the shell that has
+	// stopped reading at all, because that write is dropped (sendWait).
+	//
+	// False means nothing took it, and the caller prints the list itself - which
+	// is what the key does on a machine with no shell running.
 	Shown bool     `json:"shown"`
 	Desks []string `json:"desks"`
 	On    string   `json:"on,omitempty"`
@@ -120,7 +158,9 @@ func (s *Server) switcher() Response {
 	}
 	names := m.DeskNames()
 	if len(names) == 0 {
-		return Response{Error: "no desks exist yet"}
+		// A fresh login, before anything is named. Advice rather than a bare
+		// refusal, because this is the one time somebody sees it.
+		return Response{Error: "no desks yet: write a manifest, or open something and it will be adopted into one"}
 	}
 	_, output, err := s.niri.FocusedPlace()
 	if err != nil {

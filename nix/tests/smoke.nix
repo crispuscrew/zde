@@ -245,9 +245,12 @@ let
           echo "a shell was listening and the switcher printed the list anyway:"
           cat /tmp/switcher.txt; exit 1
         }
-        picker_open() { case "$(pickerq state)" in open*) return 0 ;; *) return 1 ;; esac; }
+        # Exactly what it should be showing: one desk, and the one we are on. A
+        # match on "open" alone would pass a picker that came up empty, or one
+        # that does not know where you are - which is what Enter lands on.
+        picker_open() { [ "$(pickerq state)" = "open 1 probe" ]; }
         if ! waitfor 20 picker_open; then
-          echo "the picker never opened: $(pickerq state)"
+          echo "the picker never opened with the right contents: $(pickerq state)"
           journalctl --user -u zde-bar.service --no-pager | tail -20; exit 1
         fi
         # On the screen, and named ours: the bar is on a layer too, so this looks
@@ -257,6 +260,34 @@ let
           echo "the picker says it is open and niri has no such layer:"
           cat /tmp/layers-picker.txt; exit 1
         }
+        # And it has the keyboard, which is the half that makes it usable and the
+        # half nothing else here would notice: driving it through IPC works just
+        # as well with the keyboard never taken. niri prints the interactivity in
+        # the same reply, so this costs nothing.
+        grep -q '"keyboard_interactivity":"Exclusive"' /tmp/layers-picker.txt || {
+          echo "the picker is on screen without the keyboard, so no key would reach it:"
+          cat /tmp/layers-picker.txt; exit 1
+        }
+
+        # Dismissing, before choosing: the way out that changes nothing. It is
+        # the path Escape takes, and without this the whole hide-without-picking
+        # branch is dead code as far as CI is concerned.
+        [ "$(pickerq dismiss)" = "closed" ] || { echo "dismiss said $(pickerq dismiss)"; exit 1; }
+        dismissed() { [ "$(pickerq state)" = "closed" ] && [ "$(nirimsg --json layers 2>/dev/null | grep -c zde-picker)" = "0" ]; }
+        if ! waitfor 15 dismissed; then
+          echo "the picker was dismissed and is still there: $(pickerq state)"
+          nirimsg --json layers; exit 1
+        fi
+        # And nothing moved: dismissing is not choosing.
+        XDG_RUNTIME_DIR=$mgr zde status 2>&1 | grep -q 'on desk    probe' && {
+          echo "dismissing the picker switched a desk"; exit 1
+        }
+
+        # Then open it again for the half that does choose.
+        XDG_RUNTIME_DIR=$mgr zde desk switcher >/dev/null
+        if ! waitfor 20 picker_open; then
+          echo "the picker did not reopen: $(pickerq state)"; exit 1
+        fi
 
         # And choosing takes you there. Through the same IPC, because a machine
         # with no input devices cannot press Enter - what is being checked is the

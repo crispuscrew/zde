@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/crispuscrew/zde/internal/desk"
 )
@@ -201,7 +202,7 @@ func TestEventsArriveOnALiveConnection(t *testing.T) {
 		t.Fatal("a connection was listening and desk.switcher says nothing was shown")
 	}
 
-	ev, err := c.NextEvent()
+	ev, err := c.NextEventBefore(time.Now().Add(5 * time.Second))
 	if err != nil {
 		t.Fatalf("waiting for the event: %v", err)
 	}
@@ -210,5 +211,69 @@ func TestEventsArriveOnALiveConnection(t *testing.T) {
 	}
 	if len(ev.Desks) != 2 {
 		t.Errorf("event desks = %v", ev.Desks)
+	}
+}
+
+// blocker is a listener that never reads: a write to it blocks until its
+// deadline, which is what a frozen shell that has not closed its socket looks
+// like from here.
+type blocker struct {
+	mu       sync.Mutex
+	deadline time.Time
+}
+
+func (b *blocker) SetWriteDeadline(t time.Time) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.deadline = t
+	return nil
+}
+
+func (b *blocker) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	d := b.deadline
+	b.mu.Unlock()
+	if d.IsZero() {
+		// No deadline set: this is the bug the deadline exists to prevent, and
+		// a test must not hang on it. Wait long enough to fail the timing
+		// assertion instead.
+		time.Sleep(3 * time.Second)
+		return len(p), nil
+	}
+	time.Sleep(time.Until(d))
+	return 0, errClosed
+}
+
+// A listener that has stopped reading must cost one send and then stop being a
+// listener. Before the deadline it blocked for ever: measured, 276 events filled
+// the socket and the next write never returned, so every later Mod+Tab waited
+// five seconds, printed a timeout to a stderr nobody reads, and left a goroutine
+// parked in Write.
+func TestBroadcastDropsAListenerThatStoppedReading(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
+	deaf := &sink{w: &blocker{}}
+	s.listen(deaf)
+
+	start := time.Now()
+	sent := s.broadcast(Event{Kind: EventPicker})
+	took := time.Since(start)
+
+	if sent != 0 {
+		t.Errorf("a listener that never read took %d events", sent)
+	}
+	// Generous, and still far below the three seconds the unbounded write takes.
+	if took > 2*time.Second {
+		t.Errorf("broadcast waited %v on a listener that never reads", took)
+	}
+	if n := s.listeners(); n != 0 {
+		t.Errorf("the stalled listener is still on the list: %d", n)
+	}
+
+	// And the next one is not slowed by it at all, which is the part that made
+	// the key unusable rather than merely slow once.
+	start = time.Now()
+	s.broadcast(Event{Kind: EventPicker})
+	if took := time.Since(start); took > 100*time.Millisecond {
+		t.Errorf("the second broadcast still waited %v", took)
 	}
 }

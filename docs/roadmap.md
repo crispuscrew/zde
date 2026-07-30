@@ -100,9 +100,11 @@ turned "when someone has hardware" into something anyone can do this evening.
   desks silently stop being declared. Worth failing one file at a time.
 - nav with a layer-shell surface up: one holding keyboard focus reads as
   nothing focused at all, so a press spends itself putting focus back on a
-  window instead of going anywhere. Nothing zde ships reaches that yet - the
-  desk switcher is the surface that will, and it should be tried the day it
-  exists.
+  window instead of going anywhere. The picker is that surface and it ships
+  now, taking the keyboard only while it is visible - so the thing to try is a
+  nav key the instant after it closes ([`verify.md`](verify.md), a day of
+  work). Not settled here: driving a real key into a nested compositor did not
+  work well enough to trust the answer.
 - nav latency, by hand on real hardware rather than by arithmetic: one Mod+j
   spawns a `zde`, and behind it zded asks niri for the focused window, moves
   it, asks again, and on a rotation re-reads the map and the focused name a

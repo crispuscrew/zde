@@ -89,6 +89,14 @@ PanelWindow {
     Rectangle {
         id: panel
 
+        // Presses inside the panel stop here. Without this the panel is not a
+        // mouse target at all and a click on the desk you want falls through to
+        // the dim layer behind, which dismisses - so clicking a row did the
+        // opposite of choosing it.
+        MouseArea {
+            anchors.fill: parent
+        }
+
         anchors.centerIn: parent
         width: 420
         height: Math.min(rows.implicitHeight + 24, picker.height - 80)
@@ -96,6 +104,9 @@ PanelWindow {
         border.color: "#2a2c37"
         border.width: 1
         radius: 6
+        // The height is capped to the screen, so past about twenty desks the
+        // rows would otherwise draw outside the panel and over the wallpaper.
+        clip: true
 
         // focus lives here, and the surface only holds the keyboard while it is
         // visible, so nothing is listening for keys when the picker is not up.
@@ -157,6 +168,14 @@ PanelWindow {
                     height: 26
                     radius: 4
                     color: row.index === picker.index ? "#2a2c37" : "transparent"
+
+                    // Clickable, because a list you can see is a list somebody
+                    // will click, and a keyboard-first desktop is not a
+                    // mouse-hostile one.
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: picker.chosen(row.modelData)
+                    }
 
                     Text {
                         anchors.left: parent.left

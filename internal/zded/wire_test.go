@@ -23,10 +23,14 @@ func TestTheBarAsksForMethodsThatExist(t *testing.T) {
 		t.Fatalf("read %s: %v", path, err)
 	}
 
-	// Matches what the QML writes: {"method":"queue.list"}. Deliberately not a
-	// JSON parse - the line is a QML string literal with an escaped newline in
-	// it, and the point is to find the names wherever they are written.
-	re := regexp.MustCompile(`"method"\s*:\s*"([a-zA-Z.-]+)"`)
+	// Both ways the QML writes one: as JSON text, {"method":"queue.list"}, and
+	// as a QML object passed to JSON.stringify, where the key is bare. The
+	// second form is how the picker sends desk.switch, and requiring the quotes
+	// meant this test could not see the one method it was most likely to miss.
+	// Deliberately not a JSON parse: these are string literals and object
+	// literals in a QML file, and the point is to find the names wherever they
+	// are written.
+	re := regexp.MustCompile(`"?method"?\s*:\s*"([a-zA-Z.-]+)"`)
 	found := re.FindAllStringSubmatch(string(src), -1)
 	if len(found) == 0 {
 		t.Fatalf("no method name found in %s, so this test is checking nothing: "+

@@ -308,12 +308,13 @@ Not bugs, do not report them:
 
   | Works | Silent |
   |---|---|
-  | `Mod+j`/`k` and the arrows (nav) | `Mod+Shift+Escape` (panic), `Mod+Shift+z` (zen) |
-  | `Mod+Shift+j`/`k` (move window) | `Mod+a`, `Mod+Shift+a` (ask) |
-  | `Mod+r` (regulars), `Mod+u` (queue jump) | `Mod+v`, `Mod+Shift+v` (clip, pass) |
-  | `Mod+Shift+Tab` (last desk) | `Mod+g`, `Mod+semicolon` (launcher, palette) |
-  | `zde workspace next\|prev`, `zde desk *`, `zde queue *`, `zde status` | `Mod+t`, `Mod+e` (launch), `Mod+w` (jump to window) |
-  | the niri natives: columns, monitors, fullscreen, float, close, overview, consume/expel | `Mod+m` (modes), `Mod+n`, `Mod+slash`, `Mod+c`, `Mod+p`, `Mod+q`, and the rest of the system group |
+  | `Mod+Tab` (the picker) | `Mod+Shift+Escape` (panic), `Mod+Shift+z` (zen) |
+  | `Mod+j`/`k` and the arrows (nav) | `Mod+a`, `Mod+Shift+a` (ask) |
+  | `Mod+Shift+j`/`k` (move window) | `Mod+v`, `Mod+Shift+v` (clip, pass) |
+  | `Mod+r` (regulars), `Mod+u` (queue jump) | `Mod+g`, `Mod+semicolon` (launcher, palette) |
+  | `Mod+Shift+Tab` (last desk) | `Mod+t`, `Mod+e` (launch), `Mod+w` (jump to window) |
+  | `zde workspace next\|prev`, `zde desk *`, `zde queue *`, `zde status` | `Mod+m` (modes), `Mod+n`, `Mod+slash`, `Mod+c`, `Mod+p`, `Mod+q` |
+  | the niri natives: columns, monitors, fullscreen, float, close, overview, consume/expel | and the rest of the system group |
 
   `Mod+Shift+Escape` is worth singling out: panic is the key you reach for
   first when something goes wrong, and it is one of the silent ones.

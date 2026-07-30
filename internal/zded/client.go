@@ -64,6 +64,9 @@ func (c *Client) Call(method string, out any, args ...string) error {
 	return json.Unmarshal(resp.Ok, out)
 }
 
+// queueMax bounds the events kept for a caller that is not reading them.
+const queueMax = 64
+
 // line is one message from zded, either kind.
 type line struct {
 	Event *Event          `json:"event"`
@@ -83,6 +86,13 @@ func (c *Client) reply(method string) (Response, error) {
 			return Response{}, fmt.Errorf("zde: %s: reply is not zded's: %w", method, err)
 		}
 		if l.Event != nil {
+			// Bounded, because a client that subscribes and only ever calls
+			// would otherwise grow this for the life of the session. Dropping
+			// the oldest is right for a picker request: a stale one is a
+			// surface nobody is waiting for any more.
+			if len(c.queued) >= queueMax {
+				c.queued = c.queued[1:]
+			}
 			c.queued = append(c.queued, *l.Event)
 			continue
 		}
@@ -90,15 +100,28 @@ func (c *Client) reply(method string) (Response, error) {
 	}
 }
 
-// NextEvent waits for the next event on a connection that has asked for them.
-// Events already passed while reading a reply come back first, in order.
+// NextEvent waits for the next event, for as long as it takes. A stream is
+// meant to sit idle: six seconds between two presses of a key is ordinary, and
+// this used to give up after five, which made the exported API useless for the
+// one thing it exists for. Close the connection to stop waiting, or use
+// NextEventBefore.
 func (c *Client) NextEvent() (Event, error) {
+	return c.NextEventBefore(time.Time{})
+}
+
+// NextEventBefore is NextEvent with a deadline, for a caller that would rather
+// fail than wait - a test, mostly. The zero time means no deadline.
+//
+// Events already passed while reading a reply come back first, in order.
+func (c *Client) NextEventBefore(deadline time.Time) (Event, error) {
 	if len(c.queued) > 0 {
 		ev := c.queued[0]
 		c.queued = c.queued[1:]
 		return ev, nil
 	}
-	if err := c.conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+	// Cleared rather than left alone: Call sets an absolute deadline of its own,
+	// and inheriting a spent one would fail this read instantly.
+	if err := c.conn.SetDeadline(deadline); err != nil {
 		return Event{}, err
 	}
 	for {

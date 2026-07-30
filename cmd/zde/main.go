@@ -276,6 +276,7 @@ func usage() {
 
   zde status             what zded and the compositor are doing
   zde desk list          the desks that exist right now
+  zde desk switcher      open the picker; prints the list when no shell is up
   zde desk switch NAME   bring a desk up on every monitor it owns
   zde workspace next|prev
                          one along this desk's band, stopping at its ends

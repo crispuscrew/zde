@@ -184,11 +184,19 @@ ShellRoot {
             // The shell decides nothing: a desk switch is zded's, over the same
             // socket everything else uses (docs/vision.md, section 2 - the
             // shell is a thin adapter with zero logic inside).
-            if (zded.connected)
-                zded.write(JSON.stringify({
+            //
+            // On the stream connection and not the bar's. The reply to this is
+            // the list of workspaces it focused, and the bar's parser reads
+            // whatever arrives as a queue listing - so picking a desk made the
+            // bar say "1 waiting" for two seconds about a queue that was empty.
+            // The stream's parser ignores any line with no event in it.
+            if (stream.connected)
+                stream.write(JSON.stringify({
                     method: "desk.switch",
                     args: [name]
                 }) + "\n");
+            else
+                console.warn("zde: picked " + name + " with no connection to zded");
         }
         onDismissed: picker.hide()
     }

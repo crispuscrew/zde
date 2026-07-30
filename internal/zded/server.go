@@ -236,10 +236,14 @@ func (s *Server) handle(conn net.Conn) {
 			k.reply(Response{Error: "malformed request"})
 			continue
 		}
-		if req.Method == "events" {
+		if req.Method == MethodEvents {
 			// The connection stays a connection: it keeps answering requests,
 			// and events arrive on it as well. A client that wanted a second
 			// socket for them can have one, and one that does not need not.
+			if len(req.Args) != 0 {
+				k.reply(Response{Error: MethodEvents + " takes no arguments"})
+				continue
+			}
 			s.listen(k)
 			k.reply(ok("listening"))
 			continue
@@ -282,7 +286,7 @@ func (s *Server) Dispatch(req Request) Response {
 	switch req.Method {
 	case "status":
 		return ok(s.status())
-	case "events":
+	case MethodEvents:
 		// Handled by the connection rather than here, because subscribing is a
 		// thing a connection becomes and not a question with an answer (see
 		// handle). Named here so it is a method zded has rather than one it has
