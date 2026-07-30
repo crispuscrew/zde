@@ -122,6 +122,31 @@ func (d *Desk) check() error {
 		if app.App == "" {
 			return fmt.Errorf("manifest %q: app %d has no app", d.Name, i+1)
 		}
+		// The app and the instance name a directory: zinc keeps per-instance
+		// state under one, and these are the two parts of the path a manifest
+		// supplies. A manifest is a file somebody edits by hand, so
+		// `instance: ../../../etc` is a thing that can be typed - and it must
+		// be refused here rather than by whoever ends up joining the path.
+		//
+		// Checked as a desk name is checked, which is the same shape zinc's own
+		// app names take: lowercase, digits, dashes between them. Nothing that
+		// can be a dot, a slash, or a surprise.
+		if !desk.ValidDesk(app.App) {
+			return fmt.Errorf("manifest %q: app name %q is not a name: lowercase letters, digits and dashes, "+
+				"because it becomes part of a path", d.Name, app.App)
+		}
+		if app.Instance != "" && !desk.ValidDesk(app.Instance) {
+			return fmt.Errorf("manifest %q: app %q: instance %q is not a name: lowercase letters, digits and "+
+				"dashes, because it becomes part of a path", d.Name, app.App, app.Instance)
+		}
+		for slot := range app.Mounts {
+			// The slot is a name the app declares and this manifest fills; the
+			// value is a path on this machine, which is the person's own and
+			// deliberately not our business.
+			if !desk.ValidDesk(slot) {
+				return fmt.Errorf("manifest %q: app %q: mount slot %q is not a name", d.Name, app.App, slot)
+			}
+		}
 		switch app.Background {
 		case "", "keep", "pause":
 		default:
