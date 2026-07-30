@@ -266,6 +266,11 @@ show up in use.
   what is in it, on the desk you were standing on.
 - **Nothing moves under you** (invariant 6): focus changes never rearrange the
   strip.
+- **Lock the screen** with `Mod+Ctrl+semicolon`, and unlock it. Deliberately
+  not tested in CI: a VM with no input devices that locks itself cannot unlock
+  itself. What CI does check is the half that strands you - that the locker has
+  a PAM service and so can accept a password at all. Try it before you need it
+  in a cafe.
 - **`Mod+Tab` when the shell is unwell.** Kill the bar (`systemctl --user stop
   zde-bar`) and press it: you should get the desk list printed to wherever the
   key's output goes, rather than nothing at all. The daemon waits 200ms for the

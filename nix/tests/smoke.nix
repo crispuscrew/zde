@@ -470,6 +470,15 @@ let
           nirimsg windows; exit 1
         fi
 
+        # And the lock is one of the names, because Mod+Ctrl+semicolon resolves
+        # through the same table and a machine that cannot lock its screen is
+        # not one to take out of the house.
+        zde app list 2>&1 | tee /tmp/applist.txt
+        grep -q '^lock' /tmp/applist.txt || {
+          echo "no lock configured, so Mod+Ctrl+semicolon does nothing:"
+          cat /tmp/applist.txt; exit 1
+        }
+
         # And a name nobody configured says what is configured, rather than
         # failing in a way that leaves somebody wondering whether they typed it
         # wrong or their machine has none.
@@ -976,6 +985,16 @@ pkgs.testers.runNixOSTest {
       machine.wait_until_succeeds("pgrep -f tuigreet")
       machine.succeed("test -x /run/current-system/sw/bin/niri-session")
       machine.succeed("test -f /run/current-system/sw/share/xdg-desktop-portal/niri-portals.conf")
+
+      # The screen lock can authenticate. This is the trap worth a test rather
+      # than the locking itself: a locker with no PAM service takes the screen
+      # and then refuses every password, which is not a locked screen but a lost
+      # machine. niri's own module provides it, and this is what notices if that
+      # ever stops being true.
+      #
+      # Locking for real is a by-hand item (docs/verify.md): this VM has no
+      # input devices, so anything that locked it could not unlock it.
+      machine.succeed("test -e /etc/pam.d/swaylock")
 
       # The backlight rules reached udev, which is the difference between the
       # brightness keys working and failing for everyone who is not root. They
