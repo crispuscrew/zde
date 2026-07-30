@@ -223,6 +223,12 @@ ShellRoot {
         picker.show(kind, rows, here, ev.token ?? "");
     }
 
+    // The one process this shell starts. Everything else it does is a line on a
+    // socket; a leader action is a key doing what a key does.
+    Process {
+        id: leader
+    }
+
     Picker {
         id: picker
 
@@ -247,6 +253,16 @@ ShellRoot {
                 console.warn("zde: picked " + key + " with no connection to zded");
         }
         onDismissed: picker.hide()
+
+        // A leader action runs the same command the key would, rather than the
+        // shell learning what locking is: `zde system lock` resolves the
+        // machine's locker through the same table Mod+t uses, and when that
+        // becomes zcr's job it changes in one place and not two.
+        onAction: name => {
+            picker.hide();
+            leader.command = ["zde", "system", name];
+            leader.running = true;
+        }
 
         // The asker is waiting on this, briefly, to find out whether anything
         // came of the event it sent.
@@ -294,6 +310,16 @@ ShellRoot {
         function dismiss(): string {
             picker.dismissed();
             return "closed";
+        }
+
+        // The leader letters, reachable the same way the pick is: a machine
+        // with no input devices cannot press l, and the wiring behind it is
+        // the part worth proving.
+        function act(name: string): string {
+            if (!picker.visible)
+                return "closed";
+            picker.action(name);
+            return "acted";
         }
     }
 

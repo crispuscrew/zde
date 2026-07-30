@@ -34,8 +34,14 @@ binds:
   - { action: desk.queue-jump, key: Mod+u }
   - { action: desk.regulars, key: Mod+r }
   - { action: desk.zen, key: Mod+Shift+z }
-  # panic: single chord for now. The described Mod+Escape-then-L / Mod+Tab-then-L
-  # sequences (panic + block) need the input daemon (roadmap: modes).
+  # panic: single chord for now. Mod+Escape-then-L, the sequence this was
+  # always meant to be, still needs the input daemon (roadmap: modes) - niri
+  # binds one modifier set plus one key and Escape is not a leader.
+  #
+  # Mod+Tab-then-L turned out not to need it: the picker Mod+Tab opens holds the
+  # keyboard while it is up, so a second press is one that surface can read, and
+  # `l` there locks the screen. What a leader needs is something to grab the
+  # keyboard, and the shell already does.
   - { action: desk.panic, key: Mod+Shift+Escape }
   # - { action: desk.block, key: ... }   # leader sequence, needs the input daemon
 
@@ -136,7 +142,11 @@ binds:
   - { action: system.help, key: Mod+slash }
   - { action: system.layout-switch, key: Mod+space } # lang switch
   - { action: system.notif-center, key: Mod+n }
-  - { action: system.lock, key: Mod+Ctrl+semicolon } # deliberate combo: no accidental locks
+  # Two ways, on purpose. The chord is deliberately awkward - the vim grid owns
+  # l in every modifier set it has, so lock cannot have the one everybody's
+  # fingers expect - and Mod+Tab then l is the one to actually use: it is a menu
+  # that says what it does rather than a chord to remember.
+  - { action: system.lock, key: Mod+Ctrl+semicolon }
 
   # net. The observer widget (Shift+n) does the cutting; net.observe is live.
   - { action: net.observe, key: Mod+Shift+n }
