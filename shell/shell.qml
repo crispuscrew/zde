@@ -173,7 +173,7 @@ ShellRoot {
                 want = s;
         }
         picker.screen = want ?? Quickshell.screens[0] ?? null;
-        picker.show(ev.desks ?? [], ev.on ?? "");
+        picker.show(ev.desks ?? [], ev.on ?? "", ev.token ?? "");
     }
 
     Picker {
@@ -199,6 +199,16 @@ ShellRoot {
                 console.warn("zde: picked " + name + " with no connection to zded");
         }
         onDismissed: picker.hide()
+
+        // The asker is waiting on this, briefly, to find out whether anything
+        // came of the event it sent.
+        onShown: token => {
+            if (stream.connected)
+                stream.write(JSON.stringify({
+                    method: "shown",
+                    args: [token]
+                }) + "\n");
+        }
     }
 
     // How a test can ask the bar what it is showing, rather than only whether

@@ -247,9 +247,10 @@ let
           echo "the picker is open before anything asked for it: $(pickerq state)"; exit 1
         }
         XDG_RUNTIME_DIR=$mgr zde desk switcher 2>&1 | tee /tmp/switcher.txt
-        # Nothing printed: with a shell listening, the surface is the answer. The
-        # list is what it prints when nobody is, which is checked further down on
-        # the zded that has no shell.
+        # Nothing printed, which now means more than it used to: the shell has to
+        # acknowledge the event before the verb calls it shown, so an empty file
+        # here is the whole round trip - key, daemon, event, surface, token back.
+        # A shell that read the socket and drew nothing would print the list.
         [ ! -s /tmp/switcher.txt ] || {
           echo "a shell was listening and the switcher printed the list anyway:"
           cat /tmp/switcher.txt; exit 1

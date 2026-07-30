@@ -128,6 +128,8 @@ type Server struct {
 	ln       net.Listener
 	problems []string
 	subs     map[*sink]struct{}
+	waiting  map[string]chan struct{}
+	tokens   uint64
 }
 
 func New(version string, jrn *journal.Journal, compositor Compositor, desks Desks) *Server {
@@ -286,6 +288,11 @@ func (s *Server) Dispatch(req Request) Response {
 	switch req.Method {
 	case "status":
 		return ok(s.status())
+	case MethodShown:
+		if len(req.Args) != 1 {
+			return Response{Error: MethodShown + " takes the token from the event"}
+		}
+		return s.acknowledge(req.Args[0])
 	case MethodEvents:
 		// Handled by the connection rather than here, because subscribing is a
 		// thing a connection becomes and not a question with an answer (see

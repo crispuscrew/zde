@@ -29,18 +29,34 @@ PanelWindow {
     property string on: ""
     property int index: 0
 
-    // chosen(name) is the whole output of this surface. The shell sends it to
+    // What the event asked for, sent back once this is actually up. The asker
+    // is waiting on it: without it, "shown" means the socket took the bytes,
+    // which a frozen shell also does.
+    property string token: ""
+
+    // chosen(name) is the whole output of this surface. The shell sends these to
     // zded; the picker itself knows nothing about sockets.
     signal chosen(string name)
     signal dismissed
+    signal shown(string token)
 
-    function show(list, here) {
+    function show(list, here, token) {
         picker.desks = list;
         picker.on = here;
+        picker.token = token ?? "";
         // Start on the desk you are on, so Enter alone is a no-op rather than a
         // surprise, and one press of Down is the next desk.
         picker.index = Math.max(0, list.indexOf(here));
         picker.visible = true;
+    }
+
+    // On the window becoming visible rather than at the end of show(), so what
+    // is acknowledged is a surface that exists. It is still not a painted frame
+    // - nothing short of a frame callback is - but it is the difference between
+    // "the shell read a socket" and "the shell built the thing".
+    onVisibleChanged: {
+        if (picker.visible && picker.token !== "")
+            picker.shown(picker.token);
     }
 
     function hide() {

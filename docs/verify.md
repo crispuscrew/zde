@@ -266,6 +266,12 @@ show up in use.
   what is in it, on the desk you were standing on.
 - **Nothing moves under you** (invariant 6): focus changes never rearrange the
   strip.
+- **`Mod+Tab` when the shell is unwell.** Kill the bar (`systemctl --user stop
+  zde-bar`) and press it: you should get the desk list printed to wherever the
+  key's output goes, rather than nothing at all. The daemon waits 200ms for the
+  shell to say it drew the surface, so a shell that is running but stuck should
+  behave the same as one that is not running. Hard to arrange on purpose; worth
+  recognising if a key ever seems to do nothing.
 - **`Mod+Tab`, and the question it settles.** The picker is the first thing zde
   draws that takes the keyboard, and the roadmap has been carrying the worry
   that a layer surface holding focus reads to niri as nothing focused at all -
