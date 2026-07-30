@@ -266,6 +266,17 @@ show up in use.
   what is in it, on the desk you were standing on.
 - **Nothing moves under you** (invariant 6): focus changes never rearrange the
   strip.
+- **`Mod+Tab`, and the question it settles.** The picker is the first thing zde
+  draws that takes the keyboard, and the roadmap has been carrying the worry
+  that a layer surface holding focus reads to niri as nothing focused at all -
+  so a nav key pressed while it is up would spend itself putting focus back on a
+  window. Open it, close it with Escape, and then press `Mod+j` immediately: if
+  the first press goes nowhere, that is the thing, and it wants
+  `keyboardFocus` on demand rather than exclusive.
+- **Whether the picker is what you want from `Mod+Tab`.** It has no text field
+  on purpose - arrows, `j`/`k`, or a digit - because filtering belongs to the
+  palette in 0.2. If you find yourself typing a desk name at it, that is the
+  argument for bringing the palette forward.
 - **Coming back**: `zde desk last` after a detour lands where you left, on the
   workspace you left, not on the desk's first one.
 - **Making a regular, and unmaking it.** Stand on a workspace worth keeping and
@@ -289,11 +300,8 @@ show up in use.
 
 Not bugs, do not report them:
 
-- **Most of the shell**: there is a bar now, and no picker, no notification
-  centre, no desk switcher. Pressed as a key, `Mod+Tab` does nothing visible -
-  it lists the desks on a stdout nobody is reading, which is the honest thing it
-  can do without a surface (`zde desk switcher` in a terminal shows the same
-  list).
+- **Most of the shell**: there is a bar and a desk picker now; no notification
+  centre, no palette, no launcher.
 - **Most of the cheatsheet.** A bind whose command is not written yet prints
   usage to a stderr nobody reads, so the key is silent and so is the machine.
   What is live today, and nothing else:

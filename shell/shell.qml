@@ -115,11 +115,118 @@ ShellRoot {
         }
     }
 
+    // The events connection, separate from the one the bar polls on. Same
+    // socket, second connection: a stream and a poll on one connection would
+    // work, and keeping them apart means a broken parser on either side cannot
+    // take the other with it.
+    Socket {
+        id: stream
+
+        path: Quickshell.env("XDG_RUNTIME_DIR") + "/zde/zded.sock"
+        connected: true
+
+        onConnectionStateChanged: {
+            if (stream.connected)
+                stream.write('{"method":"events"}\n');
+        }
+
+        parser: SplitParser {
+            onRead: line => {
+                let msg = null;
+                try {
+                    msg = JSON.parse(line);
+                } catch (e) {
+                    return;
+                }
+                // Replies to our own subscribe arrive here too; only the lines
+                // carrying an event are events.
+                if (!msg || !msg.event)
+                    return;
+                if (msg.event.kind === "picker")
+                    root.openPicker(msg.event);
+            }
+        }
+    }
+
+    // Redialling the stream, on the same tick as the bar's poll. zded is
+    // restarted by any switch that changes it, and a shell that stopped
+    // listening then would keep working and stop appearing, which is the worst
+    // of both.
+    Timer {
+        interval: 2000
+        running: true
+        repeat: true
+        onTriggered: {
+            if (!stream.connected)
+                stream.connected = true;
+        }
+    }
+
+    // The picker, one instance and not one per screen: it appears on the screen
+    // zded says is being looked at, because a picker on every monitor is not a
+    // picker. An unknown output falls back to the first screen, which on one
+    // monitor is the right answer and on several is at least a screen.
+    function openPicker(ev) {
+        let want = null;
+        for (const s of Quickshell.screens) {
+            if (s.name === ev.output)
+                want = s;
+        }
+        picker.screen = want ?? Quickshell.screens[0] ?? null;
+        picker.show(ev.desks ?? [], ev.on ?? "");
+    }
+
+    Picker {
+        id: picker
+
+        onChosen: name => {
+            picker.hide();
+            // The shell decides nothing: a desk switch is zded's, over the same
+            // socket everything else uses (docs/vision.md, section 2 - the
+            // shell is a thin adapter with zero logic inside).
+            if (zded.connected)
+                zded.write(JSON.stringify({
+                    method: "desk.switch",
+                    args: [name]
+                }) + "\n");
+        }
+        onDismissed: picker.hide()
+    }
+
     // How a test can ask the bar what it is showing, rather than only whether
     // it is running: `qs -p <config> ipc call queue count`. A bar that never
     // read the queue and a bar reading it correctly look identical from the
     // outside, and that is the mutation the smoke test could not otherwise
     // catch.
+    // The picker, over the same IPC. Two reasons, and the second is the honest
+    // one: a picker is driven by a keyboard, and a machine with no input devices
+    // - which is every CI machine - cannot press a key. So the choice a key
+    // makes is reachable from here too, which makes it testable and, as a side
+    // effect, scriptable.
+    IpcHandler {
+        target: "picker"
+
+        function state(): string {
+            if (!picker.visible)
+                return "closed";
+            return "open " + picker.desks.length + " " + picker.on;
+        }
+
+        function pick(name: string): string {
+            if (!picker.visible)
+                return "closed";
+            if (picker.desks.indexOf(name) < 0)
+                return "no such desk";
+            picker.chosen(name);
+            return "picked";
+        }
+
+        function dismiss(): string {
+            picker.dismissed();
+            return "closed";
+        }
+    }
+
     IpcHandler {
         target: "queue"
 

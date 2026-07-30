@@ -27,9 +27,7 @@ func main() {
 func run(args []string) error {
 	switch {
 	case len(args) == 2 && args[0] == "desk" && args[1] == "switcher":
-		// The switcher is a shell surface (roadmap 0.1); until it exists,
-		// listing is the honest thing this key can do.
-		return deskList()
+		return switcher()
 	case len(args) == 3 && args[0] == "desk" && args[1] == "switch":
 		return switchDesk(args[2])
 	case len(args) == 3 && args[0] == "desk" && args[1] == "move-window":
@@ -163,6 +161,33 @@ func call(method string, args ...string) error {
 	}
 	defer c.Close()
 	return c.Call(method, nil, args...)
+}
+
+// switcher asks for the picker. With a shell listening, that is a surface and
+// this prints nothing; without one, the key still has to do something, so it
+// prints the list it would have shown - which is what it did before there was
+// a picker at all.
+func switcher() error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	var sw zded.Switcher
+	if err := c.Call("desk.switcher", &sw); err != nil {
+		return err
+	}
+	if sw.Shown {
+		return nil
+	}
+	for _, d := range sw.Desks {
+		if d == sw.On {
+			fmt.Println(d, "(here)")
+			continue
+		}
+		fmt.Println(d)
+	}
+	return nil
 }
 
 func deskList() error {
