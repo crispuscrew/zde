@@ -545,10 +545,28 @@ let
         [ -n "$moved" ] || {
           echo "expected a window on vshop.winit.foot to carry:"; nirimsg windows; exit 1
         }
+        # Where the window ended up, counted on the band's own workspace rather
+        # than read off what has focus. This used to check that focus followed
+        # the carried window, which held only because the band's workspace was
+        # empty: the band is made by promoting a workspace now, so it has work
+        # in it, and landing on the workspace lands next to what was already
+        # there. Which of them niri focuses is niri's business; whether the
+        # window arrived is ours.
+        wsid() {
+          nirimsg --json workspaces 2>/dev/null | tr '{' '\n' | grep "\"name\":\"$1\"" |
+            grep -o '"id":[0-9]*' | head -1 | cut -d: -f2
+        }
+        onws() { nirimsg --json windows 2>/dev/null | tr '{' '\n' | grep -c "\"workspace_id\":$1"; }
+        band=$(wsid regulars.winit.foot-2)
+        [ -n "$band" ] || { echo "cannot find the band's workspace id"; nirimsg --json workspaces; exit 1; }
+        before=$(onws "$band")
+
         zde desk move-window-to regulars 2>&1 | tee /tmp/mwt-in.txt
         grep -qx 'regulars.winit.foot-2' /tmp/mwt-in.txt
-        [ "$(focused_window)" = "$moved" ] || {
-          echo "window $moved did not arrive in the band: focus is on $(focused_window)"; exit 1
+        after=$(onws "$band")
+        [ "$after" -eq $((before + 1)) ] || {
+          echo "window $moved did not arrive in the band: it held $before windows and now holds $after"
+          nirimsg windows; exit 1
         }
         # Whole line, not a substring: tee hides the exit status, so this grep
         # is all that stands between a refusal and a green run - and a refusal
@@ -558,8 +576,14 @@ let
         # what it remembers.
         zde desk move-window-to vshop 2>&1 | tee /tmp/mwt-out.txt
         grep -qx 'vshop.winit.code' /tmp/mwt-out.txt
+        # Out again, counted the same way: the band is back to what it held
+        # before the window visited, and the window is the one that left.
+        [ "$(onws "$band")" -eq "$before" ] || {
+          echo "the window did not come back out: the band holds $(onws "$band"), it held $before"
+          nirimsg windows; exit 1
+        }
         [ "$(focused_window)" = "$moved" ] || {
-          echo "window $moved did not come back out: focus is on $(focused_window)"; exit 1
+          echo "window $moved came out of the band and focus is on $(focused_window)"; exit 1
         }
 
         # Band-clamped scrolling against a real strip. zde names the workspace
