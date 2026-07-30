@@ -459,21 +459,60 @@ let
         # never scrolled into by anything else. Made last, so everything above
         # it ran on a machine that had none.
         #
-        # Not declared, because they cannot be: a manifest named regulars is
-        # refused where manifests are read - the regulars are the band that is
-        # not a desk. Naming a workspace into the band is the only way they
-        # come into being, so that is what this does, and what the error on a
-        # machine without them tells you to do.
+        # Made with the verb, which is the whole point of the verb: a manifest
+        # cannot declare this band and adoption names into the desk you are on,
+        # so until there was one, the only way to have regulars was to name a
+        # workspace through niri by hand - which this test used to do, and which
+        # is not something to ask of anybody.
+        #
+        # So: a workspace worth keeping, made the way a person makes one. Past
+        # the end of the strip, open something, let adoption name it. vshop
+        # already has a foot workspace and its snapshot declares it, so this one
+        # is adopted as foot-2 - undeclared, which is what makes it movable.
+        #
+        # The desk is said out loud rather than inherited from the block above.
+        # Adoption names into the desk you are on, and the tests before this one
+        # left haven active, so a workspace opened here without switching first
+        # is adopted into haven - which is what happened when this was written,
+        # and cost a CI round trip to a name that never appeared.
+        zde desk switch vshop >/dev/null
         for i in $(seq 10); do nirimsg action focus-workspace-down >/dev/null; done
-        nirimsg action set-workspace-name regulars.winit.comms >/dev/null
+        foot -e sleep 600 >/tmp/foot3.log 2>&1 &
+        promoted() { nirimsg workspaces >/tmp/ws3.txt 2>&1 && grep -q 'vshop.winit.foot-2' /tmp/ws3.txt; }
+        if ! waitfor 60 promoted; then
+          echo "the workspace to promote was never adopted:"
+          cat /tmp/foot3.log /tmp/ws3.txt /tmp/zded-live.log; exit 1
+        fi
 
-        # Naming the band left focus sitting on it, so the desk to come back to
+        # First the refusal, on a workspace the manifest declares: it would be
+        # recreated by the next switch, so moving it would look undone by
+        # something invisible. foot is in vshop's snapshot from earlier.
+        nirimsg action focus-workspace vshop.winit.foot >/dev/null
+        if zde desk move-workspace-to regulars 2>&1 | tee /tmp/mws-no.txt; then
+          echo "moved a workspace vshop declares, which comes straight back"; exit 1
+        fi
+        grep -q 'vshop' /tmp/mws-no.txt
+        grep -q 'foot' /tmp/mws-no.txt
+
+        # Then the move that works, and the band exists because of it.
+        nirimsg action focus-workspace vshop.winit.foot-2 >/dev/null
+        zde desk move-workspace-to regulars 2>&1 | tee /tmp/mws.txt
+        grep -qx 'regulars.winit.foot-2' /tmp/mws.txt
+        nirimsg workspaces 2>&1 | tee /tmp/ws4.txt
+        grep -q 'regulars.winit.foot-2' /tmp/ws4.txt
+        # A rename and not a move: the window that was in it is still in it.
+        [ -n "$(focused_window)" ] || {
+          echo "the workspace changed bands and lost what was in it:"; nirimsg windows; exit 1
+        }
+
+        # Making the band left focus sitting in it - the workspace under you
+        # changed hands, you did not go anywhere - so the desk to come back to
         # is chosen here rather than inherited: what is being checked is
         # reaching the regulars from somewhere and landing back on that
         # somewhere, which needs the somewhere to be known.
         zde desk switch haven >/dev/null
         zde desk regulars 2>&1 | tee /tmp/reg.txt
-        grep -qx 'regulars.winit.comms' /tmp/reg.txt
+        grep -qx 'regulars.winit.foot-2' /tmp/reg.txt
 
         # Reaching for them costs nothing, because coming back is one key.
         zde desk last 2>&1 | tee /tmp/reg-back.txt
@@ -506,11 +545,42 @@ let
         [ -n "$moved" ] || {
           echo "expected a window on vshop.winit.foot to carry:"; nirimsg windows; exit 1
         }
-        zde desk move-window-to regulars 2>&1 | tee /tmp/mwt-in.txt
-        grep -qx 'regulars.winit.comms' /tmp/mwt-in.txt
-        [ "$(focused_window)" = "$moved" ] || {
-          echo "window $moved did not arrive in the band: focus is on $(focused_window)"; exit 1
+        # Where the window ended up, counted on the band's own workspace rather
+        # than read off what has focus. This used to check that focus followed
+        # the carried window, which held only because the band's workspace was
+        # empty: the band is made by promoting a workspace now, so it has work
+        # in it, and landing on the workspace lands next to what was already
+        # there. Which of them niri focuses is niri's business; whether the
+        # window arrived is ours.
+        # Which workspace the carried window is on, asked of niri about that
+        # window by id. Not counted, and not read off what has focus: counting
+        # let the wrong window pass this test once, because the trip back
+        # carried whatever had focus rather than the window that went in.
+        wsid() {
+          nirimsg --json workspaces 2>/dev/null | tr '{' '\n' | grep "\"name\":\"$1\"" |
+            grep -o '"id":[0-9]*' | head -1 | cut -d: -f2
         }
+        winws() {
+          nirimsg --json windows 2>/dev/null | tr '{' '\n' | grep "\"id\":$1," |
+            grep -o '"workspace_id":[0-9]*' | head -1 | cut -d: -f2
+        }
+        # focused_window answers '"id":2'; the number is what niri wants back.
+        movedid=''${moved##*:}
+        band=$(wsid regulars.winit.foot-2)
+        [ -n "$band" ] || { echo "cannot find the band's workspace id"; nirimsg --json workspaces; exit 1; }
+
+        zde desk move-window-to regulars 2>&1 | tee /tmp/mwt-in.txt
+        grep -qx 'regulars.winit.foot-2' /tmp/mwt-in.txt
+        [ "$(winws "$movedid")" = "$band" ] || {
+          echo "window $movedid is on workspace $(winws "$movedid"), not the band's $band"
+          nirimsg windows; exit 1
+        }
+
+        # Focus it before sending it back, because the verb carries whatever is
+        # focused - and the band already had a window, so landing there did not
+        # leave focus on the one that arrived. That ambiguity is a question for
+        # the by-hand list; here it just has to be pinned down.
+        nirimsg action focus-window --id "$movedid" >/dev/null
         # Whole line, not a substring: tee hides the exit status, so this grep
         # is all that stands between a refusal and a green run - and a refusal
         # that names the desk it could not reach contains "vshop.winit" too.
@@ -519,8 +589,16 @@ let
         # what it remembers.
         zde desk move-window-to vshop 2>&1 | tee /tmp/mwt-out.txt
         grep -qx 'vshop.winit.code' /tmp/mwt-out.txt
+        # Out again, and it is the same window that left: it is on the
+        # workspace vshop was entered on, and it is what you are looking at -
+        # that workspace is empty, so here the carried window is the only thing
+        # focus can be.
+        [ "$(winws "$movedid")" = "$(wsid vshop.winit.code)" ] || {
+          echo "window $movedid did not come back out: it is on workspace $(winws "$movedid")"
+          nirimsg windows; exit 1
+        }
         [ "$(focused_window)" = "$moved" ] || {
-          echo "window $moved did not come back out: focus is on $(focused_window)"; exit 1
+          echo "window $moved came out of the band and focus is on $(focused_window)"; exit 1
         }
 
         # Band-clamped scrolling against a real strip. zde names the workspace

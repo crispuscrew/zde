@@ -2421,3 +2421,120 @@ func TestNotificationArrivesWithoutACompositor(t *testing.T) {
 		t.Errorf("queue = %+v, want it kept with no desk", q)
 	}
 }
+
+// The regulars had no way to come into being. A manifest cannot declare the
+// band, adoption names into the desk you are standing on, and so the only
+// route was naming a workspace by hand through niri - which is not something
+// the product can ask of anyone. This is that verb, and it is the same rename
+// in both directions, so it is also how work comes back out of a band that
+// would otherwise only fill up (docs/roadmap.md).
+func TestMoveWorkspaceToMakesTheRegulars(t *testing.T) {
+	f := &fakeCompositor{
+		m: desk.Rebuild([]desk.Workspace{
+			{Name: "vshop.DP-1.comms", Output: "DP-1"},
+			{Name: "vshop.DP-1.code", Output: "DP-1"},
+		}, []string{"DP-1"}),
+		focused: "vshop.DP-1.comms",
+		output:  "DP-1",
+	}
+	jrn, err := journal.Open(filepath.Join(t.TempDir(), "j.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jrn.Close()
+	s := New("test", jrn, f, nil)
+
+	var got []string
+	resp := s.Dispatch(Request{Method: "desk.move-workspace-to", Args: []string{"regulars"}})
+	if resp.Error != "" {
+		t.Fatalf("move-workspace-to: %s", resp.Error)
+	}
+	if err := json.Unmarshal(resp.Ok, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "regulars.DP-1.comms" {
+		t.Errorf("answered %v, want [regulars.DP-1.comms]", got)
+	}
+	if len(f.renames) != 1 || f.renames[0] != "vshop.DP-1.comms -> regulars.DP-1.comms" {
+		t.Errorf("renames = %v", f.renames)
+	}
+	// You did not go anywhere - the workspace under you changed bands - so the
+	// journal has to agree that you are in the regulars now, or desk.last
+	// takes you to where you already are.
+	st := jrn.State()
+	if st.OnDesk != "regulars" {
+		t.Errorf("OnDesk = %q, want regulars", st.OnDesk)
+	}
+	if st.LastDesk != "vshop" {
+		t.Errorf("LastDesk = %q, want vshop, so desk.last comes back", st.LastDesk)
+	}
+}
+
+// A slot the manifest declares would be recreated by the next switch, so the
+// move would look undone by something invisible. Refusing has to name the desk
+// whose file needs editing.
+func TestMoveWorkspaceToRefusesADeclaredSlot(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "vshop.yaml"),
+		[]byte("name: vshop\nmonitors: { DP-1: { workspaces: [comms] } }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeCompositor{
+		m: desk.Rebuild([]desk.Workspace{
+			{Name: "vshop.DP-1.comms", Output: "DP-1"},
+		}, []string{"DP-1"}),
+		focused: "vshop.DP-1.comms",
+		output:  "DP-1",
+	}
+	s := New("test", nil, f, manifest.Dir(dir))
+
+	resp := s.Dispatch(Request{Method: "desk.move-workspace-to", Args: []string{"regulars"}})
+	if resp.Error == "" {
+		t.Fatal("moved a workspace its own manifest declares, which comes straight back")
+	}
+	if !strings.Contains(resp.Error, "vshop") || !strings.Contains(resp.Error, "comms") {
+		t.Errorf("refusal %q names neither the desk nor the slot", resp.Error)
+	}
+	if len(f.renames) != 0 {
+		t.Errorf("refused and renamed anyway: %v", f.renames)
+	}
+}
+
+// An unnamed workspace has no label to keep and no band to leave, and niri
+// keeps an empty one at the end of every strip. The refusal has to say what to
+// do instead, because "not a zde name" explains nothing to somebody who just
+// pressed a key.
+func TestMoveWorkspaceToRefusesAnUnnamedWorkspace(t *testing.T) {
+	f := &fakeCompositor{
+		m:       twoDesks(),
+		focused: "7",
+		output:  "DP-1",
+	}
+	s := New("test", nil, f, nil)
+
+	resp := s.Dispatch(Request{Method: "desk.move-workspace-to", Args: []string{"regulars"}})
+	if resp.Error == "" {
+		t.Fatal("moved a workspace that has no zde name")
+	}
+	if !strings.Contains(resp.Error, "adopted") {
+		t.Errorf("refusal %q does not say how to make it movable", resp.Error)
+	}
+}
+
+// The advice for an empty band names this verb. A message telling somebody to
+// run something has to name something that runs: the old one told them to name
+// a workspace through niri by hand, which is what this verb replaced.
+func TestTheRegularsAdviceNamesAVerbThatExists(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code"}, nil)
+	resp := s.Dispatch(Request{Method: "desk.regulars"})
+	if resp.Error == "" {
+		t.Fatal("there are no regulars here and desk.regulars did not say so")
+	}
+	if !strings.Contains(resp.Error, "move-workspace-to") {
+		t.Fatalf("advice %q does not name the verb that makes a band", resp.Error)
+	}
+	// And that verb answers, rather than being a name in a string.
+	if got := s.Dispatch(Request{Method: "desk.move-workspace-to", Args: []string{"regulars"}}); strings.HasPrefix(got.Error, "unknown method") {
+		t.Errorf("the advice names %q, which zded does not have", "desk.move-workspace-to")
+	}
+}

@@ -36,6 +36,8 @@ func run(args []string) error {
 		return focusDesk("desk.move-window", args[2])
 	case len(args) == 3 && args[0] == "desk" && args[1] == "move-window-to":
 		return focusDesk("desk.move-window-to", args[2])
+	case len(args) == 3 && args[0] == "desk" && args[1] == "move-workspace-to":
+		return focusDesk("desk.move-workspace-to", args[2])
 	case len(args) == 2 && args[0] == "workspace" && (args[1] == "next" || args[1] == "prev"):
 		return focusDesk("workspace." + args[1])
 	case len(args) == 2 && args[0] == "nav" && (args[1] == "down" || args[1] == "up"):
@@ -256,7 +258,10 @@ func usage() {
   zde desk move-window next|prev
                          carry the focused window to the desk beside, and go
   zde desk move-window-to NAME
-                         carry it to that desk, the way into the regulars
+                         carry the focused window to that desk
+  zde desk move-workspace-to NAME
+                         hand this whole workspace to that desk, which is how
+                         the regulars are made and how work comes back out
   zde desk next          the desk after this one, wrapping (regulars excluded)
   zde desk prev          the desk before this one, wrapping
   zde queue              what is waiting, oldest first

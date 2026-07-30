@@ -268,10 +268,19 @@ show up in use.
   strip.
 - **Coming back**: `zde desk last` after a detour lands where you left, on the
   workspace you left, not on the desk's first one.
-- **The regulars fill up.** Work goes into the band and there is no way to get
-  it back out except `zde desk move-window-to <desk>`, one window at a time.
-  Watch how fast that becomes annoying - that is the argument for whatever
-  replaces it.
+- **Making a regular, and unmaking it.** Stand on a workspace worth keeping and
+  run `zde desk move-workspace-to regulars`; that is the only way the band comes
+  into being. Then `zde desk move-workspace-to <desk>` to put it back. What to
+  feel for: whether promoting an existing workspace is what you reach for, or
+  whether you wanted to make an empty one and fill it afterwards - which is
+  refused, because an empty workspace is never adopted and so has no name to
+  move.
+- **Where you land when you send a window to a band that is not empty.**
+  `zde desk move-window-to regulars` carries the window and follows it, but it
+  follows it to the *workspace*: if something is already there, you arrive
+  beside the window you sent rather than on it. Decide whether that is right.
+  Making it land on the carried window is a small change, and it is not obvious
+  which is less surprising.
 - **The queue**: leave things in it for a day. `zde desk queue-jump` should
   take you where the oldest one was written, and the desk it names should still
   make sense hours later.
