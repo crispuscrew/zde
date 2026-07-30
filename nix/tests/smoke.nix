@@ -234,6 +234,8 @@ let
         # would sit between haven and vshop, and `desk next` would stop
         # answering what those tests expect.
         nirimsg action set-workspace-name probe.winit.one >/dev/null
+        ondesk() { XDG_RUNTIME_DIR=$mgr zde status 2>/dev/null | grep '^on desk' || true; }
+        before_picker=$(ondesk)
         [ "$(pickerq state)" = "closed" ] || {
           echo "the picker is open before anything asked for it: $(pickerq state)"; exit 1
         }
@@ -278,9 +280,12 @@ let
           echo "the picker was dismissed and is still there: $(pickerq state)"
           nirimsg --json layers; exit 1
         fi
-        # And nothing moved: dismissing is not choosing.
-        XDG_RUNTIME_DIR=$mgr zde status 2>&1 | grep -q 'on desk    probe' && {
-          echo "dismissing the picker switched a desk"; exit 1
+        # And nothing moved: dismissing is not choosing. Compared with what it
+        # was before rather than against a desk name, because the watcher has
+        # been running all along and what zded thinks it is on before the picker
+        # opens is its business, not this test's.
+        [ "$(ondesk)" = "$before_picker" ] || {
+          echo "dismissing the picker moved zded from '$before_picker' to '$(ondesk)'"; exit 1
         }
 
         # Then open it again for the half that does choose.
@@ -295,10 +300,9 @@ let
         [ "$(pickerq pick probe)" = "picked" ] || {
           echo "choosing probe from the picker: $(pickerq pick probe)"; exit 1
         }
-        landed() { XDG_RUNTIME_DIR=$mgr zde status 2>/dev/null | grep -q 'on desk    probe'; }
+        landed() { case "$(ondesk)" in *probe*) return 0 ;; *) return 1 ;; esac; }
         if ! waitfor 20 landed; then
-          echo "the picker chose probe and zded is on $(XDG_RUNTIME_DIR=$mgr zde status | grep 'on desk')"
-          exit 1
+          echo "the picker chose probe and zded is on '$(ondesk)'"; exit 1
         fi
         # And it closed itself on the way, surface and all.
         shut() { [ "$(pickerq state)" = "closed" ] && [ "$(nirimsg --json layers 2>/dev/null | grep -c zde-picker)" = "0" ]; }
