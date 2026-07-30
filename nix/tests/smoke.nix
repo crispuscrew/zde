@@ -158,14 +158,21 @@ let
         # environment only after niri has put it there.
         XDG_RUNTIME_DIR=$mgr zde status 2>&1 | tee /tmp/unit-status.txt
         grep -qx 'compositor connected' /tmp/unit-status.txt
-        # The bar is up and listening, so status has to say so. This is the line
-        # somebody reads when a key drew nothing, and it is only worth having if
-        # it is true in both directions - the false case is asserted on the zded
-        # further down, which has no shell at all.
-        grep -qx 'shell      yes' /tmp/unit-status.txt || {
-          echo "a shell is listening and status does not say so:"
-          cat /tmp/unit-status.txt; exit 1
+        # The bar is up and listening, so status has to say so. Waited for rather
+        # than asked once: the target starts zded and the bar together, and Qt
+        # takes a second or two to reach the socket, so a single question here
+        # asks whether something that is still starting has started.
+        #
+        # This is the line somebody reads when a key drew nothing, and it is only
+        # worth having if it is true in both directions - the false case is
+        # asserted further down on the zded that has no shell at all.
+        shell_seen() {
+          XDG_RUNTIME_DIR=$mgr zde status 2>/dev/null | grep -qx 'shell      yes'
         }
+        if ! waitfor 30 shell_seen; then
+          echo "the bar is running and status does not say a shell is listening:"
+          XDG_RUNTIME_DIR=$mgr zde status; sctl status zde-bar.service || true; exit 1
+        fi
 
         # And the bar, which the same target starts. Asserted against niri
         # rather than against systemd: an active unit proves quickshell did not
