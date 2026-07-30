@@ -48,10 +48,14 @@ let
         mkdir -p "$XDG_RUNTIME_DIR" /tmp/desks
         chmod 700 "$XDG_RUNTIME_DIR"
 
-        # A desk that does not exist yet, declared.
+        # A desk that does not exist yet, declared - with an app on it, which
+        # nothing launches yet and which is still the half of a manifest that
+        # says what the desk is for (docs/model.md, section 5).
         printf 'name: vshop
     monitors:
       winit: { workspaces: [code, notes] }
+    apps:
+      - { app: nvim, instance: vshop, monitor: winit, workspace: code }
     '       > /tmp/desks/vshop.yaml
 
         # niri, nested and headless. cage gives it a Wayland host; pixman and
@@ -420,6 +424,33 @@ let
         # A desk that exists only as a manifest is created and entered.
         zde desk switch vshop 2>&1 | tee /tmp/switch.txt
         grep -qx 'vshop.winit.code' /tmp/switch.txt
+
+        # Layer 2, end to end and through the CLI: the desk's app comes back
+        # as the address zinc takes, on the workspace zde names, with the state
+        # directory zinc itself answered for. The last column is the one worth
+        # the VM - it is `zcr where`, run by zde, and the point of asking is
+        # that the layout stays zinc's to change.
+        XDG_STATE_HOME=/tmp/state zde desk apps vshop 2>&1 | tee /tmp/apps.txt
+        awk '$1=="nvim@vshop" && $2=="vshop.winit.code" &&
+             $3=="/tmp/state/zinc/nvim/vshop" { found=1 }
+             END { exit !found }' /tmp/apps.txt || {
+          echo "zde desk apps did not say where that instance keeps its state:"
+          cat /tmp/apps.txt; exit 1
+        }
+        # And the desk you are on, which is the form a keybind would use: the
+        # switch above put us on vshop.
+        XDG_STATE_HOME=/tmp/state zde desk apps 2>&1 | tee /tmp/apps-here.txt
+        grep -q 'nvim@vshop' /tmp/apps-here.txt || {
+          echo "zde desk apps, on vshop, did not list vshop's apps:"
+          cat /tmp/apps-here.txt; exit 1
+        }
+        # zcr is on the session's PATH, said by the daemon that has that PATH.
+        # A machine where this is no is one whose desks declare apps it cannot
+        # run, and every symptom of it looks like something else.
+        grep -qx 'zinc       yes' /tmp/status.txt || {
+          echo "zded cannot see zcr, so nothing sandboxed can start:"
+          cat /tmp/status.txt; exit 1
+        }
 
         # No shell on this zded, and status says so. Between this and the line
         # above, the fact is asserted in both directions - a status field that is
@@ -926,13 +957,6 @@ pkgs.testers.runNixOSTest {
       ../zde-user.nix
     ];
 
-    # Layer 2's tools, the way a real machine gets them: zinc's own
-    # home-manager module, which is the shape it says zde should install it in.
-    home-manager.users.zde = {
-      imports = [ zincModule ];
-      programs.zinc.enable = true;
-    };
-
     # zde.laptop stays off here on purpose: it would hand the VM's network to
     # NetworkManager and make anything network-shaped in this script flaky.
     # nix/test-host.nix evaluates that branch instead.
@@ -946,26 +970,45 @@ pkgs.testers.runNixOSTest {
     # asserted by a user who is actually subject to it - root is not.
     users.users.intruder.isNormalUser = true;
 
-    # A second keyboard layout, which is what Mod+space switches between. With
-    # one layout that key does nothing, which is what every zde session has done
-    # so far - and a machine you cannot write to somebody in is not one anybody
-    # travels with. Set here so the generated local.kdl is what niri validates
-    # below, rather than a shape nothing has ever parsed.
-    home-manager.users.zde.zde.niri.xkb = {
-      layout = "us,ru";
-      options = "grp:caps_toggle";
-    };
+    home-manager.users.zde = {
+      # Layer 2's tools, the way a real machine gets them: zinc's own
+      # home-manager module, which is the shape it says zde should install it
+      # in.
+      imports = [ zincModule ];
+      programs.zinc.enable = true;
+      # zlg is opt-in in zinc's module, on the reasoning that a desktop shipping
+      # its own launcher does not want a second one. zde ships none: its
+      # generated keymap binds Mod+g to `zlg` already (common/keymap), so
+      # leaving it out is not declining a second launcher, it is a bound key
+      # that spawns nothing.
+      programs.zinc.tools = [
+        "zc"
+        "zcr"
+        "zlt"
+        "zlg"
+      ];
 
-    # A host's own binds, through the seam that exists for them: local.kdl,
-    # included after the generated ones. The live image (nix/live.nix) puts a
-    # terminal on a key this way, because nothing in the keymap can open one
-    # yet - so niri accepting a second binds block is load-bearing rather than
-    # incidental, and the niri validate below is what keeps it that way.
-    home-manager.users.zde.zde.niri.extraConfig = ''
-      binds {
-          Mod+Return { spawn "foot"; }
-      }
-    '';
+      # A second keyboard layout, which is what Mod+space switches between.
+      # With one layout that key does nothing, which is what every zde session
+      # has done so far - and a machine you cannot write to somebody in is not
+      # one anybody travels with. Set here so the generated local.kdl is what
+      # niri validates below, rather than a shape nothing has ever parsed.
+      zde.niri.xkb = {
+        layout = "us,ru";
+        options = "grp:caps_toggle";
+      };
+
+      # A host's own binds, through the seam that exists for them: local.kdl,
+      # included after the generated ones. The live image (nix/live.nix) puts a
+      # terminal on a key this way, because nothing in the keymap can open one
+      # yet - so niri accepting a second binds block is load-bearing rather than
+      # incidental, and the niri validate below is what keeps it that way.
+      zde.niri.extraConfig = ''
+        binds {
+            Mod+Return { spawn "foot"; }
+        }
+      '';
+    };
 
     # cage hosts the nested niri; mesa's software rasteriser is what both of
     # them render with.
@@ -1000,6 +1043,11 @@ pkgs.testers.runNixOSTest {
       # time either side moved.
       machine.succeed("su -l zde -c 'command -v zcr'")
       machine.succeed("su -l zde -c 'command -v zc'")
+      # And zlg, which is not a nicety: Mod+g in the generated keymap spawns it
+      # by name (common/keymap/keymap.yaml, launcher.open). Without it that key
+      # is bound to a binary the machine does not have, which looks from the
+      # keyboard exactly like a key that does nothing.
+      machine.succeed("su -l zde -c 'command -v zlg'")
       where = machine.succeed(
           "su -l zde -c 'XDG_STATE_HOME=/tmp/st zcr where browser@work'"
       )

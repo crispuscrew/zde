@@ -131,6 +131,15 @@ func (d *Desk) check() error {
 		// Checked as a desk name is checked, which is the same shape zinc's own
 		// app names take: lowercase, digits, dashes between them. Nothing that
 		// can be a dot, a slash, or a surprise.
+		// `browser@work` is how a person writes one instance of an app, and
+		// zinc 0.8.1 documents it, so it is what somebody will type here.
+		// This file keeps the two halves apart, and the generic name error
+		// below would answer a reasonable thing to write with a rule about
+		// dashes.
+		if base, instance, isAddress := strings.Cut(app.App, "@"); isAddress {
+			return fmt.Errorf("manifest %q: app %q is an address: write the two halves in their own fields "+
+				"(app: %s, instance: %s)", d.Name, app.App, base, instance)
+		}
 		if !desk.ValidDesk(app.App) {
 			return fmt.Errorf("manifest %q: app name %q is not a name: lowercase letters, digits and dashes, "+
 				"because it becomes part of a path", d.Name, app.App)

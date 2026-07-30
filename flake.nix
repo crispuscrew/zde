@@ -59,6 +59,13 @@
         system:
         nixpkgs.lib.nixosSystem {
           inherit system;
+          # Layer 2's tools reach the image the way they reach a real machine:
+          # zinc's own home-manager module, imported by nix/live.nix. Passed in
+          # rather than fetched there, because that file is a path module and a
+          # path module cannot see this flake's inputs.
+          specialArgs = {
+            zincModule = zinc.homeModules.zinc;
+          };
           modules = [
             ./nix/system.nix
             home-manager.nixosModules.home-manager

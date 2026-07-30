@@ -95,7 +95,12 @@ on_exit:  []
 ```
 
 - `instance` + `mounts`: one app definition, many desks; per-instance state
-  via `{instance}` templating in the app's mount slots.
+  via `{instance}` templating in the app's mount slots. The two fields are one
+  address to zinc - `nvim@vshop` - and `zde desk apps` prints it beside the
+  directory zinc says that instance keeps its state in. zde asks rather than
+  joining that path itself: the layout is zinc's, and a second copy of it drifts
+  the first time either side moves a directory. `{instance}` templating in mount
+  slots is zinc 0.8.2 and not there yet.
 - `browser-vshop` is an inherited app (`Inherits: browser`): per-project
   variants needing their own security posture get their own reviewable YAML.
   Instances = identical-config multiplicity; inheritance = config variation.

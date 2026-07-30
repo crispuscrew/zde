@@ -308,3 +308,17 @@ func TestOrdinaryAppEntriesAreAccepted(t *testing.T) {
 		t.Errorf("parsed %+v", d.Apps)
 	}
 }
+
+// A manifest keeps the app and the instance in two fields; zinc's own docs
+// spell an instance as browser@work, so that is what somebody will type into
+// the one field. The generic name check would answer it with a rule about
+// dashes, which reads as "no instances here" rather than "not in that field".
+func TestParseRejectsAddressInAppField(t *testing.T) {
+	_, err := Parse([]byte("name: vshop\nmonitors: { DP-1: { workspaces: [web] } }\napps: [{ app: browser@work }]"))
+	if err == nil {
+		t.Fatal("an address in the app field was accepted")
+	}
+	if !strings.Contains(err.Error(), "instance: work") {
+		t.Fatalf("the error should show which halves go where, got: %v", err)
+	}
+}

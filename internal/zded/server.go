@@ -15,7 +15,9 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,6 +29,7 @@ import (
 	"github.com/crispuscrew/zde/internal/desk"
 	"github.com/crispuscrew/zde/internal/journal"
 	"github.com/crispuscrew/zde/internal/manifest"
+	"github.com/crispuscrew/zde/internal/zinc"
 )
 
 // Compositor is what the daemon needs from niri. An interface because zded
@@ -119,11 +122,31 @@ type Status struct {
 	// Queued is how many things are waiting, which is the other half of the
 	// bar: if the bar is not up, this is the only way to see them.
 	Queued int `json:"queued"`
+	// Zinc says whether layer 2's runner is on the session's PATH (docs/
+	// delivery.md). A zde machine without it can run nothing sandboxed, which
+	// is most of what a zde machine is for - and the session's PATH is not the
+	// one a terminal has, so this is the daemon's answer and not the CLI's.
+	Zinc bool `json:"zinc"`
 	// Manifests that could not be read, most recently seen. A desk quietly
 	// missing is the failure this exists to stop being quiet: the daemon
 	// carries on with the manifests that do work, and says here which ones it
 	// gave up on.
 	BadManifests []string `json:"badManifests,omitempty"`
+}
+
+// DeskApp is one app a desk declares (docs/model.md, section 5), as the two
+// things a manifest turns it into: the address a person and zcr both use for
+// it, and the workspace it is pinned to.
+//
+// Where that instance keeps its state is deliberately not here. It is zinc's
+// answer, given by `zcr where`, and asking it means running a program - which
+// the daemon that answers every keybind should not be doing on a socket call
+// it cannot time out. The client asks (cmd/zde).
+type DeskApp struct {
+	Address string `json:"address"`
+	// Place is the workspace name it is pinned to, empty when it is not:
+	// adoption places an unpinned app wherever it opens.
+	Place string `json:"place,omitempty"`
 }
 
 // Server answers the zde socket.
@@ -397,6 +420,8 @@ func (s *Server) Dispatch(req Request) Response {
 			return s.rotate(desk.Next)
 		}
 		return s.rotate(desk.Prev)
+	case "desk.apps":
+		return s.deskApps(req.Args)
 	case "desk.snapshot":
 		return s.snapshot(req.Args)
 	case "desk.reconcile":
@@ -514,6 +539,65 @@ func (s *Server) ensureDeclared(target string) error {
 // snapshot writes down a desk that exists, so it can be asked for again. It is
 // the other end of adoption: arrange a desk by hand, let the names settle,
 // then make it something a manifest declares.
+// deskApps answers what a desk is made of before any of it is running.
+//
+// The manifests are files and a client could read them, but which directory
+// they are in is the daemon's answer: zded is started with one (-desks) and a
+// client working it out separately is a second rule about where desks live.
+func (s *Server) deskApps(args []string) Response {
+	target := ""
+	switch len(args) {
+	case 0:
+		// The desk you are on, from the compositor rather than the journal, for
+		// the reason snapshot has: this is about what is on the screen.
+		focused, err := s.niri.FocusedName()
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		n, err := desk.ParseName(focused)
+		if err != nil {
+			return Response{Error: fmt.Sprintf("%q is not a desk workspace, so there is no desk to list: name one", focused)}
+		}
+		target = n.Desk
+	case 1:
+		target = args[0]
+	default:
+		return Response{Error: "desk.apps takes one desk name, or none for the one you are on"}
+	}
+	all, problems, err := s.desks.All()
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	s.rememberProblems(problems)
+	d, found := all[target]
+	if !found {
+		// Naming what is declared: the usual way to land here is a desk that
+		// exists on the screen and was never written down, and the answer to
+		// that is a list of the ones that were.
+		declared := make([]string, 0, len(all))
+		for name := range all {
+			declared = append(declared, name)
+		}
+		sort.Strings(declared)
+		if len(declared) == 0 {
+			return Response{Error: fmt.Sprintf("no desk %q is declared, and neither is any other", target)}
+		}
+		return Response{Error: fmt.Sprintf("no desk %q is declared; there is %s", target, strings.Join(declared, ", "))}
+	}
+	out := make([]DeskApp, 0, len(d.Apps))
+	for _, app := range d.Apps {
+		a := DeskApp{Address: zinc.Address(app.App, app.Instance)}
+		if app.Monitor != "" && app.Workspace != "" {
+			// check() proved this parses when the manifest was read.
+			if n, err := desk.NewName(target, app.Monitor, app.Workspace); err == nil {
+				a.Place = n.String()
+			}
+		}
+		out = append(out, a)
+	}
+	return ok(out)
+}
+
 func (s *Server) snapshot(args []string) Response {
 	m, err := s.niri.DeskMap()
 	if err != nil {
@@ -1245,6 +1329,8 @@ func (s *Server) status() Status {
 	}
 	st.Shell = s.listeners() > 0
 	st.Notifications = s.notifier != nil
+	_, err = exec.LookPath(zinc.Runner)
+	st.Zinc = err == nil
 	s.mu.Lock()
 	st.BadManifests = append([]string(nil), s.problems...)
 	s.mu.Unlock()

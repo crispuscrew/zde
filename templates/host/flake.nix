@@ -98,6 +98,17 @@
               ];
               zde.enable = true;
               programs.zinc.enable = true;
+              # zlg is opt-in in zinc's module, on the reasoning that a desktop shipping
+              # its own launcher does not want a second one. zde ships none: its
+              # generated keymap binds Mod+g to `zlg` already (common/keymap), so
+              # leaving it out is not declining a second launcher, it is a bound key
+              # that spawns nothing.
+              programs.zinc.tools = [
+                "zc"
+                "zcr"
+                "zlt"
+                "zlg"
+              ];
 
               # Host-specific niri: outputs, scale, an xkb layout. This is the
               # seam for everything zde does not fix.
