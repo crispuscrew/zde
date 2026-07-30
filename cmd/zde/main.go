@@ -64,6 +64,12 @@ func run(args []string) error {
 		return snapshot([]string{args[2]})
 	}
 	switch strings.Join(args, " ") {
+	case "help":
+		// Mod+slash spawns this. It has been an unknown command that printed
+		// the usage to stderr and exited 1, which is the right text and the
+		// wrong everything else.
+		usage()
+		return nil
 	case "status":
 		return status()
 	case "desk list":
@@ -313,6 +319,18 @@ func usage() {
   zde desk last          go back to the desk you came from
   zde desk reconcile     make the workspace names true again
   zde desk snapshot [N]  write down the desk you are on, so you can ask for it
+
+Updating zde, which is two deliberate steps and nothing automatic
+(docs/update.md). Use your own host name from your flake:
+
+  cd /etc/nixos
+  sudo nix flake update zde
+  sudo nixos-rebuild switch --flake .#zdebox
+
+Use boot rather than switch for a kernel or mesa change, and log out after a
+niri one: a running compositor is not replaced by a rebuild, and its config is.
+If the new one is worse, sudo nixos-rebuild switch --rollback, or pick the
+generation above the newest in the boot menu.
 
 Most of the action map (docs/model.md, section 6) is not wired yet; the
 generated keybinds that call it land with roadmap 0.1.
