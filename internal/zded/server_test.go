@@ -2538,3 +2538,88 @@ func TestTheRegularsAdviceNamesAVerbThatExists(t *testing.T) {
 		t.Errorf("the advice names %q, which zded does not have", "desk.move-workspace-to")
 	}
 }
+
+// desk.apps is what a desk declares, put in the two forms something else can
+// use: the address zinc takes (zde keeps app and instance in separate fields,
+// so somebody has to join them) and the workspace name zde uses everywhere
+// else.
+func TestDeskApps(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "vshop.yaml"), []byte(
+		"name: vshop\nmonitors: { DP-1: { workspaces: [code, web] } }\n"+
+			"apps:\n"+
+			"  - { app: nvim, instance: vshop, monitor: DP-1, workspace: code }\n"+
+			"  - { app: browser }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code", output: "DP-1"}
+	s := New("test", nil, f, manifest.Dir(dir))
+
+	// No name: the desk on the screen, which is what a keybind would ask for.
+	list := deskAppsOf(t, s, Request{Method: "desk.apps"})
+	if len(list) != 2 {
+		t.Fatalf("desk.apps returned %d apps, want 2: %+v", len(list), list)
+	}
+	if list[0].Address != "nvim@vshop" {
+		t.Errorf("address = %q, want nvim@vshop", list[0].Address)
+	}
+	if list[0].Place != "vshop.DP-1.code" {
+		t.Errorf("place = %q, want the workspace name it is pinned to", list[0].Place)
+	}
+	// No instance is the app's bare name - zinc renames nothing that ran before
+	// instances existed - and no pin is adoption's business, not a place.
+	if list[1].Address != "browser" || list[1].Place != "" {
+		t.Errorf("unpinned app with no instance = %+v", list[1])
+	}
+}
+
+// The desk on the screen and the desk asked about are different questions, and
+// the second one has to work when the first has no answer: the reason to ask
+// about a desk you are not on is to find out what it would start.
+func TestDeskAppsByName(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "haven.yaml"), []byte(
+		"name: haven\nmonitors: { DP-1: { workspaces: [read] } }\n"+
+			"apps: [{ app: reader, instance: haven }]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := New("test", nil, &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code"}, manifest.Dir(dir))
+
+	list := deskAppsOf(t, s, Request{Method: "desk.apps", Args: []string{"haven"}})
+	if len(list) != 1 || list[0].Address != "reader@haven" {
+		t.Fatalf("desk.apps haven = %+v", list)
+	}
+}
+
+// A desk that exists on the screen and was never written down is the ordinary
+// way to land here, so the refusal lists what is declared rather than saying
+// the name is wrong.
+func TestDeskAppsNamesWhatIsDeclared(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "haven.yaml"),
+		[]byte("name: haven\nmonitors: { DP-1: { workspaces: [read] } }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := New("test", nil, &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code"}, manifest.Dir(dir))
+
+	resp := s.Dispatch(Request{Method: "desk.apps", Args: []string{"vshop"}})
+	if resp.Error == "" {
+		t.Fatal("listed the apps of a desk with no manifest")
+	}
+	if !strings.Contains(resp.Error, "haven") {
+		t.Errorf("refusal %q does not say which desks are declared", resp.Error)
+	}
+}
+
+func deskAppsOf(t *testing.T, s *Server, req Request) []DeskApp {
+	t.Helper()
+	resp := s.Dispatch(req)
+	if resp.Error != "" {
+		t.Fatalf("%s: %s", req.Method, resp.Error)
+	}
+	var list []DeskApp
+	if err := json.Unmarshal(resp.Ok, &list); err != nil {
+		t.Fatal(err)
+	}
+	return list
+}

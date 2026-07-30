@@ -166,6 +166,13 @@ its units are where systemd looks; it never logs anybody in.
   `graphical-session.target` rather than by you.
 - Log out and back in: the second session gets a zded of its own, not a stale
   socket from the first.
+- `zde status` says `zinc       yes`, which is the session finding layer 2's
+  runner on its own PATH. It is a different question from `command -v zcr` in a
+  terminal, and the one that matters: a keybind runs with the session's
+  environment.
+- `Mod+g` opens zinc's launcher (`zlg`) over an empty list. Empty is right on
+  a fresh machine - nothing has defined an app yet - and a key that draws
+  nothing at all is the report.
 
 ## 2. The input layer
 
@@ -312,7 +319,7 @@ show up in use.
 Not bugs, do not report them:
 
 - **Most of the shell**: there is a bar and a desk picker now; no notification
-  centre, no palette, no launcher.
+  centre and no palette. The launcher on `Mod+g` is zinc's, not zde's.
 - **Most of the cheatsheet.** A bind whose command is not written yet prints
   usage to a stderr nobody reads, so the key is silent and so is the machine.
   What is live today, and nothing else:
@@ -322,10 +329,12 @@ Not bugs, do not report them:
   | `Mod+Tab` (the picker) | `Mod+Shift+Escape` (panic), `Mod+Shift+z` (zen) |
   | `Mod+j`/`k` and the arrows (nav) | `Mod+a`, `Mod+Shift+a` (ask) |
   | `Mod+Shift+j`/`k` (move window) | `Mod+v`, `Mod+Shift+v` (clip, pass) |
-  | `Mod+r` (regulars), `Mod+u` (queue jump) | `Mod+g`, `Mod+semicolon` (launcher, palette) |
-  | `Mod+Shift+Tab` (last desk) | `Mod+t`, `Mod+e` (launch), `Mod+w` (jump to window) |
-  | `zde workspace next\|prev`, `zde desk *`, `zde queue *`, `zde status` | `Mod+m` (modes), `Mod+n`, `Mod+slash`, `Mod+c`, `Mod+p`, `Mod+q` |
-  | the niri natives: columns, monitors, fullscreen, float, close, overview, consume/expel | and the rest of the system group |
+  | `Mod+r` (regulars), `Mod+u` (queue jump) | `Mod+semicolon` (palette), `Mod+w` (jump to window) |
+  | `Mod+t`, `Mod+e` (terminal, editor) | `Mod+Shift+t`, `Mod+Shift+e` (launch-at) |
+  | `Mod+g` (zinc's launcher), `Mod+Ctrl+semicolon` (lock) | `Mod+m` (modes), `Mod+n`, `Mod+c`, `Mod+p`, `Mod+q` |
+  | `Mod+Shift+Tab` (last desk) | `Mod+slash` (help: it prints, to a stderr no key has) |
+  | `zde workspace next\|prev`, `zde desk *`, `zde queue *`, `zde status` | and the rest of the system group |
+  | the niri natives: columns, monitors, fullscreen, float, close, overview, consume/expel | |
 
   `Mod+Shift+Escape` is worth singling out: panic is the key you reach for
   first when something goes wrong, and it is one of the silent ones.
@@ -337,6 +346,10 @@ Not bugs, do not report them:
 - **The keyboard layout** is whatever niri defaults to. `zde.niri.extraConfig`
   is where a host's own layout goes, and whether it should be taken from the
   system's console keymap instead is still open.
+- **Sandboxed apps.** `zcr`, `zc` and `zlg` are installed and rootless podman is
+  running under them, so the machinery is there - but no app is defined, so
+  `zlg` lists nothing and no key starts anything sandboxed. Defining one is
+  zinc's `zc`, and the desk manifests that name apps do not launch them yet.
 - **Persistence**: it is a live image. The journal, the queue and anything you
   configure are gone on reboot.
 

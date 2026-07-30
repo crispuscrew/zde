@@ -84,8 +84,27 @@ in
         it means, without editing the keymap everything else is generated from.
 
         An argv rather than a command line, so nothing has to agree about
-        quoting. These become zinc apps launched by zcr in a sandbox
-        (docs/delivery.md, layer 2); they are host commands until it arrives.
+        quoting.
+
+        A sandboxed app is one of these too - the argv is the runner:
+
+        ```nix
+        zde.apps.browser = [ "zcr" "run" "browser" "--exec" ];
+        ```
+
+        which needs zinc's own home-manager module alongside this one
+        (`programs.zinc.enable`, as the host template and the live image wire
+        it). Without --exec zcr prints the launch plan and exits, which from a
+        keybind looks exactly like nothing happening.
+
+        No instance in that argv: zinc 0.8.1 addresses an instance as
+        `browser@work` and `zcr run` does not take one yet (`run --instance` is
+        0.8.2), so a desk manifest's instance is declared and not yet threaded
+        through a launch. `zde desk apps` prints the address and where zinc says
+        that instance keeps its state.
+
+        The defaults below are host commands because a machine has to be usable
+        before it has any apps defined.
       '';
     };
 

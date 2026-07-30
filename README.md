@@ -26,12 +26,15 @@ queue you can drop a reminder into and jump back to where it was written.
 `zded` holds the session's notification name, so an app that has never heard
 of zde arrives on the desk you were standing on instead of in a popup nobody
 was looking at. One keymap file generates the niri binds and the cheatsheet
-together, so the two cannot drift.
+together, so the two cannot drift. The sandbox is installed rather than
+described: zinc is a pinned input, so a zde machine has `zcr`, `zc` and `zlg`
+and the rootless podman under them.
 
 **Missing.** Most of the shell: there is a bar and a desk picker, and no
-notification centre, no palette, no launcher - which is what most of the
-cheatsheet is waiting on, and a bind whose command is not written yet is a key
-that does nothing, silently.
+notification centre and no palette - which is what most of the cheatsheet is
+waiting on, and a bind whose command is not written yet is a key that does
+nothing, silently. And the apps: a desk manifest declares what it is for, in
+the address zinc takes for an instance, and nothing launches it yet.
 [`docs/verify.md`](docs/verify.md) has the live-versus-silent split key by
 key; [`docs/roadmap.md`](docs/roadmap.md) has the order the rest arrives in.
 

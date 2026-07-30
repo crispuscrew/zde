@@ -8,19 +8,26 @@ How zde reaches a machine. Frozen 2026-07-22.
 |---|---|---|
 | 0 system | kernel, drivers/firmware, modprobe options, podman + subuids, greetd, PipeWire, portals, kanata permissions, laptop hardware (power, radios), nix | `nix/system.nix` (NixOS) or `install.sh` (portable) |
 | 1 user env | niri config (generated keymap), zded, shell, zinc tools, fonts, theme | `nix/home.nix` - one module, shared by both paths |
-| 2 apps | zinc containers, app YAMLs, desk manifests | digest-pinned; provisioned by hand until something does it |
+| 2 apps | zinc containers, app YAMLs, desk manifests | zinc's own flake, installed by layer 1; digest-pinned; provisioned by hand until something seeds it |
 
 Layer 1 is the same home-manager module everywhere, so "which distro" only
 affects layer 0.
 
-Layer 2 has no owner yet, and the table used to claim one: "zcr at first run"
-describes a first-run path that exists in neither project. zinc's store
-creates `~/.config/zinc/apps` the first time something saves an app and seeds
-nothing into it, and its own flake and first-run seed are unstarted roadmap
-items. So today an app YAML gets there because somebody put it there, and
-moving a digest is somebody retyping a tag: zinc's resolver refuses to touch
-an already-pinned reference and does not record the tag a digest came from.
-Nothing about zde's own update path (`update.md`) covers layer 2.
+Layer 2 arrives as a flake. zinc 0.8.1 ships `homeModules.zinc`, so the tools
+land on PATH the way everything else in layer 1 does - the host template pins
+zinc to its own tag and enables it, and zde pins the same tag so its smoke test
+runs against the binary rather than a paragraph.
+
+Where an instance keeps state is zinc's to say and readable rather than
+assumed: `zcr where <app>[@<instance>]` prints it, honouring `XDG_STATE_HOME`,
+and zde asks rather than joining that path itself. Two copies of a layout drift
+the first time either side moves one.
+
+What is still by hand: an app YAML gets into `~/.config/zinc/apps` because
+somebody put it there, and moving a digest is somebody retyping a tag - zinc's
+resolver returns an already-pinned reference unchanged and does not record the
+tag it came from. Both are on zinc's 0.8.2 list. Nothing about zde's own update
+path (`update.md`) covers layer 2 yet.
 
 Laptop hardware (upower, power profiles, wifi/bt radios) is a toggle in the
 system module: `zde.laptop.enable`. Desktops leave it off; the 0.4 laptop

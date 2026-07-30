@@ -12,11 +12,19 @@ Everything, in `flake.lock`. Two inputs decide what a machine runs:
 |---|---|---|
 | `nixpkgs` | `nixos-26.05`, the current stable | you bump it |
 | `home-manager` | `release-26.05`, matched to nixpkgs | with nixpkgs |
+| `zinc` | a tag, `v0.8.1` | you edit the tag |
 
 Nothing floats. `nixos-26.05` is a branch that receives backports, so the
 niri in it can change within the release - but a machine only sees any of it
 when the lock moves. The lock is the pin. Keep home-manager's release matched
 to nixpkgs: mismatched pairs break in ways that are tedious to read.
+
+zinc is the one pinned to a tag rather than a branch, which is what zde asks of
+anybody pinning zde: an update should be a decision, and a tag is a thing to
+decide about. `nix flake update zinc` on a tag re-resolves to the same commit,
+so moving it means editing the URL in `flake.nix` - and in
+`templates/host/flake.nix`, which is the pin a real machine actually has. It
+follows this repo's nixpkgs, so a machine has one and not two.
 
 niri has no input of its own. Stable currently carries the release zde wants
 (26.04) and builds it against the same mesa the system runs, which is what
@@ -93,6 +101,11 @@ sudo nix flake update zde
 sudo nixos-rebuild switch --flake .#zdebox
 ```
 
+zinc is a separate input in that flake, on its own tag, so the sandbox and the
+desktop move independently: `sudo nix flake update zinc` after editing its tag,
+applied by the same rebuild. Two decisions rather than one is deliberate - the
+thing that isolates every app should not change because the bar did.
+
 That flake is the one that matters, and not only for the disks. **A module is
 evaluated by whichever nixpkgs imports it**, so the lock in this repo pins what
 CI tests and says nothing about what your machine runs: import zde from a flake
@@ -123,6 +136,9 @@ What survives and what does not:
   activation. This is safe by design - the journal is replayed on the way back
   up, which is what the desks are rebuilt from - but it is a real restart: a
   `zde` running at that instant gets a closed socket rather than an answer.
+- **Nothing restarts a running app** when zinc moves. The tools on PATH are the
+  new ones and the containers already up were started by the old ones; what
+  changes them is stopping and starting the app.
 - The portals are restarted too, but on their own schedule rather than zded's:
   they are NixOS-level user units, so they go when their own packages change,
   which is a nixpkgs bump and not a zde one. A screencast in flight dies with

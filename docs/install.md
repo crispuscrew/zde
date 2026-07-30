@@ -11,10 +11,13 @@ zde is early, and this is what "early" means in practice:
   bar, the picker, a terminal and an editor work. The palette, the launcher,
   ask, clip, pass, capture, media and most of the system group are keys that do
   nothing. [`verify.md`](verify.md) has the split key by key.
-- **Apps are not sandboxed yet.** The premise of zde is that every app runs
-  under zinc; layer 2 is not here, so what `Mod+t` starts is an ordinary host
-  program. Nothing about the security model in [`vision.md`](vision.md) is true
-  of this install yet.
+- **Apps are not sandboxed unless you sandbox them.** The premise of zde is that
+  every app runs under zinc. The tools are installed now (`zcr`, `zc`) and the
+  runtime under them is on, so a sandboxed app is a thing you can define and put
+  on a key - but nothing zde ships does it for you, and what `Mod+t` starts is
+  an ordinary host program. Most of the security model in
+  [`vision.md`](vision.md) is not true of this install until you define apps
+  that way.
 - **It has never run for a week.** Or a day. Bugs found in ordinary use are the
   point of installing it, and the ones that matter will be found by you.
 
@@ -120,7 +123,7 @@ quick on a hotel connection. It is also the last time it will be that slow.
 Log in at the greeter. Then, in order:
 
 ```sh
-zde status              # zded up, compositor connected
+zde status              # zded up, compositor connected, zinc yes
 zde app list            # what Mod+t and Mod+e will run
 ```
 
@@ -148,7 +151,36 @@ The regulars - the band reachable from every desk - do not exist until you make
 one: stand on a workspace worth keeping and run
 `zde desk move-workspace-to regulars`.
 
-## 5. When it breaks
+## 5. Apps, and the sandbox
+
+A desk manifest can declare what the desk is for. Nothing launches it yet, so
+this is a record rather than a machine that starts things:
+
+```yaml
+apps:
+  - { app: browser, instance: work, monitor: eDP-1, workspace: web }
+```
+
+`zde desk apps` prints what a desk declares - the address zinc takes for each
+app, the workspace it is pinned to, and where zinc says that instance keeps its
+state. The last one is asked rather than assumed, which is why it is worth
+printing: two desks can declare the same app, and what makes them two browsers
+instead of one is that directory.
+
+Defining the app itself is zinc's, and `zc` is what does it. Once an app is
+defined, putting it on a key is one line in your flake's module block:
+
+```nix
+zde.apps.browser = [ "zcr" "run" "browser" "--exec" ];
+```
+
+Then `zde app launch browser` runs it, and any key can. Without `--exec` zcr
+prints the launch plan and exits, which from a keybind looks exactly like
+nothing happening. An instance cannot be threaded through a launch yet - zinc
+addresses one as `browser@work` and `zcr run` does not take one until 0.8.2 -
+so a manifest's instance is declared and not yet started.
+
+## 6. When it breaks
 
 It will. In descending order of how much it hurts:
 
@@ -158,7 +190,8 @@ It will. In descending order of how much it hurts:
   whether zded is up, whether it can see the compositor, whether a shell is
   listening (no shell is the whole diagnosis for a session where `Mod+Tab`
   prints a list instead of drawing a picker), whether notifications are ours,
-  how many things are queued, and which manifests it could not read.
+  whether `zcr` is on the session's PATH, how many things are queued, and which
+  manifests it could not read.
 
   Then `Ctrl+Alt+F2` is a text console you can log into with the same password:
   `journalctl --user -u zded`, `systemctl --user restart zded`, and
@@ -172,7 +205,7 @@ It will. In descending order of how much it hurts:
 Keep the live stick in your bag. It is a working system, it needs no disk, and
 it can mount and repair the installed one.
 
-## 6. Updating
+## 7. Updating
 
 zde is an input to your flake, so an update is two steps and neither is
 automatic ([`update.md`](update.md) has the detail, including what a switch
@@ -183,6 +216,18 @@ cd /etc/nixos
 sudo nix flake update zde
 sudo nixos-rebuild switch --flake .#zdebox
 ```
+
+zinc - the sandbox - is a second input in that same flake, pinned to a tag, so
+updating the desktop does not update it and the other way round. Moving it is
+editing the tag in `flake.nix` and then:
+
+```sh
+sudo nix flake update zinc
+sudo nixos-rebuild switch --flake .#zdebox
+```
+
+Nothing already running is restarted by that: the tools on PATH become the new
+ones, and an app that is up stays as it was started until you stop it.
 
 Use `boot` instead of `switch` for anything touching the kernel or mesa, and log
 out and back in after a niri bump: a running compositor is not replaced by a

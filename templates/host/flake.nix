@@ -43,6 +43,14 @@
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.home-manager.follows = "home-manager";
     };
+
+    # Layer 2: the sandbox apps run in. Its own flake, pinned to its own tag,
+    # because it releases on its own schedule and an update to one should not
+    # be an update to the other.
+    zinc = {
+      url = "github:crispuscrew/zinc/v0.8.1";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -51,6 +59,7 @@
       nixpkgs,
       home-manager,
       zde,
+      zinc,
       ...
     }:
     let
@@ -80,9 +89,26 @@
             # zde.laptop.enable = true;   # battery, radios, the lid switch
 
             # Layer 1: the niri config, the generated binds, zded and its unit.
+            # Layer 2 arrives here too: zinc's tools on PATH, which is what a
+            # `zde.apps` entry naming `zcr` needs to exist.
             home-manager.users.${user} = {
-              imports = [ zde.homeModules.zde ];
+              imports = [
+                zde.homeModules.zde
+                zinc.homeModules.zinc
+              ];
               zde.enable = true;
+              programs.zinc.enable = true;
+              # zlg is opt-in in zinc's module, on the reasoning that a desktop shipping
+              # its own launcher does not want a second one. zde ships none: its
+              # generated keymap binds Mod+g to `zlg` already (common/keymap), so
+              # leaving it out is not declining a second launcher, it is a bound key
+              # that spawns nothing.
+              programs.zinc.tools = [
+                "zc"
+                "zcr"
+                "zlt"
+                "zlg"
+              ];
 
               # Host-specific niri: outputs, scale, an xkb layout. This is the
               # seam for everything zde does not fix.

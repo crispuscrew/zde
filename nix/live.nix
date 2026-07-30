@@ -12,6 +12,7 @@
   lib,
   pkgs,
   modulesPath,
+  zincModule,
   ...
 }:
 {
@@ -88,11 +89,32 @@
   # A later binds block does not replace the earlier ones - niri keeps them and
   # swaps only the keys the new block names (niri-config, the "binds" arm),
   # which is the same behaviour zded's dynamic.kdl will lean on.
-  home-manager.users.zde.zde.niri.extraConfig = ''
-    binds {
-        Mod+Return { spawn "foot"; }
-    }
-  '';
+  # Both layers, which is what this image is for. zcr and zc come from zinc's
+  # own flake (docs/delivery.md, layer 2): without them the stick boots a
+  # desktop whose whole premise is sandboxed apps and has nothing to run one
+  # with, and the by-hand list (docs/verify.md) cannot ask about layer 2 at all.
+  # The runtime they need is layer 0's - rootless podman is on already.
+  home-manager.users.zde = {
+    imports = [ zincModule ];
+    programs.zinc.enable = true;
+    # zlg is opt-in in zinc's module, on the reasoning that a desktop shipping
+    # its own launcher does not want a second one. zde ships none: its
+    # generated keymap binds Mod+g to `zlg` already (common/keymap), so
+    # leaving it out is not declining a second launcher, it is a bound key
+    # that spawns nothing.
+    programs.zinc.tools = [
+      "zc"
+      "zcr"
+      "zlt"
+      "zlg"
+    ];
+
+    zde.niri.extraConfig = ''
+      binds {
+          Mod+Return { spawn "foot"; }
+      }
+    '';
+  };
 
   # zde-live.iso rather than nixos-minimal-<version>-x86_64-linux.iso, so a
   # stick says what it is. mkForce: the CD names it after the distro.

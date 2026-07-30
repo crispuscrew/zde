@@ -40,7 +40,29 @@
     "root": {
       "inputs": {
         "home-manager": "home-manager",
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs",
+        "zinc": "zinc"
+      }
+    },
+    "zinc": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1785447513,
+        "narHash": "sha256-oO3qfWW0Jsu7GAWIjDXt94Ba4ybmlZCuevB5z0mI2r0=",
+        "owner": "crispuscrew",
+        "repo": "zinc",
+        "rev": "600499d28f3585f17d42565392949a070f62108c",
+        "type": "github"
+      },
+      "original": {
+        "owner": "crispuscrew",
+        "ref": "v0.8.1",
+        "repo": "zinc",
+        "type": "github"
       }
     }
   },

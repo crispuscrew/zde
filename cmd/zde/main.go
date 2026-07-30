@@ -13,6 +13,7 @@ import (
 	"github.com/crispuscrew/zde/internal/apps"
 	"github.com/crispuscrew/zde/internal/journal"
 	"github.com/crispuscrew/zde/internal/zded"
+	"github.com/crispuscrew/zde/internal/zinc"
 )
 
 func main() {
@@ -72,6 +73,10 @@ func run(args []string) error {
 		return lastDesk()
 	case len(args) == 2 && args[0] == "desk" && args[1] == "reconcile":
 		return reconcile()
+	case len(args) == 2 && args[0] == "desk" && args[1] == "apps":
+		return deskApps(nil)
+	case len(args) == 3 && args[0] == "desk" && args[1] == "apps":
+		return deskApps([]string{args[2]})
 	case len(args) == 2 && args[0] == "desk" && args[1] == "snapshot":
 		return snapshot(nil)
 	case len(args) == 3 && args[0] == "desk" && args[1] == "snapshot":
@@ -134,6 +139,52 @@ func appList() error {
 	return nil
 }
 
+// deskApps prints what a desk is made of before any of it is running: the
+// address of each app, the workspace it is pinned to, and where the thing that
+// runs it says that instance keeps its state.
+//
+// The last column is asked for rather than worked out (internal/zinc). It is
+// also the answer to the question a manifest raises and nothing else answers -
+// two desks can declare the same app, and what makes them two browsers rather
+// than one is a directory neither the manifest nor zde chooses.
+func deskApps(args []string) error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	var list []zded.DeskApp
+	if err := c.Call("desk.apps", &list, args...); err != nil {
+		return err
+	}
+	if len(list) == 0 {
+		// Not an error: a desk with no apps is a desk somebody arranged by
+		// hand, which is how every desk starts (docs/model.md, snapshot).
+		fmt.Println("no apps declared")
+		return nil
+	}
+	// address, where it goes, where its state is - tab separated like every
+	// other list zde prints, with the long field last.
+	var unanswered error
+	for _, app := range list {
+		place := dash(app.Place) // unpinned: adoption places it
+		state := "-"
+		if loc, err := zinc.Where(app.Address); err == nil {
+			state = loc.State
+		} else if unanswered == nil {
+			unanswered = err
+		}
+		fmt.Printf("%s\t%s\t%s\n", app.Address, place, state)
+	}
+	// Once, after the list, and on stderr: the addresses are still the answer
+	// to what the desk declares, and repeating one missing binary per app would
+	// bury them.
+	if unanswered != nil {
+		fmt.Fprintln(os.Stderr, unanswered)
+	}
+	return nil
+}
+
 func status() error {
 	c, err := zded.Dial()
 	if err != nil {
@@ -153,6 +204,11 @@ func status() error {
 	// Mod+Tab prints a list, and an absent line explains nothing.
 	fmt.Printf("shell      %s\n", yesno(st.Shell))
 	fmt.Printf("notify     %s\n", yesno(st.Notifications))
+	// Layer 2: whether the session can run a sandboxed app at all. It is the
+	// whole diagnosis for a desk whose apps do nothing, and it is a fact about
+	// the session's PATH rather than this terminal's, which is why zded is the
+	// one asked.
+	fmt.Printf("zinc       %s\n", yesno(st.Zinc))
 	fmt.Printf("queue      %d waiting\n", st.Queued)
 	if st.OnDesk != "" {
 		fmt.Printf("on desk    %s\n", st.OnDesk)
@@ -376,6 +432,8 @@ func usage() {
   zde desk last          go back to the desk you came from
   zde desk reconcile     make the workspace names true again
   zde desk snapshot [N]  write down the desk you are on, so you can ask for it
+  zde desk apps [NAME]   what a desk declares: the address of each app, where
+                         it goes, and where zinc says its state lives
 
 Updating zde, which is two deliberate steps and nothing automatic
 (docs/update.md). Use your own host name from your flake:
@@ -383,6 +441,10 @@ Updating zde, which is two deliberate steps and nothing automatic
   cd /etc/nixos
   sudo nix flake update zde
   sudo nixos-rebuild switch --flake .#zdebox
+
+The sandbox is its own pin in that flake: edit the zinc tag, then
+nix flake update zinc, then rebuild. Two decisions rather than one, because the
+thing that isolates every app should not move because the bar did.
 
 Use boot rather than switch for a kernel or mesa change, and log out after a
 niri one: a running compositor is not replaced by a rebuild, and its config is.
