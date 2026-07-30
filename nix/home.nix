@@ -15,6 +15,12 @@ let
   zdeTools = pkgs.callPackage ./zde.nix { };
   zdeShell = pkgs.callPackage ./shell.nix { };
 
+  # Whether anything under zde.niri.xkb was set. niri merges a later input
+  # block, so writing an empty one would be harmless - but it would also put a
+  # section in a person's local.kdl that says nothing, which is the kind of
+  # thing that gets copied around and then wondered about.
+  layoutSet = cfg.niri.xkb.layout != "" || cfg.niri.xkb.options != "";
+
   # What dynamic.kdl says before zded has written anything into it. niri treats
   # a missing include as a fatal error, so this file has to exist from the
   # first boot, and it cannot be a store symlink because zded writes it.
@@ -31,6 +37,34 @@ in
 {
   options.zde = {
     enable = lib.mkEnableOption "the zde user environment";
+
+    niri.xkb = {
+      layout = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        example = "us,ru";
+        description = ''
+          The xkb layouts, comma separated. Empty leaves niri on xkb's default,
+          which is us.
+
+          Mod+space is bound to niri's switch-layout, so this is what it
+          switches between: with one layout that key does nothing, which is
+          the state of every zde session so far. A second language is the
+          difference between a machine you can write to somebody in and one
+          you cannot.
+        '';
+      };
+      options = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        example = "grp:caps_toggle,compose:ralt";
+        description = ''
+          xkb options, comma separated. `fkeys:basic_13-24` belongs here on a
+          machine running the input layer: without it the keys it emits arrive
+          as XF86Tools rather than F13.
+        '';
+      };
+    };
 
     niri.extraConfig = lib.mkOption {
       type = lib.types.lines;
@@ -67,7 +101,18 @@ in
       # The host's own half, still declarative.
       "niri/local.kdl" = {
         text = ''
-          // Generated from zde.niri.extraConfig. Edit that, not this.
+          // Generated from zde.niri.xkb and zde.niri.extraConfig. Edit those,
+          // not this.
+          ${lib.optionalString layoutSet ''
+            input {
+                keyboard {
+                    xkb {
+                        ${lib.optionalString (cfg.niri.xkb.layout != "") ''layout "${cfg.niri.xkb.layout}"''}
+                        ${lib.optionalString (cfg.niri.xkb.options != "") ''options "${cfg.niri.xkb.options}"''}
+                    }
+                }
+            }
+          ''}
           ${cfg.niri.extraConfig}
         '';
         force = true;

@@ -847,6 +847,16 @@ pkgs.testers.runNixOSTest {
     # asserted by a user who is actually subject to it - root is not.
     users.users.intruder.isNormalUser = true;
 
+    # A second keyboard layout, which is what Mod+space switches between. With
+    # one layout that key does nothing, which is what every zde session has done
+    # so far - and a machine you cannot write to somebody in is not one anybody
+    # travels with. Set here so the generated local.kdl is what niri validates
+    # below, rather than a shape nothing has ever parsed.
+    home-manager.users.zde.zde.niri.xkb = {
+      layout = "us,ru";
+      options = "grp:caps_toggle";
+    };
+
     # A host's own binds, through the seam that exists for them: local.kdl,
     # included after the generated ones. The live image (nix/live.nix) puts a
     # terminal on a key this way, because nothing in the keymap can open one
@@ -941,6 +951,12 @@ pkgs.testers.runNixOSTest {
       # includes resolve, and every action name the keymap emitted is real.
       # Run as the user, since the includes resolve relative to the file.
       machine.succeed("su -l zde -c 'niri validate -c ~/.config/niri/config.kdl'")
+
+      # The layout reached the config niri reads. Two of them, because one is
+      # what a session has without this and Mod+space needs somewhere to switch
+      # to.
+      machine.succeed("grep -q 'layout \"us,ru\"' /home/zde/.config/niri/local.kdl")
+      machine.succeed("grep -q 'grp:caps_toggle' /home/zde/.config/niri/local.kdl")
 
       # A broken include has to fail loudly rather than boot into a default
       # config: this is the seam zded writes through every day.
