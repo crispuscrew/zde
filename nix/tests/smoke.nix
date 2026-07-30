@@ -442,7 +442,12 @@ let
         # name has to resolve, the binary has to be there, and exec has to
         # replace this process with it.
         before_terminal=$(nirimsg --json windows | grep -c '"id"' || true)
-        zde app launch terminal &
+        # Redirected, like every other client this script starts. A background
+        # process that inherits stdout holds the pipe open, and the runner waits
+        # for EOF on it - so leaving this bare hung the whole test until the
+        # global timeout, twenty five minutes later, with the terminal it
+        # launched sitting there working perfectly.
+        zde app launch terminal >/tmp/launch.log 2>&1 &
         more_windows() {
           [ "$(nirimsg --json windows | grep -c '"id"' || true)" -gt "$before_terminal" ]
         }
