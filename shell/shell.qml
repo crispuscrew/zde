@@ -13,6 +13,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import Quickshell.Services.UPower
 import Quickshell.Wayland
 
 ShellRoot {
@@ -35,6 +36,20 @@ ShellRoot {
     // those in a row and the number stops being trustworthy, which is how a
     // daemon that holds the socket open and goes quiet gets noticed.
     property int waiting: 0
+
+    // The battery, read once at the root: the bar draws it and the IPC reports
+    // it, and two readings of the same thing would eventually disagree.
+    QtObject {
+        id: batteryState
+
+        readonly property var dev: UPower.displayDevice
+        readonly property bool have: batteryState.dev !== null && batteryState.dev.isLaptopBattery
+        readonly property int pct: batteryState.have ? Math.round(batteryState.dev.percentage * 100) : 0
+        readonly property bool charging: batteryState.have
+            && (batteryState.dev.state === UPowerDeviceState.Charging
+                || batteryState.dev.state === UPowerDeviceState.FullyCharged)
+        readonly property int secsLeft: batteryState.have ? batteryState.dev.timeToEmpty : 0
+    }
 
     // One connection, held open. zded speaks line-delimited JSON, so asking
     // costs a write and a read; a `zde queue` per tick would be a process per
@@ -256,6 +271,16 @@ ShellRoot {
             return root.queued + " " + root.urgent;
         }
 
+        // What the battery reads, so a machine without one can be told apart
+        // from a bar that failed to ask. A VM has no battery, which is the
+        // case worth pinning: a desktop should say nothing here rather than
+        // show a stub reading full.
+        function battery(): string {
+            if (!batteryState.have)
+                return "none";
+            return batteryState.pct + (batteryState.charging ? " charging" : " discharging");
+        }
+
         // Height and reserved space, as the panel came up. Not the same claim
         // as "the compositor honoured it" - proving that means measuring a
         // window with the bar and without it, which the smoke test does not do
@@ -327,6 +352,48 @@ ShellRoot {
                     return root.urgent > 0 ? n + "  !" + root.urgent : n;
                 }
                 color: root.urgent > 0 ? "#e5484d" : (root.linked && root.known ? "#c9ccd4" : "#7a7f8a")
+                font.pixelSize: 13
+                font.family: "monospace"
+            }
+
+            // The battery, which is on the bar for the reason principle 4 gives:
+            // what a keypress depends on. On a laptop away from a desk, what
+            // every decision depends on is how long it has left.
+            //
+            // Empty on a machine with no battery rather than a stub reading
+            // 100%: a desktop should say nothing here, and UPower's display
+            // device on one is not a laptop battery.
+            Text {
+                id: battery
+
+                readonly property bool have: batteryState.have
+                readonly property int pct: batteryState.pct
+                readonly property bool charging: batteryState.charging
+
+                anchors.right: clock.left
+                anchors.rightMargin: 14
+                anchors.verticalCenter: parent.verticalCenter
+                visible: battery.have
+
+                text: {
+                    if (!battery.have)
+                        return "";
+                    const mark = battery.charging ? "+" : "";
+                    // The time left, when the machine knows it and is running
+                    // on it. A percentage answers "how full"; a train journey
+                    // asks "how long", and they are not the same question on a
+                    // battery that has aged.
+                    const secs = batteryState.secsLeft;
+                    if (!battery.charging && secs > 60) {
+                        const h = Math.floor(secs / 3600);
+                        const m = Math.floor((secs % 3600) / 60);
+                        return mark + battery.pct + "%  " + h + "h" + (m < 10 ? "0" : "") + m;
+                    }
+                    return mark + battery.pct + "%";
+                }
+                // Loud below a fifth, which is where a decision has to be made
+                // about the next hour rather than the next day.
+                color: !battery.charging && battery.pct <= 20 ? "#e5484d" : "#c9ccd4"
                 font.pixelSize: 13
                 font.family: "monospace"
             }
