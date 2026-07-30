@@ -209,6 +209,13 @@ let
           echo "the bar came up as height/zone '$geom', wanted '26 26'"; exit 1
         }
 
+        # No battery here, and the bar has to say so rather than show a stub. A
+        # desktop is the same case as this VM, and a strip claiming 100% on a
+        # machine with no battery is worse than one saying nothing.
+        [ "$(barq battery)" = "none" ] || {
+          echo "no battery on this machine and the bar reads '$(barq battery)'"; exit 1
+        }
+
         # Then the count, against a queue that changes underneath it. "0 0"
         # before, "1 0" after: the poll is two seconds, so this waits rather
         # than sleeping once and hoping.
