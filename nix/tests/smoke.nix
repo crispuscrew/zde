@@ -552,22 +552,35 @@ let
         # in it, and landing on the workspace lands next to what was already
         # there. Which of them niri focuses is niri's business; whether the
         # window arrived is ours.
+        # Which workspace the carried window is on, asked of niri about that
+        # window by id. Not counted, and not read off what has focus: counting
+        # let the wrong window pass this test once, because the trip back
+        # carried whatever had focus rather than the window that went in.
         wsid() {
           nirimsg --json workspaces 2>/dev/null | tr '{' '\n' | grep "\"name\":\"$1\"" |
             grep -o '"id":[0-9]*' | head -1 | cut -d: -f2
         }
-        onws() { nirimsg --json windows 2>/dev/null | tr '{' '\n' | grep -c "\"workspace_id\":$1"; }
+        winws() {
+          nirimsg --json windows 2>/dev/null | tr '{' '\n' | grep "\"id\":$1," |
+            grep -o '"workspace_id":[0-9]*' | head -1 | cut -d: -f2
+        }
+        # focused_window answers '"id":2'; the number is what niri wants back.
+        movedid=''${moved##*:}
         band=$(wsid regulars.winit.foot-2)
         [ -n "$band" ] || { echo "cannot find the band's workspace id"; nirimsg --json workspaces; exit 1; }
-        before=$(onws "$band")
 
         zde desk move-window-to regulars 2>&1 | tee /tmp/mwt-in.txt
         grep -qx 'regulars.winit.foot-2' /tmp/mwt-in.txt
-        after=$(onws "$band")
-        [ "$after" -eq $((before + 1)) ] || {
-          echo "window $moved did not arrive in the band: it held $before windows and now holds $after"
+        [ "$(winws "$movedid")" = "$band" ] || {
+          echo "window $movedid is on workspace $(winws "$movedid"), not the band's $band"
           nirimsg windows; exit 1
         }
+
+        # Focus it before sending it back, because the verb carries whatever is
+        # focused - and the band already had a window, so landing there did not
+        # leave focus on the one that arrived. That ambiguity is a question for
+        # the by-hand list; here it just has to be pinned down.
+        nirimsg action focus-window --id "$movedid" >/dev/null
         # Whole line, not a substring: tee hides the exit status, so this grep
         # is all that stands between a refusal and a green run - and a refusal
         # that names the desk it could not reach contains "vshop.winit" too.
@@ -576,10 +589,12 @@ let
         # what it remembers.
         zde desk move-window-to vshop 2>&1 | tee /tmp/mwt-out.txt
         grep -qx 'vshop.winit.code' /tmp/mwt-out.txt
-        # Out again, counted the same way: the band is back to what it held
-        # before the window visited, and the window is the one that left.
-        [ "$(onws "$band")" -eq "$before" ] || {
-          echo "the window did not come back out: the band holds $(onws "$band"), it held $before"
+        # Out again, and it is the same window that left: it is on the
+        # workspace vshop was entered on, and it is what you are looking at -
+        # that workspace is empty, so here the carried window is the only thing
+        # focus can be.
+        [ "$(winws "$movedid")" = "$(wsid vshop.winit.code)" ] || {
+          echo "window $movedid did not come back out: it is on workspace $(winws "$movedid")"
           nirimsg windows; exit 1
         }
         [ "$(focused_window)" = "$moved" ] || {
