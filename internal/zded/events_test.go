@@ -40,8 +40,11 @@ type closedErr struct{}
 func (*closedErr) Error() string { return "connection closed" }
 
 // The picker is a surface somebody else draws, so the verb's job is to tell
-// them - and to say whether anybody was told, because the key has to do
-// something on a machine with no shell running.
+// them, and the event has to carry everything the surface needs to draw without
+// asking anything else.
+//
+// Nothing acknowledges here, so Shown is false: a listener that takes the bytes
+// and does nothing is exactly the case that used to report success.
 func TestSwitcherTellsAListener(t *testing.T) {
 	f := &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code", output: "DP-1"}
 	s := New("test", nil, f, nil)
@@ -58,8 +61,8 @@ func TestSwitcherTellsAListener(t *testing.T) {
 	if err := json.Unmarshal(resp.Ok, &sw); err != nil {
 		t.Fatal(err)
 	}
-	if !sw.Shown {
-		t.Error("something was listening and the answer says nothing was shown")
+	if sw.Shown {
+		t.Error("nobody acknowledged the event and the answer claims a picker was shown")
 	}
 	if len(sw.Desks) != 2 {
 		t.Errorf("desks = %v", sw.Desks)
@@ -80,6 +83,70 @@ func TestSwitcherTellsAListener(t *testing.T) {
 	}
 	if got.Event.Output != "DP-1" {
 		t.Errorf("output = %q, want the screen being looked at", got.Event.Output)
+	}
+	if got.Event.Token == "" {
+		t.Error("the event carries no token, so nothing can say it drew the surface")
+	}
+}
+
+// And with an acknowledgement, Shown is true. This is the whole difference
+// between the key opening a picker and the key doing nothing: a shell that reads
+// its socket while failing to draw counts as neither, so the caller falls back
+// to printing the list.
+func TestSwitcherReportsShownOnlyWhenAcknowledged(t *testing.T) {
+	f := &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code", output: "DP-1"}
+	s := New("test", nil, f, nil)
+
+	rec := &recorder{}
+	s.listen(&sink{w: rec})
+
+	// The shell's side, in the background: read the token out of the event and
+	// send it back, which is what Picker.qml does when the surface exists.
+	go func() {
+		for i := 0; i < 200; i++ {
+			var got struct{ Event Event }
+			line := strings.TrimSpace(rec.String())
+			if line != "" && json.Unmarshal([]byte(line), &got) == nil && got.Event.Token != "" {
+				s.acknowledge(got.Event.Token)
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	start := time.Now()
+	resp := s.Dispatch(Request{Method: "desk.switcher"})
+	took := time.Since(start)
+	if resp.Error != "" {
+		t.Fatalf("desk.switcher: %s", resp.Error)
+	}
+	var sw Switcher
+	if err := json.Unmarshal(resp.Ok, &sw); err != nil {
+		t.Fatal(err)
+	}
+	if !sw.Shown {
+		t.Error("the picker was acknowledged and the answer says nothing was shown")
+	}
+	// And it did not sit out the timeout to hear it: a key that waits 200ms
+	// every time is a key that feels broken.
+	if took > 100*time.Millisecond {
+		t.Errorf("waited %v for an acknowledgement that arrived at once", took)
+	}
+}
+
+// An acknowledgement nobody asked for is ignored rather than refused, and
+// cannot make some later event report success it never had.
+func TestAcknowledgingAnUnknownTokenIsHarmless(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code"}, nil)
+	if resp := s.Dispatch(Request{Method: "shown", Args: []string{"1234"}}); resp.Error != "" {
+		t.Errorf("a late acknowledgement was refused: %s", resp.Error)
+	}
+	rec := &recorder{}
+	s.listen(&sink{w: rec})
+	var sw Switcher
+	json.Unmarshal(s.Dispatch(Request{Method: "desk.switcher"}).Ok, &sw)
+	if sw.Shown {
+		t.Error("a stale acknowledgement made a later event report shown")
 	}
 }
 
@@ -194,12 +261,11 @@ func TestEventsArriveOnALiveConnection(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer other.Close()
+	// Shown is not asserted here: this client is a test, not a shell, so it
+	// acknowledges nothing. What matters for this test is that the line arrives.
 	var sw Switcher
 	if err := other.Call("desk.switcher", &sw); err != nil {
 		t.Fatal(err)
-	}
-	if !sw.Shown {
-		t.Fatal("a connection was listening and desk.switcher says nothing was shown")
 	}
 
 	ev, err := c.NextEventBefore(time.Now().Add(5 * time.Second))

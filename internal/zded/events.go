@@ -3,6 +3,7 @@ package zded
 import (
 	"encoding/json"
 	"io"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -37,10 +38,25 @@ type Event struct {
 	// Output is the monitor to appear on: the one being looked at. A picker on
 	// every screen is not a picker.
 	Output string `json:"output,omitempty"`
+	// Token is what the shell sends back once the surface is up. It is how the
+	// asker learns that something was actually shown rather than merely
+	// written to (see Switcher.Shown).
+	Token string `json:"token,omitempty"`
 }
 
 // EventPicker asks the shell to show the desk switcher.
 const EventPicker = "picker"
+
+// MethodShown is how a listener says it did the thing: the token from the
+// event it acted on. Unsolicited ones are ignored, so this cannot be used to
+// make a key report success that never happened.
+const MethodShown = "shown"
+
+// ackWait is how long the asker waits for that. A shell on the same machine
+// answers in about a millisecond, so this is invisible when everything works
+// and is the whole cost when the shell is wedged - at which point the key falls
+// back to printing, which is the point.
+const ackWait = 200 * time.Millisecond
 
 // MethodEvents is the request that turns a connection into a listener. One
 // constant because two places name it: the connection loop, which is where it is
@@ -126,6 +142,50 @@ func (s *Server) broadcast(ev Event) int {
 	return sent
 }
 
+// await registers a token and returns the channel that closes when somebody
+// acknowledges it.
+func (s *Server) await(token string) chan struct{} {
+	ch := make(chan struct{})
+	s.mu.Lock()
+	if s.waiting == nil {
+		s.waiting = map[string]chan struct{}{}
+	}
+	s.waiting[token] = ch
+	s.mu.Unlock()
+	return ch
+}
+
+func (s *Server) stopAwaiting(token string) {
+	s.mu.Lock()
+	delete(s.waiting, token)
+	s.mu.Unlock()
+}
+
+// acknowledge resolves a token. Unknown ones are ignored rather than refused:
+// an event whose asker has already given up is not an error, it is late.
+func (s *Server) acknowledge(token string) Response {
+	s.mu.Lock()
+	ch, known := s.waiting[token]
+	if known {
+		delete(s.waiting, token)
+	}
+	s.mu.Unlock()
+	if known {
+		close(ch)
+	}
+	return ok("thanks")
+}
+
+// nextToken is a counter and not a random string: it never leaves this machine,
+// and one that reads 7 is one a person can follow in a log.
+func (s *Server) nextToken() string {
+	s.mu.Lock()
+	s.tokens++
+	n := s.tokens
+	s.mu.Unlock()
+	return strconv.FormatUint(n, 10)
+}
+
 // listeners is how many connections are listening. For tests, and for anything
 // later that wants to know whether the shell is there.
 func (s *Server) listeners() int {
@@ -137,14 +197,16 @@ func (s *Server) listeners() int {
 // Switcher is what `desk.switcher` answers: the desks, and whether a surface
 // took the job of showing them.
 type Switcher struct {
-	// Shown is true when at least one listener took the line. That is a
-	// listener accepting bytes, not a surface appearing: a shell that reads and
-	// then fails to draw still counts here, and only an acknowledgement from the
-	// shell could tell the difference. What it does catch is the shell that has
-	// stopped reading at all, because that write is dropped (sendWait).
+	// Shown is true when a listener said it put the surface up, within ackWait.
+	// Not "the bytes were accepted": a shell can read a socket while failing to
+	// draw anything - frozen, or stuck on a frame - and that used to count,
+	// which made the key do nothing at all and suppress the printed list too.
 	//
-	// False means nothing took it, and the caller prints the list itself - which
-	// is what the key does on a machine with no shell running.
+	// False means nothing showed it in time, and the caller prints the list
+	// itself. That is what the key does with no shell running, with a wedged
+	// one, and with one that is merely slower than ackWait - the last of which
+	// prints a list and then shows a picker, which is untidy and better than
+	// silence.
 	Shown bool     `json:"shown"`
 	Desks []string `json:"desks"`
 	On    string   `json:"on,omitempty"`
@@ -169,11 +231,25 @@ func (s *Server) switcher() Response {
 		output = ""
 	}
 	on := s.activeDesk(m)
+	token := s.nextToken()
+	acked := s.await(token)
+	defer s.stopAwaiting(token)
+
 	sent := s.broadcast(Event{
 		Kind:   EventPicker,
 		Desks:  names,
 		On:     on,
 		Output: output,
+		Token:  token,
 	})
-	return ok(Switcher{Shown: sent > 0, Desks: names, On: on})
+	if sent == 0 {
+		return ok(Switcher{Shown: false, Desks: names, On: on})
+	}
+	// Somebody took the bytes; now find out whether anything came of them.
+	select {
+	case <-acked:
+		return ok(Switcher{Shown: true, Desks: names, On: on})
+	case <-time.After(ackWait):
+		return ok(Switcher{Shown: false, Desks: names, On: on})
+	}
 }
