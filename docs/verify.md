@@ -229,6 +229,10 @@ desk model is defined in terms of monitors (docs/model.md, invariant 1).
   windows out of that strip is a thing to look at: if a window's title bar is
   under the bar, the exclusive zone is not being honoured.
 - A desk whose manifest names two monitors comes up on both.
+- **A jump across desks moves both screens.** `Mod+w` to a window on another
+  desk brings that desk up everywhere before focusing the window, so the monitor
+  you were not looking at changes as well. One output cannot show this, which is
+  why the smoke test cannot either.
 - `Mod+bracketleft` / `bracketright` move between them; `Mod+Shift+` the same
   carries the window.
 - `zde workspace next` stays inside the band **on the screen you are on**. The
@@ -295,6 +299,19 @@ show up in use.
   on purpose - arrows, `j`/`k`, or a digit - because filtering belongs to the
   palette in 0.2. If you find yourself typing a desk name at it, that is the
   argument for bringing the palette forward.
+- **`Mod+w`, and whether you can tell your windows apart in it.** A row is the
+  app id, the title, and the workspace the window is on, in the same surface the
+  desk picker uses and with the same absence of a text field. Four terminals is
+  the case to look at: if their titles do not distinguish them, the fix is
+  either the palette or a shell that sets its title, and which one it is decides
+  whether 0.2 moves.
+- **Where `Mod+w` leaves the screen you were not looking at.** Jumping to a
+  window on another desk brings that whole desk up on every monitor and then
+  focuses the window, because a desk is what all the monitors show at once
+  (model.md, section 2) - focusing the window alone would leave one screen on
+  the desk you came from. So the other screen moves too. It is the journey
+  walking there would have made; decide whether it is the one you wanted from a
+  key called jump.
 - **Coming back**: `zde desk last` after a detour lands where you left, on the
   workspace you left, not on the desk's first one.
 - **Making a regular, and unmaking it.** Stand on a workspace worth keeping and
@@ -318,7 +335,8 @@ show up in use.
 
 Not bugs, do not report them:
 
-- **Most of the shell**: there is a bar and a desk picker now; no notification
+- **Most of the shell**: there is a bar and a picker now - the desks on
+  `Mod+Tab`, the open windows on `Mod+w`, one surface for both; no notification
   centre and no palette. The launcher on `Mod+g` is zinc's, not zde's.
 - **Most of the cheatsheet.** A bind whose command is not written yet prints
   usage to a stderr nobody reads, so the key is silent and so is the machine.
@@ -326,14 +344,15 @@ Not bugs, do not report them:
 
   | Works | Silent |
   |---|---|
-  | `Mod+Tab` (the picker) | `Mod+Shift+Escape` (panic), `Mod+Shift+z` (zen) |
+  | `Mod+Tab` (the desk picker), `Mod+w` (the window one) | `Mod+Shift+Escape` (panic), `Mod+Shift+z` (zen) |
   | `Mod+j`/`k` and the arrows (nav) | `Mod+a`, `Mod+Shift+a` (ask) |
   | `Mod+Shift+j`/`k` (move window) | `Mod+v`, `Mod+Shift+v` (clip, pass) |
-  | `Mod+r` (regulars), `Mod+u` (queue jump) | `Mod+semicolon` (palette), `Mod+w` (jump to window) |
+  | `Mod+r` (regulars), `Mod+u` (queue jump) | `Mod+semicolon` (palette) |
   | `Mod+t`, `Mod+e` (terminal, editor) | `Mod+Shift+t`, `Mod+Shift+e` (launch-at) |
-  | `Mod+g` (zinc's launcher), `Mod+Ctrl+semicolon` (lock) | `Mod+m` (modes), `Mod+n`, `Mod+c`, `Mod+p`, `Mod+q` |
-  | `Mod+Shift+Tab` (last desk) | `Mod+slash` (help: it prints, to a stderr no key has) |
-  | `zde workspace next\|prev`, `zde desk *`, `zde queue *`, `zde status` | and the rest of the system group |
+  | `Mod+w` (jump to window) | `Mod+m` (modes), `Mod+n`, `Mod+c`, `Mod+p`, `Mod+q` |
+  | `Mod+g` (zinc's launcher), `Mod+Ctrl+semicolon` (lock) | `Mod+slash` (help: it prints, to a stderr no key has) |
+  | `Mod+Shift+Tab` (last desk) | and the rest of the system group |
+  | `zde workspace next\|prev`, `zde desk *`, `zde queue *`, `zde status` | |
   | the niri natives: columns, monitors, fullscreen, float, close, overview, consume/expel | |
 
   `Mod+Shift+Escape` is worth singling out: panic is the key you reach for

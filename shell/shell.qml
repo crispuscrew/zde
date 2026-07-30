@@ -159,6 +159,8 @@ ShellRoot {
                     return;
                 if (msg.event.kind === "picker")
                     root.openPicker(msg.event);
+                else if (msg.event.kind === "windows")
+                    root.openWindows(msg.event);
             }
         }
     }
@@ -177,28 +179,59 @@ ShellRoot {
         }
     }
 
-    // The picker, one instance and not one per screen: it appears on the screen
-    // zded says is being looked at, because a picker on every monitor is not a
-    // picker. An unknown output falls back to the first screen, which on one
-    // monitor is the right answer and on several is at least a screen.
+    // What choosing a row asks zded to do. Set when the picker is opened, since
+    // that is the only place that knows which kind of rows went into it - the
+    // picker itself is handed rows and hands back a key, and knows nothing
+    // about sockets or methods.
+    property string pickMethod: "desk.switch"
+
+    // The desks. The note on a row is where you are, because that is the one
+    // thing about a desk list you cannot see from the list.
     function openPicker(ev) {
+        const here = ev.on ?? "";
+        root.pickMethod = "desk.switch";
+        root.showPicker(ev, "desks", (ev.desks ?? []).map(d => ({
+                    key: d,
+                    label: d,
+                    note: d === here ? "here" : ""
+                })), here);
+    }
+
+    // The open windows. The app id and the title together, because neither
+    // alone tells two terminals apart; the workspace on the right, because the
+    // zde name is how a person recognises which desk a window is on.
+    function openWindows(ev) {
+        root.pickMethod = "window.jump-to";
+        root.showPicker(ev, "windows", (ev.windows ?? []).map(w => ({
+                    key: String(w.id),
+                    label: (w.appId ?? "") + (w.title ? "  " + w.title : ""),
+                    note: w.workspace ?? ""
+                })), "");
+    }
+
+    // One instance and not one per screen: it appears on the screen zded says
+    // is being looked at, because a picker on every monitor is not a picker. An
+    // unknown output falls back to the first screen, which on one monitor is
+    // the right answer and on several is at least a screen.
+    function showPicker(ev, kind, rows, here) {
         let want = null;
         for (const s of Quickshell.screens) {
             if (s.name === ev.output)
                 want = s;
         }
         picker.screen = want ?? Quickshell.screens[0] ?? null;
-        picker.show(ev.desks ?? [], ev.on ?? "", ev.token ?? "");
+        picker.show(kind, rows, here, ev.token ?? "");
     }
 
     Picker {
         id: picker
 
-        onChosen: name => {
+        onChosen: key => {
             picker.hide();
-            // The shell decides nothing: a desk switch is zded's, over the same
-            // socket everything else uses (docs/vision.md, section 2 - the
-            // shell is a thin adapter with zero logic inside).
+            // The shell decides nothing: switching a desk and jumping to a
+            // window are both zded's, over the same socket everything else uses
+            // (docs/vision.md, section 2 - the shell is a thin adapter with
+            // zero logic inside).
             //
             // On the stream connection and not the bar's. The reply to this is
             // the list of workspaces it focused, and the bar's parser reads
@@ -207,11 +240,11 @@ ShellRoot {
             // The stream's parser ignores any line with no event in it.
             if (stream.connected)
                 stream.write(JSON.stringify({
-                    method: "desk.switch",
-                    args: [name]
+                    method: root.pickMethod,
+                    args: [key]
                 }) + "\n");
             else
-                console.warn("zde: picked " + name + " with no connection to zded");
+                console.warn("zde: picked " + key + " with no connection to zded");
         }
         onDismissed: picker.hide()
 
@@ -239,18 +272,22 @@ ShellRoot {
     IpcHandler {
         target: "picker"
 
+        // What it is showing, how many rows, and which row you are already on -
+        // a dash where there is none, so that the answer has the same shape
+        // either way and a test is not comparing against a trailing space.
         function state(): string {
             if (!picker.visible)
                 return "closed";
-            return "open " + picker.desks.length + " " + picker.on;
+            const here = picker.on === "" ? "-" : picker.on;
+            return "open " + picker.kind + " " + picker.rows.length + " " + here;
         }
 
-        function pick(name: string): string {
+        function pick(key: string): string {
             if (!picker.visible)
                 return "closed";
-            if (picker.desks.indexOf(name) < 0)
-                return "no such desk";
-            picker.chosen(name);
+            if (picker.rows.findIndex(r => r.key === key) < 0)
+                return "no such row";
+            picker.chosen(key);
             return "picked";
         }
 

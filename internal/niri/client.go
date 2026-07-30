@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/crispuscrew/zde/internal/desk"
@@ -46,9 +47,14 @@ type Workspace struct {
 }
 
 // Window is niri's window, narrowed to what naming a workspace after its first
-// app needs.
+// app needs, and to what picking one out of a list needs.
+//
+// Title is what the app calls the window and app id is what it is; both are
+// here because neither alone tells two terminals apart, and a list you cannot
+// tell apart is a list you cannot choose from.
 type Window struct {
 	ID          uint64  `json:"id"`
+	Title       *string `json:"title"`
 	AppID       *string `json:"app_id"`
 	WorkspaceID *uint64 `json:"workspace_id"`
 	IsFocused   bool    `json:"is_focused"`
@@ -281,6 +287,71 @@ func (c *Client) Windows() ([]Window, error) {
 		return nil, fmt.Errorf("niri: Windows: %w", err)
 	}
 	return out, nil
+}
+
+// OpenWindow is one open window as somebody picks it out of a list: the id to
+// act on, two things to recognise it by, and where it is.
+//
+// Workspace is niri's name for the workspace, which for one zde owns is the
+// zde name - <desk>.<monitor>.<label>, the thing a person reads and says out
+// loud (docs/model.md, section 3). A workspace nothing has named yet leaves it
+// empty rather than showing an id that means nothing outside the compositor.
+type OpenWindow struct {
+	ID        uint64
+	Title     string
+	AppID     string
+	Workspace string
+}
+
+// OpenWindows lists every open window with the workspace it is on.
+//
+// The join is here rather than in the caller because it takes two replies, and
+// the two describe one moment only if nothing else asks in between: a caller
+// that asked separately could show a window against a workspace name that had
+// already been corrected under it (invariant 1 renames on a monitor move).
+func (c *Client) OpenWindows() ([]OpenWindow, error) {
+	windows, err := c.Windows()
+	if err != nil {
+		return nil, err
+	}
+	workspaces, err := c.Workspaces()
+	if err != nil {
+		return nil, err
+	}
+	named := make(map[uint64]string, len(workspaces))
+	for _, w := range workspaces {
+		named[w.ID] = deref(w.Name)
+	}
+	out := make([]OpenWindow, 0, len(windows))
+	for _, w := range windows {
+		where := ""
+		if w.WorkspaceID != nil {
+			// A window on no workspace at all is one niri is still placing.
+			// Nameless is the same answer as unnamed here: it is somewhere, and
+			// jumping to it will find out where.
+			where = named[*w.WorkspaceID]
+		}
+		out = append(out, OpenWindow{
+			ID:        w.ID,
+			Title:     deref(w.Title),
+			AppID:     deref(w.AppID),
+			Workspace: where,
+		})
+	}
+	return out, nil
+}
+
+// FocusWindow focuses a window by id, wherever it is: niri brings up the
+// workspace it is on, on the monitor showing that workspace.
+//
+// It moves nothing (docs/model.md, invariant 6), which is the whole difference
+// between going to a window and fetching one. The id is niri's, stable within a
+// session and not across one - which is fine for something read off a list and
+// spent immediately, and is why nothing writes one down.
+func (c *Client) FocusWindow(id uint64) error {
+	return c.Action(map[string]any{
+		"FocusWindow": map[string]any{"id": id},
+	}, "FocusWindow "+strconv.FormatUint(id, 10))
 }
 
 // FocusedWindow is niri's focused window id, 0 when nothing is focused - an
