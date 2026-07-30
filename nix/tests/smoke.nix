@@ -381,6 +381,25 @@ let
           echo "the two windows to jump between never appeared:"
           cat /tmp/jump-foot1.log /tmp/jump-foot2.log; nirimsg windows; exit 1
         fi
+
+        # Which window has focus, and the other one, both read now rather than
+        # once the picker is up. A layer surface holding the keyboard reads to
+        # niri as nothing focused at all - the roadmap's own warning, and the
+        # reason the picker takes focus only while visible - so asked with the
+        # picker on screen this answers nothing and takes the script with it.
+        onnow=$(focused_window) || true
+        onnow=''${onnow##*:}
+        [ -n "$onnow" ] || {
+          echo "two windows are open and niri has none of them focused:"
+          nirimsg windows; exit 1
+        }
+        target=$(nirimsg --json windows 2>/dev/null | tr '{' '\n' |
+          grep -o '"id":[0-9]*' | cut -d: -f2 | grep -v "^$onnow$" | head -1) || true
+        [ -n "$target" ] || {
+          echo "no second window to choose: everything reports the focused id ($onnow)"
+          nirimsg windows; exit 1
+        }
+
         XDG_RUNTIME_DIR=$mgr zde window jump-to 2>&1 | tee /tmp/jump-shell.txt
         # Nothing printed: a shell drew it and said so, the same round trip the
         # desk switcher makes - key, daemon, event, surface, token back.
@@ -403,15 +422,9 @@ let
           cat /tmp/layers-jump.txt; exit 1
         }
 
-        # The window that is not the one already focused - the newest has it -
-        # so that what is asserted afterwards is a jump and not a no-op.
-        onnow=$(focused_window); onnow=''${onnow##*:}
-        target=$(nirimsg --json windows 2>/dev/null | tr '{' '\n' |
-          grep -o '"id":[0-9]*' | cut -d: -f2 | grep -v "^$onnow$" | head -1)
-        [ -n "$target" ] || {
-          echo "both windows report the same id as the focused one ($onnow):"
-          nirimsg windows; exit 1
-        }
+        # The window that is not the one already focused - the newest has it, and
+        # this was read before the picker took the keyboard - so that what is
+        # asserted afterwards is a jump and not a no-op.
         [ "$(pickerq pick "$target")" = "picked" ] || {
           echo "choosing window $target: $(pickerq pick "$target")"; exit 1
         }
@@ -1045,19 +1058,20 @@ let
         # line, id first, tab separated, so a session whose shell has died can
         # still be steered and so what is open can be grepped at all.
         zde window jump-to 2>&1 | tee /tmp/jump-list.txt
-        grep -q '^[0-9][0-9]*	[a-z][a-z0-9-]*\.winit\.[a-z0-9-]*	foot' /tmp/jump-list.txt || {
+        # One row, matched on its shape: the id, then the zde name of the
+        # workspace it is on, then the app. Taken out of the list rather than
+        # off the top of it, so this says nothing about the order and everything
+        # about the columns.
+        row=$(grep -m1 '^[0-9][0-9]*	[a-z][a-z0-9-]*\.winit\.[a-z0-9-]*	foot' /tmp/jump-list.txt) || true
+        [ -n "$row" ] || {
           echo "the printed list is not id, then the zde workspace name, then the app:"
           cat /tmp/jump-list.txt; nirimsg windows; exit 1
         }
-        # The first row, which is on the desk whose name sorts first, because
-        # the list is grouped by workspace. Standing anywhere else makes the
-        # jump below cross a desk rather than move within one.
-        jid=$(head -1 /tmp/jump-list.txt | cut -f1)
-        jws=$(head -1 /tmp/jump-list.txt | cut -f2)
+        jid=$(printf '%s\n' "$row" | cut -f1)
+        jws=$(printf '%s\n' "$row" | cut -f2)
         jdesk=''${jws%%.*}
-        [ -n "$jid" ] && [ -n "$jdesk" ] || {
-          echo "nothing in the list to jump to:"; cat /tmp/jump-list.txt; exit 1
-        }
+        # Standing on a desk that is not the window's, whichever row this is, so
+        # that the jump below crosses a desk rather than moving within one.
         if [ "$jdesk" = "vshop" ]; then
           zde desk switch haven >/dev/null
         else
