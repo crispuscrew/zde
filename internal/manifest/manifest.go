@@ -191,7 +191,17 @@ func FromMap(m *desk.Map, name string) (*Desk, error) {
 type Dir string
 
 // All reads every manifest in the directory.
-func (dir Dir) All() (map[string]*Desk, error) { return LoadDir(string(dir)) }
+func (dir Dir) All() (map[string]*Desk, []Problem, error) { return LoadDir(string(dir)) }
+
+// Problem is one manifest that could not be used, and why. A manifest is a file
+// a person edits, so one of them being wrong is ordinary; the rest of the desks
+// going with it is not.
+type Problem struct {
+	Path string
+	Err  error
+}
+
+func (p Problem) String() string { return p.Path + ": " + p.Err.Error() }
 
 // Save writes a manifest, refusing to overwrite one that is already there.
 // A snapshot is a record of an arrangement someone made; quietly replacing an
@@ -233,20 +243,29 @@ func Load(path string) (*Desk, error) {
 	return d, nil
 }
 
-// LoadDir reads every manifest in a directory, keyed by desk name.
+// LoadDir reads every manifest in a directory, keyed by desk name, and says
+// which ones it could not read.
 //
 // A directory that is not there is not an error: it is a machine with no desks
-// declared yet, which is where everyone starts. A manifest that does not parse
-// is an error naming the file - the rest of the desks working while one is
-// quietly missing is worse than being told.
-func LoadDir(dir string) (map[string]*Desk, error) {
+// declared yet, which is where everyone starts. The returned error is only for
+// a directory that cannot be read at all.
+//
+// One file failing takes only that file. It used to take the whole read, and
+// then the caller that mattered most swallowed the error and carried on with
+// nothing - so a typo in one manifest silently undeclared every desk on the
+// machine. A file a person edits by hand will be wrong sometimes; that is
+// ordinary, and it should cost them that desk and no more. What is not
+// acceptable is the silence, which is why the problems come back rather than
+// being logged here: they end up in `zde status`, in front of somebody.
+func LoadDir(dir string) (map[string]*Desk, []Problem, error) {
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
-		return map[string]*Desk{}, nil
+		return map[string]*Desk{}, nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	var problems []Problem
 	out := map[string]*Desk{}
 	for _, e := range entries {
 		if e.IsDir() {
@@ -256,16 +275,27 @@ func LoadDir(dir string) (map[string]*Desk, error) {
 		if ext != ".yaml" && ext != ".yml" {
 			continue
 		}
-		d, err := Load(filepath.Join(dir, e.Name()))
+		path := filepath.Join(dir, e.Name())
+		d, err := Load(path)
 		if err != nil {
-			return nil, err
+			problems = append(problems, Problem{Path: path, Err: err})
+			continue
 		}
 		if prev, dup := out[d.Name]; dup {
-			return nil, fmt.Errorf("%s: desk %q is already declared by another manifest", filepath.Join(dir, e.Name()), prev.Name)
+			// Both files are suspect and neither is obviously the intruder, so
+			// the second one loses and says so. Dropping both would lose a desk
+			// that works over a duplicate somebody probably made by copying it.
+			problems = append(problems, Problem{
+				Path: path,
+				Err:  fmt.Errorf("desk %q is already declared by another manifest", prev.Name),
+			})
+			continue
 		}
 		out[d.Name] = d
 	}
-	return out, nil
+	// Deterministic, because this is printed: os.ReadDir is sorted, so the
+	// problems are already in filename order and stay that way.
+	return out, problems, nil
 }
 
 func contains(all []string, s string) bool {

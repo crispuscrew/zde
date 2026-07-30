@@ -102,9 +102,12 @@ func TestLoadDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	all, err := LoadDir(dir)
+	all, problems, err := LoadDir(dir)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(problems) != 0 {
+		t.Errorf("nothing here is broken, and LoadDir reported %v", problems)
 	}
 	if len(all) != 2 || all["vshop"] == nil || all["haven"] == nil {
 		t.Errorf("loaded %v", all)
@@ -114,35 +117,58 @@ func TestLoadDir(t *testing.T) {
 // No directory is a machine with no desks declared, which is where everyone
 // starts.
 func TestLoadDirMissing(t *testing.T) {
-	all, err := LoadDir(filepath.Join(t.TempDir(), "nope"))
-	if err != nil || len(all) != 0 {
-		t.Errorf("LoadDir on a missing directory = %v, %v", all, err)
+	all, problems, err := LoadDir(filepath.Join(t.TempDir(), "nope"))
+	if err != nil || len(all) != 0 || len(problems) != 0 {
+		t.Errorf("LoadDir on a missing directory = %v, %v, %v", all, problems, err)
 	}
 }
 
-// One broken manifest is an error naming the file. The rest working while one
-// is quietly missing is worse than being told.
-func TestLoadDirReportsTheBrokenFile(t *testing.T) {
+// One broken manifest costs that desk and no other. It used to cost all of
+// them: LoadDir returned on the first bad file, and the caller that mattered
+// dropped the error and carried on with an empty map, so a typo in one file
+// silently undeclared every desk on the machine.
+func TestLoadDirKeepsTheDesksThatWork(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "vshop.yaml"), []byte(vshop), 0o644)
 	os.WriteFile(filepath.Join(dir, "broken.yaml"), []byte("name: VSHOP\nmonitors: {}"), 0o644)
 
-	_, err := LoadDir(dir)
-	if err == nil {
-		t.Fatal("a broken manifest was skipped in silence")
+	all, problems, err := LoadDir(dir)
+	if err != nil {
+		t.Fatalf("one bad file failed the whole read: %v", err)
 	}
-	if !strings.Contains(err.Error(), "broken.yaml") {
-		t.Errorf("error %q does not name the file", err)
+	if all["vshop"] == nil {
+		t.Errorf("the manifest that parses was lost with the one that does not: %v", all)
+	}
+	if len(problems) != 1 {
+		t.Fatalf("problems = %v, want the one broken file", problems)
+	}
+	// Named, because the point of reporting is telling somebody which file to
+	// open.
+	if !strings.Contains(problems[0].String(), "broken.yaml") {
+		t.Errorf("problem %q does not name the file", problems[0])
 	}
 }
 
-// Two manifests claiming one desk name is a conflict nobody can resolve later.
-func TestLoadDirRejectsDuplicateDesks(t *testing.T) {
+// Two manifests claiming one desk name is still a problem, and now it is that
+// file's problem: the first one read wins and the second is reported, rather
+// than both of them and every other desk being lost to the argument.
+func TestLoadDirReportsDuplicateDesks(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "a.yaml"), []byte(vshop), 0o644)
 	os.WriteFile(filepath.Join(dir, "b.yaml"), []byte(vshop), 0o644)
-	if _, err := LoadDir(dir); err == nil || !strings.Contains(err.Error(), "already declared") {
-		t.Errorf("got %v, want a duplicate-desk error", err)
+
+	all, problems, err := LoadDir(dir)
+	if err != nil {
+		t.Fatalf("a duplicate failed the whole read: %v", err)
+	}
+	if all["vshop"] == nil {
+		t.Error("both copies of the desk were dropped, leaving nothing declared")
+	}
+	if len(problems) != 1 || !strings.Contains(problems[0].String(), "already declared") {
+		t.Errorf("problems = %v, want one about a duplicate", problems)
+	}
+	if !strings.Contains(problems[0].Path, "b.yaml") {
+		t.Errorf("the second file should lose, and %q did", problems[0].Path)
 	}
 }
 

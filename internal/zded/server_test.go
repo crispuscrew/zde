@@ -934,12 +934,13 @@ func TestDeskRegularsWithNoneYet(t *testing.T) {
 	}
 }
 
-// brokenDesks is a desks directory that cannot be read at all, which is what
-// one unparseable file in it amounts to.
+// brokenDesks is a desks directory that cannot be read at all - the directory
+// itself, not a file in it. One unparseable file is a different thing and no
+// longer this: it costs that desk and is reported (see partialDesks).
 type brokenDesks struct{}
 
-func (brokenDesks) All() (map[string]*manifest.Desk, error) {
-	return nil, errors.New("reading manifests: vshop.yaml: field monitorz not found")
+func (brokenDesks) All() (map[string]*manifest.Desk, []manifest.Problem, error) {
+	return nil, nil, errors.New("reading manifests: permission denied")
 }
 func (brokenDesks) Save(*manifest.Desk) (string, error) { return "", errors.New("not writable") }
 
@@ -954,9 +955,9 @@ func TestDeskRegularsDoesNotSpeakForOtherFailures(t *testing.T) {
 		want string
 	}{
 		{
-			name: "a manifest that will not parse",
+			name: "a desks directory that cannot be read",
 			s:    New("test", nil, &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code"}, brokenDesks{}),
-			want: "monitorz",
+			want: "permission denied",
 		},
 		{
 			name: "a compositor that cannot be read",
@@ -1809,7 +1810,59 @@ func TestSwitchDoesNotRecreateWhatExists(t *testing.T) {
 // only read.
 type fixedDesks map[string]*manifest.Desk
 
-func (f fixedDesks) All() (map[string]*manifest.Desk, error) { return f, nil }
+func (f fixedDesks) All() (map[string]*manifest.Desk, []manifest.Problem, error) { return f, nil, nil }
+
+// partialDesks is the ordinary case this all exists for: somebody edited one
+// manifest and got it wrong, and the others are fine.
+type partialDesks struct {
+	good map[string]*manifest.Desk
+	bad  []manifest.Problem
+}
+
+func (p partialDesks) All() (map[string]*manifest.Desk, []manifest.Problem, error) {
+	return p.good, p.bad, nil
+}
+func (partialDesks) Save(*manifest.Desk) (string, error) { return "", errors.New("not writable") }
+
+// A broken manifest is one desk's problem, and it has to be somebody's problem:
+// the daemon carries on with the manifests that work, and `zde status` names
+// the file. Before this, the error was dropped and the map dropped with it, so
+// every desk on the machine quietly stopped being declared - and nothing
+// anywhere said why.
+func TestStatusNamesTheManifestItCouldNotRead(t *testing.T) {
+	desks := partialDesks{
+		good: map[string]*manifest.Desk{
+			"vshop": {Name: "vshop", Monitors: map[string]manifest.Monitor{
+				"DP-1": {Workspaces: []string{"code"}},
+			}},
+		},
+		bad: []manifest.Problem{{
+			Path: "/desks/haven.yaml",
+			Err:  errors.New("field monitorz not found"),
+		}},
+	}
+	s := New("test", nil, &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code"}, desks)
+
+	// Something has to read the manifests before status can know: on a real
+	// machine that is any desk switch, and here it is the same call.
+	s.manifestFor("vshop")
+
+	st := s.status()
+	if len(st.BadManifests) != 1 {
+		t.Fatalf("BadManifests = %v, want the one file", st.BadManifests)
+	}
+	if !strings.Contains(st.BadManifests[0], "haven.yaml") {
+		t.Errorf("status says %q, which does not name the file", st.BadManifests[0])
+	}
+	if !strings.Contains(st.BadManifests[0], "monitorz") {
+		t.Errorf("status says %q, which does not say what is wrong with it", st.BadManifests[0])
+	}
+	// And the desk that parses is still declared, which is the half that used
+	// to be lost.
+	if s.manifestFor("vshop") == nil {
+		t.Error("the manifest that parses went with the one that does not")
+	}
+}
 func (f fixedDesks) Save(*manifest.Desk) (string, error) {
 	return "", errors.New("not writable")
 }
@@ -1836,9 +1889,12 @@ func TestDeskSnapshot(t *testing.T) {
 	if err := c.Call("desk.snapshot", &path); err != nil {
 		t.Fatal(err)
 	}
-	all, err := dir.All()
+	all, problems, err := dir.All()
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(problems) != 0 {
+		t.Fatalf("snapshot wrote something that does not load: %v", problems)
 	}
 	d, ok := all["vshop"]
 	if !ok {

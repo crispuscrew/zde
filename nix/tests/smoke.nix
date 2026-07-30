@@ -290,6 +290,23 @@ let
         zde desk switch vshop 2>&1 | tee /tmp/switch.txt
         grep -qx 'vshop.winit.code' /tmp/switch.txt
 
+        # And it still works with a broken manifest sitting beside it, which is
+        # the ordinary state of a directory somebody edits by hand. One bad file
+        # used to fail the whole read, and the caller that mattered dropped the
+        # error - so every desk on the machine quietly stopped being declared.
+        # Left here for the rest of the run, deliberately: everything below this
+        # line is therefore also a test that a broken manifest does not spread.
+        printf 'name: haven\nmonitorz: nope\n' > /tmp/desks/broken.yaml
+        zde desk switch vshop 2>&1 | tee /tmp/switch2.txt
+        grep -qx 'vshop.winit.code' /tmp/switch2.txt
+        # And somebody is told, by the one command that exists to say what is
+        # wrong with a session.
+        zde status 2>&1 | tee /tmp/status-bad.txt
+        grep -q 'broken.yaml' /tmp/status-bad.txt || {
+          echo "a manifest could not be read and zde status did not mention it:"
+          cat /tmp/status-bad.txt; exit 1
+        }
+
         # niri's own client agrees that both declared workspaces are there.
         nirimsg workspaces 2>&1 | tee /tmp/ws.txt
         grep -q 'vshop.winit.code' /tmp/ws.txt
