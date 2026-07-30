@@ -84,8 +84,18 @@ in
         it means, without editing the keymap everything else is generated from.
 
         An argv rather than a command line, so nothing has to agree about
-        quoting. These become zinc apps launched by zcr in a sandbox
-        (docs/delivery.md, layer 2); they are host commands until it arrives.
+        quoting.
+
+        A sandboxed app is one of these too - the argv is the runner:
+
+        ```nix
+        zde.apps.browser = [ "zcr" "run" "browser@work" ];
+        ```
+
+        which needs zinc's own home-manager module alongside this one
+        (`programs.zinc.enable`, as the host template wires it). The defaults
+        below are host commands because a machine has to be usable before it
+        has any apps defined.
       '';
     };
 

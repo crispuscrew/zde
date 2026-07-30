@@ -18,6 +18,7 @@
   zdeModule,
   homeManagerModule,
   zdeConfig,
+  zincModule,
 }:
 let
   # One script, so the quoting lives in a shell file rather than inside a
@@ -925,6 +926,13 @@ pkgs.testers.runNixOSTest {
       ../zde-user.nix
     ];
 
+    # Layer 2's tools, the way a real machine gets them: zinc's own
+    # home-manager module, which is the shape it says zde should install it in.
+    home-manager.users.zde = {
+      imports = [ zincModule ];
+      programs.zinc.enable = true;
+    };
+
     # zde.laptop stays off here on purpose: it would hand the VM's network to
     # NetworkManager and make anything network-shaped in this script flaky.
     # nix/test-host.nix evaluates that branch instead.
@@ -985,6 +993,20 @@ pkgs.testers.runNixOSTest {
       machine.wait_until_succeeds("pgrep -f tuigreet")
       machine.succeed("test -x /run/current-system/sw/bin/niri-session")
       machine.succeed("test -f /run/current-system/sw/share/xdg-desktop-portal/niri-portals.conf")
+
+      # Layer 2's tools arrived, and the contract zde leans on holds against the
+      # real binary. `zcr where` is what zde asks rather than joining that path
+      # itself: the layout is zinc's, and two copies of it would drift the first
+      # time either side moved.
+      machine.succeed("su -l zde -c 'command -v zcr'")
+      machine.succeed("su -l zde -c 'command -v zc'")
+      where = machine.succeed(
+          "su -l zde -c 'XDG_STATE_HOME=/tmp/st zcr where browser@work'"
+      )
+      assert "state: /tmp/st/zinc/browser/work" in where, where
+      # And the instance is a name there too, which is the half of this that a
+      # desk manifest feeds: zde refuses a path in that field, and so does zinc.
+      machine.fail("su -l zde -c 'zcr where \"browser@../../etc\"'")
 
       # The screen lock can authenticate. This is the trap worth a test rather
       # than the locking itself: a locker with no PAM service takes the screen

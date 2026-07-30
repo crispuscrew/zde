@@ -7,6 +7,19 @@
       url = "github:nix-community/home-manager/release-26.05";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # Layer 2 (docs/delivery.md): the sandbox every app is meant to run in.
+    # Pinned to a tag rather than a branch, which is what zde asks of anybody
+    # pinning zde - an update should be a decision, and a tag is a thing to
+    # decide about.
+    #
+    # Following our nixpkgs so a machine has one, not two. zinc's own lock
+    # pins a different one, and two nixpkgs in a closure is a second copy of
+    # everything for no benefit here.
+    zinc = {
+      url = "github:crispuscrew/zinc/v0.8.1";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
     # niri comes from nixpkgs stable, which carries the release zde wants
     # (26.04) and builds it against the same mesa the system runs - the skew
     # upstream names as the usual cause of a black screen from a TTY. The lock
@@ -25,6 +38,7 @@
       self,
       nixpkgs,
       home-manager,
+      zinc,
       ...
     }:
     let
@@ -95,6 +109,11 @@
           zdeModule = ./nix/system.nix;
           homeManagerModule = home-manager.nixosModules.home-manager;
           zdeConfig = zdeConfig pkgs;
+          # Layer 2's tools, so the test machine has the sandbox a zde machine
+          # is supposed to run its apps in - and so the contract zde leans on
+          # (`zcr where`, the state layout) is checked against the real binary
+          # rather than against a paragraph.
+          zincModule = zinc.homeModules.zinc;
         };
 
         # The USB stick (nix build .#zde-iso). A package for the same reason
