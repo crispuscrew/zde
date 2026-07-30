@@ -246,3 +246,65 @@ func TestSaveRefusesToOverwrite(t *testing.T) {
 		t.Errorf("got %v, want a refusal to overwrite", err)
 	}
 }
+
+// The app and the instance become a directory: zinc keeps per-instance state
+// under one, and these are the two parts of the path a manifest supplies. A
+// manifest is a file somebody edits, so a name that climbs out of that
+// directory is a thing that can be typed, and it has to be refused where it is
+// typed rather than by whoever joins the path later.
+func TestAppAndInstanceAreNamesAndNotPaths(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{
+			name: "an instance that climbs out",
+			yaml: "name: vshop\nmonitors: { DP-1: { workspaces: [code] } }\n" +
+				"apps:\n  - { app: nvim, instance: ../../../etc }\n",
+			want: "instance",
+		},
+		{
+			name: "an instance with a slash",
+			yaml: "name: vshop\nmonitors: { DP-1: { workspaces: [code] } }\n" +
+				"apps:\n  - { app: nvim, instance: work/personal }\n",
+			want: "instance",
+		},
+		{
+			name: "an app name that is a path",
+			yaml: "name: vshop\nmonitors: { DP-1: { workspaces: [code] } }\n" +
+				"apps:\n  - { app: ../nvim, instance: work }\n",
+			want: "app name",
+		},
+		{
+			name: "a mount slot that is a path",
+			yaml: "name: vshop\nmonitors: { DP-1: { workspaces: [code] } }\n" +
+				"apps:\n  - { app: nvim, mounts: { ../out: /tmp } }\n",
+			want: "mount slot",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.yaml))
+			if err == nil {
+				t.Fatal("accepted a name that becomes a path")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error %q does not say which field is wrong", err)
+			}
+		})
+	}
+}
+
+// And the ordinary ones still pass, or this rule has made manifests unwritable
+// rather than safe. A mount value is a path on somebody's own machine, which is
+// deliberately not checked.
+func TestOrdinaryAppEntriesAreAccepted(t *testing.T) {
+	d, err := Parse([]byte("name: vshop\nmonitors: { DP-1: { workspaces: [code] } }\n" +
+		"apps:\n  - { app: browser-vshop, instance: vshop-2, mounts: { work: ~/git/vshop } }\n"))
+	if err != nil {
+		t.Fatalf("a manifest anybody would write was refused: %v", err)
+	}
+	if len(d.Apps) != 1 || d.Apps[0].Instance != "vshop-2" {
+		t.Errorf("parsed %+v", d.Apps)
+	}
+}

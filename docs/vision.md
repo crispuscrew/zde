@@ -106,7 +106,13 @@ guesses. Owns the kill switch and the per-app cut.
 ## 4. What zde asks of zinc
 
 1. Stable Wayland `app_id` per app and per instance.
-2. Runtime mount slots with `{instance}` templating (in progress).
+2. Runtime mount slots with `{instance}` templating (in progress). Where the
+   per-instance state lives is zinc's to choose - nothing in a desk manifest
+   names that path, and `$XDG_STATE_HOME/zinc/<app>/<instance>` is the shape zde
+   uses for its own. Worth having it readable from `zcr` rather than shared as a
+   constant, so the two projects cannot drift about it. Both the app and the
+   instance become path components, and a manifest is a file somebody edits, so
+   both sides should refuse a name that is a path; zde refuses one here.
 3. Instance naming in zcr: `run --instance`, `app@instance` addressing.
 4. Per-instance filtered DBus socket (notifications + MPRIS); doubles as
    attribution (principle 6).
