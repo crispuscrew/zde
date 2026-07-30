@@ -7,6 +7,8 @@ _: {
     description = "you";
     extraGroups = [
       "wheel" # sudo
+      "video" # the brightness keys: brightnessctl's udev rules hand the
+      # backlight to this group, and layer 0 installs them
       "networkmanager" # only does anything with zde.laptop.enable
     ];
 

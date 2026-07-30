@@ -43,9 +43,14 @@
   # else on it.
   services.openssh.enable = lib.mkForce false;
 
-  # nmtui works off this; the network items on the list need it before anything
-  # else on the list can be done away from a desk.
-  users.users.zde.extraGroups = [ "networkmanager" ];
+  # nmtui works off networkmanager; `video` is what brightnessctl's udev rules
+  # hand the backlight to (nix/system.nix), and the brightness keys are on the
+  # by-hand list. It was dropped from here once as buying nothing, which was
+  # true for exactly as long as those rules were not installed.
+  users.users.zde.extraGroups = [
+    "networkmanager"
+    "video"
+  ];
 
   # The instruments the list asks for. wev is how "is this key arriving as F13
   # or as XF86Tools" gets answered; notify-send is the well-behaved client to

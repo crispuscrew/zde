@@ -40,6 +40,17 @@ in
       # Rootless podman: what zcr runs apps with.
       virtualisation.podman.enable = true;
 
+      # The backlight, which is a permission and therefore layer 0's even
+      # though the binary that uses it is layer 1's. brightnessctl ships udev
+      # rules that chgrp the brightness file to `video` and make it group
+      # writable; installed with the package alone they go nowhere, because
+      # only services.udev.packages is read. Without them the brightness keys
+      # fail for the person actually pressing them, which is everyone.
+      #
+      # So a user who wants those keys belongs to `video`. That is the host's
+      # to say, not ours: the template says it (templates/host).
+      services.udev.packages = [ pkgs.brightnessctl ];
+
       # The compositor, from nixpkgs stable (docs/update.md). Upstream's module
       # installs niri and its wayland-session entry, niri's user units, the
       # portals (gnome, for screencast), and the desktop basics: polkit, dconf,
