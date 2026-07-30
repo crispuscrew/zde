@@ -108,6 +108,17 @@ type Status struct {
 	OnDesk     string `json:"onDesk,omitempty"`
 	LastDesk   string `json:"lastDesk,omitempty"`
 	Skipped    int    `json:"journalSkipped"`
+	// Whether a shell is listening for events, which is what draws the picker
+	// and the bar. A session where this is false is one where Mod+Tab prints a
+	// list and nothing appears - and knowing that from the machine you are
+	// sitting at beats guessing at it (docs/install.md, when it breaks).
+	Shell bool `json:"shell"`
+	// Notifications says whether zded took the bus name. Without it every
+	// notification the session receives goes to whoever did, or nowhere.
+	Notifications bool `json:"notifications"`
+	// Queued is how many things are waiting, which is the other half of the
+	// bar: if the bar is not up, this is the only way to see them.
+	Queued int `json:"queued"`
 	// Manifests that could not be read, most recently seen. A desk quietly
 	// missing is the failure this exists to stop being quiet: the daemon
 	// carries on with the manifests that do work, and says here which ones it
@@ -1230,7 +1241,10 @@ func (s *Server) status() Status {
 		st.OnDesk = js.OnDesk
 		st.LastDesk = js.LastDesk
 		st.Skipped = s.jrn.Skipped()
+		st.Queued = len(js.Queue)
 	}
+	st.Shell = s.listeners() > 0
+	st.Notifications = s.notifier != nil
 	s.mu.Lock()
 	st.BadManifests = append([]string(nil), s.problems...)
 	s.mu.Unlock()

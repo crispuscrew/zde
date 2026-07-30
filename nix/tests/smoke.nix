@@ -158,6 +158,14 @@ let
         # environment only after niri has put it there.
         XDG_RUNTIME_DIR=$mgr zde status 2>&1 | tee /tmp/unit-status.txt
         grep -qx 'compositor connected' /tmp/unit-status.txt
+        # The bar is up and listening, so status has to say so. This is the line
+        # somebody reads when a key drew nothing, and it is only worth having if
+        # it is true in both directions - the false case is asserted on the zded
+        # further down, which has no shell at all.
+        grep -qx 'shell      yes' /tmp/unit-status.txt || {
+          echo "a shell is listening and status does not say so:"
+          cat /tmp/unit-status.txt; exit 1
+        }
 
         # And the bar, which the same target starts. Asserted against niri
         # rather than against systemd: an active unit proves quickshell did not
@@ -397,6 +405,19 @@ let
         # A desk that exists only as a manifest is created and entered.
         zde desk switch vshop 2>&1 | tee /tmp/switch.txt
         grep -qx 'vshop.winit.code' /tmp/switch.txt
+
+        # No shell on this zded, and status says so. Between this and the line
+        # above, the fact is asserted in both directions - a status field that is
+        # always "yes" answers nothing.
+        zde status 2>&1 | tee /tmp/status-noshell.txt
+        grep -qx 'shell      no' /tmp/status-noshell.txt || {
+          echo "no shell is listening and status does not say so:"
+          cat /tmp/status-noshell.txt; exit 1
+        }
+        grep -q '^notify' /tmp/status-noshell.txt || {
+          echo "status does not say whether notifications are ours:"
+          cat /tmp/status-noshell.txt; exit 1
+        }
 
         # The switcher with nothing listening, which is this zded: the session
         # target was stopped above, so there is no shell here. The key still has

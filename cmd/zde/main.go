@@ -87,6 +87,13 @@ func status() error {
 	fmt.Printf("zded       %s\n", st.Version)
 	fmt.Printf("compositor %s\n", st.Compositor)
 	fmt.Printf("desks      %d\n", st.Desks)
+	// The three facts somebody wants when a key did nothing and there is no
+	// second machine to look them up on. Always printed, including the boring
+	// answers: "shell      no" is the whole diagnosis for a session where
+	// Mod+Tab prints a list, and an absent line explains nothing.
+	fmt.Printf("shell      %s\n", yesno(st.Shell))
+	fmt.Printf("notify     %s\n", yesno(st.Notifications))
+	fmt.Printf("queue      %d waiting\n", st.Queued)
 	if st.OnDesk != "" {
 		fmt.Printf("on desk    %s\n", st.OnDesk)
 	}
@@ -144,6 +151,13 @@ func queueList() error {
 		fmt.Printf("%d\t%s\t%s\t%s\t%s\n", it.ID, urgent, dash(it.Desk), dash(it.From), it.Text)
 	}
 	return nil
+}
+
+func yesno(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
 }
 
 func dash(s string) string {

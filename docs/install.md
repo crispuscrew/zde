@@ -154,8 +154,13 @@ It will. In descending order of how much it hurts:
 
 - **A key did nothing.** Most likely it is one of the silent ones; check the
   table in [`verify.md`](verify.md) before assuming a fault.
-- **The session is wrong but the machine is fine.** `Ctrl+Alt+F2` is a text
-  console you can log into with the same password. From there:
+- **The session is wrong but the machine is fine.** `zde status` first: it says
+  whether zded is up, whether it can see the compositor, whether a shell is
+  listening (no shell is the whole diagnosis for a session where `Mod+Tab`
+  prints a list instead of drawing a picker), whether notifications are ours,
+  how many things are queued, and which manifests it could not read.
+
+  Then `Ctrl+Alt+F2` is a text console you can log into with the same password:
   `journalctl --user -u zded`, `systemctl --user restart zded`, and
   `systemctl --user restart zde-bar`.
 - **A rebuild broke the session.** `sudo nixos-rebuild switch --rollback`, or
