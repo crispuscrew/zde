@@ -68,7 +68,7 @@ let
     monitors:
       winit: { workspaces: [code, notes] }
     apps:
-      - { app: absent-app, instance: vshop, monitor: winit, workspace: code }
+      - { app: absent-app, instance: vshop, app_id: foot, monitor: winit, workspace: code }
     '       > /tmp/desks/vshop.yaml
 
         # niri, nested and headless. cage gives it a Wayland host; pixman and
@@ -618,6 +618,25 @@ let
         waitfor 20 grep -q 'starting absent-app@vshop' /tmp/zded-live.log || {
           echo "switching to vshop did not try to start the app it declares:"
           cat /tmp/zded-live.log; exit 1
+        }
+
+        # And the desk's pin reached niri as a window rule. This is the file the
+        # generated config includes and zded is the only thing that writes
+        # (niri/config.kdl), so what is asserted is the whole seam: a manifest
+        # pin, a rule in the right shape, and niri's own parser accepting the
+        # config with it in.
+        waitfor 20 grep -q 'open-on-workspace "vshop.winit.code"' \
+          ~/.config/niri/dynamic.kdl || {
+          echo "the desk pins an app and niri was never told:"
+          cat ~/.config/niri/dynamic.kdl; exit 1
+        }
+        grep -q 'match app-id="\^foot\$"' ~/.config/niri/dynamic.kdl || {
+          echo "the rule does not match the app id the manifest names:"
+          cat ~/.config/niri/dynamic.kdl; exit 1
+        }
+        niri validate -c ~/.config/niri/config.kdl || {
+          echo "zded wrote a dynamic.kdl niri will not load:"
+          cat ~/.config/niri/dynamic.kdl; exit 1
         }
 
         # zcr is on the session's PATH, said by the daemon that has that PATH.

@@ -1360,14 +1360,19 @@ func (s *Server) switchFrom(target, from string) Response {
 // seconds, and the switch it belongs to is a keypress. The person is already
 // looking at the desk while these arrive.
 //
-// Where a window lands is still adoption's business (docs/model.md, launch
-// placement). A manifest can pin an app to a workspace and nothing here reads
-// that yet, so the windows open where niri opens windows - on the workspace in
-// front of you.
+// Where a pinned window lands is niri's, from the rules written just before
+// (rules.go). An app the manifest does not pin, or one whose window cannot be
+// recognised before it exists, still lands where niri opens windows.
 func (s *Server) startApps(target string) {
 	all, _, err := s.desks.All()
 	if err != nil {
 		return // ensureDeclared already reported this one
+	}
+	// Before the launches, not after: niri places a window from the rules it
+	// holds when the window maps, so a rule written afterwards is a rule for
+	// next time.
+	if err := writeRules(dynamicPath(), placementRules(all)); err != nil {
+		log.Printf("zded: writing niri's placement rules: %v", err)
 	}
 	d, ok := all[target]
 	if !ok || len(d.Apps) == 0 {

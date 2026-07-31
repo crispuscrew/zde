@@ -108,9 +108,14 @@ on_exit:  []
   resumes on enter. Default keep. Not implemented: nothing pauses anything yet.
 - Entering the desk starts these, once, behind the switch rather than in front
   of it - `zcr run <app>@<instance> --exec` per app, and a second entry is
-  refused by zinc rather than tracked here. Where a window lands is still
-  adoption's: the `monitor` and `workspace` pins above are declared and not yet
-  read by the launcher, so windows open where niri opens windows.
+  refused by zinc rather than tracked here.
+- `app_id` is what the window calls itself, which is not what zinc calls the
+  app: `app: browser` opens a window that says `org.mozilla.firefox`. Given it,
+  the pin above becomes a niri window rule in `dynamic.kdl` and the window opens
+  on that workspace. Without it the app still starts and adoption places it.
+  It is a second name for the same thing and it should not have to be here -
+  zinc gives the compositor a per-instance identity, and niri matches rules on
+  the id the app asserts (docs/vision.md, ask 1).
 
 ## 6. The action map
 
