@@ -270,6 +270,14 @@ let
           nirimsg --json workspaces 2>/dev/null | tr '{' '\n' |
             grep '"is_focused":[[:space:]]*true' | grep -o '"name":"[^"]*"' | head -1
         }
+        # Which window has focus, as '"id":N'. Defined here rather than where nav
+        # first needed it, because the window picker below asks the same question
+        # and two spellings of it would eventually answer differently.
+        focused_window() { nirimsg --json focused-window 2>/dev/null | grep -o '"id":[0-9]*' | head -1; }
+        # How many windows are open. One object per line first: niri answers on a
+        # single line, so counting matching lines without splitting says 1 for
+        # any number of windows at all.
+        count_windows() { nirimsg --json windows 2>/dev/null | tr '{' '\n' | grep -c '"id":' || true; }
         [ "$(pickerq state)" = "closed" ] || {
           echo "the picker is open before anything asked for it: $(pickerq state)"; exit 1
         }
@@ -282,10 +290,12 @@ let
           echo "a shell was listening and the switcher printed the list anyway:"
           cat /tmp/switcher.txt; exit 1
         }
-        # Exactly what it should be showing: one desk, and the one we are on. A
-        # match on "open" alone would pass a picker that came up empty, or one
-        # that does not know where you are - which is what Enter lands on.
-        picker_open() { [ "$(pickerq state)" = "open 1 probe" ]; }
+        # Exactly what it should be showing: desks rather than windows, one of
+        # them, and the one we are on. A match on "open" alone would pass a
+        # picker that came up empty, or one that does not know where you are -
+        # which is what Enter lands on - and now also one showing the wrong
+        # rows, since both pickers are the same surface.
+        picker_open() { [ "$(pickerq state)" = "open desks 1 probe" ]; }
         if ! waitfor 20 picker_open; then
           echo "the picker never opened with the right contents: $(pickerq state)"
           journalctl --user -u zde-bar.service --no-pager | tail -20; exit 1
@@ -343,6 +353,110 @@ let
           echo "the picker chose a desk and stayed on screen: $(pickerq state)"
           nirimsg --json layers; exit 1
         fi
+        # Mod+w, which is the same surface with different rows: zded hands over
+        # the open windows, the shell draws them, and choosing one goes to it.
+        #
+        # Nothing is open yet, and that is a refusal rather than an empty
+        # surface - a picker with no rows is one you have to press Escape to get
+        # out of, and it answers a question nobody asked.
+        if XDG_RUNTIME_DIR=$mgr zde window jump-to 2>&1 | tee /tmp/jump-none.txt; then
+          echo "jump-to opened a picker with nothing to show:"
+          cat /tmp/jump-none.txt; exit 1
+        fi
+        grep -q 'nothing is open' /tmp/jump-none.txt || {
+          echo "the refusal does not say why there is nothing to pick:"
+          cat /tmp/jump-none.txt; exit 1
+        }
+        [ "$(pickerq state)" = "closed" ] || {
+          echo "a picker came up with no windows in it: $(pickerq state)"; exit 1
+        }
+
+        # Two windows, because with one, a jump to the right window, a jump to
+        # the wrong one and a jump that did nothing all leave the same window
+        # focused. Redirected, like every other client this script starts.
+        foot -e sleep 600 >/tmp/jump-foot1.log 2>&1 &
+        foot -e sleep 600 >/tmp/jump-foot2.log 2>&1 &
+        two_windows() { [ "$(count_windows)" -ge 2 ]; }
+        if ! waitfor 60 two_windows; then
+          echo "the two windows to jump between never appeared:"
+          cat /tmp/jump-foot1.log /tmp/jump-foot2.log; nirimsg windows; exit 1
+        fi
+
+        # Which window has focus, and the other one, both read now rather than
+        # once the picker is up. A layer surface holding the keyboard reads to
+        # niri as nothing focused at all - the roadmap's own warning, and the
+        # reason the picker takes focus only while visible - so asked with the
+        # picker on screen this answers nothing and takes the script with it.
+        onnow=$(focused_window) || true
+        onnow=''${onnow##*:}
+        [ -n "$onnow" ] || {
+          echo "two windows are open and niri has none of them focused:"
+          nirimsg windows; exit 1
+        }
+        target=$(nirimsg --json windows 2>/dev/null | tr '{' '\n' |
+          grep -o '"id":[0-9]*' | cut -d: -f2 | grep -v "^$onnow$" | head -1) || true
+        [ -n "$target" ] || {
+          echo "no second window to choose: everything reports the focused id ($onnow)"
+          nirimsg windows; exit 1
+        }
+
+        XDG_RUNTIME_DIR=$mgr zde window jump-to 2>&1 | tee /tmp/jump-shell.txt
+        # Nothing printed: a shell drew it and said so, the same round trip the
+        # desk switcher makes - key, daemon, event, surface, token back.
+        [ ! -s /tmp/jump-shell.txt ] || {
+          echo "a shell was listening and jump-to printed the list anyway:"
+          cat /tmp/jump-shell.txt; exit 1
+        }
+        # Both windows, and the window picker rather than the desk one: the two
+        # share a surface now, so a Mod+w that opened the desks would otherwise
+        # look exactly like this from outside. The dash is "no row you are
+        # already on", which a list of windows has none of.
+        jumper_open() { [ "$(pickerq state)" = "open windows 2 -" ]; }
+        if ! waitfor 20 jumper_open; then
+          echo "the window picker never opened with the right contents: $(pickerq state)"
+          journalctl --user -u zde-bar.service --no-pager | tail -20; exit 1
+        fi
+        nirimsg --json layers 2>&1 | tee /tmp/layers-jump.txt
+        grep -q '"namespace":"zde-picker"' /tmp/layers-jump.txt || {
+          echo "the window picker says it is open and niri has no such layer:"
+          cat /tmp/layers-jump.txt; exit 1
+        }
+
+        # The window that is not the one already focused - the newest has it, and
+        # this was read before the picker took the keyboard - so that what is
+        # asserted afterwards is a jump and not a no-op.
+        [ "$(pickerq pick "$target")" = "picked" ] || {
+          echo "choosing window $target: $(pickerq pick "$target")"; exit 1
+        }
+        # By id, and asked of niri. "a window is focused" is true before this
+        # runs, so it would pass with the jump landing anywhere at all.
+        jumped() { [ "$(focused_window)" = '"id":'"$target" ]; }
+        if ! waitfor 20 jumped; then
+          echo "the picker chose window $target and niri has $(focused_window) focused"
+          nirimsg windows; exit 1
+        fi
+        # And it closed itself on the way, surface and all.
+        if ! waitfor 15 shut; then
+          echo "the picker chose a window and stayed on screen: $(pickerq state)"
+          nirimsg --json layers; exit 1
+        fi
+
+        # Both windows closed again. Everything below this line was written for
+        # a strip with a known set of windows on it, and a foot left here is a
+        # window on whichever workspace was focused when it started - which is
+        # how this test failed once already.
+        nirimsg action close-window >/dev/null
+        one_window() { [ "$(count_windows)" -le 1 ]; }
+        if ! waitfor 30 one_window; then
+          echo "the first jump window would not close:"; nirimsg windows; exit 1
+        fi
+        nirimsg action close-window >/dev/null
+        no_windows() { [ "$(count_windows)" -eq 0 ]; }
+        if ! waitfor 30 no_windows; then
+          echo "a jump window outlived its test, and later checks need the strip as it was:"
+          nirimsg windows; exit 1
+        fi
+
         # And the probe desk goes away again, so the rotation tests further down
         # see the two desks they were written for.
         nirimsg action focus-workspace probe.winit.one >/dev/null
@@ -648,7 +762,6 @@ let
         # comes back to the workspace you left, which here is an empty one, and
         # an empty workspace rotates whatever nav does with a stack - so this
         # would pass just as well with the window half of nav missing.
-        focused_window() { nirimsg --json focused-window 2>/dev/null | grep -o '"id":[0-9]*' | head -1; }
         nirimsg action focus-workspace vshop.winit.foot >/dev/null
 
         # One window is the end of its own stack, so the desk turns. This is
@@ -938,6 +1051,52 @@ let
         zde queue done "$id2"
         zde queue 2>&1 | tee /tmp/q-empty.txt
         [ ! -s /tmp/q-empty.txt ] || { echo "the queue did not empty:"; cat /tmp/q-empty.txt; exit 1; }
+
+        # Mod+w with nothing listening, which is this zded: the session target
+        # was stopped long ago, so there is no shell here. The key still has to
+        # do something, so it prints what it would have shown - one window per
+        # line, id first, tab separated, so a session whose shell has died can
+        # still be steered and so what is open can be grepped at all.
+        zde window jump-to 2>&1 | tee /tmp/jump-list.txt
+        # One row, matched on its shape: the id, then the zde name of the
+        # workspace it is on, then the app. Taken out of the list rather than
+        # off the top of it, so this says nothing about the order and everything
+        # about the columns.
+        row=$(grep -m1 '^[0-9][0-9]*	[a-z][a-z0-9-]*\.winit\.[a-z0-9-]*	foot' /tmp/jump-list.txt) || true
+        [ -n "$row" ] || {
+          echo "the printed list is not id, then the zde workspace name, then the app:"
+          cat /tmp/jump-list.txt; nirimsg windows; exit 1
+        }
+        jid=$(printf '%s\n' "$row" | cut -f1)
+        jws=$(printf '%s\n' "$row" | cut -f2)
+        jdesk=''${jws%%.*}
+        # Standing on a desk that is not the window's, whichever row this is, so
+        # that the jump below crosses a desk rather than moving within one.
+        if [ "$jdesk" = "vshop" ]; then
+          zde desk switch haven >/dev/null
+        else
+          zde desk switch vshop >/dev/null
+        fi
+
+        zde window jump-to "$jid" 2>&1 | tee /tmp/jump.txt
+        grep -qx "$jws" /tmp/jump.txt || {
+          echo "jumping to window $jid says it landed somewhere other than $jws:"
+          cat /tmp/jump.txt; exit 1
+        }
+        # niri's answer, not zded's, and by id: "a window is focused" is true
+        # whatever the jump did, and counting windows cannot fail at all.
+        [ "$(focused_window)" = '"id":'"$jid" ] || {
+          echo "jumped to window $jid and niri has $(focused_window) focused"
+          nirimsg windows; exit 1
+        }
+        # And the desk came up with it. A jump that only focused the window
+        # would leave the session standing on the desk it started from, which is
+        # a desk on one screen and another desk on the rest.
+        zde status 2>&1 | tee /tmp/jump-status.txt
+        grep -q "^on desk    $jdesk" /tmp/jump-status.txt || {
+          echo "jumped to a window on $jdesk and zded is somewhere else:"
+          cat /tmp/jump-status.txt; exit 1
+        }
 
         echo "live compositor check passed"
   '';

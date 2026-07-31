@@ -1,12 +1,18 @@
-// The desk picker (docs/roadmap.md, 0.1: shell MVP). Mod+Tab asks zded for it,
-// zded tells whoever is listening, and this appears on the screen being looked
-// at with the desks on it.
+// The picker (docs/roadmap.md, 0.1: shell MVP). Mod+Tab asks zded for the
+// desks and Mod+w for the open windows; zded tells whoever is listening, and
+// this appears on the screen being looked at with those rows on it.
+//
+// One surface for both. They differ only in what a row says and in what
+// choosing one means, and neither is this surface's business: it is handed
+// rows, and it hands back the key of the row that was chosen. A second copy of
+// the keyboard handling, the focus dance and the click targets would be a
+// second place for any of them to stop working, and the two would drift.
 //
 // It is the first thing zde draws that takes the keyboard, which is a question
 // the roadmap has been carrying: a layer surface holding focus reads to niri as
 // nothing focused at all, so a nav key pressed while this is up spends itself
 // putting focus back on a window. That is why this takes focus only while it is
-// visible, and gives it back the moment a desk is chosen or the picker is
+// visible, and gives it back the moment a row is chosen or the picker is
 // dismissed.
 //
 // No text field. Filtering is the palette's job (0.2), and a picker you drive
@@ -23,9 +29,18 @@ PanelWindow {
     id: picker
 
     // What to show, handed over with the event rather than fetched: zded knows
-    // the desks, and a surface that has to ask before it can draw appears in
+    // it already, and a surface that has to ask before it can draw appears in
     // two steps.
-    property var desks: []
+    //
+    // A row is { key, label, note }. The key is what choosing sends back - a
+    // desk name, a window id - and it is the only part this surface treats as
+    // meaning anything.
+    property var rows: []
+    // What these rows are, in one word. The surface draws nothing with it: it
+    // is how a test driving this over IPC can tell a window picker that opened
+    // when Mod+Tab was pressed from the desk picker that should have.
+    property string kind: ""
+    // The key of the row you are already on, where there is one.
     property string on: ""
     property int index: 0
 
@@ -34,19 +49,22 @@ PanelWindow {
     // which a frozen shell also does.
     property string token: ""
 
-    // chosen(name) is the whole output of this surface. The shell sends these to
+    // chosen(key) is the whole output of this surface. The shell sends these to
     // zded; the picker itself knows nothing about sockets.
-    signal chosen(string name)
+    signal chosen(string key)
     signal dismissed
     signal shown(string token)
 
-    function show(list, here, token) {
-        picker.desks = list;
-        picker.on = here;
+    function show(kind, newRows, here, token) {
+        picker.kind = kind;
+        picker.rows = newRows;
+        picker.on = here ?? "";
         picker.token = token ?? "";
-        // Start on the desk you are on, so Enter alone is a no-op rather than a
-        // surprise, and one press of Down is the next desk.
-        picker.index = Math.max(0, list.indexOf(here));
+        // Start on the row you are already on, so Enter alone is a no-op rather
+        // than a surprise, and one press of Down is the next one. A list with no
+        // such row - the windows, where the one you are looking at is not a
+        // place you would press Enter to reach - starts at the first.
+        picker.index = Math.max(0, newRows.findIndex(r => r.key === picker.on));
         picker.visible = true;
     }
 
@@ -64,12 +82,17 @@ PanelWindow {
     }
 
     function step(by) {
-        const n = picker.desks.length;
+        const n = picker.rows.length;
         if (n === 0)
             return;
         // Wrapping, because the list is short and a picker that stops at the
         // end makes you look at where the cursor is before pressing a key.
         picker.index = (picker.index + by + n) % n;
+    }
+
+    function choose(i) {
+        if (i >= 0 && i < picker.rows.length)
+            picker.chosen(picker.rows[i].key);
     }
 
     visible: false
@@ -106,7 +129,7 @@ PanelWindow {
         id: panel
 
         // Presses inside the panel stop here. Without this the panel is not a
-        // mouse target at all and a click on the desk you want falls through to
+        // mouse target at all and a click on the row you want falls through to
         // the dim layer behind, which dismisses - so clicking a row did the
         // opposite of choosing it.
         MouseArea {
@@ -114,14 +137,17 @@ PanelWindow {
         }
 
         anchors.centerIn: parent
-        width: 420
-        height: Math.min(rows.implicitHeight + 24, picker.height - 80)
+        // Wider than a desk name needs, because a window row carries an app and
+        // a title as well as where it is, and at 420 almost every one of them
+        // was elided down to the app.
+        width: 520
+        height: Math.min(list.implicitHeight + 24, picker.height - 80)
         color: "#11121a"
         border.color: "#2a2c37"
         border.width: 1
         radius: 6
-        // The height is capped to the screen, so past about twenty desks the
-        // rows would otherwise draw outside the panel and over the wallpaper.
+        // The height is capped to the screen, so past about twenty rows they
+        // would otherwise draw outside the panel and over the wallpaper.
         clip: true
 
         // focus lives here, and the surface only holds the keyboard while it is
@@ -134,8 +160,7 @@ PanelWindow {
                 break;
             case Qt.Key_Return:
             case Qt.Key_Enter:
-                if (picker.index >= 0 && picker.index < picker.desks.length)
-                    picker.chosen(picker.desks[picker.index]);
+                picker.choose(picker.index);
                 break;
             case Qt.Key_Down:
                 picker.step(1);
@@ -144,18 +169,16 @@ PanelWindow {
                 picker.step(-1);
                 break;
             default:
-                // j and k for a hand on home row, and a digit for the desk in
-                // that position - which is the fastest way to a desk you can
+                // j and k for a hand on home row, and a digit for the row in
+                // that position - which is the fastest way to something you can
                 // see, and the reason the rows are numbered.
                 if (event.text === "j")
                     picker.step(1);
                 else if (event.text === "k")
                     picker.step(-1);
-                else if (event.text >= "1" && event.text <= "9") {
-                    const want = parseInt(event.text, 10) - 1;
-                    if (want < picker.desks.length)
-                        picker.chosen(picker.desks[want]);
-                } else {
+                else if (event.text >= "1" && event.text <= "9")
+                    picker.choose(parseInt(event.text, 10) - 1);
+                else {
                     return;
                 }
             }
@@ -163,7 +186,7 @@ PanelWindow {
         }
 
         Column {
-            id: rows
+            id: list
 
             anchors.left: parent.left
             anchors.right: parent.right
@@ -172,15 +195,15 @@ PanelWindow {
             spacing: 2
 
             Repeater {
-                model: picker.desks
+                model: picker.rows
 
                 Rectangle {
                     id: row
 
-                    required property string modelData
+                    required property var modelData
                     required property int index
 
-                    width: rows.width
+                    width: list.width
                     height: 26
                     radius: 4
                     color: row.index === picker.index ? "#2a2c37" : "transparent"
@@ -190,27 +213,36 @@ PanelWindow {
                     // mouse-hostile one.
                     MouseArea {
                         anchors.fill: parent
-                        onClicked: picker.chosen(row.modelData)
+                        onClicked: picker.chosen(row.modelData.key)
                     }
 
                     Text {
                         anchors.left: parent.left
                         anchors.leftMargin: 8
+                        anchors.right: note.left
+                        anchors.rightMargin: 8
                         anchors.verticalCenter: parent.verticalCenter
-                        text: (row.index < 9 ? (row.index + 1) + "  " : "   ") + row.modelData
+                        text: (row.index < 9 ? (row.index + 1) + "  " : "   ") + row.modelData.label
+                        // A window title is as long as the app felt like making
+                        // it, and a row running out past the panel reads as the
+                        // panel being broken rather than the title being long.
+                        elide: Text.ElideRight
                         color: "#c9ccd4"
                         font.pixelSize: 13
                         font.family: "monospace"
                     }
 
-                    // Where you are, said rather than implied by the highlight,
-                    // which means something else here: the highlight is what
+                    // The note: where you are for a desk, where the window is
+                    // for a window. Said rather than implied by the highlight,
+                    // which means something else here - the highlight is what
                     // Enter would take.
                     Text {
+                        id: note
+
                         anchors.right: parent.right
                         anchors.rightMargin: 8
                         anchors.verticalCenter: parent.verticalCenter
-                        text: row.modelData === picker.on ? "here" : ""
+                        text: row.modelData.note ?? ""
                         color: "#7a7f8a"
                         font.pixelSize: 12
                         font.family: "monospace"

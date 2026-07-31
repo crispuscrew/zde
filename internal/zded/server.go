@@ -57,6 +57,13 @@ type Compositor interface {
 	// FocusWindowVertically moves focus one window along the stack, and does
 	// nothing at the end of it.
 	FocusWindowVertically(down bool) error
+	// Windows is every open window with the workspace each one is on, from one
+	// reading: a list that showed windows from one moment and workspace names
+	// from another would offer a row that was never true.
+	Windows() ([]Window, error)
+	// FocusWindow focuses one by id, wherever it is - which is what makes a
+	// jump a journey and not a rearrangement.
+	FocusWindow(id uint64) error
 	// RenameWorkspace corrects a name that no longer tells the truth.
 	RenameWorkspace(from, to string) error
 	// SetWorkspaceNameByID names a workspace that has no name to be
@@ -339,6 +346,20 @@ func (s *Server) Dispatch(req Request) Response {
 			return Response{Error: "desk.switcher takes no arguments"}
 		}
 		return s.switcher()
+	case "window.jump-to":
+		// One verb, two arities. The picker and the choice are the same
+		// question asked twice - which window - and with none to ask it of, the
+		// id printed by the first form is what the second one takes, so
+		// `zde window jump-to $(zde window jump-to | ... )` needs no second name
+		// to learn.
+		switch len(req.Args) {
+		case 0:
+			return s.jumpTo()
+		case 1:
+			return s.focusWindow(req.Args[0])
+		default:
+			return Response{Error: "window.jump-to takes one window id, or none to open the picker"}
+		}
 	case "desk.list":
 		m, err := s.niri.DeskMap()
 		if err != nil {

@@ -173,6 +173,42 @@ func (compositor) FocusedWindow() (uint64, error) {
 	return c.FocusedWindow()
 }
 
+// Windows is niri's answer in the shape the socket speaks. The two structs
+// stay apart on purpose: one is what the compositor said, the other is what
+// goes out over the zde socket and is read by a shell, and tying the wire to
+// niri's field names would make a niri rename somebody else's problem. Same
+// seam, and same reason, as AsDeskWorkspaces.
+func (compositor) Windows() ([]zded.Window, error) {
+	c, err := niri.Dial()
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+	open, err := c.OpenWindows()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]zded.Window, 0, len(open))
+	for _, w := range open {
+		out = append(out, zded.Window{
+			ID:        w.ID,
+			Title:     w.Title,
+			AppID:     w.AppID,
+			Workspace: w.Workspace,
+		})
+	}
+	return out, nil
+}
+
+func (compositor) FocusWindow(id uint64) error {
+	c, err := niri.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	return c.FocusWindow(id)
+}
+
 func (compositor) FocusWindowVertically(down bool) error {
 	c, err := niri.Dial()
 	if err != nil {

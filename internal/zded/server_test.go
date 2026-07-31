@@ -28,6 +28,9 @@ type fakeCompositor struct {
 	output        string // the monitor the focused workspace is on
 	followFocus   bool   // move the focus with a carried window, as niri can
 	focusedWindow uint64
+	// windows is what is open, in the order niri happens to list it - which is
+	// not the order a picker shows.
+	windows []Window
 	// nextInStack is what a vertical window move lands on, 0 for the end of
 	// the stack - niri's own answer to whether there is a window that way.
 	nextInStack uint64
@@ -100,6 +103,40 @@ func (f *fakeCompositor) FocusWindowVertically(down bool) error {
 		f.focusedWindow = f.nextInStack
 	}
 	return nil
+}
+
+func (f *fakeCompositor) Windows() ([]Window, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return nil, f.err
+	}
+	return append([]Window(nil), f.windows...), nil
+}
+
+// FocusWindow behaves like niri: focus lands on the window and on the workspace
+// it is on, and nothing is moved to get there.
+func (f *fakeCompositor) FocusWindow(id uint64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	for _, w := range f.windows {
+		if w.ID != id {
+			continue
+		}
+		f.focusedWindow = id
+		f.focused = w.Workspace
+		return nil
+	}
+	return errors.New("no such window")
+}
+
+func (f *fakeCompositor) focusedWindowID() uint64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.focusedWindow
 }
 
 func (f *fakeCompositor) FocusedOutput() (string, error) {
