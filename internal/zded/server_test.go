@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +17,7 @@ import (
 	"github.com/crispuscrew/zde/internal/desk"
 	"github.com/crispuscrew/zde/internal/journal"
 	"github.com/crispuscrew/zde/internal/manifest"
+	"time"
 )
 
 type fakeCompositor struct {
@@ -2679,4 +2681,61 @@ func deskAppsOf(t *testing.T, s *Server, req Request) []DeskApp {
 		t.Fatal(err)
 	}
 	return list
+}
+
+// A desk is what its manifest declares, so entering one starts it. The two
+// halves worth pinning: what gets asked for (the address, both fields joined),
+// and that standing still is not entering - half the nav keys re-enter the desk
+// you are on, and each pass would be another launch attempt per app.
+func TestSwitchStartsTheDesksApps(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "vshop.yaml"), []byte(
+		"name: vshop\nmonitors: { DP-1: { workspaces: [code] } }\n"+
+			"apps:\n  - { app: nvim, instance: vshop }\n  - { app: browser }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeCompositor{m: twoDesks(), focused: "haven.DP-1.read", output: "DP-1"}
+	// With a journal, because the record of which desk you were on is what
+	// decides this: by the time a switch reads the compositor, the desk it is
+	// entering has already been named into existence.
+	jrn, err := journal.Open(filepath.Join(t.TempDir(), "j.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jrn.Close()
+	s := New("test", jrn, f, manifest.Dir(dir))
+
+	started := make(chan string, 4)
+	s.launch = func(address string) error {
+		started <- address
+		return nil
+	}
+
+	if resp := s.Dispatch(Request{Method: "desk.switch", Args: []string{"vshop"}}); resp.Error != "" {
+		t.Fatal(resp.Error)
+	}
+	var got []string
+	for range 2 {
+		select {
+		case a := <-started:
+			got = append(got, a)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("the desk declares two apps and started %v", got)
+		}
+	}
+	sort.Strings(got)
+	if got[0] != "browser" || got[1] != "nvim@vshop" {
+		t.Errorf("started %v, want [browser nvim@vshop]", got)
+	}
+
+	// Already there: nothing to bring up.
+	f.focused = "vshop.DP-1.code"
+	if resp := s.Dispatch(Request{Method: "desk.switch", Args: []string{"vshop"}}); resp.Error != "" {
+		t.Fatal(resp.Error)
+	}
+	select {
+	case a := <-started:
+		t.Errorf("re-entering the desk you are on started %s again", a)
+	case <-time.After(300 * time.Millisecond):
+	}
 }

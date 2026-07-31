@@ -95,3 +95,27 @@ func parseWhere(out string) (Location, error) {
 	}
 	return loc, nil
 }
+
+// Run starts one app instance, detached, the way a person would from a shell.
+//
+// --exec because without it zcr prints the launch plan and exits, which from a
+// keypress looks exactly like nothing happening.
+//
+// Nothing here checks whether it is already running. zinc 0.9.1 made a second
+// launch refuse before it prepares anything - the release before it, that
+// second launch tore down the first - so asking would be a podman round trip
+// per app per desk switch to learn what the launch is about to tell us anyway.
+// The refusal comes back as an error and is written down like any other.
+func Run(address string) error {
+	out, err := exec.Command(Runner, "run", address, "--exec").CombinedOutput()
+	if errors.Is(err, exec.ErrNotFound) {
+		return fmt.Errorf("%s is not on PATH, so %q cannot be started (programs.zinc.enable)", Runner, address)
+	}
+	if err != nil {
+		if msg := strings.TrimSpace(string(out)); msg != "" {
+			return fmt.Errorf("%s run %s: %s", Runner, address, msg)
+		}
+		return fmt.Errorf("%s run %s: %w", Runner, address, err)
+	}
+	return nil
+}

@@ -100,12 +100,17 @@ on_exit:  []
   directory zinc says that instance keeps its state in. zde asks rather than
   joining that path itself: the layout is zinc's, and a second copy of it drifts
   the first time either side moves a directory. `{instance}` templating in mount
-  slots is zinc 0.8.2 and not there yet.
+  slots landed in zinc 0.8.2, as `{state}`, `{app}` and `{instance}`.
 - `browser-vshop` is an inherited app (`Inherits: browser`): per-project
   variants needing their own security posture get their own reviewable YAML.
   Instances = identical-config multiplicity; inheritance = config variation.
 - `background: keep | pause` - pause freezes off-desk (`podman pause`),
-  resumes on enter. Default keep.
+  resumes on enter. Default keep. Not implemented: nothing pauses anything yet.
+- Entering the desk starts these, once, behind the switch rather than in front
+  of it - `zcr run <app>@<instance> --exec` per app, and a second entry is
+  refused by zinc rather than tracked here. Where a window lands is still
+  adoption's: the `monitor` and `workspace` pins above are declared and not yet
+  read by the launcher, so windows open where niri opens windows.
 
 ## 6. The action map
 

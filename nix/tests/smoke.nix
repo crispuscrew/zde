@@ -68,7 +68,7 @@ let
     monitors:
       winit: { workspaces: [code, notes] }
     apps:
-      - { app: nvim, instance: vshop, monitor: winit, workspace: code }
+      - { app: absent-app, instance: vshop, monitor: winit, workspace: code }
     '       > /tmp/desks/vshop.yaml
 
         # niri, nested and headless. cage gives it a Wayland host; pixman and
@@ -585,19 +585,41 @@ let
         # the VM - it is `zcr where`, run by zde, and the point of asking is
         # that the layout stays zinc's to change.
         XDG_STATE_HOME=/tmp/state zde desk apps vshop 2>&1 | tee /tmp/apps.txt
-        awk '$1=="nvim@vshop" && $2=="vshop.winit.code" &&
-             $3=="/tmp/state/zinc/nvim/vshop" { found=1 }
+        awk '$1=="absent-app@vshop" && $2=="vshop.winit.code" { found=1 }
              END { exit !found }' /tmp/apps.txt || {
-          echo "zde desk apps did not say where that instance keeps its state:"
+          echo "zde desk apps did not name the app the manifest declares:"
+          cat /tmp/apps.txt; exit 1
+        }
+        # And it asked zinc rather than answering for it. This desk names an app
+        # zinc does not have, so what comes back is zinc's refusal, passed
+        # through - which is the same round trip that fills the state column for
+        # an app that exists (asserted directly against zcr further up, where it
+        # costs nothing).
+        grep -q 'no app "absent-app" defined' /tmp/apps.txt || {
+          echo "zde desk apps did not report what zcr said about the app:"
           cat /tmp/apps.txt; exit 1
         }
         # And the desk you are on, which is the form a keybind would use: the
         # switch above put us on vshop.
         XDG_STATE_HOME=/tmp/state zde desk apps 2>&1 | tee /tmp/apps-here.txt
-        grep -q 'nvim@vshop' /tmp/apps-here.txt || {
+        grep -q 'absent-app@vshop' /tmp/apps-here.txt || {
           echo "zde desk apps, on vshop, did not list vshop's apps:"
           cat /tmp/apps-here.txt; exit 1
         }
+        # And entering the desk tried to start what it declares: the whole chain,
+        # from a switch through the manifest to zcr with the address the
+        # manifest spells. A desk that starts nothing writes nothing here.
+        #
+        # The app is one zinc does not have, deliberately. A defined app would
+        # send podman looking for an image this VM has no network to fetch, on
+        # every switch in this script, and the first thing that broke was an
+        # assertion three screens away about a bar reconnecting. A refusal
+        # arrives immediately and proves the same wiring.
+        waitfor 20 grep -q 'starting absent-app@vshop' /tmp/zded-live.log || {
+          echo "switching to vshop did not try to start the app it declares:"
+          cat /tmp/zded-live.log; exit 1
+        }
+
         # zcr is on the session's PATH, said by the daemon that has that PATH.
         # A machine where this is no is one whose desks declare apps it cannot
         # run, and every symptom of it looks like something else.
@@ -1300,13 +1322,18 @@ pkgs.testers.runNixOSTest {
       # is bound to a binary the machine does not have, which looks from the
       # keyboard exactly like a key that does nothing.
       machine.succeed("su -l zde -c 'command -v zlg'")
+      # zinc 0.9 made `zcr where` load the config, so it answers only for apps
+      # that exist. zc init is zinc's own seeding, which beats this test writing
+      # an app file and owning zinc's schema to keep it parsing.
+      machine.succeed("su -l zde -c 'zc init'")
       where = machine.succeed(
-          "su -l zde -c 'XDG_STATE_HOME=/tmp/st zcr where browser@work'"
+          "su -l zde -c 'XDG_STATE_HOME=/tmp/st zcr where example-instanced@work'"
       )
-      assert "state: /tmp/st/zinc/browser/work" in where, where
-      # And the instance is a name there too, which is the half of this that a
-      # desk manifest feeds: zde refuses a path in that field, and so does zinc.
-      machine.fail("su -l zde -c 'zcr where \"browser@../../etc\"'")
+      assert "state: /tmp/st/zinc/example-instanced/work" in where, where
+      # Both halves of an address are a name, which is the rule a desk manifest
+      # feeds: zde refuses a path in either field, and so does zinc.
+      machine.fail("su -l zde -c 'zcr where \"example-instanced@../../etc\"'")
+      machine.fail("su -l zde -c 'zcr where \"../../../etc\"'")
 
       # The screen lock can authenticate. This is the trap worth a test rather
       # than the locking itself: a locker with no PAM service takes the screen

@@ -26,7 +26,9 @@ the first time either side moves one.
 What is still by hand: an app YAML gets into `~/.config/zinc/apps` because
 somebody put it there, and moving a digest is somebody retyping a tag - zinc's
 resolver returns an already-pinned reference unchanged and does not record the
-tag it came from. Both are on zinc's 0.8.2 list. Nothing about zde's own update
+tag it came from. Both landed in zinc 0.8.2 - `zc init` seeds a store with
+worked examples, and `zcr recheck` re-resolves a `SourceTag` and reports
+whether the digest moved. Neither is wired into zde. Nothing about zde's own update
 path (`update.md`) covers layer 2 yet.
 
 Laptop hardware (upower, power profiles, wifi/bt radios) is a toggle in the

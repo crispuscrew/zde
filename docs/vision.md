@@ -105,27 +105,36 @@ guesses. Owns the kill switch and the per-app cut.
 
 ## 4. What zde asks of zinc
 
-1. Stable Wayland `app_id` per app and per instance. **In 0.8.2**, as a
-   security-context `app_id`/`instance_id`. Adoption names a workspace after
-   the first window's app id, so this is what makes an adopted name say which
-   instance is in there.
-2. Runtime mount slots with `{instance}` templating (in progress). Where the
+1. Stable Wayland `app_id` per app and per instance. **Landed in 0.9.0**: a
+   real `wp_security_context_v1`, with `instance_id` the same string that names
+   the container and that `zcr where` reports. It does not reach zde yet - niri
+   26.04's IPC `Window` carries the client's own `app_id` and no security
+   context - so adoption still names a workspace from a string the app chose
+   for itself. The route to it is the pid niri reports, or a niri that exposes
+   the context.
+2. Runtime mount slots with `{instance}` templating. **Landed in 0.8.2** as
+   `{state}`, `{app}` and `{instance}` on the host side of a mount. Where the
    per-instance state lives is zinc's to choose - nothing in a desk manifest
    names that path, and `$XDG_STATE_HOME/zinc/<app>/<instance>` is the shape zde
    uses for its own. Worth having it readable from `zcr` rather than shared as a
    constant, so the two projects cannot drift about it. Both the app and the
    instance become path components, and a manifest is a file somebody edits, so
    both sides should refuse a name that is a path; zde refuses one here.
-3. Instance naming in zcr: `app@instance` addressing **landed in 0.8.1**, with
-   `zcr where` printing the state directory and the runtime name; `zcr run
-   --instance` is 0.8.2. zde's manifests already carry `instance`, and refuse
-   one that is not a name, because it becomes a path component on both sides.
+3. Instance naming in zcr. **Landed**: `app@instance` addressing and `zcr
+   where` in 0.8.1, `zcr run app@instance` in 0.8.2. zde's manifests already
+   carry `instance`, and refuse one that is not a name, because it becomes a
+   path component on both sides - which zinc now refuses too, on both halves.
 4. Per-instance filtered DBus socket (notifications + MPRIS); doubles as
-   attribution (principle 6).
+   attribution (principle 6). **Landed** in 0.8.0, with the attribution half in
+   0.9.0: `zcr bus` maps a live bus connection to `app@instance`, published by
+   zinc rather than claimed by the app. Nothing in zde reads it yet.
 5. `Inherits:`, resolved at validate time. **Landed** in zinc 0.7, as
    `zc validate <app> --resolved` (the tool asked for here as `zcc` was
    renamed `zc` in that release).
 6. Counters on the generated nft rules plus netns enumeration, for netview.
+   **Landed in 0.9.0** as `zcr net`, which is what netview (0.3) reads.
+
+All seven are answered as of zinc 0.9.1. What is left is on this side.
 
 ## 5. Scenario catalog
 

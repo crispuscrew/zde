@@ -178,9 +178,17 @@ zde.apps.browser = [ "zcr" "run" "browser" "--exec" ];
 
 Then `zde app launch browser` runs it, and any key can. Without `--exec` zcr
 prints the launch plan and exits, which from a keybind looks exactly like
-nothing happening. An instance cannot be threaded through a launch yet - zinc
-addresses one as `browser@work` and `zcr run` does not take one until 0.8.2 -
-so a manifest's instance is declared and not yet started.
+nothing happening. An instance goes in the same argv - `zcr run browser@work
+--exec` - so two desks can each have their own browser.
+
+A desk manifest starts its own apps: entering the desk runs each one it
+declares, and zinc refuses a second launch of something already up, so
+switching back and forth does not pile up browsers. The launches happen behind
+the switch, so the desk is in front of you before they arrive, and a failure
+goes to `journalctl --user -u zded` rather than taking the switch down with it.
+Where a window lands is not decided yet - the `monitor` and `workspace` pins in
+a manifest are declared and unread, so windows open on the workspace you are
+looking at.
 
 ## 6. When it breaks
 

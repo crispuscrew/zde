@@ -51,16 +51,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1785447513,
-        "narHash": "sha256-oO3qfWW0Jsu7GAWIjDXt94Ba4ybmlZCuevB5z0mI2r0=",
+        "lastModified": 1785462414,
+        "narHash": "sha256-ltzUjlTbjRKoElXK85kBJ+6vt7Sk6PHm6Y6YARN2zP4=",
         "owner": "crispuscrew",
         "repo": "zinc",
-        "rev": "600499d28f3585f17d42565392949a070f62108c",
+        "rev": "6b3aa9a3c3130eb0af2bbc52b5acc535912555ad",
         "type": "github"
       },
       "original": {
         "owner": "crispuscrew",
-        "ref": "v0.8.1",
+        "ref": "v0.9.1",
         "repo": "zinc",
         "type": "github"
       }
