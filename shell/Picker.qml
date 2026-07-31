@@ -54,6 +54,12 @@ PanelWindow {
     signal chosen(string key)
     signal dismissed
     signal shown(string token)
+    // A letter that is not navigation runs an action and closes. The picker
+    // holds the keyboard while it is up, which is what makes a second keypress
+    // readable at all - the keymap has been carrying Mod+Tab-then-L as
+    // something that needed the input daemon, and it turns out the surface that
+    // grabs focus can do it.
+    signal action(string name)
 
     function show(kind, newRows, here, token) {
         picker.kind = kind;
@@ -141,7 +147,9 @@ PanelWindow {
         // a title as well as where it is, and at 420 almost every one of them
         // was elided down to the app.
         width: 520
-        height: Math.min(list.implicitHeight + 24, picker.height - 80)
+        // The rows, their margins, and the hint line under them. Leave the hint
+        // out of the sum and it draws over the last row on a full list.
+        height: Math.min(list.implicitHeight + 46, picker.height - 80)
         color: "#11121a"
         border.color: "#2a2c37"
         border.width: 1
@@ -178,11 +186,29 @@ PanelWindow {
                     picker.step(-1);
                 else if (event.text >= "1" && event.text <= "9")
                     picker.choose(parseInt(event.text, 10) - 1);
+                else if (event.text === "l")
+                    picker.action("lock");
                 else {
                     return;
                 }
             }
             event.accepted = true;
+        }
+
+        // What else this surface does, said on the surface. A leader key nobody
+        // can see is a leader key nobody uses, and this is the whole reason a
+        // menu beats a chord you have to remember.
+        Text {
+            anchors.bottom: parent.bottom
+            anchors.left: parent.left
+            anchors.margins: 12
+            // "pick" rather than "desk": one surface lists the desks on Mod+Tab
+            // and the open windows on Mod+w, and a hint that names one of them
+            // is wrong half the time it is read.
+            text: "1-9 pick    j k move    l lock    esc close"
+            color: "#7a7f8a"
+            font.pixelSize: 11
+            font.family: "monospace"
         }
 
         Column {

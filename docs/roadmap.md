@@ -73,8 +73,12 @@ turned "when someone has hardware" into something anyone can do this evening.
   block-out-from granularity; mode mechanism (config-swap vs input layer);
   X11 apps, which need xwayland-satellite (the session leaves XWayland off).
 - keymap: niri key-name casing for punctuation (grave, brackets, semicolon,
-  comma, period); the panic/block leader sequences (Mod+Escape then L, Mod+Tab
-  then L) via the input daemon, not niri.
+  comma, period); the panic leader sequence (Mod+Escape then L) via the input
+  daemon, since Escape grabs nothing. Mod+Tab then L needed no daemon in the
+  end: the picker holds the keyboard while it is open, so the surface reads the
+  second press itself. What a leader wants is something already holding the
+  keyboard, which is worth remembering before the input layer is asked for
+  anything else.
 - niri config: `nav.*` shelling to zded per keypress feeling instant, and the
   config driving a real compositor. The smoke test settles the static half -
   niri's own parser accepts the tree, its includes resolve, and every emitted

@@ -277,7 +277,8 @@ show up in use.
   what is in it, on the desk you were standing on.
 - **Nothing moves under you** (invariant 6): focus changes never rearrange the
   strip.
-- **Lock the screen** with `Mod+Ctrl+semicolon`, and unlock it. Deliberately
+- **Lock the screen**: `Mod+Tab` then `l`, which is the one to get into your
+  fingers, and `Mod+Ctrl+semicolon` as a direct chord. Then unlock it. Deliberately
   not tested in CI: a VM with no input devices that locks itself cannot unlock
   itself. What CI does check is the half that strands you - that the locker has
   a PAM service and so can accept a password at all. Try it before you need it
