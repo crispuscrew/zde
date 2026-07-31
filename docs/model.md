@@ -115,7 +115,9 @@ on_exit:  []
   on that workspace. Without it the app still starts and adoption places it.
   It is a second name for the same thing and it should not have to be here -
   zinc gives the compositor a per-instance identity, and niri matches rules on
-  the id the app asserts (docs/vision.md, ask 1).
+  the id the app asserts (docs/vision.md, ask 1). The rules are written when
+  zded starts and on `zde desk reconcile`, so a manifest edited mid-session
+  takes effect at the next one of those.
 
 ## 6. The action map
 

@@ -624,7 +624,7 @@ let
         # generated config includes and zded is the only thing that writes
         # (niri/config.kdl), so what is asserted is the whole seam: a manifest
         # pin, a rule in the right shape, and niri's own parser accepting the
-        # config with it in.
+        # config with it in. Written when zded started, before any of this.
         waitfor 20 grep -q 'open-on-workspace "vshop.winit.code"' \
           ~/.config/niri/dynamic.kdl || {
           echo "the desk pins an app and niri was never told:"

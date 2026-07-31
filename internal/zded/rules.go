@@ -22,6 +22,12 @@ import (
 // reach - a window moved after it appears has already been drawn somewhere
 // else, and on a desktop whose rule is that nothing rearranges under you, that
 // is the wrong kind of correct.
+//
+// Written at startup and on reconcile rather than on a switch: niri reloads its
+// whole config when this file is written, and a reload re-evaluates the rules
+// for every window already open. Doing that on a keypress somebody presses all
+// day is a lot of asking for something that only changes when a file is
+// edited.
 const rulesHeader = "// Written by zded. Do not edit: the source is the desk manifests\n" +
 	"// (~/.config/zde/desks), and this file is rewritten from them.\n"
 
