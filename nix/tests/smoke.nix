@@ -21,6 +21,19 @@
   zincModule,
 }:
 let
+  # A locker that locks nothing, under the name a real one has.
+  #
+  # The name is the part that matters: `zde doctor` looks a locker up in
+  # /etc/pam.d by the basename of its binary, because a locker with no PAM
+  # service takes the screen and then refuses every password. A fake called
+  # `touch` made this session look like exactly that machine and failed a check
+  # that was right to fail. Under the name layer 1 actually configures, both
+  # stay honest - the leader chain still ends in a file on disk, and doctor
+  # still has its teeth.
+  fakeLocker = pkgs.writeShellScriptBin "swaylock" ''
+    exec ${pkgs.coreutils}/bin/touch /tmp/zde-locked
+  '';
+
   # One script, so the quoting lives in a shell file rather than inside a
   # Python string inside a Nix string.
   liveCheck = pkgs.writeShellScript "zde-live-check" ''
@@ -330,6 +343,33 @@ let
         [ "$(focusedws)" = "$before_dismiss" ] || {
           echo "dismissing the picker moved focus from $before_dismiss to $(focusedws)"; exit 1
         }
+
+        # The leader: a letter that is not navigation runs an action and closes
+        # the surface. Mod+Tab then l is what the keymap has been calling a
+        # sequence that needs the input daemon, and it does not: the picker holds
+        # the keyboard, so the second press is one this surface can read.
+        #
+        # Reopened first, because dismissing closed it.
+        XDG_RUNTIME_DIR=$mgr zde desk switcher >/dev/null
+        if ! waitfor 20 picker_open; then
+          echo "the picker did not reopen for the leader check: $(pickerq state)"; exit 1
+        fi
+        rm -f /tmp/zde-locked
+        [ "$(pickerq act lock)" = "acted" ] || {
+          echo "the leader did not act: $(pickerq act lock)"; exit 1
+        }
+        # And the command ran: picker, shell, zde, the apps table, an exec. The
+        # locker on this machine is a touch rather than swaylock, because a VM
+        # with no input devices that locks itself cannot unlock itself - what is
+        # asserted is the chain, and whether a real locker takes the screen is a
+        # by-hand item (docs/verify.md).
+        ran() { [ -e /tmp/zde-locked ]; }
+        if ! waitfor 20 ran; then
+          echo "the leader acted and nothing ran"; exit 1
+        fi
+        if ! waitfor 15 dismissed; then
+          echo "the leader acted and the picker stayed on screen: $(pickerq state)"; exit 1
+        fi
 
         # Then open it again for the half that does choose.
         XDG_RUNTIME_DIR=$mgr zde desk switcher >/dev/null
@@ -1147,26 +1187,39 @@ pkgs.testers.runNixOSTest {
         "zlg"
       ];
 
-      # A second keyboard layout, which is what Mod+space switches between.
-      # With one layout that key does nothing, which is what every zde session
-      # has done so far - and a machine you cannot write to somebody in is not
-      # one anybody travels with. Set here so the generated local.kdl is what
-      # niri validates below, rather than a shape nothing has ever parsed.
-      zde.niri.xkb = {
-        layout = "us,ru";
-        options = "grp:caps_toggle";
-      };
+      # The locker, pointed at something that locks nothing. The leader check
+      # below runs it for real - that is the point, it proves the whole chain
+      # from a keypress to an exec - and a VM with no input devices that locked
+      # itself could never unlock itself, taking every assertion after it down.
+      #
+      # It writes a file rather than exiting 0, so the test can see that it ran
+      # rather than only that nothing complained.
+      zde = {
+        apps.lock = [ "${fakeLocker}/bin/swaylock" ];
 
-      # A host's own binds, through the seam that exists for them: local.kdl,
-      # included after the generated ones. The live image (nix/live.nix) puts a
-      # terminal on a key this way, because nothing in the keymap can open one
-      # yet - so niri accepting a second binds block is load-bearing rather than
-      # incidental, and the niri validate below is what keeps it that way.
-      zde.niri.extraConfig = ''
-        binds {
-            Mod+Return { spawn "foot"; }
-        }
-      '';
+        # A second keyboard layout, which is what Mod+space switches between.
+        # With one layout that key does nothing, which is what every zde
+        # session has done so far - and a machine you cannot write to somebody
+        # in is not one anybody travels with. Set here so the generated
+        # local.kdl is what niri validates below, rather than a shape nothing
+        # has ever parsed.
+        niri.xkb = {
+          layout = "us,ru";
+          options = "grp:caps_toggle";
+        };
+
+        # A host's own binds, through the seam that exists for them: local.kdl,
+        # included after the generated ones. The live image (nix/live.nix) puts
+        # a terminal on a key this way, because nothing in the keymap can open
+        # one yet - so niri accepting a second binds block is load-bearing
+        # rather than incidental, and the niri validate below is what keeps it
+        # that way.
+        niri.extraConfig = ''
+          binds {
+              Mod+Return { spawn "foot"; }
+          }
+        '';
+      };
     };
 
     # cage hosts the nested niri; mesa's software rasteriser is what both of
