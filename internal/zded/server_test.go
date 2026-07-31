@@ -2695,7 +2695,15 @@ func TestSwitchStartsTheDesksApps(t *testing.T) {
 		t.Fatal(err)
 	}
 	f := &fakeCompositor{m: twoDesks(), focused: "haven.DP-1.read", output: "DP-1"}
-	s := New("test", nil, f, manifest.Dir(dir))
+	// With a journal, because the record of which desk you were on is what
+	// decides this: by the time a switch reads the compositor, the desk it is
+	// entering has already been named into existence.
+	jrn, err := journal.Open(filepath.Join(t.TempDir(), "j.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jrn.Close()
+	s := New("test", jrn, f, manifest.Dir(dir))
 
 	started := make(chan string, 4)
 	s.launch = func(address string) error {

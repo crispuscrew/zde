@@ -1306,6 +1306,15 @@ func (s *Server) switchFrom(target, from string) Response {
 	if from == "" {
 		from = s.activeDesk(m)
 	}
+	// The desk zde thinks you were on, which is not what `from` answers here.
+	// ensureDeclared has already named this desk's workspaces into existence,
+	// and one of them may be the focused one - so on the first entry to a
+	// declared desk, the desk you are "coming from" reads as the one you are
+	// going to. The journal is the record that has not moved yet.
+	was := ""
+	if s.jrn != nil {
+		was = s.jrn.State().OnDesk
+	}
 
 	for _, n := range plan {
 		if err := s.niri.FocusWorkspace(n.String()); err != nil {
@@ -1326,7 +1335,7 @@ func (s *Server) switchFrom(target, from string) Response {
 			s.jrn.SetLastDesk(from)
 		}
 	}
-	if from != target {
+	if was != target {
 		// A desk is what its manifest declares, so entering one brings it up
 		// (docs/model.md, section 5). Only on a change of desk: re-entering the
 		// desk you are standing on is what half the nav keys do, and each pass
