@@ -48,7 +48,7 @@
     # because it releases on its own schedule and an update to one should not
     # be an update to the other.
     zinc = {
-      url = "github:crispuscrew/zinc/v0.8.1";
+      url = "github:crispuscrew/zinc/v0.9.1";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
