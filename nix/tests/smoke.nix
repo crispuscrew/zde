@@ -598,6 +598,16 @@ let
           echo "zde desk apps, on vshop, did not list vshop's apps:"
           cat /tmp/apps-here.txt; exit 1
         }
+        # And entering the desk tried to start what it declares. The attempt is
+        # what a VM can prove: there is no image to pull in here, so the launch
+        # fails and says so - which is the whole chain anyway, from a desk
+        # switch through the manifest to zcr with the address the manifest
+        # spells. A desk that starts nothing writes nothing here.
+        waitfor 20 grep -q 'starting example-instanced@vshop' /tmp/zded-live.log || {
+          echo "switching to vshop did not try to start the app it declares:"
+          cat /tmp/zded-live.log; exit 1
+        }
+
         # zcr is on the session's PATH, said by the daemon that has that PATH.
         # A machine where this is no is one whose desks declare apps it cannot
         # run, and every symptom of it looks like something else.

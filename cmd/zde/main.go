@@ -507,7 +507,8 @@ func usage() {
                          an id goes straight to that window, desk and all
   zde keys               the whole keymap, one key per line (Mod+slash opens
                          this in a terminal)
-  zde desk switch NAME   bring a desk up on every monitor it owns
+  zde desk switch NAME   bring a desk up on every monitor it owns, and start
+                         what its manifest declares
   zde workspace next|prev
                          one along this desk's band, stopping at its ends
   zde nav down|up        the window along the stack, else the desk beside this

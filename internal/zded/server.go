@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -164,6 +165,9 @@ type Server struct {
 	jrn     *journal.Journal
 	niri    Compositor
 	desks   Desks
+	// launch starts one app instance. A field so a test can watch what a switch
+	// asks for without a container runtime under it.
+	launch func(address string) error
 
 	notifier Notifier
 
@@ -179,7 +183,7 @@ func New(version string, jrn *journal.Journal, compositor Compositor, desks Desk
 	if desks == nil {
 		desks = noDesks{}
 	}
-	return &Server{version: version, jrn: jrn, niri: compositor, desks: desks}
+	return &Server{version: version, jrn: jrn, niri: compositor, desks: desks, launch: zinc.Run}
 }
 
 // DefaultSocket is where the socket lives: the runtime directory, which the
@@ -1322,6 +1326,13 @@ func (s *Server) switchFrom(target, from string) Response {
 			s.jrn.SetLastDesk(from)
 		}
 	}
+	if from != target {
+		// A desk is what its manifest declares, so entering one brings it up
+		// (docs/model.md, section 5). Only on a change of desk: re-entering the
+		// desk you are standing on is what half the nav keys do, and each pass
+		// would be a launch attempt per declared app.
+		s.startApps(target)
+	}
 	// Names as strings, not as their parts. A workspace name is one thing
 	// everywhere else in zde - in niri, on the bar, in the journal - and the
 	// socket is the wire a shell adapter will read, so it says the same thing.
@@ -1330,6 +1341,41 @@ func (s *Server) switchFrom(target, from string) Response {
 		focused = append(focused, n.String())
 	}
 	return ok(focused)
+}
+
+// startApps runs what the desk declares, in the background.
+//
+// Behind the answer, not in front of it: a launch is podman work measured in
+// seconds, and the switch it belongs to is a keypress. The person is already
+// looking at the desk while these arrive.
+//
+// Where a window lands is still adoption's business (docs/model.md, launch
+// placement). A manifest can pin an app to a workspace and nothing here reads
+// that yet, so the windows open where niri opens windows - on the workspace in
+// front of you.
+func (s *Server) startApps(target string) {
+	all, _, err := s.desks.All()
+	if err != nil {
+		return // ensureDeclared already reported this one
+	}
+	d, ok := all[target]
+	if !ok || len(d.Apps) == 0 {
+		return
+	}
+	apps := d.Apps
+	go func() {
+		for _, app := range apps {
+			address := zinc.Address(app.App, app.Instance)
+			if err := s.launch(address); err != nil {
+				// The daemon's log is where this belongs: it is one app on one
+				// desk, and taking the switch down over it would make an
+				// unbuildable image cost somebody their whole desk. "Already
+				// running" arrives here too, which is worth reading rather than
+				// filtering - it is how you find out a desk started twice.
+				log.Printf("zded: starting %s: %v", address, err)
+			}
+		}
+	}()
 }
 
 func (s *Server) status() Status {

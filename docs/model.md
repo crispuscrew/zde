@@ -105,7 +105,12 @@ on_exit:  []
   variants needing their own security posture get their own reviewable YAML.
   Instances = identical-config multiplicity; inheritance = config variation.
 - `background: keep | pause` - pause freezes off-desk (`podman pause`),
-  resumes on enter. Default keep.
+  resumes on enter. Default keep. Not implemented: nothing pauses anything yet.
+- Entering the desk starts these, once, behind the switch rather than in front
+  of it - `zcr run <app>@<instance> --exec` per app, and a second entry is
+  refused by zinc rather than tracked here. Where a window lands is still
+  adoption's: the `monitor` and `workspace` pins above are declared and not yet
+  read by the launcher, so windows open where niri opens windows.
 
 ## 6. The action map
 
