@@ -1287,6 +1287,17 @@ func (s *Server) switchDesk(target string) Response { return s.switchFrom(target
 // one has to ask before it moves the window, because a moved window can be
 // what the answer is read off afterwards.
 func (s *Server) switchFrom(target, from string) Response {
+	// The desk zde thinks you are on, read before anything moves. Not `from`
+	// below and not the compositor: ensureDeclared names this desk's workspaces
+	// into existence, one of them may be the focused one, and the watcher
+	// records that as arriving on the desk - so by the time the switch is done,
+	// every other answer to "where were you" is the desk you were going to.
+	// That made the first entry to a declared desk - a desk that until now
+	// existed only as a manifest - the one switch that started nothing.
+	was := ""
+	if s.jrn != nil {
+		was = s.jrn.State().OnDesk
+	}
 	if err := s.ensureDeclared(target); err != nil {
 		return Response{Error: err.Error()}
 	}
@@ -1305,15 +1316,6 @@ func (s *Server) switchFrom(target, from string) Response {
 	// go back to. A failure to read it is not worth refusing the switch over.
 	if from == "" {
 		from = s.activeDesk(m)
-	}
-	// The desk zde thinks you were on, which is not what `from` answers here.
-	// ensureDeclared has already named this desk's workspaces into existence,
-	// and one of them may be the focused one - so on the first entry to a
-	// declared desk, the desk you are "coming from" reads as the one you are
-	// going to. The journal is the record that has not moved yet.
-	was := ""
-	if s.jrn != nil {
-		was = s.jrn.State().OnDesk
 	}
 
 	for _, n := range plan {
