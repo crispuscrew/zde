@@ -68,7 +68,7 @@ let
     monitors:
       winit: { workspaces: [code, notes] }
     apps:
-      - { app: example-instanced, instance: vshop, monitor: winit, workspace: code }
+      - { app: absent-app, instance: vshop, monitor: winit, workspace: code }
     '       > /tmp/desks/vshop.yaml
 
         # niri, nested and headless. cage gives it a Wayland host; pixman and
@@ -585,25 +585,37 @@ let
         # the VM - it is `zcr where`, run by zde, and the point of asking is
         # that the layout stays zinc's to change.
         XDG_STATE_HOME=/tmp/state zde desk apps vshop 2>&1 | tee /tmp/apps.txt
-        awk '$1=="example-instanced@vshop" && $2=="vshop.winit.code" &&
-             $3=="/tmp/state/zinc/example-instanced/vshop" { found=1 }
+        awk '$1=="absent-app@vshop" && $2=="vshop.winit.code" { found=1 }
              END { exit !found }' /tmp/apps.txt || {
-          echo "zde desk apps did not say where that instance keeps its state:"
+          echo "zde desk apps did not name the app the manifest declares:"
+          cat /tmp/apps.txt; exit 1
+        }
+        # And it asked zinc rather than answering for it. This desk names an app
+        # zinc does not have, so what comes back is zinc's refusal, passed
+        # through - which is the same round trip that fills the state column for
+        # an app that exists (asserted directly against zcr further up, where it
+        # costs nothing).
+        grep -q 'no app "absent-app" defined' /tmp/apps.txt || {
+          echo "zde desk apps did not report what zcr said about the app:"
           cat /tmp/apps.txt; exit 1
         }
         # And the desk you are on, which is the form a keybind would use: the
         # switch above put us on vshop.
         XDG_STATE_HOME=/tmp/state zde desk apps 2>&1 | tee /tmp/apps-here.txt
-        grep -q 'example-instanced@vshop' /tmp/apps-here.txt || {
+        grep -q 'absent-app@vshop' /tmp/apps-here.txt || {
           echo "zde desk apps, on vshop, did not list vshop's apps:"
           cat /tmp/apps-here.txt; exit 1
         }
-        # And entering the desk tried to start what it declares. The attempt is
-        # what a VM can prove: there is no image to pull in here, so the launch
-        # fails and says so - which is the whole chain anyway, from a desk
-        # switch through the manifest to zcr with the address the manifest
-        # spells. A desk that starts nothing writes nothing here.
-        waitfor 20 grep -q 'starting example-instanced@vshop' /tmp/zded-live.log || {
+        # And entering the desk tried to start what it declares: the whole chain,
+        # from a switch through the manifest to zcr with the address the
+        # manifest spells. A desk that starts nothing writes nothing here.
+        #
+        # The app is one zinc does not have, deliberately. A defined app would
+        # send podman looking for an image this VM has no network to fetch, on
+        # every switch in this script, and the first thing that broke was an
+        # assertion three screens away about a bar reconnecting. A refusal
+        # arrives immediately and proves the same wiring.
+        waitfor 20 grep -q 'starting absent-app@vshop' /tmp/zded-live.log || {
           echo "switching to vshop did not try to start the app it declares:"
           cat /tmp/zded-live.log; exit 1
         }
