@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -16,6 +17,33 @@ import (
 // JSON reply per line. Replies are given in order, so a test says what the
 // compositor answers and nothing else.
 func fakeNiri(t *testing.T, replies ...string) string {
+	return fakeNiriAsked(t, nil, replies...)
+}
+
+// asked is what a fake niri was sent, kept for the tests where the request is
+// the thing worth checking: an action name is a string all the way to the
+// compositor, so a typo in one is invisible to Go and shows up only as a niri
+// that refuses it. Locked because the connection is served from a goroutine
+// and the test reads this from its own.
+type asked struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (a *asked) add(line string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.lines = append(a.lines, line)
+}
+
+func (a *asked) all() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.lines...)
+}
+
+// fakeNiriAsked is fakeNiri that keeps what it was asked. nil records nothing.
+func fakeNiriAsked(t *testing.T, sent *asked, replies ...string) string {
 	t.Helper()
 	// A short path: a unix socket address is capped near 108 bytes and
 	// t.TempDir is long enough to matter.
@@ -38,8 +66,12 @@ func fakeNiri(t *testing.T, replies ...string) string {
 		defer conn.Close()
 		r := bufio.NewReader(conn)
 		for _, rep := range replies {
-			if _, err := r.ReadBytes('\n'); err != nil {
+			line, err := r.ReadBytes('\n')
+			if err != nil {
 				return
+			}
+			if sent != nil {
+				sent.add(strings.TrimSpace(string(line)))
 			}
 			if _, err := conn.Write(append(oneLine(rep), '\n')); err != nil {
 				return
@@ -152,6 +184,78 @@ func TestDeskMapUnpluggedMonitor(t *testing.T) {
 	}
 	if got := m.Displaced(); len(got) != 1 || got[0].Monitor != "DP-1" {
 		t.Errorf("Displaced = %v, want the workspace with its home intact", got)
+	}
+}
+
+// The join the window picker is made of: niri says which workspace a window is
+// on by id, and a person recognises the workspace by its zde name. Both replies
+// are read here so that the two describe one moment.
+func TestOpenWindows(t *testing.T) {
+	path := fakeNiri(t,
+		`{"Ok":{"Windows":[
+			{"id":7,"title":"invoice.md","app_id":"nvim","workspace_id":1,"is_focused":true},
+			{"id":9,"title":null,"app_id":"foot","workspace_id":2,"is_focused":false},
+			{"id":11,"title":"floating","app_id":"foot","workspace_id":null,"is_focused":false}
+		]}}`,
+		`{"Ok":{"Workspaces":[
+			{"id":1,"idx":1,"name":"vshop.DP-1.code","output":"DP-1","is_focused":true},
+			{"id":2,"idx":2,"name":null,"output":"DP-1","is_focused":false}
+		]}}`,
+	)
+	got, err := dial(t, path).OpenWindows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("OpenWindows = %+v, want three", got)
+	}
+	want := OpenWindow{ID: 7, Title: "invoice.md", AppID: "nvim", Workspace: "vshop.DP-1.code"}
+	if got[0] != want {
+		t.Errorf("first window = %+v, want %+v", got[0], want)
+	}
+	// A workspace nothing has named yet is not a workspace called "2": the id
+	// means nothing outside the compositor, so the column is left empty and the
+	// window is still in the list.
+	if got[1].Workspace != "" || got[1].AppID != "foot" {
+		t.Errorf("window on an unnamed workspace = %+v", got[1])
+	}
+	// A title niri reports as null is not the string "null", and a window on no
+	// workspace at all is still open.
+	if got[2].Title != "floating" || got[2].Workspace != "" {
+		t.Errorf("window on no workspace = %+v", got[2])
+	}
+	if got[1].Title != "" {
+		t.Errorf("title = %q, want empty for a window niri gave none", got[1].Title)
+	}
+}
+
+// The action, not the reply: FocusWindow is a name and an id in a JSON object,
+// and getting either wrong reaches niri as a request it refuses. Nothing in Go
+// would notice, so this is where it is noticed.
+func TestFocusWindowAsksForThatId(t *testing.T) {
+	var sent asked
+	path := fakeNiriAsked(t, &sent, `{"Ok":"Handled"}`)
+	if err := dial(t, path).FocusWindow(9); err != nil {
+		t.Fatal(err)
+	}
+	lines := sent.all()
+	if len(lines) != 1 {
+		t.Fatalf("niri was asked %v, want one action", lines)
+	}
+	if !strings.Contains(lines[0], `"FocusWindow"`) {
+		t.Errorf("asked %s, want niri's FocusWindow action", lines[0])
+	}
+	if !strings.Contains(lines[0], `"id":9`) {
+		t.Errorf("asked %s, want the id to focus", lines[0])
+	}
+}
+
+// An action niri did not handle is not a jump that happened.
+func TestFocusWindowNotHandled(t *testing.T) {
+	path := fakeNiri(t, `{"Err":"no such window"}`)
+	err := dial(t, path).FocusWindow(9)
+	if err == nil || !strings.Contains(err.Error(), "no such window") {
+		t.Errorf("got %v, want niri's refusal", err)
 	}
 }
 

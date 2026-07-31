@@ -34,7 +34,12 @@ type Event struct {
 	// zded already has them, and a surface that has to ask before it can draw
 	// is a surface that appears in two steps.
 	Desks []string `json:"desks,omitempty"`
-	On    string   `json:"on,omitempty"`
+	// Windows is the other picker's rows. One event type with two possible
+	// payloads rather than two, because everything else about them is the same
+	// - the screen, the token, the surface that draws it - and a shell that
+	// learned to listen for one has already learned the other.
+	Windows []Window `json:"windows,omitempty"`
+	On      string   `json:"on,omitempty"`
 	// Output is the monitor to appear on: the one being looked at. A picker on
 	// every screen is not a picker.
 	Output string `json:"output,omitempty"`
@@ -46,6 +51,11 @@ type Event struct {
 
 // EventPicker asks the shell to show the desk switcher.
 const EventPicker = "picker"
+
+// EventWindows asks it to show the open windows instead. A kind of its own and
+// not a flag on the picker event: a shell that has never heard of it ignores
+// the line rather than drawing a desk picker with no desks in it.
+const EventWindows = "windows"
 
 // MethodShown is how a listener says it did the thing: the token from the
 // event it acted on. Unsolicited ones are ignored, so this cannot be used to

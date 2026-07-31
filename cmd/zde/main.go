@@ -43,6 +43,13 @@ func run(args []string) error {
 		return appList()
 	case len(args) == 2 && args[0] == "desk" && args[1] == "switcher":
 		return switcher()
+	case len(args) == 2 && args[0] == "window" && args[1] == "jump-to":
+		return jumpTo()
+	case len(args) == 3 && args[0] == "window" && args[1] == "jump-to":
+		// The id from the list, spent as it is read. It goes through focusDesk
+		// because a jump answers the way every other verb that moves the
+		// session answers: the workspace it left focused.
+		return focusDesk("window.jump-to", args[2])
 	case len(args) == 3 && args[0] == "desk" && args[1] == "switch":
 		return switchDesk(args[2])
 	case len(args) == 3 && args[0] == "desk" && args[1] == "move-window":
@@ -320,6 +327,32 @@ func switcher() error {
 	return nil
 }
 
+// jumpTo asks for the window picker. The same bargain as the desk switcher:
+// with a shell listening this prints nothing, and without one it prints the
+// list, so that the key does something on a session whose shell has died - and
+// so that what is open is greppable at all.
+func jumpTo() error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	var j zded.Jump
+	if err := c.Call("window.jump-to", &j); err != nil {
+		return err
+	}
+	if j.Shown {
+		return nil
+	}
+	// id, workspace, app, title - tab separated, id first so that the id is
+	// cut from column one and handed straight back to `zde window jump-to`,
+	// and the title last because it is the only field that can be long.
+	for _, w := range j.Windows {
+		fmt.Printf("%d\t%s\t%s\t%s\n", w.ID, dash(w.Workspace), dash(w.AppID), w.Title)
+	}
+	return nil
+}
+
 func deskList() error {
 	c, err := zded.Dial()
 	if err != nil {
@@ -410,6 +443,10 @@ func usage() {
   zde app launch NAME    run what this machine calls that (Mod+t, Mod+e)
   zde system lock        lock the screen (Mod+Ctrl+semicolon)
   zde app list           what it can start
+  zde window jump-to [ID]
+                         open the window picker (Mod+w); prints the list when
+                         no shell is up - id, workspace, app, title - and with
+                         an id goes straight to that window, desk and all
   zde desk switch NAME   bring a desk up on every monitor it owns
   zde workspace next|prev
                          one along this desk's band, stopping at its ends
