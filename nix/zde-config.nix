@@ -1,5 +1,7 @@
 # Build the zde runtime config from the keymap source of truth: the niri
-# config.kdl, the generated binds beside it, and the keymap cheatsheet. Shared
+# config.kdl, the generated binds beside it, and the keymap in both renderings
+# a person reads it in - markdown to look at, plain text for a key to show them
+# in a terminal (`zde keys`). Shared
 # by the flake package and the home module, so both produce byte-identical
 # output.
 {
@@ -16,7 +18,8 @@ runCommand "zde-config" { nativeBuildInputs = [ niri ]; } ''
   ${zde}/bin/zde-keymap \
     -in ${../common/keymap/keymap.yaml} \
     -kdl "$out/binds.kdl" \
-    -cheatsheet "$out/keymap-cheatsheet.md"
+    -cheatsheet "$out/keymap-cheatsheet.md" \
+    -text "$out/keymap.txt"
 
   # niri's own parser, on the tree as a machine will actually see it: the
   # config symlinked into place with its includes beside it, local and dynamic

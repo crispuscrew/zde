@@ -1,4 +1,5 @@
-// zde-keymap: keymap.yaml -> niri binds (KDL) + cheatsheet (markdown).
+// zde-keymap: keymap.yaml -> niri binds (KDL) + cheatsheet (markdown, and the
+// plain text `zde keys` prints).
 package main
 
 import (
@@ -15,6 +16,7 @@ func main() {
 	in := flag.String("in", "common/keymap/keymap.yaml", "keymap source")
 	kdl := flag.String("kdl", "", "write the niri binds here (default stdout)")
 	cheat := flag.String("cheatsheet", "", "write the markdown cheatsheet here")
+	text := flag.String("text", "", "write the plain text keymap here (what zde keys prints)")
 	check := flag.Bool("check", false, "validate the keymap and exit")
 	flag.Parse()
 
@@ -24,8 +26,8 @@ func main() {
 	if flag.NArg() != 0 {
 		fatal(fmt.Errorf("unexpected argument %q (the source is -in)", flag.Arg(0)))
 	}
-	if *check && (*kdl != "" || *cheat != "") {
-		fatal(fmt.Errorf("-check validates and writes nothing; drop -kdl and -cheatsheet"))
+	if *check && (*kdl != "" || *cheat != "" || *text != "") {
+		fatal(fmt.Errorf("-check validates and writes nothing; drop -kdl, -cheatsheet and -text"))
 	}
 
 	km, err := keymap.Load(*in)
@@ -41,6 +43,11 @@ func main() {
 	}
 	if *cheat != "" {
 		if err := out(*cheat, keymap.EmitCheatsheet(km)); err != nil {
+			fatal(err)
+		}
+	}
+	if *text != "" {
+		if err := out(*text, keymap.EmitText(km)); err != nil {
 			fatal(err)
 		}
 	}

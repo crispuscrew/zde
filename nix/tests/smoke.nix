@@ -1405,6 +1405,32 @@ pkgs.testers.runNixOSTest {
       ]
       assert missing == [], f"binds spawn commands that are not installed: {missing}"
 
+      # And one level down: a bind that spawns `zde app launch help` resolves to
+      # zde, which the check above is satisfied by - what the name resolves to
+      # lives in apps.json, and a program missing there is the same silent key
+      # with one more step in front of it.
+      import json
+      apps = json.loads(machine.succeed("cat /home/zde/.config/zde/apps.json"))
+      assert "help" in apps, f"no help app, so Mod+slash opens nothing: {apps}"
+      for name, argv in apps.items():
+          machine.succeed(f"su -l zde -c 'test -x {argv[0]}'")
+
+      # The keymap as a key shows it. `zde help` printed usage to a stderr no
+      # keypress has, which on a desktop where most keys are silent made the one
+      # key that says which keys work another silent one.
+      keys = machine.succeed("su -l zde -c 'zde keys'")
+      assert "Mod+Tab" in keys, keys
+      # Plain text, not the markdown cheatsheet: this one goes through a pager.
+      assert "|" not in keys and "`" not in keys, keys
+
+      # Screenshots are niri's own actions rather than a `zde capture` nobody
+      # has written. Asserted in the generated binds because the check above
+      # cannot see it: those keys spawned `zde`, which is installed, and did
+      # nothing at all when pressed.
+      binds = machine.succeed("cat /home/zde/.config/niri/binds.kdl")
+      for shot in ("{ screenshot; }", "{ screenshot-screen; }", "{ screenshot-window; }"):
+          assert shot in binds, f"no {shot} bind: {binds}"
+
       # The unit that starts the daemon with the session. Every check in this
       # file runs zded by hand, which is the one thing a person never does:
       # on a login it is niri that brings up graphical-session.target, and

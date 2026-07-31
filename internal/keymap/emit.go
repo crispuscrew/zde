@@ -77,3 +77,40 @@ func EmitCheatsheet(km *Keymap) string {
 	}
 	return b.String()
 }
+
+// EmitText renders the same cheatsheet as plain text, which is what `zde keys`
+// prints.
+//
+// Two renderings of one list rather than one, because they are read in
+// different places: the markdown is a document, and this is a terminal. Piping
+// the markdown through a pager gives somebody a screen of pipes and backticks
+// to read around; grepping it gives them a table row. Tab separated, key first,
+// like every other list zde prints - so `zde keys | grep Mod+u` answers "what
+// does that key do" in one line.
+//
+// A blank line and a bare group name between sections, and no other decoration:
+// it goes through less, and it goes into a bug report.
+func EmitText(km *Keymap) string {
+	var b strings.Builder
+	for _, g := range groups {
+		first := true
+		for _, bind := range km.Binds {
+			if bind.Entry.Group != g {
+				continue
+			}
+			if first {
+				if b.Len() > 0 {
+					b.WriteString("\n")
+				}
+				b.WriteString(g + "\n")
+				first = false
+			}
+			desc := bind.Entry.Desc
+			if bind.Arg != "" {
+				desc += " " + bind.Arg
+			}
+			b.WriteString("  " + bind.Key + "\t" + bind.Action + "\t" + desc + "\n")
+		}
+	}
+	return b.String()
+}
