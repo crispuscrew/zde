@@ -20,8 +20,12 @@ import (
 
 // The names the desktop notification spec fixes. Every app that has ever sent
 // a notification expects exactly these.
+//
+// BusName is exported because a session where it is not zded's is a session
+// where notifications go somewhere nobody is looking, and doctor has to be
+// able to say which name it means (internal/doctor).
 const (
-	busName   = "org.freedesktop.Notifications"
+	BusName   = "org.freedesktop.Notifications"
 	busPath   = "/org/freedesktop/Notifications"
 	busIface  = "org.freedesktop.Notifications"
 	specLevel = "1.2"
@@ -132,14 +136,14 @@ func Serve(sink Sink, version string) (*Server, error) {
 	// DoNotQueue: without it, losing the race leaves zded waiting to become
 	// the server later, which is a session where notifications work after
 	// something else exits and not before.
-	reply, err := conn.RequestName(busName, dbus.NameFlagDoNotQueue)
+	reply, err := conn.RequestName(BusName, dbus.NameFlagDoNotQueue)
 	if err != nil {
 		conn.Close()
 		return nil, err
 	}
 	if reply != dbus.RequestNameReplyPrimaryOwner {
 		conn.Close()
-		return nil, errors.New("another notification server already has " + busName)
+		return nil, errors.New("another notification server already has " + BusName)
 	}
 	return s, nil
 }

@@ -619,6 +619,34 @@ let
           cat /tmp/status-noshell.txt; exit 1
         }
 
+        # And doctor, which is all of that on one screen. This is as healthy as
+        # this script ever gets - a daemon answering, a compositor it can see,
+        # the notification name taken, a manifest that parses - so nothing may
+        # fail and the exit status has to be zero. The units are inactive here
+        # (this zded was started by hand) and no machine anywhere has zcr yet,
+        # which is exactly why those are warnings: neither is a session
+        # somebody cannot work in, and a command that exits non-zero on every
+        # machine is one nobody reads the output of.
+        if ! zde doctor >/tmp/doctor.txt 2>&1; then
+          echo "doctor failed a check on a session that is working:"
+          cat /tmp/doctor.txt; exit 1
+        fi
+        cat /tmp/doctor.txt
+        for line in 'ok +zded' 'ok +compositor +connected' 'ok +notify' 'warn +shell' 'ok +locker'; do
+          grep -qE "^$line" /tmp/doctor.txt || {
+            echo "doctor has no '$line' line:"; cat /tmp/doctor.txt; exit 1
+          }
+        done
+        # The locker is the line this command is most worth having: swaylock is
+        # what layer 1 configures and /etc/pam.d/swaylock is what lets it
+        # authenticate, so a machine where that file is not there locks and
+        # never unlocks. The python half of this test asserts the file exists;
+        # this asserts doctor is the thing that would notice if it stopped.
+        grep -q '/etc/pam.d/swaylock' /tmp/doctor.txt || {
+          echo "doctor does not say what the screen lock would authenticate against:"
+          cat /tmp/doctor.txt; exit 1
+        }
+
         # Mod+t, which is `zde app launch terminal`. The one thing a desktop has
         # to be able to do: until this existed, a session could be entered and
         # nothing could be started from it, and the live image carried a bind of
@@ -704,6 +732,18 @@ let
         grep -q 'broken.yaml' /tmp/status-bad.txt || {
           echo "a manifest could not be read and zde status did not mention it:"
           cat /tmp/status-bad.txt; exit 1
+        }
+        # And doctor says so in both ways it has: the line that names the file,
+        # and the exit status - which is the half that makes this worth piping
+        # into a bug report. The same command exited zero a few lines up, so
+        # between the two the status is asserted in both directions.
+        if zde doctor >/tmp/doctor-bad.txt 2>&1; then
+          echo "a manifest could not be read and doctor still passed:"
+          cat /tmp/doctor-bad.txt; exit 1
+        fi
+        grep -qE '^fail +manifests +.*broken.yaml' /tmp/doctor-bad.txt || {
+          echo "doctor failed and does not name the manifest it failed over:"
+          cat /tmp/doctor-bad.txt; exit 1
         }
 
         # niri's own client agrees that both declared workspaces are there.

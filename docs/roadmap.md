@@ -43,7 +43,9 @@ attribution; asks 5-6 land with their consumers.
 
 ## 0.3 - Comfort and ops
 
-- doctor + the remaining runbooks (the update one exists: [`update.md`](update.md)).
+- doctor's other half: the runbooks, and the agent that reads them (the update
+  runbook exists: [`update.md`](update.md)). The state collection landed early
+  as `zde doctor`, which is one line per check and no agent at all.
 - update: staleness/CVE collection, agent-drafted re-pin, human signs.
 - resources: `desk.pause`, background policies, per-desk cost widgets.
 - netview: per-app connections/rates, nft counters (zinc ask 6), `app-cut`.

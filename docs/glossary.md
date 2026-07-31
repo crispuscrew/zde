@@ -24,7 +24,7 @@ paragraph, it gets an entry here or it does not ship.
 | **attn** | the attention router: notifications, queue, display policy |
 | **target** | the media player all media actions route to (always visible) |
 | **vox** | desk-scoped, sandboxed voice control |
-| **doctor** | state collector + runbook-armed agent launcher |
+| **doctor** | state collector + runbook-armed agent launcher; `zde doctor` is the collector half |
 | **zded** | the zde background daemon: desk state, queue, notification server, IPC |
 | **shell** | the GUI layer (bar, overlays, widgets); a thin adapter over zded IPC |
 | **palette** | the command surface: every action reachable by name |
