@@ -68,7 +68,7 @@ let
     monitors:
       winit: { workspaces: [code, notes] }
     apps:
-      - { app: absent-app, instance: vshop, app_id: foot, monitor: winit, workspace: code }
+      - { app: absent-app, instance: vshop, app_id: zde-pinned-probe, monitor: winit, workspace: code }
     '       > /tmp/desks/vshop.yaml
 
         # niri, nested and headless. cage gives it a Wayland host; pixman and
@@ -630,7 +630,7 @@ let
           echo "the desk pins an app and niri was never told:"
           cat ~/.config/niri/dynamic.kdl; exit 1
         }
-        grep -q 'match app-id="\^foot\$"' ~/.config/niri/dynamic.kdl || {
+        grep -q 'match app-id="\^zde-pinned-probe\$"' ~/.config/niri/dynamic.kdl || {
           echo "the rule does not match the app id the manifest names:"
           cat ~/.config/niri/dynamic.kdl; exit 1
         }
@@ -638,6 +638,44 @@ let
           echo "zded wrote a dynamic.kdl niri will not load:"
           cat ~/.config/niri/dynamic.kdl; exit 1
         }
+
+        # And the window actually lands there. A rule in a file niri accepted is
+        # not a window in the right place: what this proves is the whole of it,
+        # from the manifest's pin to where the thing opened. foot names its own
+        # app id, which is how a window arrives claiming to be the app the desk
+        # pinned without a container in the way.
+        #
+        # From another workspace on purpose. Opening it on the pinned one would
+        # pass with no rule at all - that is where new windows go.
+        nirimsg action focus-workspace vshop.winit.notes >/dev/null
+        foot --app-id=zde-pinned-probe -e sleep 120 >/tmp/pinned.log 2>&1 &
+        landed() {
+          nirimsg --json windows |
+            tr ',' '\n' | grep -q '"app_id":"zde-pinned-probe"'
+        }
+        if ! waitfor 60 landed; then
+          echo "the pinned window never opened:"; cat /tmp/pinned.log; exit 1
+        fi
+        pinned_ws=$(nirimsg --json windows | tr '{' '\n' |
+          grep '"app_id":"zde-pinned-probe"' | tr ',' '\n' |
+          grep '"workspace_id"' | head -1 | tr -dc '0-9')
+        want_ws=$(nirimsg --json workspaces | tr '{' '\n' |
+          grep '"name":"vshop.winit.code"' | tr ',' '\n' |
+          grep '"id"' | head -1 | tr -dc '0-9')
+        if [ -z "$pinned_ws" ] || [ "$pinned_ws" != "$want_ws" ]; then
+          echo "the pinned window opened on workspace $pinned_ws, and the desk pins it to $want_ws:"
+          nirimsg windows; nirimsg workspaces; exit 1
+        fi
+        # Closed, because everything below was written for a strip with a known
+        # set of windows on it.
+        nirimsg action focus-window --id "$(nirimsg --json windows | tr '{' '\n' |
+          grep '"app_id":"zde-pinned-probe"' | tr ',' '\n' |
+          grep '"id"' | head -1 | tr -dc '0-9')" >/dev/null
+        nirimsg action close-window >/dev/null
+        gone() { ! landed; }
+        if ! waitfor 30 gone; then
+          echo "the pinned window would not close:"; nirimsg windows; exit 1
+        fi
 
         # zcr is on the session's PATH, said by the daemon that has that PATH.
         # A machine where this is no is one whose desks declare apps it cannot
