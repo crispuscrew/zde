@@ -188,4 +188,11 @@ var registry = map[string]Entry{
 	"system.brightness-dn": {Group: "system", Desc: "brightness down", Spawn: []string{"brightnessctl", "set", "5%-"}, Repeat: true, WhenLocked: true},
 	"system.layout-switch": {Group: "system", Desc: "switch keyboard layout (language)", Native: "switch-layout \"next\""},
 	"system.notif-center":  {Group: "system", Desc: "the notification center", Spawn: []string{"zde", "system", "notif-center"}},
+	// doctor is a screen of text and there is nothing yet to show one: a bind
+	// spawns a process whose stdout goes to niri's log, so a chord for this
+	// would be a key that answers into a file nobody is reading. Registered
+	// anyway, because the action map has it (docs/model.md, section 6) and the
+	// palette runs actions by name - the chord comes with a surface to print
+	// into. Until then it is `zde doctor` in a terminal.
+	"system.doctor": {Group: "system", Desc: "the doctor: every check on one screen", Spawn: []string{"zde", "doctor"}},
 }

@@ -133,6 +133,8 @@ type Status struct {
 	// delivery.md). A zde machine without it can run nothing sandboxed, which
 	// is most of what a zde machine is for - and the session's PATH is not the
 	// one a terminal has, so this is the daemon's answer and not the CLI's.
+	// Both `zde status` and `zde doctor` print it: status is what a person runs
+	// first, and one line there is cheaper than the wrong diagnosis.
 	Zinc bool `json:"zinc"`
 	// Manifests that could not be read, most recently seen. A desk quietly
 	// missing is the failure this exists to stop being quiet: the daemon
@@ -1350,6 +1352,11 @@ func (s *Server) status() Status {
 	}
 	st.Shell = s.listeners() > 0
 	st.Notifications = s.notifier != nil
+	// Looked up per call rather than remembered from startup. PATH points at
+	// profile directories whose contents change under a running daemon, and
+	// zded outlives the switch that installs zinc - so asking every time is
+	// the difference between an answer about this machine and one about this
+	// machine at the last login.
 	_, err = exec.LookPath(zinc.Runner)
 	st.Zinc = err == nil
 	s.mu.Lock()

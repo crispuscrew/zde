@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/crispuscrew/zde/internal/apps"
+	"github.com/crispuscrew/zde/internal/doctor"
 	"github.com/crispuscrew/zde/internal/journal"
 	"github.com/crispuscrew/zde/internal/zded"
 	"github.com/crispuscrew/zde/internal/zinc"
@@ -98,6 +99,8 @@ func run(args []string) error {
 		return nil
 	case "status":
 		return status()
+	case "doctor":
+		return runDoctor()
 	case "desk list":
 		return deskList()
 	default:
@@ -231,6 +234,21 @@ func status() error {
 	// looking through the directory for which one.
 	for _, bad := range st.BadManifests {
 		fmt.Printf("manifest   %s\n", bad)
+	}
+	return nil
+}
+
+// runDoctor is every check on one screen (internal/doctor). The report goes to
+// stdout whole, because somebody is going to paste it into a bug report; the
+// summary goes to stderr as an error, which is also what makes the exit status
+// non-zero. Only failures do that - a machine with no zinc yet has warnings on
+// every line it can have them on, and a command that always exits non-zero is
+// one nobody looks at.
+func runDoctor() error {
+	report := doctor.Run()
+	fmt.Print(report)
+	if n := report.Failed(); n > 0 {
+		return fmt.Errorf("zde doctor: %d of %d checks failed", n, len(report))
 	}
 	return nil
 }
@@ -438,6 +456,11 @@ func usage() {
 	fmt.Fprint(os.Stderr, `zde - the command line into zded
 
   zde status             what zded and the compositor are doing
+  zde doctor             every check on one screen: the daemon, the compositor,
+                         the shell, notifications, the units, the manifests and
+                         whether the screen lock could accept a password.
+                         Non-zero when something failed, so it is worth piping
+                         into a bug report
   zde desk list          the desks that exist right now
   zde desk switcher      open the picker; prints the list when no shell is up
   zde app launch NAME    run what this machine calls that (Mod+t, Mod+e)

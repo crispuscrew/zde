@@ -281,8 +281,9 @@ show up in use.
   fingers, and `Mod+Ctrl+semicolon` as a direct chord. Then unlock it. Deliberately
   not tested in CI: a VM with no input devices that locks itself cannot unlock
   itself. What CI does check is the half that strands you - that the locker has
-  a PAM service and so can accept a password at all. Try it before you need it
-  in a cafe.
+  a PAM service and so can accept a password at all - and `zde doctor` answers
+  the same question on the machine you are sitting at, before you find out the
+  hard way. Try it before you need it in a cafe.
 - **`Mod+Tab` when the shell is unwell.** Kill the bar (`systemctl --user stop
   zde-bar`) and press it: you should get the desk list printed to wherever the
   key's output goes, rather than nothing at all. The daemon waits 200ms for the
@@ -353,7 +354,7 @@ Not bugs, do not report them:
   | `Mod+w` (jump to window) | `Mod+m` (modes), `Mod+n`, `Mod+c`, `Mod+p`, `Mod+q` |
   | `Mod+g` (zinc's launcher), `Mod+Ctrl+semicolon` (lock) | `Mod+slash` (help: it prints, to a stderr no key has) |
   | `Mod+Shift+Tab` (last desk) | and the rest of the system group |
-  | `zde workspace next\|prev`, `zde desk *`, `zde queue *`, `zde status` | |
+  | `zde workspace next\|prev`, `zde desk *`, `zde queue *`, `zde status`, `zde doctor` | |
   | the niri natives: columns, monitors, fullscreen, float, close, overview, consume/expel | |
 
   `Mod+Shift+Escape` is worth singling out: panic is the key you reach for
