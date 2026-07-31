@@ -173,6 +173,14 @@ its units are where systemd looks; it never logs anybody in.
 - `Mod+g` opens zinc's launcher (`zlg`) over an empty list. Empty is right on
   a fresh machine - nothing has defined an app yet - and a key that draws
   nothing at all is the report.
+- `Mod+slash` opens the keymap in a pager, and `q` closes it. It is the key
+  worth pressing first on a machine where most keys are silent: it is the list
+  of the ones that are not.
+- `Mod+Print` takes a screenshot and puts it on the clipboard. `Mod+Shift+s`
+  opens niri's region picker, `Mod+Ctrl+w` takes the focused window. They land
+  where niri's `screenshot-path` default puts them, `~/Pictures/Screenshots`,
+  and whether that directory gets created on a machine that has never had one
+  is the part only a real session answers.
 
 ## 2. The input layer
 
@@ -352,9 +360,11 @@ Not bugs, do not report them:
   | `Mod+r` (regulars), `Mod+u` (queue jump) | `Mod+semicolon` (palette) |
   | `Mod+t`, `Mod+e` (terminal, editor) | `Mod+Shift+t`, `Mod+Shift+e` (launch-at) |
   | `Mod+w` (jump to window) | `Mod+m` (modes), `Mod+n`, `Mod+c`, `Mod+p`, `Mod+q` |
-  | `Mod+g` (zinc's launcher), `Mod+Ctrl+semicolon` (lock) | `Mod+slash` (help: it prints, to a stderr no key has) |
-  | `Mod+Shift+Tab` (last desk) | and the rest of the system group |
-  | `zde workspace next\|prev`, `zde desk *`, `zde queue *`, `zde status`, `zde doctor` | |
+  | `Mod+g` (zinc's launcher), `Mod+Ctrl+semicolon` (lock) | and the rest of the system group |
+  | `Mod+slash` (the keymap, in a pager) | |
+  | `Mod+Print`, `Mod+Shift+s`, `Mod+Ctrl+w` (screenshots) | |
+  | `Mod+Shift+Tab` (last desk) | |
+  | `zde workspace next\|prev`, `zde desk *`, `zde queue *`, `zde status`, `zde doctor`, `zde keys` | |
   | the niri natives: columns, monitors, fullscreen, float, close, overview, consume/expel | |
 
   `Mod+Shift+Escape` is worth singling out: panic is the key you reach for

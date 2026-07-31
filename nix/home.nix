@@ -13,6 +13,10 @@ let
   # keymap source of truth. Same derivation the flake exposes.
   zdeConfig = pkgs.callPackage ./zde-config.nix { };
   zdeTools = pkgs.callPackage ./zde.nix { };
+
+  # Named once because two defaults want it: the terminal itself, and the help
+  # key, which is a pager in a terminal.
+  defaultTerminal = [ (lib.getExe pkgs.foot) ];
   zdeShell = pkgs.callPackage ./shell.nix { };
 
   # Whether anything under zde.niri.xkb was set. niri merges a later input
@@ -131,7 +135,7 @@ in
     # start using, and foot is small, starts without a GPU, and is what the live
     # image and the tests already run. Name another and this stops being used.
     zde.apps = {
-      terminal = lib.mkDefault [ (lib.getExe pkgs.foot) ];
+      terminal = lib.mkDefault defaultTerminal;
       editor = lib.mkDefault [
         (lib.getExe pkgs.foot)
         "-e"
@@ -149,6 +153,36 @@ in
         "--ignore-empty-password"
         "--show-failed-attempts"
       ];
+      # What Mod+slash opens. A key that shows you the keys has to draw
+      # somewhere, and until the shell has a surface for it the somewhere is a
+      # terminal - so help is an app like any other, which also means a machine
+      # that prefers a different one says so in the same place it says
+      # everything else.
+      #
+      # The default terminal and not cfg.apps.terminal: a default that reads
+      # the option it is a default for is infinite recursion, which the module
+      # system finds at eval and nobody wants to meet at a rebuild. So a
+      # machine that changes its terminal and wants help in that one sets
+      # zde.apps.help too - `zde app list` prints both argvs side by side,
+      # which is where that is noticed.
+      #
+      # -e is how every terminal worth the name takes a command. The pager is
+      # pointed straight at the file `zde keys` prints rather than at
+      # `zde keys | less`, because a pipe needs a shell, and a shell inside a
+      # default argv is a quoting problem waiting for somebody's terminal to be
+      # the one that disagrees.
+      #
+      # Paged because the keymap is a screen and a bit: without it the answer
+      # scrolls past and the terminal closes on it.
+      help = lib.mkDefault (
+        defaultTerminal
+        ++ [
+          "-e"
+          (lib.getExe pkgs.less)
+          "-R"
+          "${config.xdg.configHome}/zde/keymap.txt"
+        ]
+      );
     };
 
     # The niri config, and the binds it includes. Regenerated on every switch,
@@ -184,8 +218,14 @@ in
         '';
         force = true;
       };
-      # The cheatsheet the help widget (system.help) shows.
+      # The cheatsheet the help widget (system.help) will show when there is
+      # one to show it.
       "zde/keymap-cheatsheet.md".source = "${zdeConfig}/keymap-cheatsheet.md";
+
+      # What `zde keys` prints, which is what Mod+slash opens today. Installed
+      # rather than rendered by the CLI: the binds a machine actually has come
+      # from this build, so the list it shows should come from the same one.
+      "zde/keymap.txt".source = "${zdeConfig}/keymap.txt";
 
       # What `zde app launch` reads. Generated, because the keymap's names and
       # the machine's programs are two different things and this is the seam.
@@ -215,6 +255,7 @@ in
       pkgs.foot # the default terminal, and what Mod+t runs unless told otherwise
       pkgs.swaylock # the default screen lock (Mod+Ctrl+semicolon)
       pkgs.brightnessctl # system.brightness-up/dn
+      pkgs.less # the pager Mod+slash reads the keymap in
       pkgs.wireplumber # wpctl, for audio.*
       # The bar runs from the store path in its unit, so this is not what
       # starts it. It is `qs log` and `qs list`, which are the only way to find
