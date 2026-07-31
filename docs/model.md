@@ -100,7 +100,7 @@ on_exit:  []
   directory zinc says that instance keeps its state in. zde asks rather than
   joining that path itself: the layout is zinc's, and a second copy of it drifts
   the first time either side moves a directory. `{instance}` templating in mount
-  slots is zinc 0.8.2 and not there yet.
+  slots landed in zinc 0.8.2, as `{state}`, `{app}` and `{instance}`.
 - `browser-vshop` is an inherited app (`Inherits: browser`): per-project
   variants needing their own security posture get their own reviewable YAML.
   Instances = identical-config multiplicity; inheritance = config variation.

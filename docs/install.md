@@ -178,9 +178,10 @@ zde.apps.browser = [ "zcr" "run" "browser" "--exec" ];
 
 Then `zde app launch browser` runs it, and any key can. Without `--exec` zcr
 prints the launch plan and exits, which from a keybind looks exactly like
-nothing happening. An instance cannot be threaded through a launch yet - zinc
-addresses one as `browser@work` and `zcr run` does not take one until 0.8.2 -
-so a manifest's instance is declared and not yet started.
+nothing happening. An instance goes in the same argv - `zcr run browser@work
+--exec` - so two desks can each have their own browser. What no key does yet is
+start what a desk manifest declares; that is zde's next piece of work, and
+nothing in zinc blocks it any more.
 
 ## 6. When it breaks
 

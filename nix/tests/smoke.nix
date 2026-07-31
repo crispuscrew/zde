@@ -68,7 +68,7 @@ let
     monitors:
       winit: { workspaces: [code, notes] }
     apps:
-      - { app: nvim, instance: vshop, monitor: winit, workspace: code }
+      - { app: example-instanced, instance: vshop, monitor: winit, workspace: code }
     '       > /tmp/desks/vshop.yaml
 
         # niri, nested and headless. cage gives it a Wayland host; pixman and
@@ -585,8 +585,8 @@ let
         # the VM - it is `zcr where`, run by zde, and the point of asking is
         # that the layout stays zinc's to change.
         XDG_STATE_HOME=/tmp/state zde desk apps vshop 2>&1 | tee /tmp/apps.txt
-        awk '$1=="nvim@vshop" && $2=="vshop.winit.code" &&
-             $3=="/tmp/state/zinc/nvim/vshop" { found=1 }
+        awk '$1=="example-instanced@vshop" && $2=="vshop.winit.code" &&
+             $3=="/tmp/state/zinc/example-instanced/vshop" { found=1 }
              END { exit !found }' /tmp/apps.txt || {
           echo "zde desk apps did not say where that instance keeps its state:"
           cat /tmp/apps.txt; exit 1
@@ -594,7 +594,7 @@ let
         # And the desk you are on, which is the form a keybind would use: the
         # switch above put us on vshop.
         XDG_STATE_HOME=/tmp/state zde desk apps 2>&1 | tee /tmp/apps-here.txt
-        grep -q 'nvim@vshop' /tmp/apps-here.txt || {
+        grep -q 'example-instanced@vshop' /tmp/apps-here.txt || {
           echo "zde desk apps, on vshop, did not list vshop's apps:"
           cat /tmp/apps-here.txt; exit 1
         }
@@ -1300,13 +1300,18 @@ pkgs.testers.runNixOSTest {
       # is bound to a binary the machine does not have, which looks from the
       # keyboard exactly like a key that does nothing.
       machine.succeed("su -l zde -c 'command -v zlg'")
+      # zinc 0.9 made `zcr where` load the config, so it answers only for apps
+      # that exist. zc init is zinc's own seeding, which beats this test writing
+      # an app file and owning zinc's schema to keep it parsing.
+      machine.succeed("su -l zde -c 'zc init'")
       where = machine.succeed(
-          "su -l zde -c 'XDG_STATE_HOME=/tmp/st zcr where browser@work'"
+          "su -l zde -c 'XDG_STATE_HOME=/tmp/st zcr where example-instanced@work'"
       )
-      assert "state: /tmp/st/zinc/browser/work" in where, where
-      # And the instance is a name there too, which is the half of this that a
-      # desk manifest feeds: zde refuses a path in that field, and so does zinc.
-      machine.fail("su -l zde -c 'zcr where \"browser@../../etc\"'")
+      assert "state: /tmp/st/zinc/example-instanced/work" in where, where
+      # Both halves of an address are a name, which is the rule a desk manifest
+      # feeds: zde refuses a path in either field, and so does zinc.
+      machine.fail("su -l zde -c 'zcr where \"example-instanced@../../etc\"'")
+      machine.fail("su -l zde -c 'zcr where \"../../../etc\"'")
 
       # The screen lock can authenticate. This is the trap worth a test rather
       # than the locking itself: a locker with no PAM service takes the screen

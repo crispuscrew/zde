@@ -12,7 +12,7 @@ Everything, in `flake.lock`. Two inputs decide what a machine runs:
 |---|---|---|
 | `nixpkgs` | `nixos-26.05`, the current stable | you bump it |
 | `home-manager` | `release-26.05`, matched to nixpkgs | with nixpkgs |
-| `zinc` | a tag, `v0.8.1` | you edit the tag |
+| `zinc` | a tag, `v0.9.1` | you edit the tag |
 
 Nothing floats. `nixos-26.05` is a branch that receives backports, so the
 niri in it can change within the release - but a machine only sees any of it

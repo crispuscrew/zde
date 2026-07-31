@@ -16,7 +16,7 @@
     # pins a different one, and two nixpkgs in a closure is a second copy of
     # everything for no benefit here.
     zinc = {
-      url = "github:crispuscrew/zinc/v0.8.1";
+      url = "github:crispuscrew/zinc/v0.9.1";
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
