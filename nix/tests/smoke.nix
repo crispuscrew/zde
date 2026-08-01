@@ -272,6 +272,16 @@ let
           journalctl --user -u zde-bar.service --no-pager | tail -25; exit 1
         fi
 
+        # No NetworkManager either (zde.laptop is off for this node), which the
+        # bar has to say as a state of its own rather than as "no network":
+        # this VM is perfectly online and simply has nothing to ask. Same
+        # argument as the battery above, and the first tick may not have
+        # answered yet, so this waits.
+        no_manager() { [ "$(barq net)" = "absent" ]; }
+        if ! waitfor 20 no_manager; then
+          echo "no NetworkManager here and the bar reads '$(barq net)'"; exit 1
+        fi
+
         # Then the count, against a queue that changes underneath it. "0 0"
         # before, "1 0" after: the poll is two seconds, so this waits rather
         # than sleeping once and hoping.
@@ -1616,6 +1626,16 @@ pkgs.testers.runNixOSTest {
       assert "zded" in status, status
       # It reports the missing compositor rather than claiming a working one.
       assert "NIRI_SOCKET" in status, status
+
+      # The connections key, on a machine with no NetworkManager and no wifi
+      # hardware - which this VM is, and which is the case that has to degrade
+      # rather than hang or fail: the key is bound, so a person will press it.
+      # It answers in one legible line and exits 0, because there is nothing
+      # here to fix.
+      conns = machine.succeed(
+          "su -l zde -c 'XDG_RUNTIME_DIR=/tmp/rt zde system connections'"
+      )
+      assert "no NetworkManager" in conns, conns
 
       # The socket is the zde boundary (docs/vision.md, principle 7). Asserted
       # as another user, because root is not subject to the mode bits and

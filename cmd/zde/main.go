@@ -4,17 +4,23 @@
 package main
 
 import (
+	"bufio"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/crispuscrew/zde/internal/apps"
 	"github.com/crispuscrew/zde/internal/attn"
 	"github.com/crispuscrew/zde/internal/doctor"
 	"github.com/crispuscrew/zde/internal/journal"
+	"github.com/crispuscrew/zde/internal/link"
 	"github.com/crispuscrew/zde/internal/zded"
 	"github.com/crispuscrew/zde/internal/zinc"
 )
@@ -52,6 +58,18 @@ func run(args []string) error {
 		return attnMode("attn.mode")
 	case len(args) == 2 && args[0] == "attn":
 		return attnMode("attn.mode", args[1])
+	case len(args) == 2 && args[0] == "system" && args[1] == "connections":
+		return connections()
+	case len(args) == 2 && args[0] == "net" && args[1] == "status":
+		return netStatus()
+	case len(args) == 3 && args[0] == "net" && args[1] == "connect":
+		// Three words and never four. The fourth would be the password, and a
+		// password in argv is readable by every account on the machine for as
+		// long as the process lives (/proc/<pid>/cmdline) - so there is no
+		// spelling of this command that can leak one. It comes from stdin.
+		return netConnect(args[2])
+	case len(args) == 2 && args[0] == "net" && args[1] == "disconnect":
+		return netDisconnect()
 	case len(args) == 1 && args[0] == "keys":
 		return keys()
 	case len(args) == 2 && args[0] == "app" && args[1] == "list":
@@ -495,6 +513,198 @@ func jumpTo() error {
 	return nil
 }
 
+// connections opens the connections widget. The same bargain as the desk
+// switcher: with a shell listening this prints nothing, and without one it
+// prints the link and what is in range, so that the key does something on a
+// session whose shell has died - and so that this is testable on a machine
+// with no compositor at all.
+func connections() error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	var cn zded.Connections
+	if err := c.Call("net.connections", &cn); err != nil {
+		return err
+	}
+	if cn.Shown {
+		return nil
+	}
+	// The link first, because it is the answer to the question the key is
+	// usually pressed to ask, and it is the only line on a machine with no
+	// NetworkManager and no radio.
+	fmt.Println(linkLine(cn.Link))
+	if len(cn.Networks) == 0 {
+		switch {
+		case cn.Link.Kind == link.KindAbsent:
+			// The line above already said the whole of it.
+		case !cn.Link.Wifi:
+			fmt.Println("no wifi radio on this machine")
+		default:
+			fmt.Println("no wifi networks in range")
+		}
+		return nil
+	}
+	// signal, security, note, ssid - tab separated like every other list zde
+	// prints, with the only field that can be long last. The note is where you
+	// are, or that joining will not ask for anything.
+	for _, n := range cn.Networks {
+		fmt.Printf("%d\t%s\t%s\t%s\n", n.Signal, security(n), note(n), n.SSID)
+	}
+	return nil
+}
+
+func security(n link.Network) string {
+	if n.Secure {
+		return "secure"
+	}
+	return "open"
+}
+
+func note(n link.Network) string {
+	switch {
+	case n.Active:
+		return "here"
+	case n.Saved:
+		return "saved"
+	}
+	return "-"
+}
+
+// netStatus is the one line the bar draws, for whoever has no bar.
+func netStatus() error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	var st link.Status
+	if err := c.Call("net.status", &st); err != nil {
+		return err
+	}
+	fmt.Println(linkLine(st))
+	return nil
+}
+
+// linkLine is the link in words, and the same words the bar uses so that the
+// two never look like they are talking about different machines.
+func linkLine(st link.Status) string {
+	switch st.Kind {
+	case link.KindWifi:
+		if st.SSID == "" {
+			// On wifi, and the access point would not say its name. Rare, and
+			// not worth claiming a network called "".
+			return "wifi"
+		}
+		return fmt.Sprintf("wifi %s %d%%", st.SSID, st.Signal)
+	case link.KindWired:
+		return "wired"
+	case link.KindAbsent:
+		return "no NetworkManager on this machine: zde asks it everything about " +
+			"the network, and layer 0 installs it with zde.laptop.enable"
+	default:
+		return "not connected"
+	}
+}
+
+// netConnect joins a network, and asks for the password only when joining
+// needs one: an open network, or one NetworkManager already has a profile for,
+// asks nobody anything.
+//
+// The password never becomes an argument to anything (see run, and
+// internal/link on why not nmcli). It goes from the terminal into one D-Bus
+// message and is not written down on the way.
+func netConnect(ssid string) error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	var networks []link.Network
+	// A list that cannot be read is not a reason to refuse: zded says why when
+	// the join itself fails, in words about the network rather than about a
+	// list nobody asked for.
+	_ = c.Call("net.list", &networks)
+	args := []string{ssid}
+	for _, n := range networks {
+		if n.SSID != ssid || !n.Secure || n.Saved {
+			continue
+		}
+		secret, err := readSecret("password for " + ssid + ": ")
+		if err != nil {
+			return err
+		}
+		if secret == "" {
+			return fmt.Errorf("%s needs a password", ssid)
+		}
+		args = append(args, secret)
+		break
+	}
+	var said string
+	if err := c.Call("net.connect", &said, args...); err != nil {
+		return err
+	}
+	fmt.Println(said)
+	return nil
+}
+
+func netDisconnect() error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	var said string
+	if err := c.Call("net.disconnect", &said); err != nil {
+		return err
+	}
+	fmt.Println(said)
+	return nil
+}
+
+// readSecret takes a password from stdin, with the terminal's echo off while it
+// is typed.
+//
+// The prompt goes to stderr because stdout is the command's answer and a prompt
+// is not - so `zde net connect x > log` still asks, and the log still holds only
+// what happened.
+//
+// Echo off because a password on the screen is a password in the scrollback,
+// and in tmux's buffer, and in whatever is recording the terminal. If this is
+// killed mid-prompt the terminal is left quiet until `stty sane`, which is the
+// same deal every password prompt on the machine makes.
+func readSecret(prompt string) (string, error) {
+	restore := hush(os.Stdin)
+	defer restore()
+	fmt.Fprint(os.Stderr, prompt)
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	// The newline the person's Enter could not echo, so the next thing printed
+	// does not land on the prompt.
+	fmt.Fprintln(os.Stderr)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	return strings.TrimRight(line, "\r\n"), nil
+}
+
+// hush turns a terminal's echo off and answers with how to put it back. A
+// stdin that is not a terminal - a pipe from `pass show wifi` - echoes nothing
+// to begin with, so there is nothing to turn off and nothing to restore.
+func hush(f *os.File) func() {
+	fd := int(f.Fd())
+	before, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+	if err != nil {
+		return func() {}
+	}
+	quiet := *before
+	quiet.Lflag &^= unix.ECHO
+	if err := unix.IoctlSetTermios(fd, unix.TCSETS, &quiet); err != nil {
+		return func() {}
+	}
+	return func() { unix.IoctlSetTermios(fd, unix.TCSETS, before) } //nolint:errcheck // nothing useful to do about a terminal that will not take its settings back
+}
+
 func deskList() error {
 	c, err := zded.Dial()
 	if err != nil {
@@ -589,6 +799,18 @@ func usage() {
   zde desk switcher      open the picker; prints the list when no shell is up
   zde app launch NAME    run what this machine calls that (Mod+t, Mod+e)
   zde system lock        lock the screen (Mod+Ctrl+semicolon)
+  zde system connections open the connections widget (Mod+Shift+c); prints the
+                         link and what is in range when no shell is up -
+                         signal, security, note, network - and says so plainly
+                         on a machine with no NetworkManager
+  zde net status         what the link is right now: wifi and its signal,
+                         wired, nothing, or no NetworkManager to ask
+  zde net connect SSID   join a wifi network. The password is read from stdin,
+                         never from the command line - anybody with an account
+                         on this machine can read a running process's
+                         arguments - and it is only asked for when the network
+                         is secured and NetworkManager has no profile for it
+  zde net disconnect     drop the wifi link, keeping the saved profile
   zde app list           what it can start
   zde window jump-to [ID]
                          open the window picker (Mod+w); prints the list when

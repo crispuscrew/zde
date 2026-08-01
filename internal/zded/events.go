@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/crispuscrew/zde/internal/attn"
+	"github.com/crispuscrew/zde/internal/link"
 )
 
 // sendWait is how long a listener has to take a line before it stops being a
@@ -46,7 +47,12 @@ type Event struct {
 	// screen, the token and the acknowledgement are the same for every surface
 	// zded asks for, and a shell that learned one has learned this one.
 	Notifications []attn.Record `json:"notifications,omitempty"`
-	On            string        `json:"on,omitempty"`
+	// The connections surface's two: the wifi networks it lists, and the link
+	// as it stands, so it can say what you are on without asking a second
+	// question (net.go).
+	Networks []link.Network `json:"networks,omitempty"`
+	Link     *link.Status   `json:"link,omitempty"`
+	On       string         `json:"on,omitempty"`
 	// Output is the monitor to appear on: the one being looked at. A picker on
 	// every screen is not a picker.
 	Output string `json:"output,omitempty"`
