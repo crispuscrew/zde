@@ -232,44 +232,75 @@ func TestCenterFallsBackToTheList(t *testing.T) {
 	}
 }
 
-// A row nobody can act on is the ordinary case, not the exception: zde does not
-// claim the actions capability, so most apps never send one. Saying so is the
-// difference between a key that explains itself and one that does nothing.
+// A row nobody can act on is a row to say so about: a notice is not a button,
+// and a key that did nothing on it would read as the surface being broken.
 func TestInvokingWhatHasNoAction(t *testing.T) {
 	s, _, _ := queueTestServer(t, "vshop.DP-1.code")
 	told := []uint64{}
-	invoked := []uint64{}
+	invoked := []string{}
 	s.Watching(tellTale{ids: &told, invoked: &invoked})
 	id, err := s.Arrived(attn.Notification{From: "app", Text: "no button on this"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp := s.Dispatch(Request{Method: "attn.invoke", Args: []string{strconv.FormatUint(id, 10)}})
+	resp := s.Dispatch(Request{Method: "attn.invoke", Args: []string{strconv.FormatUint(id, 10), attn.DefaultAction}})
 	if resp.Error == "" {
-		t.Fatal("a notification with no action was reported as invoked")
+		t.Fatal("a notification with no actions was reported as invoked")
 	}
 	if len(invoked) != 0 {
 		t.Errorf("told the bus about %v anyway", invoked)
 	}
 }
 
-// And one that does have an action reaches the bus, with the id the sender was
-// given. This is the whole of what Enter does in the center.
-func TestInvokingWhatHasAnAction(t *testing.T) {
+// Every action the sender declared is pressable, not only the default. The
+// center offers them a key each, so the one that was pressed is the one that
+// has to reach the app - anything else archives what somebody meant to reply
+// to.
+func TestInvokingAnActionThatIsNotTheDefault(t *testing.T) {
 	s, _, _ := queueTestServer(t, "vshop.DP-1.code")
 	told := []uint64{}
-	invoked := []uint64{}
+	invoked := []string{}
 	s.Watching(tellTale{ids: &told, invoked: &invoked})
-	id, err := s.Arrived(attn.Notification{From: "Fractal", Text: "Ilya: about the invoice", Action: true})
+	id, err := s.Arrived(attn.Notification{From: "Fractal", Text: "Ilya: about the invoice", Actions: []attn.Action{
+		{Key: attn.DefaultAction, Label: "Open"},
+		{Key: "reply", Label: "Reply"},
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp := s.Dispatch(Request{Method: "attn.invoke", Args: []string{strconv.FormatUint(id, 10)}})
-	if resp.Error != "" {
-		t.Fatalf("invoking an action the sender declared: %s", resp.Error)
+	for _, key := range []string{attn.DefaultAction, "reply"} {
+		invoked = nil
+		resp := s.Dispatch(Request{Method: "attn.invoke", Args: []string{strconv.FormatUint(id, 10), key}})
+		if resp.Error != "" {
+			t.Fatalf("invoking %q, which the sender declared: %s", key, resp.Error)
+		}
+		want := strconv.FormatUint(id, 10) + " " + key
+		if len(invoked) != 1 || invoked[0] != want {
+			t.Errorf("invoked %v, want %q", invoked, want)
+		}
 	}
-	if len(invoked) != 1 || invoked[0] != id {
-		t.Errorf("invoked %v, want the id that was chosen", invoked)
+}
+
+// A key the notification never offered is refused. The other end of this socket
+// is a surface, and passing whatever it says through to the bus would let zde
+// tell an app that a button was pressed which that app never put on anything.
+func TestInvokingAKeyTheSenderNeverOffered(t *testing.T) {
+	s, _, _ := queueTestServer(t, "vshop.DP-1.code")
+	told := []uint64{}
+	invoked := []string{}
+	s.Watching(tellTale{ids: &told, invoked: &invoked})
+	id, err := s.Arrived(attn.Notification{From: "Fractal", Text: "Ilya: about the invoice", Actions: []attn.Action{
+		{Key: attn.DefaultAction, Label: "Open"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := s.Dispatch(Request{Method: "attn.invoke", Args: []string{strconv.FormatUint(id, 10), "delete-everything"}})
+	if resp.Error == "" {
+		t.Fatal("a key nobody declared was passed to the bus")
+	}
+	if len(invoked) != 0 {
+		t.Errorf("told the bus about %v anyway", invoked)
 	}
 }
 
@@ -280,11 +311,13 @@ func TestInvokeReportsWhatTheBusSaid(t *testing.T) {
 	s, _, _ := queueTestServer(t, "vshop.DP-1.code")
 	told := []uint64{}
 	s.Watching(tellTale{ids: &told, err: errors.New("the app that sent this has exited")})
-	id, err := s.Arrived(attn.Notification{From: "app", Text: "gone by now", Action: true})
+	id, err := s.Arrived(attn.Notification{From: "app", Text: "gone by now", Actions: []attn.Action{
+		{Key: attn.DefaultAction, Label: "Open"},
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp := s.Dispatch(Request{Method: "attn.invoke", Args: []string{strconv.FormatUint(id, 10)}})
+	resp := s.Dispatch(Request{Method: "attn.invoke", Args: []string{strconv.FormatUint(id, 10), attn.DefaultAction}})
 	if resp.Error != "the app that sent this has exited" {
 		t.Errorf("error = %q, want what the bus said", resp.Error)
 	}

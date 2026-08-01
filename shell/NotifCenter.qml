@@ -7,11 +7,18 @@
 // says what became of it - waiting, done, or silent because a mode kept it off
 // the queue - and never leaves that to be inferred from its absence.
 //
+// It is also where a notification's actions are offered, all of them: the row
+// you are on lists what its sender said can be done about it, one digit each,
+// and Enter is the default action where there is one. That is what makes zded
+// claiming the spec's "actions" capability true rather than a promise (see
+// internal/attn, GetCapabilities) - an app's buttons are reachable here, behind
+// Mod+n, because there is no popup to put them on yet.
+//
 // The same shape as Picker.qml, and deliberately not the same surface. A picker
-// hands back the key of a row and knows nothing else; this one has two verbs on
-// a row (act on it, or take it off) and something to say back when a verb was
-// not possible. Sharing one surface would have meant a mode flag inside it,
-// which is the point where one surface becomes two badly.
+// hands back the key of a row and knows nothing else; this one has several
+// verbs on a row and something to say back when one of them was not possible.
+// Sharing one surface would have meant a mode flag inside it, which is the
+// point where one surface becomes two badly.
 pragma ComponentBehavior: Bound
 
 import QtQuick
@@ -43,10 +50,10 @@ PanelWindow {
     // which a frozen shell also does.
     property string token: ""
 
-    // invoke(id) fires a notification's default action; drop(id) takes it off.
-    // Both go to zded over the socket - this surface knows nothing about
+    // invoke(id, key) presses one of a notification's actions; drop(id) takes it
+    // off. Both go to zded over the socket - this surface knows nothing about
     // sockets, and decides nothing (docs/vision.md, section 2).
-    signal invoke(string id)
+    signal invoke(string id, string key)
     signal drop(string id)
     signal dismissed
     signal shown(string token)
@@ -84,20 +91,57 @@ PanelWindow {
         return center.rows[i];
     }
 
-    // Enter. A row whose app declared no default action is refused here rather
-    // than by zded, so the answer arrives with the keypress instead of after a
-    // round trip - and zded refuses it too, because the shell is not where a
-    // rule lives.
+    // The actions of the row you are on, in the order its sender declared them.
+    // Their position is what presses them: the first is 1, and there are never
+    // more than nine here, because nine is what a digit can reach and zded
+    // keeps no more than can be offered (internal/attn, actionsMax).
+    function actionsOf(r) {
+        return (r && r.actions) ? r.actions : [];
+    }
+
+    // Enter: the default action, which is the sender's own answer to "what does
+    // choosing this mean". A row that declared none is refused here rather than
+    // by zded, so the answer arrives with the keypress instead of after a round
+    // trip - and zded refuses it too, because the shell is not where a rule
+    // lives.
+    //
+    // "default" is the spec's own name for it and not zde's, which is why it is
+    // written here as a string: the freedesktop notification spec fixes it, so
+    // this cannot drift out of step with the Go side.
     function act() {
+        const list = center.actionsOf(center.rowAt(center.index));
+        for (const a of list) {
+            if (a.key === "default") {
+                center.fire(a);
+                return;
+            }
+        }
         const r = center.rowAt(center.index);
         if (!r)
             return;
-        if (!r.action) {
-            center.note = "nothing to invoke: " + (r.from ?? "it") + " sent a notification, not a button";
+        center.note = list.length > 0 ? "no default action: press its number instead" : "nothing to invoke: " + (r.from ?? "it") + " sent a notification, not a button";
+    }
+
+    // A digit: the action in that position. Out of range is said rather than
+    // ignored, because a key that does nothing on a surface offering numbered
+    // things reads as the surface being broken.
+    function press(i) {
+        const list = center.actionsOf(center.rowAt(center.index));
+        if (i < 0 || i >= list.length) {
+            center.note = list.length === 0 ? "this one has no actions to press" : "there is no action " + (i + 1) + " on this one";
             return;
         }
-        center.note = "sent to " + (r.from ?? "it");
-        center.invoke(String(r.id));
+        center.fire(list[i]);
+    }
+
+    // What both of them do. Optimistic by a millisecond: zded answers only when
+    // it refuses, and a refusal replaces this the moment it arrives.
+    function fire(a) {
+        const r = center.rowAt(center.index);
+        if (!r)
+            return;
+        center.note = "sent " + a.label + " to " + (r.from ?? "the app");
+        center.invoke(String(r.id), a.key);
     }
 
     // d. Marked here as well as asked of zded: the reply carries no id, so a
@@ -174,8 +218,10 @@ PanelWindow {
         // and what became of it, and at the picker's width the text was the
         // only part that got elided away.
         width: 640
-        // The rows, their margins, the body line and the hint under them.
-        height: Math.min(list.implicitHeight + 76, center.height - 80)
+        // The rows, their margins, and the three lines under them: the body,
+        // the actions on offer, and the hint. Leave one out of the sum and it
+        // draws over the last row on a full list.
+        height: Math.min(list.implicitHeight + 96, center.height - 80)
         color: "#11121a"
         border.color: "#2a2c37"
         border.width: 1
@@ -199,11 +245,10 @@ PanelWindow {
                 center.step(-1);
                 break;
             default:
-                // A digit moves the highlight rather than acting on the row.
-                // In the picker a digit chooses, because choosing a desk is
-                // reversible; here the two verbs invoke somebody's app and take
-                // a notification away, and neither is a thing to do by
-                // mistyping a workspace number.
+                // A digit presses that action on the row you are on. In the
+                // picker a digit chooses a row, and here it cannot: a row has
+                // several things you might do to it, and the numbers are worth
+                // more spent on those than on a list you can walk with j and k.
                 if (event.text === "j")
                     center.step(1);
                 else if (event.text === "k")
@@ -211,7 +256,7 @@ PanelWindow {
                 else if (event.text === "d")
                     center.dismiss();
                 else if (event.text >= "1" && event.text <= "9")
-                    center.index = Math.min(parseInt(event.text, 10) - 1, center.rows.length - 1);
+                    center.press(parseInt(event.text, 10) - 1);
                 else {
                     return;
                 }
@@ -237,7 +282,7 @@ PanelWindow {
         Text {
             id: body
 
-            anchors.bottom: hint.top
+            anchors.bottom: actions.top
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.margins: 12
@@ -254,13 +299,49 @@ PanelWindow {
             font.family: "monospace"
         }
 
+        // What can be done to the row you are on, with the key that does it.
+        // Said on the surface rather than left to be discovered: an action
+        // nobody can see is an action nobody presses, and this is the whole
+        // difference between offering an app's buttons and merely holding them.
+        Text {
+            id: actions
+
+            anchors.bottom: hint.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.margins: 12
+            anchors.bottomMargin: 6
+            visible: center.rows.length > 0
+            text: {
+                const r = center.rowAt(center.index);
+                const list = center.actionsOf(r);
+                if (list.length === 0)
+                    return "no actions on this one";
+                let parts = [];
+                for (let i = 0; i < list.length; i++)
+                    parts.push((i + 1) + " " + list[i].label + (list[i].key === "default" ? " (enter)" : ""));
+                let line = parts.join("    ");
+                // An app may declare more than this surface can offer. Saying
+                // how many beats a list that quietly stops, which would read as
+                // the app having sent fewer than it did.
+                const more = (r && r.moreActions) ? r.moreActions : 0;
+                if (more > 0)
+                    line += "    +" + more + " this surface cannot reach";
+                return line;
+            }
+            elide: Text.ElideRight
+            color: "#c9ccd4"
+            font.pixelSize: 12
+            font.family: "monospace"
+        }
+
         Text {
             id: hint
 
             anchors.bottom: parent.bottom
             anchors.left: parent.left
             anchors.margins: 12
-            text: "j k move    enter act    d dismiss    esc close"
+            text: "j k move    enter default    1-9 action    d dismiss    esc close"
             color: "#7a7f8a"
             font.pixelSize: 11
             font.family: "monospace"

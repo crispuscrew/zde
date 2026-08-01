@@ -1238,6 +1238,17 @@ let
           echo "the notification arrived and the history does not have it:"
           cat /tmp/notif-center.txt; exit 1
         }
+        # And what this server tells an app it can do. "actions" is the claim
+        # that decides whether apps send buttons at all, so it is worth pinning
+        # on the bus rather than only in a Go test: the center offers every
+        # action a sender declares, and the day it stops this line has to fail.
+        dbus-send --session --print-reply --dest=org.freedesktop.Notifications \
+          /org/freedesktop/Notifications \
+          org.freedesktop.Notifications.GetCapabilities > /tmp/caps.txt 2>&1
+        grep -q '"actions"' /tmp/caps.txt || {
+          echo "zded does not tell apps it offers actions, so they will not send any:"
+          cat /tmp/caps.txt; exit 1
+        }
         zde queue done "$nid"
 
         zde queue done "$id"

@@ -460,10 +460,10 @@ func (s *Server) Dispatch(req Request) Response {
 		}
 		return s.center()
 	case "attn.invoke":
-		if len(req.Args) != 1 {
-			return Response{Error: "attn.invoke takes one notification id"}
+		if len(req.Args) != 2 {
+			return Response{Error: "attn.invoke takes a notification id and the key of the action to press"}
 		}
-		return s.invoke(req.Args[0])
+		return s.invoke(req.Args[0], req.Args[1])
 	case "desk.queue-jump":
 		if len(req.Args) != 0 {
 			return Response{Error: "desk.queue-jump takes no arguments"}
@@ -1017,13 +1017,14 @@ func (s *Server) Arrived(n attn.Notification) (uint64, error) {
 		return 0, errors.New("no journal, so nothing can be kept")
 	}
 	rec := attn.Record{
-		From:   n.From,
-		Text:   n.Text,
-		Body:   n.Body,
-		Urgent: n.Urgent,
-		Action: n.Action,
-		At:     time.Now(),
-		Desk:   s.whereWeAre(),
+		From:    n.From,
+		Text:    n.Text,
+		Body:    n.Body,
+		Urgent:  n.Urgent,
+		Actions: n.Actions,
+		Extra:   n.Extra,
+		At:      time.Now(),
+		Desk:    s.whereWeAre(),
 	}
 	if s.mode().Queues(n.Urgent) {
 		it, err := s.jrn.Queue(journal.Item{
@@ -1066,13 +1067,14 @@ func (s *Server) Closed(id uint64) error {
 // not ask for, so it can say so on the bus. A client blocked on a
 // notification's closure has no other way to learn it is gone.
 //
-// Invoke is the other direction: the person choosing a notification in the
-// center, and the app hearing about it. It answers an error because the ways it
-// can fail are ones the person has to be told about - an app that has since
+// Invoke is the other direction: the person pressing one of a notification's
+// actions, and the app hearing about it. Which action is a key the record
+// declared, checked before it gets here. It answers an error because the ways
+// it can fail are ones the person has to be told about - an app that has since
 // exited hears nothing at all.
 type Notifier interface {
 	Dismissed(id uint64)
-	Invoke(id uint64) error
+	Invoke(id uint64, key string) error
 }
 
 // Watching sets who to tell. Called once at startup, before anything is

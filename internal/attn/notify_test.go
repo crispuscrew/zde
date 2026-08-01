@@ -286,19 +286,27 @@ func TestNotifyReportsASinkThatRefused(t *testing.T) {
 	}
 }
 
-// What this server does, and only that. Claiming actions would make apps send
-// buttons nothing can press.
+// What this server does, and only that. "actions" is in the list because every
+// action a sender declares is offered in the notification center; it must stay
+// out of the list the day that stops being true, because an app reads this to
+// decide whether to send buttons at all.
 func TestCapabilitiesAreOnlyWhatIsTrue(t *testing.T) {
 	caps, derr := notifier(&fakeSink{}).GetCapabilities()
 	if derr != nil {
 		t.Fatal(derr)
 	}
+	claimed := map[string]bool{}
 	for _, c := range caps {
 		switch c {
-		case "body", "persistence":
+		case "actions", "body", "persistence":
+			claimed[c] = true
 		default:
 			t.Errorf("claims %q, which nothing here does", c)
 		}
+	}
+	if !claimed["actions"] {
+		t.Error("the center offers every action a sender declares and this does not say so, " +
+			"so apps that ask first will never send one")
 	}
 	name, vendor, version, spec, derr := notifier(&fakeSink{}).GetServerInformation()
 	if derr != nil || name != "zded" || vendor != "zde" || version != "test" || spec != specLevel {
@@ -366,55 +374,96 @@ func TestOnlyTheSpecIsOnTheBus(t *testing.T) {
 	}
 }
 
-// The default action is the one a list of rows can offer: choosing the
-// notification itself. Reading it off the pairs the spec sends - key, label,
-// key, label - is what lets the center say which rows Enter can do anything
-// with, and a center that offered every row would refuse most of them after
-// the keypress rather than before it.
-func TestNotifyNoticesTheDefaultAction(t *testing.T) {
-	for _, tc := range []struct {
-		actions []string
-		want    bool
-	}{
-		{nil, false},
-		{[]string{"default", "Open"}, true},
-		{[]string{"reply", "Reply", "default", "Open"}, true},
-		// A label is not a key. Reading every position would make "default" as
-		// a button's text look like an action that can be invoked.
-		{[]string{"open", "default"}, false},
-		{[]string{"archive", "Archive"}, false},
-	} {
-		sink := &fakeSink{}
-		if _, derr := notifier(sink).Notify(peer, "app", 0, "", "hello", "", tc.actions, nil, -1); derr != nil {
-			t.Fatal(derr)
-		}
-		if got := sink.got[0].Action; got != tc.want {
-			t.Errorf("actions %v gave Action = %v, want %v", tc.actions, got, tc.want)
-		}
+// Every action a sender declares is kept, in the order it sent them, because
+// every one of them is offered in the center - which is what makes claiming the
+// spec's "actions" capability true. Keeping only the default was the version of
+// this that could not honestly claim it.
+func TestNotifyKeepsEveryAction(t *testing.T) {
+	sink := &fakeSink{}
+	if _, derr := notifier(sink).Notify(peer, "Fractal", 0, "", "Ilya: about the invoice", "",
+		[]string{"default", "Open", "reply", "Reply", "archive", "Archive"}, nil, -1); derr != nil {
+		t.Fatal(derr)
+	}
+	want := []Action{{"default", "Open"}, {"reply", "Reply"}, {"archive", "Archive"}}
+	if !reflect.DeepEqual(sink.got[0].Actions, want) {
+		t.Errorf("actions = %+v, want %+v in the order they were sent", sink.got[0].Actions, want)
+	}
+	if sink.got[0].Extra != 0 {
+		t.Errorf("extra = %d, want none: all three were kept", sink.got[0].Extra)
 	}
 }
 
-// Invoking is how the notification center acts on a row: the sender hears
-// ActionInvoked with the id it was given and the key the spec fixes, which is
-// the only thing that makes a notification something you can answer rather
-// than only something you can read.
-func TestInvokeTellsTheSender(t *testing.T) {
-	n, _ := watched(&fakeSink{})
-	var fired []string
-	n.server.act = func(id uint64, key string) {
-		fired = append(fired, strconv.FormatUint(id, 10)+" "+key)
-	}
-	id, derr := n.Notify(peer, "Fractal", 0, "", "Ilya: about the invoice", "",
-		[]string{"default", "Open"}, nil, -1)
-	if derr != nil {
+// The keys are the even positions and the labels the odd ones. Reading every
+// position would offer a button's text as an action key, and pressing it would
+// tell the app something it never said it understood.
+func TestNotifyReadsActionsAsPairs(t *testing.T) {
+	sink := &fakeSink{}
+	if _, derr := notifier(sink).Notify(peer, "app", 0, "", "hello", "",
+		[]string{"open", "default"}, nil, -1); derr != nil {
 		t.Fatal(derr)
 	}
-	if err := n.server.Invoke(uint64(id)); err != nil {
-		t.Fatalf("invoking a notification whose sender is still there: %v", err)
+	got := sink.got[0].Actions
+	if len(got) != 1 || got[0].Key != "open" || got[0].Label != "default" {
+		t.Errorf("actions = %+v, want one action keyed open and labelled default", got)
 	}
-	want := strconv.FormatUint(uint64(id), 10) + " " + DefaultAction
-	if len(fired) != 1 || fired[0] != want {
-		t.Errorf("emitted %v, want one %q", fired, want)
+	// And a key with no label is the sender's mistake, not a reason to drop
+	// something it declared: its key becomes what a person reads.
+	sink.got = nil
+	if _, derr := notifier(sink).Notify(peer, "app", 0, "", "hello", "",
+		[]string{"reply"}, nil, -1); derr != nil {
+		t.Fatal(derr)
+	}
+	if got := sink.got[0].Actions; len(got) != 1 || got[0].Key != "reply" || got[0].Label != "reply" {
+		t.Errorf("actions = %+v, want the key standing in for the missing label", got)
+	}
+}
+
+// The list comes from an app on the session bus and nothing stops one sending a
+// thousand. It is bounded at what the center can offer with one keypress each,
+// and what was declared beyond it is counted so the surface can say so rather
+// than showing a list that quietly stops.
+func TestNotifyBoundsTheActions(t *testing.T) {
+	var sent []string
+	for i := 0; i < actionsMax+3; i++ {
+		sent = append(sent, "key"+strconv.Itoa(i), "Label "+strconv.Itoa(i))
+	}
+	sink := &fakeSink{}
+	if _, derr := notifier(sink).Notify(peer, "app", 0, "", "hello", "", sent, nil, -1); derr != nil {
+		t.Fatal(derr)
+	}
+	got := sink.got[0]
+	if len(got.Actions) != actionsMax {
+		t.Errorf("kept %d actions, want the bound of %d", len(got.Actions), actionsMax)
+	}
+	if got.Extra != 3 {
+		t.Errorf("extra = %d, want the 3 that did not fit", got.Extra)
+	}
+}
+
+// Invoking is how the center acts on a row: the sender hears ActionInvoked with
+// the id it was given and the key it declared. The key that comes back is the
+// one that was pressed and not always the default - a center that offers three
+// buttons and always sends "default" would archive what somebody meant to
+// reply to.
+func TestInvokeTellsTheSenderWhichAction(t *testing.T) {
+	for _, key := range []string{DefaultAction, "reply"} {
+		n, _ := watched(&fakeSink{})
+		var fired []string
+		n.server.act = func(id uint64, key string) {
+			fired = append(fired, strconv.FormatUint(id, 10)+" "+key)
+		}
+		id, derr := n.Notify(peer, "Fractal", 0, "", "Ilya: about the invoice", "",
+			[]string{"default", "Open", "reply", "Reply"}, nil, -1)
+		if derr != nil {
+			t.Fatal(derr)
+		}
+		if err := n.server.Invoke(uint64(id), key); err != nil {
+			t.Fatalf("invoking %q on a sender that is still there: %v", key, err)
+		}
+		want := strconv.FormatUint(uint64(id), 10) + " " + key
+		if len(fired) != 1 || fired[0] != want {
+			t.Errorf("emitted %v, want one %q", fired, want)
+		}
 	}
 }
 
@@ -430,7 +479,7 @@ func TestInvokeRefusesWhenTheAppHasGone(t *testing.T) {
 	if derr != nil {
 		t.Fatal(derr)
 	}
-	err := n.server.Invoke(uint64(id))
+	err := n.server.Invoke(uint64(id), DefaultAction)
 	if err == nil {
 		t.Fatal("invoking an action on an app that has exited was reported as done")
 	}
@@ -450,7 +499,7 @@ func TestInvokeRefusesAnIDNobodyHolds(t *testing.T) {
 	n, _ := watched(&fakeSink{})
 	fired := 0
 	n.server.act = func(uint64, string) { fired++ }
-	if err := n.server.Invoke(4242); err == nil {
+	if err := n.server.Invoke(4242, DefaultAction); err == nil {
 		t.Error("invoking an id the server never handed out was reported as done")
 	}
 	if fired != 0 {

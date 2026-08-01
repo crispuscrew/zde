@@ -394,13 +394,13 @@ ShellRoot {
     NotifCenter {
         id: center
 
-        // Enter on a row. zded decides whether there is anything to invoke and
-        // says so if not - the surface has already refused the rows it can see
-        // have no action, and this is the half only the bus knows: whether the
-        // app that sent it is still there to hear.
-        onInvoke: which => root.send({
+        // An action pressed on a row: the notification, and the key its sender
+        // declared for that action. zded checks the key against what that
+        // notification offered, and says so when the app has since exited -
+        // which is the half only the bus knows.
+        onInvoke: (which, key) => root.send({
             method: "attn.invoke",
-            args: [which]
+            args: [which, key]
         })
 
         // d. The same verb the queue has, because it is the same act: this

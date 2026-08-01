@@ -52,11 +52,28 @@ type Record struct {
 	// Dismissed says it is not waiting any more - finished by a person, or
 	// taken back by the app that sent it.
 	Dismissed bool `json:"dismissed,omitempty"`
-	// Action says the sender declared the spec's default action, so there is
-	// something to invoke. Most senders will not: zde does not claim the
-	// actions capability (see GetCapabilities), and an app that asks before it
-	// sends is told no.
-	Action bool `json:"action,omitempty"`
+	// Actions is what its sender says can be done about it, in the order it
+	// declared them. The center offers every one of them, which is what makes
+	// the "actions" capability an honest claim (see GetCapabilities).
+	Actions []Action `json:"actions,omitempty"`
+	// Extra is how many more were declared than are kept here, so the surface
+	// can say some are out of its reach rather than showing a list that quietly
+	// stops (see actionsMax).
+	Extra int `json:"moreActions,omitempty"`
+}
+
+// Allows reports whether this notification declared that action.
+//
+// The center sends a key back over the socket, and a key nobody declared is one
+// an app would be told was pressed without ever having offered it. Checked here
+// rather than on the bus side, because the list is the record's.
+func (r Record) Allows(key string) bool {
+	for _, a := range r.Actions {
+		if a.Key == key {
+			return true
+		}
+	}
+	return false
 }
 
 // History is what arrived, bounded at HistoryMax and oldest first. Safe for

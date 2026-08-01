@@ -122,14 +122,18 @@ func (s *Server) center() Response {
 	}
 }
 
-// invoke fires a notification's default action, which is what Enter does in the
-// center.
+// invoke presses one of a notification's actions: the id from the history, and
+// the key its sender declared for that action.
+//
+// The key is checked against that notification's own list rather than passed
+// through. A surface is on the other end of this socket, and a key nobody
+// declared would arrive at the app as an action it never offered - which is not
+// something zde should be able to do on anybody's behalf, however it got asked.
 //
 // Every way this cannot work is a sentence rather than a silence, because the
-// surface shows what comes back: a row nobody can act on is the ordinary case
-// here, not the exception - zde does not claim the actions capability, so most
-// apps never send one (internal/attn, GetCapabilities).
-func (s *Server) invoke(id string) Response {
+// surface shows what comes back and somebody who pressed a key is owed an
+// answer about it.
+func (s *Server) invoke(id, key string) Response {
 	n, err := strconv.ParseUint(id, 10, 64)
 	if err != nil {
 		return Response{Error: "attn.invoke wants the id from the history, not " + strconv.Quote(id)}
@@ -138,13 +142,16 @@ func (s *Server) invoke(id string) Response {
 	if !found {
 		return Response{Error: "nothing in the history has id " + id + ", so there is nothing to act on"}
 	}
-	if !rec.Action {
-		return Response{Error: strconv.Quote(rec.Text) + " came with no action: its app sent a notification, not a button"}
+	if len(rec.Actions) == 0 {
+		return Response{Error: strconv.Quote(rec.Text) + " came with no actions: its app sent a notification, not a button"}
+	}
+	if !rec.Allows(key) {
+		return Response{Error: strconv.Quote(rec.Text) + " never offered " + strconv.Quote(key)}
 	}
 	if s.notifier == nil {
 		return Response{Error: "zded is not the notification server on this session, so there is nobody to tell"}
 	}
-	if err := s.notifier.Invoke(n); err != nil {
+	if err := s.notifier.Invoke(n, key); err != nil {
 		return Response{Error: err.Error()}
 	}
 	return ok([]string{})

@@ -39,11 +39,30 @@ const (
 )
 
 // DefaultAction is the spec's name for the action a notification means when it
-// is chosen rather than when a button on it is pressed: open the message, show
-// the download. It is the one zde can invoke, because the notification center
-// is a list of rows and Enter is choosing a row - there is nowhere yet for the
-// other actions to be buttons.
+// is chosen rather than when one of its buttons is pressed: open the message,
+// show the download. It keeps a distinction of its own in the center - it is
+// what Enter does, where the rest are a key each - because it is the one action
+// a sender says is the obvious thing to do.
 const DefaultAction = "default"
+
+// actionsMax is how many of a notification's actions are kept, and it is the
+// number the notification center can offer with one keypress each (digits 1 to
+// 9). Bounded because the list comes from an app on the session bus and nothing
+// stops one sending a thousand: the history holds hundreds of records, and
+// unbounded lists inside a bounded list is not a bound.
+//
+// What was declared beyond it is counted rather than forgotten, so the surface
+// can say there are actions it cannot reach instead of quietly showing fewer
+// than the app offered. The day the center can offer more than nine, this moves
+// with it.
+const actionsMax = 9
+
+// Action is one thing a sender says can be done about a notification: the key
+// it wants back, and the label a person reads.
+type Action struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+}
 
 // summaryMax bounds what one notification puts on one line of the queue,
 // counted the way a person counts: in characters. An app that sends an essay
@@ -71,15 +90,16 @@ type Notification struct {
 	// Urgent is the spec's urgency 2 (critical). Apps use it for what should
 	// interrupt rather than wait, and focus mode is what reads it (mode.go).
 	Urgent bool
-	// Action says the sender declared the default action, so choosing this in
-	// the notification center has something to invoke.
-	//
-	// Most senders will not declare one. GetCapabilities does not claim
-	// "actions", so an app that asks before it sends is told no - and that is
-	// the honest answer while nothing draws a button. What this buys is the
-	// apps that send a default action anyway: they get the one action a list of
-	// rows can offer, instead of it being dropped on the floor.
-	Action bool
+	// Actions is what the sender says can be done about it, in the order it
+	// sent them, bounded by actionsMax. Every one of them is offered in the
+	// notification center, which is what lets this server claim the spec's
+	// "actions" capability (see GetCapabilities) - a claim that would be a lie
+	// if only the default were reachable.
+	Actions []Action
+	// Extra is how many more the sender declared than were kept. Counted so the
+	// center can say that some cannot be reached from here, which is the honest
+	// version of a list that quietly ends.
+	Extra int
 }
 
 // Sink is where a notification goes. attn does not own the queue - the journal
@@ -196,16 +216,17 @@ func (s *Server) Dismissed(id uint64) {
 	s.emitClosed(id, ReasonDismissed)
 }
 
-// Invoke fires a notification's default action: the thing its sender meant by
-// "if you choose this, do that". It is what Enter does in the notification
-// center.
+// Invoke fires one of a notification's actions: the key the sender asked for
+// back, sent as the spec's ActionInvoked. Which key is the caller's to say -
+// zded checks it against what that notification declared, because the list is
+// the record's and this half only knows the bus.
 //
 // It refuses rather than emitting into nothing. ActionInvoked is a broadcast,
 // so a signal for an app that has exited goes out and is heard by nobody, and
 // the person is left looking at a row that did something invisible. The two
 // refusals are different facts and say so: nothing is holding this id any more
 // (it was replaced, or finished), and the app that sent it has gone.
-func (s *Server) Invoke(id uint64) error {
+func (s *Server) Invoke(id uint64, key string) error {
 	sender, ok := s.senderOf(id)
 	if !ok {
 		return fmt.Errorf("nothing on the bus is holding notification %d any more", id)
@@ -219,7 +240,7 @@ func (s *Server) Invoke(id uint64) error {
 	if s.act == nil {
 		return errors.New("no bus to invoke it on")
 	}
-	s.act(id, DefaultAction)
+	s.act(id, key)
 	return nil
 }
 
@@ -300,12 +321,14 @@ func (n *notifications) Notify(
 		}
 	}
 
+	kept, extra := takeActions(actions)
 	id, err := s.sink.Arrived(Notification{
-		From:   claim(app, sender),
-		Text:   text,
-		Body:   rest,
-		Urgent: urgency(hints) == 2,
-		Action: hasDefault(actions),
+		From:    claim(app, sender),
+		Text:    text,
+		Body:    rest,
+		Urgent:  urgency(hints) == 2,
+		Actions: kept,
+		Extra:   extra,
 	})
 	if err != nil {
 		return 0, dbus.MakeFailedError(err)
@@ -341,29 +364,58 @@ func (n *notifications) CloseNotification(sender dbus.Sender, id uint32) *dbus.E
 	return nil
 }
 
-// GetCapabilities says what this server does, and only that. Claiming actions
-// would make apps send buttons nothing can press (docs/roadmap.md,
+// GetCapabilities says what this server does, and only that (docs/roadmap.md,
 // cross-cutting: where a mechanism is partial, say so).
 //
-// Still not claimed, now that the center can invoke the default action: the
-// capability means every action will be offered, and a list of rows offers one.
-// It goes in the day the center draws the rest of them, and until then an app
-// that asks gets the answer that matches what it would see.
+// "actions" is claimed because every action a sender declares is offered to the
+// person: the notification center lists them with their own labels, a keypress
+// each, and the default is what Enter means. It was not claimed while only the
+// default could be invoked, because the capability promises the whole list and
+// half a list is a promise apps would send buttons against.
+//
+// It is a claim about reach, not about immediacy. There is no popup yet, so the
+// offer is behind Mod+n rather than in front of you, and an app expecting a
+// button on the screen the moment it sends will not see one. That is the part
+// worth knowing before reading this as more than it says.
+//
+// Nothing else is claimed. action-icons, body-markup, body-images, icon-static
+// and sound are all things the spec defines and this does not do.
 func (n *notifications) GetCapabilities() ([]string, *dbus.Error) {
-	return []string{"body", "persistence"}, nil
+	return []string{"actions", "body", "persistence"}, nil
 }
 
-// hasDefault reports whether the sender declared the default action. The spec
-// sends actions as pairs - key, label, key, label - so only the even positions
-// are keys, and a list with an odd length has a label missing rather than a key
-// to read.
-func hasDefault(actions []string) bool {
-	for i := 0; i+1 < len(actions); i += 2 {
-		if actions[i] == DefaultAction {
-			return true
+// takeActions reads the actions a sender declared.
+//
+// The spec sends them as pairs - key, label, key, label - so the keys are the
+// even positions. A key with no label after it is the sender's mistake and its
+// key becomes its label: showing "reply" beats dropping an action somebody
+// declared, and beats a button with nothing written on it.
+//
+// Labels go through oneLine for the same reason summaries do: this one ends up
+// on a surface, and a label with a newline in it is a row that draws over the
+// one below.
+func takeActions(actions []string) ([]Action, int) {
+	var kept []Action
+	declared := 0
+	for i := 0; i < len(actions); i += 2 {
+		key := oneLine(actions[i])
+		if key == "" {
+			continue // an empty key addresses nothing
 		}
+		declared++
+		if len(kept) >= actionsMax {
+			continue
+		}
+		label := ""
+		if i+1 < len(actions) {
+			label = oneLine(actions[i+1])
+		}
+		if label == "" {
+			label = key
+		}
+		kept = append(kept, Action{Key: key, Label: label})
 	}
-	return false
+	return kept, declared - len(kept)
 }
 
 // GetServerInformation is what an app reads to decide what to send.

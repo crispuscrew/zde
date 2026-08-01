@@ -2451,17 +2451,19 @@ func TestQueueDoneTellsTheSender(t *testing.T) {
 // tellTale is the bus, watched: what zded told the sender, and about what.
 type tellTale struct {
 	ids *[]uint64
-	// invoked is the ids whose default action was fired, and err is what the
-	// bus said about it - an app that has exited is a refusal, not a silence.
-	invoked *[]uint64
+	// invoked is what was pressed, as "id key", and err is what the bus said
+	// about it - an app that has exited is a refusal, not a silence. The key is
+	// kept because a center that offers three buttons and always sends the
+	// default would archive what somebody meant to reply to.
+	invoked *[]string
 	err     error
 }
 
 func (t tellTale) Dismissed(id uint64) { *t.ids = append(*t.ids, id) }
 
-func (t tellTale) Invoke(id uint64) error {
+func (t tellTale) Invoke(id uint64, key string) error {
 	if t.invoked != nil {
-		*t.invoked = append(*t.invoked, id)
+		*t.invoked = append(*t.invoked, strconv.FormatUint(id, 10)+" "+key)
 	}
 	return t.err
 }
