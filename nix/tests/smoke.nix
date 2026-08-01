@@ -816,6 +816,28 @@ let
           echo "the refusal does not say what this machine can start:"; cat /tmp/nosuch.txt; exit 1
         }
 
+        # Bluetooth on a machine with no radio, which is this VM and every
+        # desktop that has not asked for one (zde.bluetooth.enable is off here,
+        # and so is zde.laptop). That is the case worth pinning: the verb has to
+        # say so and exit zero, rather than erroring, or hanging on a bus
+        # nobody answers on. It goes through zded to bluetoothd and back, so a
+        # daemon that blocked on the system bus would be caught here.
+        zde system bluetooth 2>&1 | tee /tmp/bt.txt
+        grep -q '^adapter    none' /tmp/bt.txt || {
+          echo "no bluetooth adapter and the verb does not say so legibly:"
+          cat /tmp/bt.txt; exit 1
+        }
+
+        # And asking it to do something is a refusal that names the reason. The
+        # other half of the same fact: a verb that reports success for a pairing
+        # that cannot have happened is worse than one that errors.
+        if zde system bluetooth pair 44:5C:E9:1A:2B:3C 2>&1 | tee /tmp/bt-pair.txt; then
+          echo "pairing succeeded on a machine with no radio:"; cat /tmp/bt-pair.txt; exit 1
+        fi
+        grep -qi 'bluetooth' /tmp/bt-pair.txt || {
+          echo "the refusal does not say what is missing:"; cat /tmp/bt-pair.txt; exit 1
+        }
+
         # The switcher with nothing listening, which is this zded: the session
         # target was stopped above, so there is no shell here. The key still has
         # to do something, so it prints the desks and marks the one you are on -
