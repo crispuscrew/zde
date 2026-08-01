@@ -5,6 +5,7 @@ import (
 	"io"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/crispuscrew/zde/internal/attn"
@@ -118,6 +119,14 @@ const MethodEvents = "events"
 type sink struct {
 	mu sync.Mutex
 	w  io.Writer
+	// asking is whether an answer is already on its way down this connection.
+	// One at a time, because an ask.text line carries no id of its own: two
+	// answers interleaved on one connection would be indistinguishable, and the
+	// first "done" would end both. Both clients serialize today - the CLI asks
+	// and waits, the window will not take a second question while one is
+	// running - and this is what makes that a property of the protocol rather
+	// than a habit of the only two callers there happen to be.
+	asking atomic.Bool
 }
 
 func (k *sink) reply(resp Response) {
@@ -126,22 +135,47 @@ func (k *sink) reply(resp Response) {
 	writeResponse(k.w, resp)
 }
 
-func (k *sink) send(ev Event) error {
+func (k *sink) send(ev Event) error { return k.sendWithin(ev, sendWait) }
+
+// sendWithin is send with the patience the caller can afford. A broadcast can
+// afford almost none (see sendWait): a wedged shell must not be what a keypress
+// waits for. One piece of an answer is a different thing - one of thousands
+// being pushed at a client that is also drawing the last one - and 200ms of not
+// reading is not a client worth giving up on.
+//
+// A write that fails or falls short closes the connection, and doing that here
+// rather than at each caller is the point: a deadline can trip halfway through a
+// line, and the next bytes on that connection would be read as the tail of a
+// message nobody can parse. Closing is also how the other end finds out - an EOF
+// it can act on, rather than a stream that stopped and an end that never came.
+func (k *sink) sendWithin(ev Event, wait time.Duration) error {
 	line, err := json.Marshal(struct {
 		Event Event `json:"event"`
 	}{ev})
 	if err != nil {
 		return err
 	}
+	line = append(line, '\n')
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	// Bounded, and cleared afterwards so the reply path is not left with a
 	// deadline it never asked for.
 	if d, ok := k.w.(interface{ SetWriteDeadline(time.Time) error }); ok {
-		d.SetWriteDeadline(time.Now().Add(sendWait))
+		d.SetWriteDeadline(time.Now().Add(wait))
 		defer d.SetWriteDeadline(time.Time{})
 	}
-	_, err = k.w.Write(append(line, '\n'))
+	n, err := k.w.Write(line)
+	if err == nil && n < len(line) {
+		// Nothing to retry into: what is on the wire is already half a line.
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		// A connection that cannot take a whole line is finished, whichever of
+		// the two ways it failed.
+		if c, ok := k.w.(io.Closer); ok {
+			c.Close()
+		}
+	}
 	return err
 }
 
