@@ -539,6 +539,57 @@ let
           nirimsg windows; exit 1
         fi
 
+        # Mod+semicolon: the palette. The same round trip as the picker - key,
+        # daemon, event, surface, token back - with the two halves that are its
+        # own: the filter, and running a row, which has to do what the row's key
+        # would have done rather than merely close.
+        paletteq() {
+          XDG_RUNTIME_DIR=$mgr quickshell ipc --pid "$barpid" call palette "$@" 2>&1 |
+            tr -d '\n' || true
+        }
+        XDG_RUNTIME_DIR=$mgr zde palette 2>&1 | tee /tmp/palette.txt
+        [ ! -s /tmp/palette.txt ] || {
+          echo "a shell was listening and the palette printed the list anyway:"
+          cat /tmp/palette.txt; exit 1
+        }
+        palette_open() { case "$(paletteq state)" in "open "*) return 0 ;; *) return 1 ;; esac; }
+        if ! waitfor 20 palette_open; then
+          echo "the palette never opened: $(paletteq state)"
+          journalctl --user -u zde-bar.service --no-pager | tail -20; exit 1
+        fi
+        # Typing narrows it. The second number is what is left on screen, and a
+        # filter that did nothing would leave it equal to the first.
+        paletteq filter system.lock >/dev/null
+        narrowed() { case "$(paletteq state)" in *" 1") return 0 ;; *) return 1 ;; esac; }
+        if ! waitfor 15 narrowed; then
+          echo "typing into the palette did not narrow it: $(paletteq state)"; exit 1
+        fi
+        # And running the row does what Mod+Ctrl+semicolon does: the locker on
+        # this machine is a touch, so what is asserted is the chain - surface,
+        # shell, zded, the spawn, the apps table, an exec.
+        rm -f /tmp/zde-locked
+        [ "$(paletteq run system.lock)" = "ran" ] || {
+          echo "running system.lock from the palette: $(paletteq run system.lock)"; exit 1
+        }
+        if ! waitfor 20 ran; then
+          # The daemon's log, because the two ways this fails look identical
+          # from here: a row zded marked dead and refused, and a spawn that
+          # could not find what it was asked to start.
+          echo "the palette ran system.lock and nothing locked"
+          journalctl --user -u zded.service --no-pager | tail -20; exit 1
+        fi
+        # And it took itself off the screen on the way. A palette left holding
+        # the keyboard reads to niri as nothing focused at all, which every
+        # check below this line would then answer wrongly.
+        palette_shut() {
+          [ "$(paletteq state)" = "closed" ] &&
+            [ "$(nirimsg --json layers 2>/dev/null | grep -c zde-palette)" = "0" ]
+        }
+        if ! waitfor 15 palette_shut; then
+          echo "the palette ran an action and stayed on screen: $(paletteq state)"
+          nirimsg --json layers; exit 1
+        fi
+
         # And the probe desk goes away again, so the rotation tests further down
         # see the two desks they were written for.
         nirimsg action focus-workspace probe.winit.one >/dev/null
@@ -886,6 +937,21 @@ let
         grep -q '(here)' /tmp/switcher-noshell.txt || {
           echo "the printed list does not say which desk you are on:"
           cat /tmp/switcher-noshell.txt; exit 1
+        }
+
+        # The palette makes the same bargain, and its list is the answer to
+        # "what does this machine do" that `zde keys` gives for keys - with the
+        # half the cheatsheet cannot give, which is which of them do anything
+        # yet. Both directions, because a column that always says the same
+        # thing says nothing.
+        zde palette 2>&1 | tee /tmp/palette-noshell.txt
+        grep -q 'desk.switcher.*Mod+Tab' /tmp/palette-noshell.txt || {
+          echo "the palette does not say which key runs an action:"
+          cat /tmp/palette-noshell.txt; exit 1
+        }
+        grep -q 'nothing is written behind it yet' /tmp/palette-noshell.txt || {
+          echo "every action on this machine reads as working, which is not true:"
+          cat /tmp/palette-noshell.txt; exit 1
         }
 
         # And it still works with a broken manifest sitting beside it, which is

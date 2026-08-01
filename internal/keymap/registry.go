@@ -26,6 +26,22 @@ type Entry struct {
 	// and it must stay off for everything else - a bind that reaches past the
 	// lock screen is a way around it.
 	WhenLocked bool
+
+	// written says somebody has written the command this action spawns. Most of
+	// the keymap has none: the bind spawns `zde`, which does not know that verb,
+	// prints usage to a stderr no keypress has and exits - a key that does
+	// nothing, silently (README, Missing). The palette lists those anyway and
+	// says so on the row, which is the difference between a key that teaches
+	// what is coming and one that is merely dead.
+	//
+	// Lowercase because this file is the only place allowed to say it, and off
+	// by default so that an action added without a thought about it reads as
+	// silent rather than as a promise. A niri native needs none: niri wrote it.
+	// Whether the program is on this machine is a different question, asked
+	// where the palette is built (internal/zded, whyNot), and this one is
+	// pinned against the only thing that decides it - `zde`'s own dispatch -
+	// by TestLiveActionsAreTheOnesZdeKnows (cmd/zde).
+	written bool
 }
 
 type argKind int
@@ -67,16 +83,16 @@ var registry = map[string]Entry{
 	// windows. nav.down/up unify the two - focus a stacked window first, then
 	// rotate the desk at the column's edge. switcher opens the chooser, last
 	// toggles to the last-active desk.
-	"desk.switcher":         {Group: "desk", Desc: "open the desk switcher", Spawn: []string{"zde", "desk", "switcher"}},
-	"desk.next":             {Group: "desk", Desc: "switch to the next desk", Spawn: []string{"zde", "desk", "next"}},
-	"desk.prev":             {Group: "desk", Desc: "switch to the previous desk", Spawn: []string{"zde", "desk", "prev"}},
-	"desk.last":             {Group: "desk", Desc: "toggle to the last-active desk", Spawn: []string{"zde", "desk", "last"}},
-	"nav.down":              {Group: "desk", Desc: "focus the window below, else rotate to the next desk", Spawn: []string{"zde", "nav", "down"}},
-	"nav.up":                {Group: "desk", Desc: "focus the window above, else rotate to the previous desk", Spawn: []string{"zde", "nav", "up"}},
-	"desk.move-window-next": {Group: "desk", Desc: "move the window to the next desk", Spawn: []string{"zde", "desk", "move-window", "next"}},
-	"desk.move-window-prev": {Group: "desk", Desc: "move the window to the previous desk", Spawn: []string{"zde", "desk", "move-window", "prev"}},
-	"desk.queue-jump":       {Group: "desk", Desc: "jump to the queue's top item", Spawn: []string{"zde", "desk", "queue-jump"}},
-	"desk.regulars":         {Group: "desk", Desc: "go to the regulars (shared singletons: comms, music, personal browser)", Spawn: []string{"zde", "desk", "regulars"}},
+	"desk.switcher":         {Group: "desk", Desc: "open the desk switcher", Spawn: []string{"zde", "desk", "switcher"}, written: true},
+	"desk.next":             {Group: "desk", Desc: "switch to the next desk", Spawn: []string{"zde", "desk", "next"}, written: true},
+	"desk.prev":             {Group: "desk", Desc: "switch to the previous desk", Spawn: []string{"zde", "desk", "prev"}, written: true},
+	"desk.last":             {Group: "desk", Desc: "toggle to the last-active desk", Spawn: []string{"zde", "desk", "last"}, written: true},
+	"nav.down":              {Group: "desk", Desc: "focus the window below, else rotate to the next desk", Spawn: []string{"zde", "nav", "down"}, written: true},
+	"nav.up":                {Group: "desk", Desc: "focus the window above, else rotate to the previous desk", Spawn: []string{"zde", "nav", "up"}, written: true},
+	"desk.move-window-next": {Group: "desk", Desc: "move the window to the next desk", Spawn: []string{"zde", "desk", "move-window", "next"}, written: true},
+	"desk.move-window-prev": {Group: "desk", Desc: "move the window to the previous desk", Spawn: []string{"zde", "desk", "move-window", "prev"}, written: true},
+	"desk.queue-jump":       {Group: "desk", Desc: "jump to the queue's top item", Spawn: []string{"zde", "desk", "queue-jump"}, written: true},
+	"desk.regulars":         {Group: "desk", Desc: "go to the regulars (shared singletons: comms, music, personal browser)", Spawn: []string{"zde", "desk", "regulars"}, written: true},
 	"desk.panic":            {Group: "desk", Desc: "panic: decoy desk, mute, silence", Spawn: []string{"zde", "desk", "panic"}},
 	"desk.block":            {Group: "desk", Desc: "block: hard lock, no notifications or capture leak", Spawn: []string{"zde", "desk", "block"}},
 	"desk.zen":              {Group: "desk", Desc: "toggle zen (content only)", Spawn: []string{"zde", "desk", "zen"}},
@@ -105,7 +121,7 @@ var registry = map[string]Entry{
 	"window.close":       {Group: "window", Desc: "close the window", Native: "close-window"},
 	"window.consume":     {Group: "window", Desc: "consume: pull the next window into this column (in)", Native: "consume-window-into-column"},
 	"window.expel":       {Group: "window", Desc: "expel: push the window out of its column (out)", Native: "expel-window-from-column"},
-	"window.jump-to":     {Group: "window", Desc: "jump to any open window by name", Spawn: []string{"zde", "window", "jump-to"}},
+	"window.jump-to":     {Group: "window", Desc: "jump to any open window by name", Spawn: []string{"zde", "window", "jump-to"}, written: true},
 
 	// workspace: numbered switching is gone (desks replace it); overview zooms
 	// out to the whole band.
@@ -114,17 +130,17 @@ var registry = map[string]Entry{
 	// out of the desk and into somebody else's workspaces. Clamping to the
 	// band is invariant 4, and it is the difference between a strip you scroll
 	// and a desk you leave on purpose.
-	"workspace.next":     {Group: "workspace", Desc: "one along this desk's band, stopping at its end", Spawn: []string{"zde", "workspace", "next"}},
-	"workspace.prev":     {Group: "workspace", Desc: "one back along this desk's band, stopping at its end", Spawn: []string{"zde", "workspace", "prev"}},
+	"workspace.next":     {Group: "workspace", Desc: "one along this desk's band, stopping at its end", Spawn: []string{"zde", "workspace", "next"}, written: true},
+	"workspace.prev":     {Group: "workspace", Desc: "one back along this desk's band, stopping at its end", Spawn: []string{"zde", "workspace", "prev"}, written: true},
 	"workspace.overview": {Group: "workspace", Desc: "toggle the overview (zoom out to all workspaces)", Native: "toggle-overview"},
 
 	// launch: zlg is zinc's launcher; the rest goes through zde. "terminal"
 	// and "editor" are logical names zde resolves to the configured zinc apps
 	// ($EDITOR is whichever editor app you set, not a hardcoded one).
 	// launch-at prompts for a directory; launch opens with ambient context.
-	"launcher.open": {Group: "launch", Desc: "zlg, the app launcher", Spawn: []string{"zlg"}},
-	"palette.open":  {Group: "launch", Desc: "search and run any action by name", Spawn: []string{"zde", "palette"}},
-	"app.launch":    {Group: "launch", Desc: "launch", Spawn: []string{"zde", "app", "launch"}, Arg: argName},
+	"launcher.open": {Group: "launch", Desc: "zlg, the app launcher", Spawn: []string{"zlg"}, written: true},
+	"palette.open":  {Group: "launch", Desc: "search and run any action by name", Spawn: []string{"zde", "palette"}, written: true},
+	"app.launch":    {Group: "launch", Desc: "launch", Spawn: []string{"zde", "app", "launch"}, Arg: argName, written: true},
 	"app.launch-at": {Group: "launch", Desc: "prompt for a location, then launch", Spawn: []string{"zde", "app", "launch-at"}, Arg: argName},
 
 	// ask: the quick LLM.
@@ -167,10 +183,10 @@ var registry = map[string]Entry{
 	"media.target":     {Group: "media", Desc: "the media target picker (pin a player, or auto-route)", Spawn: []string{"zde", "media", "target"}},
 
 	// audio: raw wpctl until zde audio lands; the OSD comes with the shell.
-	"audio.vol-up":   {Group: "audio", Desc: "volume up", Spawn: []string{"wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%+"}, Repeat: true, WhenLocked: true},
-	"audio.vol-down": {Group: "audio", Desc: "volume down", Spawn: []string{"wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%-"}, Repeat: true, WhenLocked: true},
-	"audio.mute":     {Group: "audio", Desc: "mute the output", Spawn: []string{"wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"}, WhenLocked: true},
-	"audio.mic-mute": {Group: "audio", Desc: "mute the mic", Spawn: []string{"wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"}, WhenLocked: true},
+	"audio.vol-up":   {Group: "audio", Desc: "volume up", Spawn: []string{"wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%+"}, Repeat: true, WhenLocked: true, written: true},
+	"audio.vol-down": {Group: "audio", Desc: "volume down", Spawn: []string{"wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%-"}, Repeat: true, WhenLocked: true, written: true},
+	"audio.mute":     {Group: "audio", Desc: "mute the output", Spawn: []string{"wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"}, WhenLocked: true, written: true},
+	"audio.mic-mute": {Group: "audio", Desc: "mute the mic", Spawn: []string{"wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"}, WhenLocked: true, written: true},
 
 	// net: the observer widget does per-app cuts and the kill switch; the two
 	// quick-cut sequences (keymap.yaml) wait for the input daemon.
@@ -189,36 +205,36 @@ var registry = map[string]Entry{
 
 	// system: raw tools until zde grows its own (brightnessctl now; layout
 	// switch is a niri native). The rest routes through zde.
-	"system.lock":  {Group: "system", Desc: "lock the screen", Spawn: []string{"zde", "system", "lock"}},
-	"system.quiet": {Group: "system", Desc: "toggle quiet (do not disturb)", Spawn: []string{"zde", "system", "quiet"}},
+	"system.lock":  {Group: "system", Desc: "lock the screen", Spawn: []string{"zde", "system", "lock"}, written: true},
+	"system.quiet": {Group: "system", Desc: "toggle quiet (do not disturb)", Spawn: []string{"zde", "system", "quiet"}, written: true},
 	"system.power": {Group: "system", Desc: "the power menu", Spawn: []string{"zde", "system", "power"}},
 	// connections: the wifi networks and the link you are on. The description
 	// promised bluetooth too, and a cheatsheet line is a promise a person reads
 	// before pressing the key - pairing is a conversation of its own with its
 	// own daemon, and it is not on this key yet.
-	"system.connections": {Group: "system", Desc: "the wifi networks, and the link you are on (no bluetooth yet)", Spawn: []string{"zde", "system", "connections"}},
+	"system.connections": {Group: "system", Desc: "the wifi networks, and the link you are on (no bluetooth yet)", Spawn: []string{"zde", "system", "connections"}, written: true},
 	// bluetooth on its own, and deliberately unbound (common/keymap/keymap.yaml
 	// binds nothing to it): Mod+Shift+c is system.connections, and a second
 	// chord for half of one surface is a key to remember for no reason.
 	// Registered so the palette can run it by name, and so the verb has an
 	// action the day the connections surface has a bluetooth section in it.
-	"system.bluetooth":  {Group: "system", Desc: "bluetooth: what is around, pairing, and what is connected", Spawn: []string{"zde", "system", "bluetooth"}},
+	"system.bluetooth":  {Group: "system", Desc: "bluetooth: what is around, pairing, and what is connected", Spawn: []string{"zde", "system", "bluetooth"}, written: true},
 	"system.calendar":   {Group: "system", Desc: "the calendar and clock widget", Spawn: []string{"zde", "system", "calendar"}},
 	"system.wallpapers": {Group: "system", Desc: "the wallpapers widget", Spawn: []string{"zde", "system", "wallpapers"}},
 	// help is a terminal on the keymap, not a widget: `zde help` printed usage
 	// to a stderr no keypress has, so the one key whose job is to say which
 	// keys work was itself one of the silent ones. It goes back to being a
 	// surface when the shell has one; the action does not change when it does.
-	"system.help":          {Group: "system", Desc: "the keymap, in a terminal", Spawn: []string{"zde", "app", "launch", "help"}},
-	"system.brightness-up": {Group: "system", Desc: "brightness up", Spawn: []string{"brightnessctl", "set", "5%+"}, Repeat: true, WhenLocked: true},
-	"system.brightness-dn": {Group: "system", Desc: "brightness down", Spawn: []string{"brightnessctl", "set", "5%-"}, Repeat: true, WhenLocked: true},
+	"system.help":          {Group: "system", Desc: "the keymap, in a terminal", Spawn: []string{"zde", "app", "launch", "help"}, written: true},
+	"system.brightness-up": {Group: "system", Desc: "brightness up", Spawn: []string{"brightnessctl", "set", "5%+"}, Repeat: true, WhenLocked: true, written: true},
+	"system.brightness-dn": {Group: "system", Desc: "brightness down", Spawn: []string{"brightnessctl", "set", "5%-"}, Repeat: true, WhenLocked: true, written: true},
 	"system.layout-switch": {Group: "system", Desc: "switch keyboard layout (language)", Native: "switch-layout \"next\""},
-	"system.notif-center":  {Group: "system", Desc: "the notification center", Spawn: []string{"zde", "system", "notif-center"}},
+	"system.notif-center":  {Group: "system", Desc: "the notification center", Spawn: []string{"zde", "system", "notif-center"}, written: true},
 	// doctor is a screen of text and there is nothing yet to show one: a bind
 	// spawns a process whose stdout goes to niri's log, so a chord for this
 	// would be a key that answers into a file nobody is reading. Registered
 	// anyway, because the action map has it (docs/model.md, section 6) and the
 	// palette runs actions by name - the chord comes with a surface to print
 	// into. Until then it is `zde doctor` in a terminal.
-	"system.doctor": {Group: "system", Desc: "the doctor: every check on one screen", Spawn: []string{"zde", "doctor"}},
+	"system.doctor": {Group: "system", Desc: "the doctor: every check on one screen", Spawn: []string{"zde", "doctor"}, written: true},
 }

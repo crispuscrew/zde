@@ -96,6 +96,114 @@ func TestEmitText(t *testing.T) {
 	}
 }
 
+// The palette reads its keys off the file EmitText writes, so the writer and
+// the reader are one format with two halves. Change a tab, an indent or the
+// column order in either and every key in the palette goes missing - silently,
+// because a row with no key still draws.
+func TestTheCheatsheetSurvivesBeingReadBack(t *testing.T) {
+	km, err := Parse([]byte(sample))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := parseText([]byte(EmitText(km)))
+	if len(got) != len(km.Binds) {
+		t.Fatalf("wrote %d binds and read back %d: %+v", len(km.Binds), len(got), got)
+	}
+	for _, b := range km.Binds {
+		found := false
+		for _, l := range got {
+			if l.key == b.Key && l.action == b.Action && strings.HasPrefix(l.desc, b.Entry.Desc) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s (%s) did not survive the round trip: %+v", b.Key, b.Action, got)
+		}
+	}
+}
+
+// What the palette lists, and which key it says runs each row. Both halves are
+// load-bearing: an action with no chord must still be listed (that is what
+// makes `zde doctor` reachable by name at all), and an action with several must
+// show the first, because the keymap writes the letter chord first and a row
+// that names two keys names neither.
+func TestActionsListEverythingAndSayWhichKeyRunsIt(t *testing.T) {
+	// A second chord on one action, which is the ordinary case - the keymap
+	// gives the letter chord and the arrows to the same action - and the reason
+	// the first one has to win.
+	km, err := Parse([]byte(sample + "  - { action: desk.switcher, key: Mod+F5 }\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := map[string]Action{}
+	for _, a := range Actions([]byte(EmitText(km))) {
+		by[a.Name] = a
+	}
+	if got := by["desk.switcher"].Key; got != "Mod+Tab" {
+		t.Errorf("desk.switcher key = %q, want the chord the cheatsheet has", got)
+	}
+	// Bound to nothing in this keymap, and still an action a person can ask
+	// for: the whole reason the list is the registry and not the file.
+	unbound, ok := by["system.doctor"]
+	if !ok {
+		t.Fatal("system.doctor is not in the list, so nothing can run it by name")
+	}
+	if unbound.Key != "" {
+		t.Errorf("system.doctor key = %q, and this keymap binds no chord to it", unbound.Key)
+	}
+	// The argument is part of the row: there is no `app.launch` to run.
+	if _, bare := by["app.launch"]; bare {
+		t.Error("app.launch is listed without an argument, and running it would refuse")
+	}
+	launch, ok := by["app.launch terminal"]
+	if !ok {
+		t.Fatal("app.launch terminal is not in the list, so Mod+t has no row")
+	}
+	if got := strings.Join(launch.Spawn, " "); got != "zde app launch terminal" {
+		t.Errorf("app.launch terminal spawns %q, want what the bind spawns", got)
+	}
+	if !launch.Live {
+		t.Error("app.launch terminal reads as not written, and it is what Mod+t does")
+	}
+	// A niri native is live because niri does it, whatever zde has written.
+	if !by["window.focus left"].Live {
+		t.Error("a niri native reads as not written")
+	}
+}
+
+// The order is the action map's, then the name. Without it the list comes out
+// of a Go map, which means a different order every time it is asked for - and a
+// palette whose third row moves between two presses of the key is one nobody
+// can learn.
+func TestActionsComeOutInOneOrder(t *testing.T) {
+	first := Actions(nil)
+	for range 5 {
+		got := Actions(nil)
+		if len(got) != len(first) {
+			t.Fatalf("two calls, %d rows and %d", len(first), len(got))
+		}
+		for i := range got {
+			if got[i].Name != first[i].Name {
+				t.Fatalf("row %d is %q one time and %q the next", i, first[i].Name, got[i].Name)
+			}
+		}
+	}
+	// desk before window before system, the way docs/model.md, section 6 has
+	// them, rather than alphabetically.
+	at := func(group string) int {
+		for i, a := range first {
+			if a.Group == group {
+				return i
+			}
+		}
+		t.Fatalf("no %s group in the list", group)
+		return 0
+	}
+	if at("desk") > at("window") || at("window") > at("system") {
+		t.Error("the groups are not in the action map's order")
+	}
+}
+
 func TestErrors(t *testing.T) {
 	cases := []struct {
 		name, yaml, want string
@@ -242,6 +350,13 @@ func TestRegistryInvariants(t *testing.T) {
 		// set that does is fixed here rather than left to a code review.
 		if e.WhenLocked && !inLockGroup[e.Group] {
 			t.Errorf("%s: allow-when-locked on a %q bind, which the lock screen has no business running", id, e.Group)
+		}
+		// A niri native is live by construction: niri performs it, and there is
+		// no zde command behind it to be written or missing. Saying so as well
+		// would be a second answer to one question, and the palette would show
+		// working keys as dead.
+		if e.Native != "" && e.written {
+			t.Errorf("%s: a niri native marked written, which is a claim about a zde command it does not have", id)
 		}
 		holes := strings.Count(e.Native, argPlaceholder)
 		if e.parametric() && e.Native != "" && holes != 1 {

@@ -48,6 +48,8 @@ type Event struct {
 	// screen, the token and the acknowledgement are the same for every surface
 	// zded asks for, and a shell that learned one has learned this one.
 	Notifications []attn.Record `json:"notifications,omitempty"`
+	// Actions is the palette's rows, sent the same way and for the same reason.
+	Actions []Action `json:"actions,omitempty"`
 	// The connections surface's two: the wifi networks it lists, and the link
 	// as it stands, so it can say what you are on without asking a second
 	// question (net.go).
@@ -96,6 +98,12 @@ const (
 	// It goes to the connection that asked and to nobody else (ask.go).
 	EventAskText = "ask.text"
 )
+
+// EventPalette asks it to show every action by name instead. A kind of its own
+// for the reason EventWindows is one: a shell that has never heard of it draws
+// nothing, where one that read a picker event with no desks in it would draw an
+// empty surface holding the keyboard.
+const EventPalette = "palette"
 
 // MethodShown is how a listener says it did the thing: the token from the
 // event it acted on. Unsolicited ones are ignored, so this cannot be used to

@@ -10,7 +10,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -23,6 +22,7 @@ import (
 	"github.com/crispuscrew/zde/internal/bt"
 	"github.com/crispuscrew/zde/internal/doctor"
 	"github.com/crispuscrew/zde/internal/journal"
+	"github.com/crispuscrew/zde/internal/keymap"
 	"github.com/crispuscrew/zde/internal/link"
 	"github.com/crispuscrew/zde/internal/zded"
 	"github.com/crispuscrew/zde/internal/zinc"
@@ -77,6 +77,20 @@ func run(args []string) error {
 		return bluetooth(args[2:])
 	case len(args) == 1 && args[0] == "keys":
 		return keys()
+	case len(args) == 1 && args[0] == "palette":
+		return palette()
+	case len(args) >= 2 && args[0] == "palette":
+		// The name from the list, handed straight back - the same two arities
+		// the window picker has, and for the same reason: the picker and the
+		// choice are one question asked twice, and with nothing to ask it of,
+		// what the first form printed is what the second one takes.
+		//
+		// Everything after the verb is the name, the way `queue add` takes its
+		// text. Eight action names carry a space (`window.focus left`), and the
+		// list prints the name in column one, so a form that took exactly one
+		// argument refused a name copied off the row above it - and blamed the
+		// person for mistyping it.
+		return call("palette.run", strings.Join(args[1:], " "))
 	case len(args) == 2 && args[0] == "app" && args[1] == "list":
 		return appList()
 	case len(args) == 2 && args[0] == "desk" && args[1] == "switcher":
@@ -185,7 +199,7 @@ func launch(name string) error {
 // keypress has is what it did before, which on a desktop where most keys are
 // still silent is the worst key to have chosen for that.
 func keys() error {
-	path := keymapPath()
+	path := keymap.TextPath()
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return fmt.Errorf("no keymap at %s: layer 1 installs it, so this is a zde "+
@@ -196,13 +210,6 @@ func keys() error {
 	}
 	_, err = os.Stdout.Write(data)
 	return err
-}
-
-func keymapPath() string {
-	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
-		return filepath.Join(dir, "zde", "keymap.txt")
-	}
-	return filepath.Join(os.Getenv("HOME"), ".config", "zde", "keymap.txt")
 }
 
 // appList is how somebody finds out what their machine can start, which is
@@ -942,6 +949,33 @@ func connections() error {
 	return nil
 }
 
+// palette asks for the palette. The same bargain as the desk switcher: with a
+// shell listening this prints nothing, and without one it prints the list, so
+// that the key does something on a session whose shell has died - and so that
+// what this machine can be asked to do is greppable at all.
+func palette() error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	var p zded.Palette
+	if err := c.Call("palette.list", &p); err != nil {
+		return err
+	}
+	if p.Shown {
+		return nil
+	}
+	// name, key, why not, what it does - tab separated, the name in column one
+	// because it is what goes back to `zde palette NAME`, and the description
+	// last because it is the only field that can be long. A dash is "nothing
+	// here", which in the third column means the action works.
+	for _, a := range p.Actions {
+		fmt.Printf("%s\t%s\t%s\t%s\n", a.Name, dash(a.Key), dash(a.Why), a.Desc)
+	}
+	return nil
+}
+
 func security(n link.Network) string {
 	if n.Secure {
 		return "secure"
@@ -1248,6 +1282,10 @@ func usage() {
                          zde ask local < the-question
   zde keys               the whole keymap, one key per line (Mod+slash opens
                          this in a terminal)
+  zde palette [NAME]     every action by name (Mod+semicolon); prints the list
+                         when no shell is up - name, key, why it would do
+                         nothing, what it does - and with a name runs that one,
+                         doing exactly what its key would do
   zde desk switch NAME   bring a desk up on every monitor it owns, and start
                          what its manifest declares
   zde workspace next|prev

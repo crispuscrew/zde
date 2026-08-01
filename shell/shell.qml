@@ -285,6 +285,8 @@ ShellRoot {
                     root.openAsk(msg.event, false);
                 else if (msg.event.kind === "ask.panel")
                     root.openAsk(msg.event, true);
+                else if (msg.event.kind === "palette")
+                    root.openPalette(msg.event);
             }
         }
     }
@@ -425,6 +427,21 @@ ShellRoot {
     function openAsk(ev, isPanel) {
         askWindow.screen = root.screenFor(ev);
         askWindow.show(isPanel, ev.token ?? "");
+    }
+
+    // Every action zde has, by name. The key goes on the row because half of
+    // what a palette is for is learning the key you forgot, and whether the row
+    // works at all is zded's answer, not the shell's - most of the keymap is
+    // bound to commands nobody has written yet.
+    function openPalette(ev) {
+        palette.screen = root.screenFor(ev);
+        palette.show((ev.actions ?? []).map(a => ({
+                    name: a.name,
+                    desc: a.desc ?? "",
+                    key: a.key ?? "",
+                    live: a.live === true,
+                    why: a.why ?? ""
+                })), ev.token ?? "");
     }
 
     // The screen an event asks for. One answer for every surface: two copies of
@@ -704,6 +721,28 @@ ShellRoot {
         }
     }
 
+    ActionPalette {
+        id: palette
+
+        // The shell decides nothing here either: which action a name means, and
+        // whether running it spawns a command or asks niri, are zded's
+        // (docs/vision.md, section 2). On the stream connection, for the reason
+        // the picker's choice is - the bar's parser reads every line it gets as
+        // a queue listing.
+        onChosen: name => {
+            palette.hide();
+            root.send({
+                method: "palette.run",
+                args: [name]
+            });
+        }
+        onDismissed: palette.hide()
+        onShown: token => root.send({
+            method: "shown",
+            args: [token]
+        })
+    }
+
     // How a test can ask the bar what it is showing, rather than only whether
     // it is running: `qs -p <config> ipc call queue count`. A bar that never
     // read the queue and a bar reading it correctly look identical from the
@@ -749,6 +788,43 @@ ShellRoot {
                 return "closed";
             picker.action(name);
             return "acted";
+        }
+    }
+
+    // The palette, over the same IPC and for the same reason: a machine with no
+    // input devices cannot type into it, and typing is the whole interaction.
+    IpcHandler {
+        target: "palette"
+
+        // What it is showing: how many actions it was handed, and how many the
+        // filter leaves. Two numbers rather than one, because a filter that
+        // matched everything and one that was never applied look identical from
+        // a single count.
+        function state(): string {
+            if (!palette.visible)
+                return "closed";
+            return "open " + palette.rows.length + " " + palette.matches.length;
+        }
+
+        function filter(text: string): string {
+            if (!palette.visible)
+                return "closed";
+            palette.narrow(text);
+            return "filtered";
+        }
+
+        function run(name: string): string {
+            if (!palette.visible)
+                return "closed";
+            if (palette.rows.findIndex(r => r.name === name) < 0)
+                return "no such row";
+            palette.chosen(name);
+            return "ran";
+        }
+
+        function dismiss(): string {
+            palette.dismissed();
+            return "closed";
         }
     }
 

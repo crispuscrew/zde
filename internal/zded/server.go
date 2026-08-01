@@ -79,6 +79,10 @@ type Compositor interface {
 	// EmptyByOutput is the unnamed, empty workspaces per output - what a
 	// declared workspace gets made out of.
 	EmptyByOutput() (map[string][]uint64, error)
+	// Perform runs one of niri's own actions by the name a bind gives it. Half
+	// the keymap is niri's own, and the palette has to be able to run those the
+	// same way it runs everything else.
+	Perform(action string) error
 }
 
 // Desks is where manifests live. An interface rather than a loaded map,
@@ -175,6 +179,10 @@ type Server struct {
 	// launch starts one app instance. A field so a test can watch what a switch
 	// asks for without a container runtime under it.
 	launch func(address string) error
+	// spawn runs what a bind would have run, for the palette. A field for the
+	// same reason launch is one: what the palette starts is the thing worth
+	// asserting, and a test should not have to start a terminal to see it.
+	spawn func(argv []string) error
 
 	notifier Notifier
 	// history is what has arrived, whatever the mode did about it. Bounded, and
@@ -216,6 +224,7 @@ func New(version string, jrn *journal.Journal, compositor Compositor, desks Desk
 		niri:     compositor,
 		desks:    desks,
 		launch:   zinc.Run,
+		spawn:    spawnDetached,
 		openLink: link.Open,
 		// Neither radio is dialled here: opening a system bus connection at
 		// startup would be zded doing that work on every machine, including the
@@ -469,6 +478,19 @@ func (s *Server) Dispatch(req Request) Response {
 			return Response{Error: "net.disconnect takes no arguments"}
 		}
 		return s.netDisconnect()
+	case "palette.list":
+		if len(req.Args) != 0 {
+			return Response{Error: "palette.list takes no arguments"}
+		}
+		return s.palette()
+	case "palette.run":
+		// One name, and the name is the whole of it. A palette that took a
+		// method and its arguments would be a way to ask zded for anything at
+		// all from a surface, and what this runs is what a key already runs.
+		if len(req.Args) != 1 {
+			return Response{Error: "palette.run takes one action name"}
+		}
+		return s.runAction(req.Args[0])
 	case "desk.list":
 		m, err := s.niri.DeskMap()
 		if err != nil {
