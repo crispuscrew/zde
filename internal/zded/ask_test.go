@@ -84,6 +84,11 @@ func TestFakeTier(t *testing.T) {
 		// test can ask afterwards whether it was left running.
 		grand := exec.Command(os.Args[0], "-test.run=^TestFakeTier$", "--", fakeTierMark, "linger", args[2])
 		grand.Stdout = os.Stdout
+		// And stderr, which is what a shell gives a backgrounded child and what
+		// makes this the reviewer's case rather than a tidier one: that pipe was
+		// exec's, with a copying goroutine Wait waits for, so holding it cost
+		// five seconds and a failure reported for an answer that was fine.
+		grand.Stderr = os.Stderr
 		if err := grand.Start(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			code = 1
@@ -278,10 +283,11 @@ func TestATierThatForksDoesNotWedgeTheRun(t *testing.T) {
 	if text != "answered and forked" {
 		t.Errorf("the tier answered %q", text)
 	}
-	// Generously below the two minute timeout, and far above the drain: what is
-	// being pinned is that the run ends with the tier rather than with whatever
-	// the tier left holding the pipe.
-	if took > 15*time.Second {
+	// Far above the drain and well below anything a person would sit through:
+	// what is being pinned is that the run ends with the tier rather than with
+	// whatever the tier left holding a pipe. Two seconds also fails the version
+	// of this where stderr is exec's, which cost the whole of WaitDelay.
+	if took > 2*time.Second {
 		t.Errorf("the run took %v for a tier that answered and exited at once", took)
 	}
 

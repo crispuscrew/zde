@@ -18,7 +18,6 @@ package zded
 // nothing written down (see askRun).
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -66,9 +65,10 @@ const MethodAskRun = "ask.run"
 const askTimeout = 2 * time.Minute
 
 // askGrace is how long Wait may go on waiting after the tier has been told to
-// stop. It is the guard on the one pipe zde does not own - stderr, which exec
-// copies for us - and on a process that somehow survives its group being
-// killed. Short, because by this point everything that was going to answer has.
+// stop. With both pipes held here rather than by exec, all it guards is a
+// process that outlives its own group being killed, which is a stopped one or
+// one in a state no signal reaches. Short, because by this point everything
+// that was going to answer has.
 const askGrace = 5 * time.Second
 
 // askDrain is how long the answer may keep arriving after the tier has exited.
@@ -86,6 +86,11 @@ const askDrain = 200 * time.Millisecond
 // answer then stopped mid-sentence, the end of it failed the same way, and the
 // window waited for ever.
 const askSendWait = 5 * time.Second
+
+// complaintMax is how much of a tier's stderr is worth keeping to explain a
+// failure with. Generous for a stack trace, and nothing like enough to be a
+// place a daemon accidentally stores a log.
+const complaintMax = 64 << 10
 
 // askMax bounds one answer. zded itself does not care - it streams and forgets
 // - but the window keeps the whole thing in one text item on the thread that
@@ -186,26 +191,38 @@ func (s *Server) askRun(k *sink, args []string) {
 	// and answers it: no arguments to quote, and nothing about it on a command
 	// line that `ps` prints for the whole machine to read.
 	cmd.Stdin = strings.NewReader(question)
-	// Whatever it complains about, kept for the end. A tier that fails says why
-	// here - the wrong model name, no credentials in the container, no network
-	// where it wanted one - and without it a surface can report an exit status
-	// and nothing else.
-	var complaint bytes.Buffer
-	cmd.Stderr = &complaint
 
-	// The pipe is ours rather than one exec owns, because EOF on it needs every
-	// holder of the write end to let go of it - and a tier that forks leaves one
+	// Both pipes are zde's own rather than exec's, because EOF on one needs
+	// every holder of the write end to let go - and a tier that forks leaves one
 	// behind. `zcr run <app> --exec` and a shell script are the two shapes this
-	// option exists for and both fork, so this is the ordinary case and not an
-	// exotic one: with exec's own pipe, a tier whose child outlived it parked
-	// this goroutine in Read for the life of the session, past the timeout,
-	// because the timeout is enforced by Wait and Wait is after the read.
+	// option exists for, and both fork, so this is the ordinary case rather than
+	// an exotic one.
+	//
+	// With exec's pipe for stdout, a tier whose child outlived it parked this
+	// goroutine in a read for the life of the session, past the timeout, because
+	// the timeout is enforced by Wait and Wait comes after the read. With exec's
+	// pipe for stderr, that same child held the copying goroutine Wait does wait
+	// for: measured against a shell tier that backgrounds one thing, five
+	// seconds of nothing and then a failure reported for an answer that had
+	// arrived perfectly.
 	pr, pw, err := os.Pipe()
 	if err != nil {
 		askDone(k, err.Error())
 		return
 	}
+	er, ew, err := os.Pipe()
+	if err != nil {
+		pr.Close()
+		pw.Close()
+		askDone(k, err.Error())
+		return
+	}
 	cmd.Stdout = pw
+	// Whatever it complains about, kept for the end. A tier that fails says why
+	// there - the wrong model name, no credentials in the container, no network
+	// where it wanted one - and without it a surface can report an exit status
+	// and nothing else.
+	cmd.Stderr = ew
 	// Its own process group, so that stopping the tier stops what the tier
 	// started. Killing the one pid zde knows about leaves exactly the children
 	// that were the problem still running, still holding the pipe.
@@ -214,15 +231,16 @@ func (s *Server) askRun(k *sink, args []string) {
 		killGroup(cmd)
 		return nil
 	}
-	// The second guard, and the one that covers stderr: that pipe is exec's,
-	// with a copying goroutine Wait waits for, and the same forked child can
-	// hold it open after the process is gone. WaitDelay is what closes it and
-	// lets Wait return instead of waiting on a grandchild nobody asked about.
+	// The last guard, for a process that outlives its own group being killed -
+	// one stopped, or one in a state the signal cannot reach. With both pipes
+	// held here, this is all WaitDelay has left to do.
 	cmd.WaitDelay = askGrace
 
 	if err := cmd.Start(); err != nil {
 		pr.Close()
 		pw.Close()
+		er.Close()
+		ew.Close()
 		// One sentence for every way a tier fails to start, naming the tier,
 		// what it tried to run, and the option that would fix it.
 		// exec.ErrNotFound was the only case this used to name, and it is the
@@ -240,28 +258,36 @@ func (s *Server) askRun(k *sink, args []string) {
 			tier, argv[0], reason, tier))
 		return
 	}
-	// zded's own copy of the write end, closed now: while this process holds it,
-	// nothing the tier does can produce an EOF on the read end.
+	// zded's own copies of the write ends, closed now: while this process holds
+	// one, nothing the tier does can produce an EOF on the read end.
 	pw.Close()
-	// And the read end, when the run is over one way or the other. This close is
-	// what unblocks pump: the deadline fires, or something cancels, or this
-	// function returns and its deferred cancel runs.
+	ew.Close()
+	// And the read ends, when the run is over one way or the other. That close
+	// is what unblocks the two readers below: the deadline fires, or something
+	// cancels, or this function returns and its deferred cancel runs.
 	go func() {
 		<-ctx.Done()
 		pr.Close()
+		er.Close()
 	}()
+	// Emptied while the answer arrives, not after it: a pipe nobody reads fills
+	// up, and a tier blocked writing to stderr is a tier that has stopped
+	// answering because zde stopped listening.
+	complaint := make(chan []byte, 1)
+	go func() { complaint <- drain(er, complaintMax) }()
 
 	// Waiting alongside the reading rather than after it, which is the other
 	// half of the same lesson: an answer is over when the tier is, and not when
 	// the last thing the tier forked lets go of the pipe. Once the process has
-	// gone, pump gets a deadline - long enough to drain what is already in the
-	// pipe, short enough that a forked child holding it is not somebody's whole
-	// session. The pipe is zde's, so reading it while Wait runs is safe in a way
-	// it never is with exec's own.
+	// gone, both readers get a deadline - long enough to drain what is already
+	// in the pipe, short enough that a forked child holding it is not somebody's
+	// whole session. The pipes are zde's, so reading them while Wait runs is
+	// safe in a way it never is with exec's own.
 	waited := make(chan error, 1)
 	go func() {
 		err := cmd.Wait()
 		pr.SetReadDeadline(time.Now().Add(askDrain))
+		er.SetReadDeadline(time.Now().Add(askDrain))
 		waited <- err
 	}()
 
@@ -272,6 +298,7 @@ func (s *Server) askRun(k *sink, args []string) {
 	// they feel like: the run is over, and a run that is over should not still
 	// be producing anything.
 	killGroup(cmd)
+	complained := <-complaint
 
 	switch {
 	case said >= askMax:
@@ -286,7 +313,7 @@ func (s *Server) askRun(k *sink, args []string) {
 		// was streaming happily and never stopped ends up.
 		askDone(k, fmt.Sprintf("the %s tier did not finish within %s", tier, askTimeout))
 	case werr != nil:
-		askDone(k, fmt.Sprintf("the %s tier failed: %s", tier, complaintOf(&complaint, werr)))
+		askDone(k, fmt.Sprintf("the %s tier failed: %s", tier, complaintOf(complained, werr)))
 	case said == 0:
 		// A window that never answers is the thing to design out, and a tier
 		// exiting happily having said nothing is exactly one - which is also
@@ -408,10 +435,30 @@ func partialRune(b []byte) int {
 	return 0
 }
 
+// drain reads everything a tier writes to stderr and keeps the first max bytes.
+//
+// Everything, because a pipe nobody empties fills up and stops the tier writing
+// to it, and a tier that says a lot before it answers would then be one zde had
+// quietly stopped. The first max bytes, because what is wanted is the reason it
+// failed and not its whole startup log kept in a daemon's memory.
+func drain(r io.Reader, max int) []byte {
+	var kept []byte
+	buf := make([]byte, 4096)
+	for {
+		n, err := r.Read(buf)
+		if n > 0 && len(kept) < max {
+			kept = append(kept, buf[:min(n, max-len(kept))]...)
+		}
+		if err != nil {
+			return kept
+		}
+	}
+}
+
 // complaintOf is what to say a tier failed with: its own words where it had
 // any, and the exit status where it said nothing.
-func complaintOf(complaint *bytes.Buffer, err error) string {
-	msg := strings.TrimSpace(complaint.String())
+func complaintOf(complaint []byte, err error) string {
+	msg := strings.TrimSpace(string(complaint))
 	if msg == "" {
 		return err.Error()
 	}
