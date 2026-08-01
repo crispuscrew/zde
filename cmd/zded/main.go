@@ -47,20 +47,55 @@ func main() {
 		*desksDir = manifest.DefaultDir()
 	}
 
-	jrn, err := journal.Open(*jrnPath)
+	// The signal has to reach the listener, or a stale socket outlives the
+	// daemon and the next zded refuses to start.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	if err := run(ctx, *socket, *jrnPath, *desksDir, attn.Serve); err != nil {
+		fatal(err)
+	}
+}
+
+// notifier is how the daemon takes the session's notification name. A parameter
+// rather than a call to attn.Serve, because what this file is really about is
+// the order things are brought up in, and the way to test an order is to hand it
+// something that will not come up.
+type notifier func(sink attn.Sink, version string) (*attn.Server, error)
+
+// run is the daemon from a bound socket to the last connection answered.
+//
+// The order below is the point of this function, and it changed. attn.Serve
+// used to come before srv.Serve, and a session bus that accepted the connection
+// and then would not authenticate stopped zded there - with the listener
+// already bound, so every `zde` call landed in the backlog and got nothing back
+// until the client gave up five seconds later. Every keybind in the session,
+// failing, because of the notification server.
+//
+// So the socket is answering first, and everything that talks to a bus happens
+// behind it. Nothing zded does for a keypress needs the notification server:
+// notifications arrive at it, and a session with none is a session that still
+// switches desks. Taking the name is bounded too (internal/attn, Serve), which
+// is what makes it safe for this to be the thing the main goroutine sits in
+// while the socket is served from another.
+func run(ctx context.Context, socket, jrnPath, desksDir string, notify notifier) error {
+	jrn, err := journal.Open(jrnPath)
 	if err != nil {
-		fatal(fmt.Errorf("journal: %w", err))
+		return fmt.Errorf("journal: %w", err)
 	}
 	defer jrn.Close()
 	if n := jrn.Skipped(); n > 0 {
 		fmt.Fprintf(os.Stderr, "zded: journal: %d entries could not be read\n", n)
 	}
 
-	srv := zded.New(version, jrn, compositor{}, manifest.Dir(*desksDir))
-	if err := srv.Listen(*socket); err != nil {
-		fatal(err)
+	srv := zded.New(version, jrn, compositor{}, manifest.Dir(desksDir))
+	if err := srv.Listen(socket); err != nil {
+		return err
 	}
-	fmt.Fprintf(os.Stderr, "zded %s listening on %s\n", version, *socket)
+	// On every way out, not only the tidy one: a socket file left behind is what
+	// makes the next zded refuse to start.
+	defer os.Remove(socket)
+	fmt.Fprintf(os.Stderr, "zded %s listening on %s\n", version, socket)
 
 	// What the desks say about where their windows open, handed to niri before
 	// anything can be launched (internal/zded/rules.go). At startup because the
@@ -68,41 +103,35 @@ func main() {
 	// is entered.
 	srv.SyncRules()
 
-	// The signal has to reach the listener, or a stale socket outlives the
-	// daemon and the next zded refuses to start.
-	ctx, stopWatching := context.WithCancel(context.Background())
-	defer stopWatching()
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
-		<-stop
-		stopWatching()
+		<-ctx.Done()
 		srv.Close()
 	}()
 
-	// The session's notification server, if this session has a bus and nobody
-	// else has taken the name. Not fatal either way: zded runs the desks
-	// whether or not anything can send it a notification, and a daemon that
-	// refused to start because of a bus would take the desks down with it.
-	if notifier, err := attn.Serve(srv, version); err != nil {
-		fmt.Fprintf(os.Stderr, "zded: notifications: %v\n", err)
-	} else {
-		defer notifier.Close()
-		// So that finishing something with `zde queue done` tells whoever sent
-		// it. A client blocked on its closure has no other way to find out.
-		srv.Watching(notifier)
-		fmt.Fprintln(os.Stderr, "zded: notifications: listening")
-	}
+	// Answering keybinds, from here on and before anything touches a bus.
+	serving := make(chan error, 1)
+	go func() { serving <- srv.Serve() }()
 
 	// Keep the names true while the session runs, rather than only when
 	// someone asks. This is also what makes zded worth having running: a
 	// workspace is adopted the moment something is in it.
 	go srv.Watch(ctx, subscribe)
 
-	if err := srv.Serve(); err != nil {
-		fatal(err)
+	// The session's notification server, if this session has a bus and nobody
+	// else has taken the name. Not fatal either way: zded runs the desks
+	// whether or not anything can send it a notification, and a daemon that
+	// refused to start because of a bus would take the desks down with it.
+	if n, err := notify(srv, version); err != nil {
+		fmt.Fprintf(os.Stderr, "zded: notifications: %v\n", err)
+	} else {
+		defer n.Close()
+		// So that finishing something with `zde queue done` tells whoever sent
+		// it. A client blocked on its closure has no other way to find out.
+		srv.Watching(n)
+		fmt.Fprintln(os.Stderr, "zded: notifications: listening")
 	}
-	os.Remove(*socket)
+
+	return <-serving
 }
 
 // subscribe opens an event stream. The connection is not shared with the

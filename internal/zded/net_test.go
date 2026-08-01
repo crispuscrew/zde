@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/crispuscrew/zde/internal/journal"
 	"github.com/crispuscrew/zde/internal/link"
@@ -85,6 +86,59 @@ func TestNoNetworkManagerIsNotOffline(t *testing.T) {
 	}
 	if st.Kind != link.KindNone {
 		t.Errorf("kind = %q for a manager with nothing connected", st.Kind)
+	}
+}
+
+// A machine with no NetworkManager is asked about once, and not on every poll.
+//
+// The bar reads the link every five seconds for as long as the session runs, and
+// every zde desktop has no NetworkManager: layer 0 installs it for laptops only.
+// Each of those questions opened a private system bus connection, ran a SASL
+// handshake, said Hello, asked who owns the name and closed again - seventeen
+// thousand times a day, measured, for an answer that changes when somebody
+// rebuilds the machine. Break this and that comes back, and with it one
+// abandoned dial every five seconds against a bus that has stopped answering.
+func TestAnAbsentNetworkManagerIsNotDialledAgainOnEveryPoll(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
+	dials := 0
+	s.openLink = func() (link.Manager, error) {
+		dials++
+		return nil, link.ErrNoManager
+	}
+
+	for i := 0; i < 20; i++ {
+		resp := s.Dispatch(Request{Method: "net.status"})
+		if resp.Error != "" {
+			t.Fatalf("net.status: %s", resp.Error)
+		}
+		var st link.Status
+		if err := json.Unmarshal(resp.Ok, &st); err != nil {
+			t.Fatal(err)
+		}
+		// The same answer every time: remembering an absence must not turn
+		// "there is no manager here" into a refusal.
+		if st.Kind != link.KindAbsent {
+			t.Fatalf("kind = %q on poll %d", st.Kind, i)
+		}
+	}
+	if dials != 1 {
+		t.Errorf("dialled %d times over twenty polls, want once", dials)
+	}
+
+	// Believed for a while and not for ever: a machine that gains a manager has
+	// to be able to say so without a new session.
+	s.noManagerAt = time.Now().Add(-2 * noManagerFor)
+	s.openLink = func() (link.Manager, error) {
+		dials++
+		return &fakeLink{status: link.Status{Kind: link.KindWifi, Wifi: true, SSID: "vshop"}}, nil
+	}
+	resp := s.Dispatch(Request{Method: "net.status"})
+	var st link.Status
+	if err := json.Unmarshal(resp.Ok, &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.Kind != link.KindWifi {
+		t.Errorf("kind = %q once the manager arrived: nothing ever asked again", st.Kind)
 	}
 }
 

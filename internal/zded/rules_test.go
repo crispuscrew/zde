@@ -74,6 +74,27 @@ func TestPlacementRulesCoverEveryDesk(t *testing.T) {
 	}
 }
 
+// The directory niri reads this from is made rather than assumed. Break this
+// and the first startup on an account where nobody has ever configured niri by
+// hand prints "no such file or directory" once, and then every pinned app opens
+// wherever niri felt like putting it - the whole of what the manifests say about
+// placement, silently not happening.
+func TestWriteRulesMakesTheDirectoryItWritesInto(t *testing.T) {
+	// What XDG_CONFIG_HOME points at on a fresh account: a directory with no
+	// niri in it.
+	path := filepath.Join(t.TempDir(), "niri", "dynamic.kdl")
+	if err := writeRules(path, "one\n"); err != nil {
+		t.Fatalf("writing the placement rules: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "one\n" {
+		t.Errorf("file holds %q", got)
+	}
+}
+
 func TestWriteRulesOnlyWhenChanged(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "dynamic.kdl")
 	if err := writeRules(path, "one\n"); err != nil {

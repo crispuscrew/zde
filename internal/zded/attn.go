@@ -45,7 +45,10 @@ func (s *Server) mode() attn.Mode {
 	if s.jrn == nil {
 		return attn.Work
 	}
-	m, err := attn.ParseMode(s.jrn.State().Mode)
+	// The mode alone (internal/journal, Mode). The bar asks for this on a clock,
+	// and a copy of every desk position the session has accumulated is a strange
+	// price for one word.
+	m, err := attn.ParseMode(s.jrn.Mode())
 	if err != nil {
 		// A journal edited by hand, or one written by a newer zde with a mode
 		// this one has never heard of. Not logged: the bar asks this every two
@@ -158,10 +161,11 @@ func (s *Server) invoke(id, key string) Response {
 	if !rec.Allows(key) {
 		return Response{Error: strconv.Quote(rec.Text) + " never offered " + strconv.Quote(key)}
 	}
-	if s.notifier == nil {
+	w := s.watcher()
+	if w == nil {
 		return Response{Error: "zded is not the notification server on this session, so there is nobody to tell"}
 	}
-	if err := s.notifier.Invoke(n, key); err != nil {
+	if err := w.Invoke(n, key); err != nil {
 		return Response{Error: err.Error()}
 	}
 	return ok([]string{})

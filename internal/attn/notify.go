@@ -15,6 +15,7 @@ import (
 	"sync"
 	"unicode"
 
+	"github.com/crispuscrew/zde/internal/bus"
 	"github.com/godbus/dbus/v5"
 )
 
@@ -169,8 +170,12 @@ type owned struct {
 // session that already has one is not an error the daemon should die of,
 // though - zded does the desks either way - so the caller decides what to do
 // with the refusal.
+//
+// Bounded, and that is what lets the daemon bring this up on the way past
+// rather than around it (cmd/zded): a session bus that accepts the connection
+// and never authenticates used to stop zded before it served anything at all.
 func Serve(sink Sink, version string) (*Server, error) {
-	conn, err := dbus.ConnectSessionBus()
+	conn, err := bus.Session()
 	if err != nil {
 		return nil, fmt.Errorf("session bus: %w", err)
 	}
