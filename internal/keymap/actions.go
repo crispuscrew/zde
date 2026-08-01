@@ -18,15 +18,21 @@ type Action struct {
 	Name  string
 	Group string
 	Desc  string
-	// Key is the chord bound to it, empty where none is. An action with no key
-	// is not a mistake - `zde doctor` and the two net cuts are registered with
-	// no chord on purpose (common/keymap/keymap.yaml, net), and being reachable
-	// by name is the whole reason they are registered at all.
+	// Key is the chord bound to it, empty where none is. Plenty of actions have
+	// none, for more than one reason: `desk.next` and `zde workspace next` work
+	// and are reached by other keys, `system.bluetooth` shares a surface with
+	// the key beside it, and a few say where they are registered that being
+	// reachable by name is the point (system.doctor, the two net cuts). A blank
+	// here is a fact about the keymap, not a fault.
 	Key string
 	// Native and Spawn are what the bind is made of: a niri action line, or an
 	// argv, exactly one of them, with any argument already filled in.
 	Native string
 	Spawn  []string
+	// Performs says niri will do this native when zde asks over the socket, and
+	// not only when the key fires. Meaningless for a spawn, and false for the
+	// eight natives niri takes from a bind and refuses from us (registry.go).
+	Performs bool
 	// Live says something is written behind it. Most of the keymap is bound to
 	// commands nobody has written yet (README, Missing), and a palette that did
 	// not say so would offer a row that does nothing when picked - which is the
@@ -51,7 +57,8 @@ type Action struct {
 //
 // An action the cheatsheet has and this build does not know is left out. There
 // is nothing to run it with, and a row that can only fail is worse than a row
-// that is missing.
+// that is missing. An action with no key is not: half the rows with no chord
+// work, and the palette is how they are reached.
 func Actions(cheatsheet []byte) []Action {
 	keyOf := map[string]string{}
 	var out []Action
@@ -104,12 +111,13 @@ func Actions(cheatsheet []byte) []Action {
 // supplied put where the bind would have put it.
 func action(name string, e Entry, arg, desc string) Action {
 	a := Action{
-		Name:   name,
-		Group:  e.Group,
-		Desc:   desc,
-		Native: e.Native,
-		Spawn:  e.Spawn,
-		Live:   e.written || e.Native != "",
+		Name:     name,
+		Group:    e.Group,
+		Desc:     desc,
+		Native:   e.Native,
+		Spawn:    e.Spawn,
+		Performs: e.performs,
+		Live:     e.written || e.Native != "",
 	}
 	switch {
 	case arg == "":

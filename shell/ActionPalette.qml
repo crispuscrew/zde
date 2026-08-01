@@ -60,6 +60,19 @@ PanelWindow {
     // which a frozen shell also does.
     property string token: ""
 
+    // Set between asking zded to run a row and being told what became of it.
+    //
+    // The surface used to close on the way out, which meant a refusal came back
+    // to nothing: the shell's stream parser drops what it cannot use, so a row
+    // zded would not run closed the palette and did nothing at all - the silent
+    // key, performed by the surface built to expose it. So it waits, and hides
+    // itself only on an answer that worked.
+    property bool running: false
+    // The last refusal, shown where the eye is until something else is asked
+    // for. Kept until then rather than timed out, because the one thing worse
+    // than a message nobody reads is one that leaves before they look.
+    property string failed: ""
+
     // chosen(name) is the whole output of this surface. The shell sends it to
     // zded, which does what that action's key would have done.
     signal chosen(string name)
@@ -90,6 +103,8 @@ PanelWindow {
         palette.token = token ?? "";
         query.text = "";
         palette.index = 0;
+        palette.running = false;
+        palette.failed = "";
         palette.visible = true;
     }
 
@@ -114,6 +129,9 @@ PanelWindow {
         const n = palette.matches.length;
         if (n === 0)
             return;
+        // A refusal belongs to the row it was about, so moving off that row
+        // takes it away rather than leaving it over somebody else's.
+        palette.failed = "";
         // Wrapping, like the picker: the list is short once it is filtered, and
         // one that stops at the end makes you look at where the cursor is
         // before pressing a key.
@@ -121,6 +139,10 @@ PanelWindow {
     }
 
     function run() {
+        // One at a time: Enter pressed twice while the first answer is on its
+        // way would start two of whatever it is.
+        if (palette.running)
+            return;
         const r = palette.matches[palette.index];
         if (!r)
             return;
@@ -130,7 +152,21 @@ PanelWindow {
             // the mark exists to break.
             return;
         }
+        palette.failed = "";
+        palette.running = true;
         palette.chosen(r.name);
+    }
+
+    // What became of it, from the shell. Empty means it ran, and the surface
+    // has no more reason to be on the screen; anything else is zded's own words
+    // about why it did not, which is the half a keypress cannot say.
+    function ran(error) {
+        palette.running = false;
+        if (error === "") {
+            palette.hide();
+            return;
+        }
+        palette.failed = error;
     }
 
     // Driving the filter from outside, for the same reason the picker's choice
@@ -209,6 +245,7 @@ PanelWindow {
             // together when the index actually changed.
             onTextChanged: {
                 palette.index = 0;
+                palette.failed = "";
                 list.positionViewAtIndex(0, ListView.Beginning);
             }
 
@@ -258,11 +295,23 @@ PanelWindow {
             anchors.right: parent.right
             anchors.margins: 12
             elide: Text.ElideRight
-            // The reason the highlighted row would do nothing, when it would.
-            // It takes the hint's place because it is the more useful of the
-            // two exactly when it is there.
-            text: palette.reason !== "" ? palette.reason : "enter run    ctrl+n/p move    esc close"
-            color: palette.reason !== "" ? "#e5a23d" : "#7a7f8a"
+            // Three things in one line, in the order they matter. What zded
+            // said about the row somebody just tried to run; failing that, why
+            // the highlighted row would do nothing; failing that, the keys.
+            // All of it takes the hint's place because each is more useful than
+            // the hint exactly when it is there.
+            text: {
+                if (palette.failed !== "")
+                    return palette.failed;
+                if (palette.reason !== "")
+                    return palette.reason;
+                return "enter run    ctrl+n/p move    esc close";
+            }
+            color: {
+                if (palette.failed !== "")
+                    return "#e5484d";
+                return palette.reason !== "" ? "#e5a23d" : "#7a7f8a";
+            }
             font.pixelSize: 11
             font.family: "monospace"
         }

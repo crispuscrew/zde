@@ -193,6 +193,32 @@ func TestPaletteNamesTheProgramThatIsMissing(t *testing.T) {
 	}
 }
 
+// The three screenshots are the rows this is most worth being right about. The
+// key takes a screenshot, and niri refuses the same action asked for over the
+// socket - it wants a field the bind does not carry and the config parser fills
+// in. So the palette must not offer them, and must go on showing the key, which
+// is the thing that works. Marked live, this was the palette doing the exact
+// silent-key trick it exists to expose: pick "screenshot a region", watch the
+// surface close, and nothing happens.
+func TestPaletteWillNotClaimToTakeAScreenshot(t *testing.T) {
+	withCheatsheet(t, "capture\n  Mod+Print\tcapture.shot-full\tscreenshot the whole output\n")
+	s, f, _ := paletteServer(t)
+
+	got := row(t, list(t, s), "capture.shot-full")
+	if got.Live {
+		t.Error("the palette offers a screenshot, and niri answers that request with an error")
+	}
+	if got.Key != "Mod+Print" {
+		t.Errorf("the row stopped teaching the key that does work: %+v", got)
+	}
+	if resp := s.Dispatch(Request{Method: "palette.run", Args: []string{"capture.shot-full"}}); resp.Error == "" {
+		t.Error("palette.run took a screenshot request niri would refuse")
+	}
+	if asked := f.performCalls(); len(asked) != 0 {
+		t.Errorf("niri was asked %v anyway", asked)
+	}
+}
+
 // The key on a row comes from the file the config build wrote, because that
 // file and the binds niri actually loaded came out of one build. Answering from
 // the registry instead would be a palette confidently teaching a chord this

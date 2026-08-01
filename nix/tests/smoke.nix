@@ -559,14 +559,29 @@ let
         fi
         # Typing narrows it. The second number is what is left on screen, and a
         # filter that did nothing would leave it equal to the first.
-        paletteq filter system.lock >/dev/null
         narrowed() { case "$(paletteq state)" in *" 1") return 0 ;; *) return 1 ;; esac; }
+        paletteq filter desk.panic >/dev/null
         if ! waitfor 15 narrowed; then
           echo "typing into the palette did not narrow it: $(paletteq state)"; exit 1
         fi
-        # And running the row does what Mod+Ctrl+semicolon does: the locker on
-        # this machine is a touch, so what is asserted is the chain - surface,
-        # shell, zded, the spawn, the apps table, an exec.
+        # A row with nothing written behind it refuses to run, and the surface
+        # stays up saying why. This is the whole design - a key that does
+        # nothing silently, and a palette that says so instead - and until this
+        # line nothing in CI ever touched it.
+        [ "$(paletteq run desk.panic)" = "cannot" ] || {
+          echo "the palette ran a row nothing is written behind: $(paletteq run desk.panic)"; exit 1
+        }
+        [ "$(paletteq state)" != "closed" ] || {
+          echo "refusing a dead row closed the palette, so nobody saw the reason"; exit 1
+        }
+
+        # And the row that does work does what Mod+Ctrl+semicolon does. The
+        # locker on this machine is a touch, so what is asserted is the chain:
+        # surface, shell, zded, the spawn, the apps table, an exec.
+        paletteq filter system.lock >/dev/null
+        if ! waitfor 15 narrowed; then
+          echo "the palette did not narrow to the row to run: $(paletteq state)"; exit 1
+        fi
         rm -f /tmp/zde-locked
         [ "$(paletteq run system.lock)" = "ran" ] || {
           echo "running system.lock from the palette: $(paletteq run system.lock)"; exit 1
@@ -578,9 +593,12 @@ let
           echo "the palette ran system.lock and nothing locked"
           journalctl --user -u zded.service --no-pager | tail -20; exit 1
         fi
-        # And it took itself off the screen on the way. A palette left holding
-        # the keyboard reads to niri as nothing focused at all, which every
-        # check below this line would then answer wrongly.
+        # And it took itself off the screen, which now says more than it used
+        # to: the surface waits for zded's answer and hides on the one that
+        # worked, so a palette still up here is a reply that never arrived or a
+        # refusal nobody would have seen. A palette left holding the keyboard
+        # also reads to niri as nothing focused at all, which every check below
+        # this line would then answer wrongly.
         palette_shut() {
           [ "$(paletteq state)" = "closed" ] &&
             [ "$(nirimsg --json layers 2>/dev/null | grep -c zde-palette)" = "0" ]

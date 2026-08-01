@@ -267,12 +267,20 @@ ShellRoot {
                 if (msg.error !== undefined) {
                     if (center.visible)
                         center.note = msg.error;
+                    else if (palette.running)
+                        palette.ran(msg.error);
                     return;
                 }
                 // Replies to our own subscribe arrive here too; only the lines
                 // carrying an event are events.
-                if (!msg.event)
+                if (!msg.event) {
+                    // A run that worked, which is what closes the palette: it
+                    // stays up until the answer comes, so that a refusal has a
+                    // surface to appear on rather than a parser that drops it.
+                    if (palette.running)
+                        palette.ran("");
                     return;
+                }
                 if (msg.event.kind === "picker")
                     root.openPicker(msg.event);
                 else if (msg.event.kind === "windows")
@@ -729,8 +737,15 @@ ShellRoot {
         // (docs/vision.md, section 2). On the stream connection, for the reason
         // the picker's choice is - the bar's parser reads every line it gets as
         // a queue listing.
+        //
+        // The surface is left up: it hides itself when the answer says the row
+        // ran (see the parser above). With no connection there will be no
+        // answer, so that is said here instead of leaving it waiting.
         onChosen: name => {
-            palette.hide();
+            if (!stream.connected) {
+                palette.ran("no connection to zded");
+                return;
+            }
             root.send({
                 method: "palette.run",
                 args: [name]
@@ -813,13 +828,19 @@ ShellRoot {
             return "filtered";
         }
 
+        // Through run(), not straight to chosen(): the gate that refuses a row
+        // nothing is written behind is the whole design, and a hatch that went
+        // round it left CI never touching it. "cannot" is that gate saying no,
+        // which is a thing worth being able to assert.
         function run(name: string): string {
             if (!palette.visible)
                 return "closed";
-            if (palette.rows.findIndex(r => r.name === name) < 0)
+            const i = palette.matches.findIndex(r => r.name === name);
+            if (i < 0)
                 return "no such row";
-            palette.chosen(name);
-            return "ran";
+            palette.index = i;
+            palette.run();
+            return palette.running ? "ran" : "cannot";
         }
 
         function dismiss(): string {

@@ -4,7 +4,6 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/crispuscrew/zde/internal/keymap"
@@ -120,11 +119,18 @@ func known() []keymap.Action {
 // would eventually disagree about which rows work.
 func whyNot(a keymap.Action) string {
 	if a.Native != "" {
-		// niri's own action, with something after its name: an argument in
-		// niri's own types, which zde will not spell for it (internal/niri,
-		// Perform). The key still does it, which is what the row goes on saying.
-		if strings.ContainsAny(a.Native, " \t") {
-			return "niri's own, and its argument is niri's to spell: the key does it"
+		// niri's own, and one it will not take from us: an argument in niri's
+		// own types, or a field the bind does not carry and the socket has no
+		// default for (internal/keymap, performs). The key does it, which is
+		// what the row goes on saying.
+		//
+		// Read off the registry rather than worked out from the action line.
+		// Deriving it called the three screenshots runnable, because their line
+		// looks like every other bare action, and niri refuses all three - the
+		// palette claiming a key that works does not, which is the one mistake
+		// this surface must not make.
+		if !a.Performs {
+			return "niri's own, and the key is the only way to ask for it"
 		}
 		return ""
 	}
@@ -135,6 +141,13 @@ func whyNot(a keymap.Action) string {
 	// which is what Live already answered; this is the other half - wpctl,
 	// brightnessctl, zlg - and it is a fact about this machine rather than about
 	// this build, so it is asked every time the list is built.
+	//
+	// zded's PATH, and the key spawns from niri's. The two are the same on a
+	// machine where both came up from one login, and not on one where somebody
+	// restarted the daemon by hand from a shell with less on its path - and then
+	// the row says a program is missing about a key that works. Answering it the
+	// way the key would means asking niri what it would spawn with, which niri
+	// does not offer.
 	if _, err := exec.LookPath(a.Spawn[0]); err != nil {
 		return a.Spawn[0] + " is not installed"
 	}

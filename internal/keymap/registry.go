@@ -42,6 +42,27 @@ type Entry struct {
 	// pinned against the only thing that decides it - `zde`'s own dispatch -
 	// by TestLiveActionsAreTheOnesZdeKnows (cmd/zde).
 	written bool
+
+	// performs says niri will do this action when zde asks for it over the IPC
+	// socket, and not only when the bind fires. It is the palette's licence to
+	// run a native row (internal/niri, Perform).
+	//
+	// Two reasons a native does not have it, both niri's rather than ours. An
+	// action whose line carries an argument - set-column-width "-10%" - takes
+	// that argument on the wire as a niri type and not as the string the KDL
+	// spells, so zde asking for one would be guessing at another project's
+	// protocol. And the three screenshots take a field that has no default over
+	// IPC, where niri's own config parser supplies one: asked as a bare action
+	// niri 26.04 answers "error parsing request" to each of them, while the key
+	// works. That asymmetry is the exact thing this palette exists to expose, so
+	// it must not be the palette's own bug.
+	//
+	// Opt-in, because the two failures are not the same size. A native wrongly
+	// marked here is a row the palette offers and niri refuses; a native wrongly
+	// left unmarked is a row that says press the key, which is true. The set is
+	// enumerated in TestOnlyTheNativesNiriTakesOverIPCAreMarked, so a new one
+	// cannot arrive without somebody deciding.
+	performs bool
 }
 
 type argKind int
@@ -99,28 +120,28 @@ var registry = map[string]Entry{
 
 	// monitor: niri natives. The window axis owns h/l, so monitors get their
 	// own pair of chords (keymap.yaml).
-	"monitor.focus left":        {Group: "monitor", Desc: "focus the monitor to the left", Native: "focus-monitor-left"},
-	"monitor.focus right":       {Group: "monitor", Desc: "focus the monitor to the right", Native: "focus-monitor-right"},
-	"monitor.move-window left":  {Group: "monitor", Desc: "move the window one monitor left", Native: "move-window-to-monitor-left"},
-	"monitor.move-window right": {Group: "monitor", Desc: "move the window one monitor right", Native: "move-window-to-monitor-right"},
+	"monitor.focus left":        {Group: "monitor", Desc: "focus the monitor to the left", Native: "focus-monitor-left", performs: true},
+	"monitor.focus right":       {Group: "monitor", Desc: "focus the monitor to the right", Native: "focus-monitor-right", performs: true},
+	"monitor.move-window left":  {Group: "monitor", Desc: "move the window one monitor left", Native: "move-window-to-monitor-left", performs: true},
+	"monitor.move-window right": {Group: "monitor", Desc: "move the window one monitor right", Native: "move-window-to-monitor-right", performs: true},
 
 	// window: niri natives except jump-to, which travels the whole hierarchy.
 	// Horizontal grid: plain focus, Shift moves, Ctrl resizes. Vertical focus
 	// lives on nav.down/up (desk group). consume/expel stack a column: i = in,
 	// o = out.
-	"window.focus left":  {Group: "window", Desc: "focus the column to the left", Native: "focus-column-left", Repeat: true},
-	"window.focus right": {Group: "window", Desc: "focus the column to the right", Native: "focus-column-right", Repeat: true},
-	"window.move left":   {Group: "window", Desc: "move the column left", Native: "move-column-left", Repeat: true},
-	"window.move right":  {Group: "window", Desc: "move the column right", Native: "move-column-right", Repeat: true},
+	"window.focus left":  {Group: "window", Desc: "focus the column to the left", Native: "focus-column-left", Repeat: true, performs: true},
+	"window.focus right": {Group: "window", Desc: "focus the column to the right", Native: "focus-column-right", Repeat: true, performs: true},
+	"window.move left":   {Group: "window", Desc: "move the column left", Native: "move-column-left", Repeat: true, performs: true},
+	"window.move right":  {Group: "window", Desc: "move the column right", Native: "move-column-right", Repeat: true, performs: true},
 	"window.narrower":    {Group: "window", Desc: "make the column narrower", Native: "set-column-width \"-10%\"", Repeat: true},
 	"window.wider":       {Group: "window", Desc: "make the column wider", Native: "set-column-width \"+10%\"", Repeat: true},
 	"window.shorter":     {Group: "window", Desc: "make the window shorter", Native: "set-window-height \"-10%\"", Repeat: true},
 	"window.taller":      {Group: "window", Desc: "make the window taller", Native: "set-window-height \"+10%\"", Repeat: true},
-	"window.fullscreen":  {Group: "window", Desc: "fullscreen", Native: "fullscreen-window"},
-	"window.float":       {Group: "window", Desc: "toggle floating", Native: "toggle-window-floating"},
-	"window.close":       {Group: "window", Desc: "close the window", Native: "close-window"},
-	"window.consume":     {Group: "window", Desc: "consume: pull the next window into this column (in)", Native: "consume-window-into-column"},
-	"window.expel":       {Group: "window", Desc: "expel: push the window out of its column (out)", Native: "expel-window-from-column"},
+	"window.fullscreen":  {Group: "window", Desc: "fullscreen", Native: "fullscreen-window", performs: true},
+	"window.float":       {Group: "window", Desc: "toggle floating", Native: "toggle-window-floating", performs: true},
+	"window.close":       {Group: "window", Desc: "close the window", Native: "close-window", performs: true},
+	"window.consume":     {Group: "window", Desc: "consume: pull the next window into this column (in)", Native: "consume-window-into-column", performs: true},
+	"window.expel":       {Group: "window", Desc: "expel: push the window out of its column (out)", Native: "expel-window-from-column", performs: true},
 	"window.jump-to":     {Group: "window", Desc: "jump to any open window by name", Spawn: []string{"zde", "window", "jump-to"}, written: true},
 
 	// workspace: numbered switching is gone (desks replace it); overview zooms
@@ -132,7 +153,7 @@ var registry = map[string]Entry{
 	// and a desk you leave on purpose.
 	"workspace.next":     {Group: "workspace", Desc: "one along this desk's band, stopping at its end", Spawn: []string{"zde", "workspace", "next"}, written: true},
 	"workspace.prev":     {Group: "workspace", Desc: "one back along this desk's band, stopping at its end", Spawn: []string{"zde", "workspace", "prev"}, written: true},
-	"workspace.overview": {Group: "workspace", Desc: "toggle the overview (zoom out to all workspaces)", Native: "toggle-overview"},
+	"workspace.overview": {Group: "workspace", Desc: "toggle the overview (zoom out to all workspaces)", Native: "toggle-overview", performs: true},
 
 	// launch: zlg is zinc's launcher; the rest goes through zde. "terminal"
 	// and "editor" are logical names zde resolves to the configured zinc apps
@@ -168,6 +189,12 @@ var registry = map[string]Entry{
 	// niri's own defaults decide where a shot lands (screenshot-path) and put
 	// it on the clipboard either way, which is the behaviour anybody who has
 	// used niri already expects.
+	//
+	// None of the three is marked performs, and they are the only natives with
+	// no argument that are not. Over the IPC socket each takes a field that has
+	// no default and the bind does not carry, where the config parser fills it
+	// in - so niri 26.04 answers "error parsing request" to a bare Screenshot
+	// while Print works. The palette says so and points at the key.
 	"capture.shot-region": {Group: "capture", Desc: "screenshot a region (niri's picker)", Native: "screenshot"},
 	"capture.shot-window": {Group: "capture", Desc: "screenshot the focused window", Native: "screenshot-window"},
 	"capture.shot-full":   {Group: "capture", Desc: "screenshot the whole output", Native: "screenshot-screen"},
