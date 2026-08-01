@@ -2456,10 +2456,20 @@ type tellTale struct {
 	// kept because a center that offers three buttons and always sends the
 	// default would archive what somebody meant to reply to.
 	invoked *[]string
-	err     error
+	// forgotten is the ids the daemon said nothing can address any more.
+	forgotten *[]uint64
+	err       error
 }
 
 func (t tellTale) Dismissed(id uint64) { *t.ids = append(*t.ids, id) }
+
+// Forget is the bus side being told a notification has fallen out of the
+// history, which is the only thing that prunes what it remembers about senders.
+func (t tellTale) Forget(id uint64) {
+	if t.forgotten != nil {
+		*t.forgotten = append(*t.forgotten, id)
+	}
+}
 
 func (t tellTale) Invoke(id uint64, key string) error {
 	if t.invoked != nil {

@@ -1045,7 +1045,15 @@ func (s *Server) Arrived(n attn.Notification) (uint64, error) {
 		}
 		rec.ID = id
 	}
-	s.history.Add(rec)
+	// What the history pushed out is what nothing can reach any more: it cannot
+	// be listed, dismissed or invoked, so the bus side is told to stop holding
+	// the sender's names for it. Without this, the one table in the system with
+	// no bound would grow by one for every notification the session ever
+	// received - and the modes made that worse, because a notification a mode
+	// keeps off the queue is one nobody can finish, so nothing else prunes it.
+	if gone := s.history.Add(rec); gone != 0 && s.notifier != nil {
+		s.notifier.Forget(gone)
+	}
 	return rec.ID, nil
 }
 
@@ -1075,6 +1083,9 @@ func (s *Server) Closed(id uint64) error {
 type Notifier interface {
 	Dismissed(id uint64)
 	Invoke(id uint64, key string) error
+	// Forget says a notification has fallen out of the history, so nothing can
+	// address it any more and nothing should be remembering who sent it.
+	Forget(id uint64)
 }
 
 // Watching sets who to tell. Called once at startup, before anything is

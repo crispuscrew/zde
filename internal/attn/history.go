@@ -84,18 +84,27 @@ type History struct {
 	records []Record
 }
 
-// Add records an arrival, dropping the oldest when the bound is reached.
-func (h *History) Add(r Record) {
+// Add records an arrival and answers with the id of the record it pushed out,
+// or zero when it pushed out nothing.
+//
+// The id is answered rather than dropped on the floor because a record leaving
+// here is the moment nothing can address that notification any more: it cannot
+// be dismissed, invoked or listed, so whatever else is holding state about it
+// should let go too (internal/attn, Forget).
+func (h *History) Add(r Record) uint64 {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.records = append(h.records, r)
-	if len(h.records) > HistoryMax {
-		// Copied down rather than resliced from the front: a reslice leaves the
-		// backing array growing to the right for ever, which is the leak this
-		// bound exists to stop, only slower.
-		copy(h.records, h.records[1:])
-		h.records = h.records[:HistoryMax]
+	if len(h.records) <= HistoryMax {
+		return 0
 	}
+	gone := h.records[0].ID
+	// Copied down rather than resliced from the front: a reslice leaves the
+	// backing array growing to the right for ever, which is the leak this bound
+	// exists to stop, only slower.
+	copy(h.records, h.records[1:])
+	h.records = h.records[:HistoryMax]
+	return gone
 }
 
 // Recent is what arrived, newest first, as a copy. Newest first because that is

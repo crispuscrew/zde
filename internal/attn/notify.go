@@ -131,6 +131,12 @@ type Server struct {
 	// and the id it used, to the queue item that became. It is what stops one
 	// app closing another's - and anybody's closing a reminder a person typed.
 	mine map[owned]uint64
+	// by is the same table read the other way: the item, to the names it is
+	// known by - at most two, the id this server gave and the one the sender
+	// asked for. It is what makes forgetting a notification, and finding out
+	// who sent one, a lookup instead of a walk over everything the session has
+	// received since it started.
+	by map[uint64][]owned
 }
 
 // owned is a notification as its sender addresses it. The sender is the bus's
@@ -153,7 +159,7 @@ func Serve(sink Sink, version string) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("session bus: %w", err)
 	}
-	s := &Server{conn: conn, sink: sink, version: version, mine: map[owned]uint64{}}
+	s := &Server{conn: conn, sink: sink, version: version, mine: map[owned]uint64{}, by: map[uint64][]owned{}}
 	s.emit = func(id uint64, reason uint32) {
 		conn.Emit(busPath, busIface+".NotificationClosed", uint32(id), reason)
 	}
@@ -244,18 +250,55 @@ func (s *Server) Invoke(id uint64, key string) error {
 	return nil
 }
 
-// senderOf is the connection that sent the notification with this id. The map
-// is keyed the other way round because everything else asks the other question;
-// this is the one caller that has an id and wants the app.
+// senderOf is the connection that sent the notification with this id. Every
+// name for one item belongs to the connection that sent it, so the first is as
+// good as any.
 func (s *Server) senderOf(id uint64) (dbus.Sender, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for k, v := range s.mine {
-		if v == id {
-			return k.sender, true
+	names := s.by[id]
+	if len(names) == 0 {
+		return "", false
+	}
+	return names[0].sender, true
+}
+
+// remember records a name a sender can address a notification by.
+//
+// A name that already pointed at something else is moved rather than copied. It
+// happens: a sender reusing a fixed id (notify-send -r 42) and the journal
+// later handing out 42 to that same sender are the same key, and leaving it
+// listed under both would let forgetting the older one delete the live entry
+// for the newer.
+func (s *Server) remember(k owned, id uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.mine == nil {
+		s.mine = map[owned]uint64{}
+	}
+	if s.by == nil {
+		s.by = map[uint64][]owned{}
+	}
+	if old, taken := s.mine[k]; taken {
+		s.by[old] = drop(s.by[old], k)
+		if len(s.by[old]) == 0 {
+			delete(s.by, old)
 		}
 	}
-	return "", false
+	s.mine[k] = id
+	s.by[id] = append(s.by[id], k)
+}
+
+// drop removes one name from a list of them. The lists are one or two long, so
+// this is a loop and not an index.
+func drop(names []owned, k owned) []owned {
+	out := names[:0]
+	for _, n := range names {
+		if n != k {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 func (s *Server) emitClosed(id uint64, reason uint32) {
@@ -265,16 +308,24 @@ func (s *Server) emitClosed(id uint64, reason uint32) {
 	s.emit(id, reason)
 }
 
-// forget drops every name a sender had for an item that no longer exists, so
-// the map does not grow for the life of the session.
+// Forget drops every name a sender had for a notification that nothing can
+// address any more.
+//
+// Exported because the daemon is what knows when that moment is: a record that
+// has fallen off the end of the history cannot be dismissed or invoked by
+// anybody, so nothing needs to remember who sent it (internal/zded, Arrived).
+// Without that the table grew one entry per notification for the life of the
+// session - and the modes made it worse, because a notification a mode keeps
+// off the queue is one nobody can finish, so nothing else would ever prune it.
+func (s *Server) Forget(id uint64) { s.forget(id) }
+
 func (s *Server) forget(id uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for k, v := range s.mine {
-		if v == id {
-			delete(s.mine, k)
-		}
+	for _, k := range s.by[id] {
+		delete(s.mine, k)
 	}
+	delete(s.by, id)
 }
 
 // notifications is the object on the bus: these four methods and nothing else.
@@ -334,16 +385,14 @@ func (n *notifications) Notify(
 		return 0, dbus.MakeFailedError(err)
 	}
 
-	s.mu.Lock()
 	// Under both names: the one the server gave, which the spec says to use,
 	// and the one the sender asked for, because reusing a fixed id is what
 	// every volume OSD in the world does (notify-send -r 42, and dunstify's
 	// -r before it).
-	s.mine[owned{sender, uint32(id)}] = id
+	s.remember(owned{sender, uint32(id)}, id)
 	if replaces != 0 {
-		s.mine[owned{sender, replaces}] = id
+		s.remember(owned{sender, replaces}, id)
 	}
-	s.mu.Unlock()
 	return uint32(id), nil
 }
 

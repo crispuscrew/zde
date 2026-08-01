@@ -337,3 +337,37 @@ func call(t *testing.T, s *Server, req Request, out any) {
 		t.Fatalf("%s: %v", req.Method, err)
 	}
 }
+
+// A record falling off the end of the history is the moment nothing can address
+// that notification any more, so the bus side is told to let go of it. It is the
+// only thing that prunes what attn remembers about senders: a notification a
+// mode kept off the queue was never on it to be finished.
+func TestARecordLeavingTheHistoryForgetsItsSender(t *testing.T) {
+	s, jrn, _ := queueTestServer(t, "vshop.DP-1.code")
+	// Quiet, so nothing is queued and nothing can ever be finished - the shape
+	// that made this leak unprunable in the first place.
+	if err := jrn.SetMode("quiet"); err != nil {
+		t.Fatal(err)
+	}
+	forgotten := []uint64{}
+	s.Watching(tellTale{ids: &[]uint64{}, forgotten: &forgotten})
+
+	var first uint64
+	for i := 0; i < attn.HistoryMax+2; i++ {
+		id, err := s.Arrived(attn.Notification{From: "app", Text: "one of many"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			first = id
+		}
+	}
+	if len(forgotten) != 2 || forgotten[0] != first {
+		t.Errorf("forgot %v, want the two that fell off the end, oldest first (%d)", forgotten, first)
+	}
+	// And nothing was forgotten that is still on the list, or the center would
+	// be showing rows the bus can no longer act on.
+	if seen := s.history.Recent(); len(seen) != attn.HistoryMax {
+		t.Errorf("history holds %d, want the bound", len(seen))
+	}
+}

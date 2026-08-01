@@ -506,3 +506,60 @@ func TestInvokeRefusesAnIDNobodyHolds(t *testing.T) {
 		t.Errorf("emitted %d signals for an id nobody holds", fired)
 	}
 }
+
+// What the server remembers about senders is bounded by what can still be
+// addressed. It used to grow by one entry for every notification a session ever
+// received, and the modes are what made that unprunable: a notification a mode
+// keeps off the queue is one nobody can finish, so nothing else would ever
+// reach it. Half a million notifications is a long uptime, not an attack.
+func TestForgettingLeavesNothingBehind(t *testing.T) {
+	n := notifier(&fakeSink{})
+	for i := 0; i < 50; i++ {
+		id, derr := n.Notify(peer, "app", 42, "", "one of many", "", nil, nil, -1)
+		if derr != nil {
+			t.Fatal(derr)
+		}
+		n.server.Forget(uint64(id))
+	}
+	if len(n.server.mine) != 0 || len(n.server.by) != 0 {
+		t.Errorf("after forgetting everything: %d names and %d items still remembered",
+			len(n.server.mine), len(n.server.by))
+	}
+}
+
+// Forgetting one notification must not take another's names with it.
+//
+// The collision is real and not theoretical: a sender that reuses a fixed id
+// (notify-send -r 3) has named a notification 3, and the journal will hand the
+// number 3 to some later notification from anybody, including that same sender.
+// The name then belongs to the newer one, and a table that still listed it
+// under the older would delete a live entry when the older was forgotten - so
+// the app could no longer close or replace the notification it is holding.
+func TestForgettingOneLeavesTheOthersAddressable(t *testing.T) {
+	n := notifier(&fakeSink{})
+	// Named 3 by its sender, and given 1 by the journal.
+	older, derr := n.Notify(peer, "app", 3, "", "the old one", "", nil, nil, -1)
+	if derr != nil {
+		t.Fatal(derr)
+	}
+	// Two more, so that the second of them is given 3 by the journal - the
+	// number the first one is already known by.
+	var newer uint32
+	for _, text := range []string{"another", "the one that gets id 3"} {
+		newer, derr = n.Notify(peer, "app", 0, "", text, "", nil, nil, -1)
+		if derr != nil {
+			t.Fatal(derr)
+		}
+	}
+	if newer != 3 {
+		t.Fatalf("the third notification got id %d, so this test is not testing the collision", newer)
+	}
+
+	n.server.Forget(uint64(older))
+	if got, ok := n.server.lookup(owned{peer, newer}); !ok || got != uint64(newer) {
+		t.Errorf("forgetting %d took the name %d with it: the app can no longer close its own notification", older, newer)
+	}
+	if _, ok := n.server.senderOf(uint64(newer)); !ok {
+		t.Error("the live notification has no sender any more, so its actions cannot be invoked")
+	}
+}
