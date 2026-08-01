@@ -300,6 +300,19 @@ ShellRoot {
         path: Quickshell.env("XDG_RUNTIME_DIR") + "/zde/zded.sock"
         connected: true
 
+        // A connection that goes away takes any answer on it with it, and the
+        // window has to be told: it will not take another question while one is
+        // on its way, so without this it sits with "..." in the prompt and
+        // refuses everything for the rest of the session. Two ways in, both
+        // ordinary: zded is restarted by any switch that changes it (the timer
+        // below exists for that), and a client that stops reading has its
+        // connection closed rather than being left waiting for an end that
+        // could not be delivered either.
+        onConnectionStateChanged: {
+            if (!askLink.connected)
+                askWindow.finished("lost the connection to zded, so the answer stops there");
+        }
+
         parser: SplitParser {
             onRead: line => {
                 let msg = null;
