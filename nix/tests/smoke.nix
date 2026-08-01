@@ -249,6 +249,29 @@ let
           echo "no battery on this machine and the bar reads '$(barq battery)'"; exit 1
         }
 
+        # And no microphone, which is the same kind of case: layer 0 turns
+        # PipeWire on and QEMU gives this VM no sound card, so there is no
+        # source to find. What may never appear here is one of the other three:
+        # a strip saying a room is being heard on a machine with no microphone
+        # in it is the whole reason the widget exists.
+        micread=$(barq mic)
+        case "$micread" in
+          none | unknown) ;;
+          *) echo "no microphone on this machine and the bar reads '$micread'"; exit 1 ;;
+        esac
+        # Then "none" specifically, and not "unknown" as well. The two are
+        # different facts - "none" is PipeWire answering that there is no
+        # source, "unknown" is PipeWire not answering - and PipeWire is layer
+        # 0's, so it does answer here. Accepting both would pass against a
+        # subscription that never connected at all, which is the one failure
+        # this can catch from outside a machine with real audio. Waited for
+        # rather than read once: the session and the socket come up together.
+        answered() { [ "$(barq mic)" = "none" ]; }
+        if ! waitfor 20 answered; then
+          echo "the bar reads '$(barq mic)': PipeWire never answered the mic widget"
+          journalctl --user -u zde-bar.service --no-pager | tail -25; exit 1
+        fi
+
         # Then the count, against a queue that changes underneath it. "0 0"
         # before, "1 0" after: the poll is two seconds, so this waits rather
         # than sleeping once and hoping.
