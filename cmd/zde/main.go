@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/crispuscrew/zde/internal/apps"
+	"github.com/crispuscrew/zde/internal/attn"
 	"github.com/crispuscrew/zde/internal/doctor"
 	"github.com/crispuscrew/zde/internal/journal"
 	"github.com/crispuscrew/zde/internal/zded"
@@ -41,6 +42,16 @@ func run(args []string) error {
 			return fmt.Errorf("nothing to lock the screen with: %w", err)
 		}
 		return nil
+	case len(args) == 2 && args[0] == "system" && args[1] == "quiet":
+		// Mod+q. A toggle rather than a mode name, because the key is for the
+		// moment somebody needs silence now: one press in, one press out.
+		return attnMode("attn.quiet")
+	case len(args) == 2 && args[0] == "system" && args[1] == "notif-center":
+		return notifCenter()
+	case len(args) == 1 && args[0] == "attn":
+		return attnMode("attn.mode")
+	case len(args) == 2 && args[0] == "attn":
+		return attnMode("attn.mode", args[1])
 	case len(args) == 1 && args[0] == "keys":
 		return keys()
 	case len(args) == 2 && args[0] == "app" && args[1] == "list":
@@ -254,6 +265,10 @@ func status() error {
 	// the session's PATH rather than this terminal's, which is why zded is the
 	// one asked.
 	fmt.Printf("zinc       %s\n", yesno(st.Zinc))
+	// The attn mode, next to the queue it governs. This is the answer to "why
+	// has nothing arrived all afternoon", and without it the only way to find
+	// out is to send yourself a notification and watch it not appear.
+	fmt.Printf("attn       %s\n", st.Mode)
 	fmt.Printf("queue      %d waiting\n", st.Queued)
 	if st.OnDesk != "" {
 		fmt.Printf("on desk    %s\n", st.OnDesk)
@@ -303,6 +318,74 @@ func queueAdd(text string) error {
 	return nil
 }
 
+// attnMode prints the mode the session is in, whether it was asked to change
+// it or only to say. One printed line for all three verbs - read, set, toggle -
+// so that Mod+q and a person typing get the same answer, and so that whatever
+// reads it back does not have to know which one was run.
+func attnMode(method string, args ...string) error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	var a zded.Attn
+	if err := c.Call(method, &a, args...); err != nil {
+		return err
+	}
+	fmt.Println(a.Mode)
+	return nil
+}
+
+// notifCenter asks for the center. The same bargain as the desk switcher: with
+// a shell listening this prints nothing and a surface appears, and without one
+// it prints the history, so that Mod+n on a session whose shell has died still
+// answers "what did I miss" - and so that what arrived is greppable at all.
+func notifCenter() error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	var center zded.Center
+	if err := c.Call("attn.center", &center); err != nil {
+		return err
+	}
+	if center.Shown {
+		return nil
+	}
+	if len(center.Notifications) == 0 {
+		// Not an error, and not silence: a session where nothing has arrived is
+		// the ordinary state of a fresh login, and a key that printed nothing
+		// would be indistinguishable from one that failed.
+		fmt.Println("nothing has arrived yet")
+		return nil
+	}
+	// id, urgency, when, sender, what became of it, text - tab separated, text
+	// last because it is the only field that can be long. The weekday rather
+	// than a date: the history is bounded at a day or two of use, so a weekday
+	// tells a person which one it was without a column nobody reads.
+	for _, r := range center.Notifications {
+		fmt.Printf("%d\t%s\t%s\t%s\t%s\t%s\n",
+			r.ID, urgentMark(r.Urgent), r.At.Format("Mon 15:04"), dash(r.From), became(r), r.Text)
+	}
+	return nil
+}
+
+// became is what happened to a notification after it arrived, in one word.
+// "silent" is the one worth having: it says a mode kept this out of the queue,
+// which is the difference between an app that stopped sending and a session
+// that stopped listening.
+func became(r attn.Record) string {
+	switch {
+	case r.Dismissed:
+		return "done"
+	case r.Queued:
+		return "waiting"
+	default:
+		return "silent"
+	}
+}
+
 // queueList prints one item per line, id first, so that finishing one is a
 // copy of what is already on the screen - and so that a bar can read it.
 func queueList() error {
@@ -320,13 +403,19 @@ func queueList() error {
 	// column it wants before it. A dash is "nothing here", which for the
 	// sender means a person typed it.
 	for _, it := range q {
-		urgent := "."
-		if it.Urgent {
-			urgent = "!"
-		}
-		fmt.Printf("%d\t%s\t%s\t%s\t%s\n", it.ID, urgent, dash(it.Desk), dash(it.From), it.Text)
+		fmt.Printf("%d\t%s\t%s\t%s\t%s\n", it.ID, urgentMark(it.Urgent), dash(it.Desk), dash(it.From), it.Text)
 	}
 	return nil
+}
+
+// urgentMark is the urgency column, in the one character both listings use: the
+// queue and the notification center are two views of the same arrivals, and two
+// spellings of "this one said it was urgent" would eventually disagree.
+func urgentMark(urgent bool) string {
+	if urgent {
+		return "!"
+	}
+	return "."
 }
 
 func yesno(b bool) string {
@@ -525,6 +614,17 @@ func usage() {
                          (id, urgency, desk, sender, text - tab separated)
   zde queue add TEXT     make something wait, on the desk you are on
   zde queue done ID      it is not waiting any more
+  zde attn [MODE]        the attn mode, or set it: work queues everything,
+                         focus queues only what the sender called urgent,
+                         quiet queues none of it. All three keep the lot in
+                         the notification center, so a mode changes what
+                         interrupts you and never what happened
+  zde system quiet       toggle quiet (Mod+q), which is the same mode by the
+                         key you reach for when you need silence now
+  zde system notif-center
+                         what arrived (Mod+n); prints the history when no
+                         shell is up - id, urgency, when, sender, whether it
+                         is waiting, done or silent, and the text
   zde desk queue-jump    go to where the oldest thing waiting is
   zde desk regulars      the band that belongs to no desk (comms, music)
   zde desk last          go back to the desk you came from

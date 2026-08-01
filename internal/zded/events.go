@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/crispuscrew/zde/internal/attn"
 )
 
 // sendWait is how long a listener has to take a line before it stops being a
@@ -39,7 +41,12 @@ type Event struct {
 	// - the screen, the token, the surface that draws it - and a shell that
 	// learned to listen for one has already learned the other.
 	Windows []Window `json:"windows,omitempty"`
-	On      string   `json:"on,omitempty"`
+	// Notifications is the notification center's rows, newest first. A third
+	// payload on the same event for the same reason the second one is here: the
+	// screen, the token and the acknowledgement are the same for every surface
+	// zded asks for, and a shell that learned one has learned this one.
+	Notifications []attn.Record `json:"notifications,omitempty"`
+	On            string        `json:"on,omitempty"`
 	// Output is the monitor to appear on: the one being looked at. A picker on
 	// every screen is not a picker.
 	Output string `json:"output,omitempty"`
@@ -56,6 +63,10 @@ const EventPicker = "picker"
 // not a flag on the picker event: a shell that has never heard of it ignores
 // the line rather than drawing a desk picker with no desks in it.
 const EventWindows = "windows"
+
+// EventCenter asks it to show the notification center: what arrived, whether
+// the mode let it through, and what became of it.
+const EventCenter = "notif-center"
 
 // MethodShown is how a listener says it did the thing: the token from the
 // event it acted on. Unsolicited ones are ignored, so this cannot be used to

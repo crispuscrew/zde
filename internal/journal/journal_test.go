@@ -475,3 +475,107 @@ func TestQueueSkipsEntriesThatAreNotItems(t *testing.T) {
 		t.Errorf("skipped = %d, want the unusable entry counted", j.Skipped())
 	}
 }
+
+// A mode the daemon forgets is a mode that lies: nothing arrives, the bar and
+// `zde status` both say work, and the person is left looking for a broken app.
+// zded restarts on every rebuild that touches it, so this is the ordinary case
+// and not the crash case.
+func TestModeSurvivesReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "j.jsonl")
+	j := open(t, path)
+	if err := j.SetMode("quiet"); err != nil {
+		t.Fatal(err)
+	}
+	j.Close()
+
+	if got := open(t, path).State().Mode; got != "quiet" {
+		t.Errorf("mode after a restart = %q, want the quiet it was left in", got)
+	}
+}
+
+// And through a compaction, which rewrites the file as the shortest sequence
+// that replays to the same state. Left out of that sequence, the mode would
+// reset at whichever moment the journal happened to get long enough - a session
+// that goes loud by itself, hours after anybody touched it.
+func TestModeSurvivesCompaction(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "j.jsonl")
+	j := open(t, path)
+	if err := j.SetMode("focus"); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Compact(); err != nil {
+		t.Fatal(err)
+	}
+	j.Close()
+
+	if got := open(t, path).State().Mode; got != "focus" {
+		t.Errorf("mode after a compaction = %q, want focus", got)
+	}
+}
+
+// An id claimed for something that never reached the queue is spent for good.
+// Handing it out again would let an app that still holds that number close
+// whatever ends up with it - a reminder somebody typed, most likely, since the
+// two share one counter (internal/attn scopes replaces to the sender for the
+// same reason).
+func TestClaimedIDsAreNeverHandedOutAgain(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "j.jsonl")
+	j := open(t, path)
+	claimed, err := j.ClaimID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	queued, err := j.Queue(Item{Text: "after it"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued.ID == claimed {
+		t.Fatalf("the queue took id %d, which was already claimed", claimed)
+	}
+	// And across a restart, which is where a counter kept only in memory would
+	// start again from whatever is still waiting.
+	j.Close()
+	again := open(t, path)
+	next, err := again.ClaimID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next == claimed || next == queued.ID {
+		t.Errorf("id %d after a restart repeats %d or %d", next, claimed, queued.ID)
+	}
+}
+
+// A compaction with nothing waiting must still write the counter down.
+//
+// This is the crossing neither of the other two makes: the id test never
+// compacts, and the compaction test leaves an item on the queue. So the line
+// that saves the counter could be made conditional on the queue having
+// something in it and both would stay green - while quiet mode is exactly that
+// state, nothing ever queued and every arrival spending an id. Compaction is
+// automatic at Open past a thousand entries, so this is not a rare shape: it is
+// what a night in quiet mode looks like, and the id it hands out afterwards is
+// one an app is still holding.
+func TestClaimedIDsSurviveACompactionOfAnEmptyQueue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "j.jsonl")
+	j := open(t, path)
+	claimed, err := j.ClaimID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q := j.State().Queue; len(q) != 0 {
+		t.Fatalf("queue = %+v, want nothing waiting: this test is about the empty case", q)
+	}
+	if err := j.Compact(); err != nil {
+		t.Fatal(err)
+	}
+	j.Close()
+
+	again := open(t, path)
+	next, err := again.ClaimID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next <= claimed {
+		t.Errorf("id %d after a compaction repeats %d, which an app is still holding", next, claimed)
+	}
+}

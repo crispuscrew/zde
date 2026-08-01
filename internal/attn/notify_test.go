@@ -3,6 +3,7 @@ package attn
 import (
 	"errors"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -79,6 +80,25 @@ func TestNotifyFallsBackToTheBody(t *testing.T) {
 	}
 	if sink.got[0].Text != "the build failed" {
 		t.Errorf("text = %q, want the body", sink.got[0].Text)
+	}
+	// And what it becomes is a summary, with a summary's bounds: it is going on
+	// one line of the queue, where a newline would turn one item into two and
+	// the second would have no id - and the body's own bound is more than ten
+	// times as long.
+	sink.got = nil
+	if _, derr := notifier(sink).Notify(peer, "app", 0, "", "",
+		strings.Repeat("word\n", 400), nil, nil, -1); derr != nil {
+		t.Fatal(derr)
+	}
+	got := sink.got[0].Text
+	if strings.Contains(got, "\n") {
+		t.Errorf("the summary taken from a body has newlines in it: %q", got)
+	}
+	// No more than a summary's worth. Not exactly it: the bound is applied
+	// while the words are still being joined, so where it lands depends on
+	// where the last word ended.
+	if n := len([]rune(got)); n > summaryMax || n == 0 {
+		t.Errorf("kept %d characters as the summary, want between one and the summary bound of %d", n, summaryMax)
 	}
 }
 
@@ -285,19 +305,27 @@ func TestNotifyReportsASinkThatRefused(t *testing.T) {
 	}
 }
 
-// What this server does, and only that. Claiming actions would make apps send
-// buttons nothing can press.
+// What this server does, and only that. "actions" is in the list because every
+// action a sender declares is offered in the notification center; it must stay
+// out of the list the day that stops being true, because an app reads this to
+// decide whether to send buttons at all.
 func TestCapabilitiesAreOnlyWhatIsTrue(t *testing.T) {
 	caps, derr := notifier(&fakeSink{}).GetCapabilities()
 	if derr != nil {
 		t.Fatal(derr)
 	}
+	claimed := map[string]bool{}
 	for _, c := range caps {
 		switch c {
-		case "body", "persistence":
+		case "actions", "body", "persistence":
+			claimed[c] = true
 		default:
 			t.Errorf("claims %q, which nothing here does", c)
 		}
+	}
+	if !claimed["actions"] {
+		t.Error("the center offers every action a sender declares and this does not say so, " +
+			"so apps that ask first will never send one")
 	}
 	name, vendor, version, spec, derr := notifier(&fakeSink{}).GetServerInformation()
 	if derr != nil || name != "zded" || vendor != "zde" || version != "test" || spec != specLevel {
@@ -362,5 +390,242 @@ func TestOnlyTheSpecIsOnTheBus(t *testing.T) {
 	}
 	for name := range want {
 		t.Errorf("%s is missing from the object on the bus", name)
+	}
+}
+
+// Every action a sender declares is kept, in the order it sent them, because
+// every one of them is offered in the center - which is what makes claiming the
+// spec's "actions" capability true. Keeping only the default was the version of
+// this that could not honestly claim it.
+func TestNotifyKeepsEveryAction(t *testing.T) {
+	sink := &fakeSink{}
+	if _, derr := notifier(sink).Notify(peer, "Fractal", 0, "", "Ilya: about the invoice", "",
+		[]string{"default", "Open", "reply", "Reply", "archive", "Archive"}, nil, -1); derr != nil {
+		t.Fatal(derr)
+	}
+	want := []Action{{"default", "Open"}, {"reply", "Reply"}, {"archive", "Archive"}}
+	if !reflect.DeepEqual(sink.got[0].Actions, want) {
+		t.Errorf("actions = %+v, want %+v in the order they were sent", sink.got[0].Actions, want)
+	}
+	if sink.got[0].Extra != 0 {
+		t.Errorf("extra = %d, want none: all three were kept", sink.got[0].Extra)
+	}
+}
+
+// The keys are the even positions and the labels the odd ones. Reading every
+// position would offer a button's text as an action key, and pressing it would
+// tell the app something it never said it understood.
+func TestNotifyReadsActionsAsPairs(t *testing.T) {
+	sink := &fakeSink{}
+	if _, derr := notifier(sink).Notify(peer, "app", 0, "", "hello", "",
+		[]string{"open", "default"}, nil, -1); derr != nil {
+		t.Fatal(derr)
+	}
+	got := sink.got[0].Actions
+	if len(got) != 1 || got[0].Key != "open" || got[0].Label != "default" {
+		t.Errorf("actions = %+v, want one action keyed open and labelled default", got)
+	}
+	// And a key with no label is the sender's mistake, not a reason to drop
+	// something it declared: its key becomes what a person reads.
+	sink.got = nil
+	if _, derr := notifier(sink).Notify(peer, "app", 0, "", "hello", "",
+		[]string{"reply"}, nil, -1); derr != nil {
+		t.Fatal(derr)
+	}
+	if got := sink.got[0].Actions; len(got) != 1 || got[0].Key != "reply" || got[0].Label != "reply" {
+		t.Errorf("actions = %+v, want the key standing in for the missing label", got)
+	}
+}
+
+// The list comes from an app on the session bus and nothing stops one sending a
+// thousand. It is bounded at what the center can offer with one keypress each,
+// and what was declared beyond it is counted so the surface can say so rather
+// than showing a list that quietly stops.
+func TestNotifyBoundsTheActions(t *testing.T) {
+	var sent []string
+	for i := 0; i < actionsMax+3; i++ {
+		sent = append(sent, "key"+strconv.Itoa(i), "Label "+strconv.Itoa(i))
+	}
+	sink := &fakeSink{}
+	if _, derr := notifier(sink).Notify(peer, "app", 0, "", "hello", "", sent, nil, -1); derr != nil {
+		t.Fatal(derr)
+	}
+	got := sink.got[0]
+	if len(got.Actions) != actionsMax {
+		t.Errorf("kept %d actions, want the bound of %d", len(got.Actions), actionsMax)
+	}
+	if got.Extra != 3 {
+		t.Errorf("extra = %d, want the 3 that did not fit", got.Extra)
+	}
+}
+
+// Invoking is how the center acts on a row: the sender hears ActionInvoked with
+// the id it was given and the key it declared. The key that comes back is the
+// one that was pressed and not always the default - a center that offers three
+// buttons and always sends "default" would archive what somebody meant to
+// reply to.
+func TestInvokeTellsTheSenderWhichAction(t *testing.T) {
+	for _, key := range []string{DefaultAction, "reply"} {
+		n, _ := watched(&fakeSink{})
+		var fired []string
+		n.server.act = func(id uint64, key string) {
+			fired = append(fired, strconv.FormatUint(id, 10)+" "+key)
+		}
+		id, derr := n.Notify(peer, "Fractal", 0, "", "Ilya: about the invoice", "",
+			[]string{"default", "Open", "reply", "Reply"}, nil, -1)
+		if derr != nil {
+			t.Fatal(derr)
+		}
+		if err := n.server.Invoke(uint64(id), key); err != nil {
+			t.Fatalf("invoking %q on a sender that is still there: %v", key, err)
+		}
+		want := strconv.FormatUint(uint64(id), 10) + " " + key
+		if len(fired) != 1 || fired[0] != want {
+			t.Errorf("emitted %v, want one %q", fired, want)
+		}
+	}
+}
+
+// A signal is a broadcast: one sent for an app that has exited goes out and is
+// heard by nobody, and the person is left looking at a row that did something
+// invisible. The refusal is what the center puts on the screen.
+func TestInvokeRefusesWhenTheAppHasGone(t *testing.T) {
+	n, _ := watched(&fakeSink{})
+	fired := 0
+	n.server.act = func(uint64, string) { fired++ }
+	n.server.holds = func(dbus.Sender) bool { return false }
+	id, derr := n.Notify(peer, "app", 0, "", "gone by now", "", []string{"default", "Open"}, nil, -1)
+	if derr != nil {
+		t.Fatal(derr)
+	}
+	err := n.server.Invoke(uint64(id), DefaultAction)
+	if err == nil {
+		t.Fatal("invoking an action on an app that has exited was reported as done")
+	}
+	if !strings.Contains(err.Error(), "exited") {
+		t.Errorf("refusal = %q, want it to say the app has gone", err)
+	}
+	if fired != 0 {
+		t.Errorf("emitted %d signals into nothing", fired)
+	}
+}
+
+// An id nothing is holding any more - replaced, or finished - has no sender to
+// tell. Emitting anyway would address whatever notification later takes that
+// number, which is the same reuse the replaces path is scoped to sender to
+// prevent.
+func TestInvokeRefusesAnIDNobodyHolds(t *testing.T) {
+	n, _ := watched(&fakeSink{})
+	fired := 0
+	n.server.act = func(uint64, string) { fired++ }
+	if err := n.server.Invoke(4242, DefaultAction); err == nil {
+		t.Error("invoking an id the server never handed out was reported as done")
+	}
+	if fired != 0 {
+		t.Errorf("emitted %d signals for an id nobody holds", fired)
+	}
+}
+
+// What the server remembers about senders is bounded by what can still be
+// addressed. It used to grow by one entry for every notification a session ever
+// received, and the modes are what made that unprunable: a notification a mode
+// keeps off the queue is one nobody can finish, so nothing else would ever
+// reach it. Half a million notifications is a long uptime, not an attack.
+func TestForgettingLeavesNothingBehind(t *testing.T) {
+	n := notifier(&fakeSink{})
+	for i := 0; i < 50; i++ {
+		id, derr := n.Notify(peer, "app", 42, "", "one of many", "", nil, nil, -1)
+		if derr != nil {
+			t.Fatal(derr)
+		}
+		n.server.Forget(uint64(id))
+	}
+	if len(n.server.mine) != 0 || len(n.server.by) != 0 {
+		t.Errorf("after forgetting everything: %d names and %d items still remembered",
+			len(n.server.mine), len(n.server.by))
+	}
+}
+
+// Forgetting one notification must not take another's names with it.
+//
+// The collision is real and not theoretical: a sender that reuses a fixed id
+// (notify-send -r 3) has named a notification 3, and the journal will hand the
+// number 3 to some later notification from anybody, including that same sender.
+// The name then belongs to the newer one, and a table that still listed it
+// under the older would delete a live entry when the older was forgotten - so
+// the app could no longer close or replace the notification it is holding.
+func TestForgettingOneLeavesTheOthersAddressable(t *testing.T) {
+	n := notifier(&fakeSink{})
+	// Named 3 by its sender, and given 1 by the journal.
+	older, derr := n.Notify(peer, "app", 3, "", "the old one", "", nil, nil, -1)
+	if derr != nil {
+		t.Fatal(derr)
+	}
+	// Two more, so that the second of them is given 3 by the journal - the
+	// number the first one is already known by.
+	var newer uint32
+	for _, text := range []string{"another", "the one that gets id 3"} {
+		newer, derr = n.Notify(peer, "app", 0, "", text, "", nil, nil, -1)
+		if derr != nil {
+			t.Fatal(derr)
+		}
+	}
+	if newer != 3 {
+		t.Fatalf("the third notification got id %d, so this test is not testing the collision", newer)
+	}
+
+	n.server.Forget(uint64(older))
+	if got, ok := n.server.lookup(owned{peer, newer}); !ok || got != uint64(newer) {
+		t.Errorf("forgetting %d took the name %d with it: the app can no longer close its own notification", older, newer)
+	}
+	if _, ok := n.server.senderOf(uint64(newer)); !ok {
+		t.Error("the live notification has no sender any more, so its actions cannot be invoked")
+	}
+}
+
+// The body is what somebody comes back to the center to read, so it arrives
+// whole. Bounded at the summary's 300 characters it was cutting an ordinary
+// two-paragraph message in half, while five files said notifications land in
+// history with what was sent.
+func TestNotifyKeepsAWholeBody(t *testing.T) {
+	sink := &fakeSink{}
+	ordinary := strings.Repeat("word ", 300) // 1500 characters, five times the summary bound
+	if _, derr := notifier(sink).Notify(peer, "app", 0, "", "the build failed", ordinary, nil, nil, -1); derr != nil {
+		t.Fatal(derr)
+	}
+	if n := len([]rune(sink.got[0].Body)); n != len([]rune(strings.TrimSpace(ordinary))) {
+		t.Errorf("kept %d characters of a %d character body", n, len([]rune(ordinary)))
+	}
+	// And it is still a bound, because the body is whatever an app felt like
+	// sending and it is what decides how big the history gets.
+	sink.got = nil
+	if _, derr := notifier(sink).Notify(peer, "app", 0, "", "hello", strings.Repeat("я", bodyMax+500), nil, nil, -1); derr != nil {
+		t.Fatal(derr)
+	}
+	if n := len([]rune(sink.got[0].Body)); n != bodyMax {
+		t.Errorf("kept %d characters, want the bound of %d", n, bodyMax)
+	}
+}
+
+// And with its lines. A body is where the paragraph goes, and one flattened
+// into a single line is the shape of the message lost - which is the half the
+// center exists to show.
+func TestNotifyKeepsTheBodysLines(t *testing.T) {
+	sink := &fakeSink{}
+	if _, derr := notifier(sink).Notify(peer, "app", 0, "", "three things",
+		"first\n\n  second  \nthird", nil, nil, -1); derr != nil {
+		t.Fatal(derr)
+	}
+	if got := sink.got[0].Body; got != "first\nsecond\nthird" {
+		t.Errorf("body = %q, want its three lines with the blank space between them collapsed", got)
+	}
+	// The summary is still one line: it goes on one line of the queue, where a
+	// newline would turn one item into two and the second would have no id.
+	sink.got = nil
+	if _, derr := notifier(sink).Notify(peer, "app", 0, "", "two\nlines", "", nil, nil, -1); derr != nil {
+		t.Fatal(derr)
+	}
+	if got := sink.got[0].Text; got != "two lines" {
+		t.Errorf("summary = %q, want it flattened to one line", got)
 	}
 }

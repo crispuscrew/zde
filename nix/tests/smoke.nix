@@ -585,6 +585,7 @@ let
         export DBUS_SESSION_BUS_ADDRESS
 
         zded -journal /tmp/live.jsonl -desks /tmp/desks >/tmp/zded-live.log 2>&1 &
+        livepid=$!
         for i in $(seq 30); do
           [ -S "$XDG_RUNTIME_DIR/zde/zded.sock" ] && break
           sleep 1
@@ -1227,6 +1228,27 @@ let
           echo "the notification arrived wrong:"; cat /tmp/q-notify.txt; exit 1
         }
         nid=$(grep 'the build failed' /tmp/q-notify.txt | cut -f1)
+
+        # And in the history, which is the half the queue cannot answer: the
+        # queue holds what is still waiting, the history holds what arrived.
+        # Nothing is listening here, so Mod+n prints it rather than drawing it -
+        # id, urgency, when, sender, what became of it, text.
+        zde system notif-center 2>&1 | tee /tmp/notif-center.txt
+        grep -q "^$nid	!	.*	notify-send	waiting	the build failed" /tmp/notif-center.txt || {
+          echo "the notification arrived and the history does not have it:"
+          cat /tmp/notif-center.txt; exit 1
+        }
+        # And what this server tells an app it can do. "actions" is the claim
+        # that decides whether apps send buttons at all, so it is worth pinning
+        # on the bus rather than only in a Go test: the center offers every
+        # action a sender declares, and the day it stops this line has to fail.
+        dbus-send --session --print-reply --dest=org.freedesktop.Notifications \
+          /org/freedesktop/Notifications \
+          org.freedesktop.Notifications.GetCapabilities > /tmp/caps.txt 2>&1
+        grep -q '"actions"' /tmp/caps.txt || {
+          echo "zded does not tell apps it offers actions, so they will not send any:"
+          cat /tmp/caps.txt; exit 1
+        }
         zde queue done "$nid"
 
         zde queue done "$id"
@@ -1278,6 +1300,30 @@ let
         grep -q "^on desk    $jdesk" /tmp/jump-status.txt || {
           echo "jumped to a window on $jdesk and zded is somewhere else:"
           cat /tmp/jump-status.txt; exit 1
+        }
+
+        # The attn mode outlives the daemon. zded is restarted by every rebuild
+        # that touches it, and a mode that quietly reset to work each time would
+        # be a mode that lies about why nothing is arriving - so it is journal
+        # state, and this is the assertion that says so.
+        zde attn quiet 2>&1 | tee /tmp/attn-set.txt
+        grep -qx quiet /tmp/attn-set.txt
+        kill "$livepid"
+        wait "$livepid" 2>/dev/null || true
+        sock_gone() { [ ! -S "$XDG_RUNTIME_DIR/zde/zded.sock" ]; }
+        if ! waitfor 15 sock_gone; then
+          echo "zded was stopped and left its socket behind, so the next one cannot start"
+          exit 1
+        fi
+        zded -journal /tmp/live.jsonl -desks /tmp/desks >>/tmp/zded-live.log 2>&1 &
+        listening() { [ -S "$XDG_RUNTIME_DIR/zde/zded.sock" ]; }
+        if ! waitfor 30 listening; then
+          echo "the restarted zded never listened:"; cat /tmp/zded-live.log; exit 1
+        fi
+        zde status 2>&1 | tee /tmp/status-restarted.txt
+        grep -qx 'attn       quiet' /tmp/status-restarted.txt || {
+          echo "quiet was set, zded restarted, and the mode came back as something else:"
+          cat /tmp/status-restarted.txt; exit 1
         }
 
         echo "live compositor check passed"
