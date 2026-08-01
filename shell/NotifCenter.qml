@@ -39,6 +39,17 @@ PanelWindow {
     property var rows: []
     property int index: 0
 
+    // The geometry the panel is built out of. Named because two things count
+    // with them: the rows, and the panel working out how tall it should be
+    // without asking the list - which takes its own height from the panel, so
+    // asking would be a binding loop.
+    readonly property int rowHeight: 26
+    readonly property int rowGap: 2
+    // The three lines under the list - the body, the actions and the hint -
+    // with the margins around them. Leave one out of the sum and the last row
+    // draws underneath it.
+    readonly property int footer: 96
+
     // What this surface has to say back, shown under the rows. The one thing a
     // read-only list cannot do is explain why a key did nothing, and most rows
     // here have nothing to invoke - zde does not claim the notification spec's
@@ -170,9 +181,17 @@ PanelWindow {
 
     // The clock time it arrived. A day and a time would be more precise and
     // less readable, and the history is bounded at a day or two of use.
+    //
+    // Cut out of the timestamp rather than parsed. Go writes RFC 3339 with up
+    // to nine fractional digits and ECMA-262 specifies three, so `new Date` on
+    // it is a bet on how forgiving one engine's parser happens to be - and the
+    // losing side of that bet is a column of "--:--" that nobody would think to
+    // blame on a date format. RFC 3339 fixes the offsets: hours at 11, minutes
+    // at 14, in the sender's own local time, which is what a clock on a bar
+    // means anyway.
     function when(r) {
-        const d = new Date(r.at);
-        return isNaN(d.getTime()) ? "--:--" : Qt.formatDateTime(d, "HH:mm");
+        const s = (r && r.at) ? String(r.at) : "";
+        return s.length >= 16 && s.charAt(13) === ":" ? s.substring(11, 16) : "--:--";
     }
 
     visible: false
@@ -218,10 +237,11 @@ PanelWindow {
         // and what became of it, and at the picker's width the text was the
         // only part that got elided away.
         width: 640
-        // The rows, their margins, and the three lines under them: the body,
-        // the actions on offer, and the hint. Leave one out of the sum and it
-        // draws over the last row on a full list.
-        height: Math.min(list.implicitHeight + 96, center.height - 80)
+        // As tall as the rows need, up to what the screen allows. Counted from
+        // the row count rather than read off the list, because the list's own
+        // height comes from this one: asking it how tall its contents are would
+        // be a binding loop, and the arithmetic is two numbers.
+        height: Math.min(center.rows.length * (center.rowHeight + center.rowGap) + center.footer, center.height - 80)
         color: "#11121a"
         border.color: "#2a2c37"
         border.width: 1
@@ -347,60 +367,97 @@ PanelWindow {
             font.family: "monospace"
         }
 
-        Column {
+        // Where you are in what arrived. The view scrolls now, so without this
+        // a full history and a short one look identical, and there is no way to
+        // tell that j has more to walk through.
+        Text {
+            anchors.bottom: parent.bottom
+            anchors.right: parent.right
+            anchors.margins: 12
+            visible: center.rows.length > 0
+            text: (center.index + 1) + " of " + center.rows.length
+            color: "#7a7f8a"
+            font.pixelSize: 11
+            font.family: "monospace"
+        }
+
+        // A view and not a column, because the history holds two hundred records
+        // and a screen holds about thirty. A column inside a clipped panel drew
+        // the first thirty and hid the rest, and j walked the highlight into the
+        // hidden part - where d dismissed a notification nobody could see, and
+        // told the app that sent it. So the row you are on is always on the
+        // screen: the view scrolls to it, rather than the list ending.
+        ListView {
             id: list
 
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: parent.top
+            anchors.bottom: body.top
             anchors.margins: 12
-            spacing: 2
+            anchors.bottomMargin: 6
+            spacing: center.rowGap
+            clip: true
+            // Deliberately without focus: the panel holds the keyboard, and a
+            // view that took it would answer the arrow keys itself and move a
+            // highlight of its own that nothing else here reads.
+            model: center.rows
+            currentIndex: center.index
+            // Contain rather than Center: walking down a long list should not
+            // redraw the whole surface on every press, and the row only has to
+            // be somewhere on the screen to be a row you can act on.
+            onCurrentIndexChanged: list.positionViewAtIndex(list.currentIndex, ListView.Contain)
+            // And when the rows themselves change, which is every time Mod+n
+            // reopens this with a fresh history: a view left where the last
+            // list was scrolled to would open somewhere down the middle of a
+            // list whose top row is the one you came to read.
+            onModelChanged: list.positionViewAtIndex(center.index, ListView.Contain)
 
-            Repeater {
-                model: center.rows
+            delegate: Rectangle {
+                id: row
 
-                Rectangle {
-                    id: row
+                required property var modelData
+                required property int index
 
-                    required property var modelData
-                    required property int index
+                width: list.width
+                height: center.rowHeight
+                radius: 4
+                color: row.index === center.index ? "#2a2c37" : "transparent"
 
-                    width: list.width
-                    height: 26
-                    radius: 4
-                    color: row.index === center.index ? "#2a2c37" : "transparent"
+                MouseArea {
+                    anchors.fill: parent
+                    onClicked: center.index = row.index
+                }
 
-                    MouseArea {
-                        anchors.fill: parent
-                        onClicked: center.index = row.index
-                    }
+                // The row: when it came, whether it said it was urgent, who
+                // sent it, and what it said. No leading number any more - the
+                // digits press this row's actions now, and a number in front of
+                // a row somebody cannot press with it is a number that lies.
+                Text {
+                    anchors.left: parent.left
+                    anchors.leftMargin: 8
+                    anchors.right: mark.left
+                    anchors.rightMargin: 8
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: center.when(row.modelData) + "  " + (row.modelData.urgent ? "! " : "  ") + (row.modelData.from ? row.modelData.from : "-") + "  " + row.modelData.text
+                    elide: Text.ElideRight
+                    // Dimmed once it is done, so the list reads as what is left
+                    // rather than as everything that ever happened.
+                    color: row.modelData.dismissed ? "#7a7f8a" : (row.modelData.urgent ? "#e5484d" : "#c9ccd4")
+                    font.pixelSize: 13
+                    font.family: "monospace"
+                }
 
-                    Text {
-                        anchors.left: parent.left
-                        anchors.leftMargin: 8
-                        anchors.right: mark.left
-                        anchors.rightMargin: 8
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: (row.index < 9 ? (row.index + 1) + "  " : "   ") + center.when(row.modelData) + "  " + (row.modelData.urgent ? "! " : "  ") + (row.modelData.from ?? "-") + "  " + row.modelData.text
-                        elide: Text.ElideRight
-                        // Dimmed once it is done, so the list reads as what is
-                        // left rather than as everything that ever happened.
-                        color: row.modelData.dismissed ? "#7a7f8a" : (row.modelData.urgent ? "#e5484d" : "#c9ccd4")
-                        font.pixelSize: 13
-                        font.family: "monospace"
-                    }
+                Text {
+                    id: mark
 
-                    Text {
-                        id: mark
-
-                        anchors.right: parent.right
-                        anchors.rightMargin: 8
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: center.became(row.modelData)
-                        color: "#7a7f8a"
-                        font.pixelSize: 12
-                        font.family: "monospace"
-                    }
+                    anchors.right: parent.right
+                    anchors.rightMargin: 8
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: center.became(row.modelData)
+                    color: "#7a7f8a"
+                    font.pixelSize: 12
+                    font.family: "monospace"
                 }
             }
         }
