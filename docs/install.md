@@ -186,9 +186,19 @@ declares, and zinc refuses a second launch of something already up, so
 switching back and forth does not pile up browsers. The launches happen behind
 the switch, so the desk is in front of you before they arrive, and a failure
 goes to `journalctl --user -u zded` rather than taking the switch down with it.
-Where a window lands is not decided yet - the `monitor` and `workspace` pins in
-a manifest are declared and unread, so windows open on the workspace you are
-looking at.
+Where a window lands is the pin, if the manifest also says what the window
+calls itself:
+
+```yaml
+apps:
+  - { app: browser, instance: work, app_id: org.mozilla.firefox,
+      monitor: eDP-1, workspace: web }
+```
+
+`app_id` is the Wayland application id, which is not the zinc app name - `niri
+msg windows` prints the ones you have open. zded turns the pin into a niri
+window rule, so the window opens on that workspace rather than in front of you.
+Leave it out and the app still starts; adoption places it.
 
 ## 6. When it breaks
 

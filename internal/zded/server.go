@@ -481,6 +481,11 @@ type Reconciled struct {
 // (vision.md, principle 8) - and it is what stops the naming model drifting
 // away from what niri actually has.
 func (s *Server) reconcile() Response {
+	// The manifests are being read anyway, and this is the verb for "make what
+	// is written down true again" - which includes what niri was told about
+	// where things open.
+	s.SyncRules()
+
 	m, err := s.niri.DeskMap()
 	if err != nil {
 		return Response{Error: err.Error()}
@@ -1360,10 +1365,9 @@ func (s *Server) switchFrom(target, from string) Response {
 // seconds, and the switch it belongs to is a keypress. The person is already
 // looking at the desk while these arrive.
 //
-// Where a window lands is still adoption's business (docs/model.md, launch
-// placement). A manifest can pin an app to a workspace and nothing here reads
-// that yet, so the windows open where niri opens windows - on the workspace in
-// front of you.
+// Where a pinned window lands is niri's, from the rules written just before
+// (rules.go). An app the manifest does not pin, or one whose window cannot be
+// recognised before it exists, still lands where niri opens windows.
 func (s *Server) startApps(target string) {
 	all, _, err := s.desks.All()
 	if err != nil {
@@ -1387,6 +1391,24 @@ func (s *Server) startApps(target string) {
 			}
 		}
 	}()
+}
+
+// SyncRules puts the desks' placement into niri's dynamic config (rules.go).
+//
+// At startup and on reconcile, which is when the manifests are the question -
+// not on every switch. The rules are a function of the files, so a switch that
+// rewrote them would be asking niri to reload its config for something that
+// had not changed, and a reload re-evaluates the rules for every window
+// already open. A manifest edited mid-session takes effect at the next
+// `zde desk reconcile`, which is the verb for making things true again.
+func (s *Server) SyncRules() {
+	all, _, err := s.desks.All()
+	if err != nil {
+		return
+	}
+	if err := writeRules(dynamicPath(), placementRules(all)); err != nil {
+		log.Printf("zded: writing niri's placement rules: %v", err)
+	}
 }
 
 func (s *Server) status() Status {
