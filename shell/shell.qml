@@ -52,6 +52,15 @@ ShellRoot {
     // those in a row and the number stops being trustworthy, which is how a
     // daemon that holds the socket open and goes quiet gets noticed.
     property int waiting: 0
+    // The same watchdog for the other connection, because the mode is asked on
+    // that one and needs the same suspicion. Without it, a zded that holds both
+    // sockets open and stops answering - stopped, deadlocked, or blocked in
+    // Dispatch on a niri that has wedged, which this connection can reach
+    // through desk.switch - blanked the queue count after four seconds and went
+    // on showing "attn quiet" for the rest of the session. That is the most
+    // expensive stale value on the strip: it is the line somebody reads to
+    // decide whether the silence is the desktop's doing.
+    property int streamWaiting: 0
 
     // The battery, read once at the root: the bar draws it and the IPC reports
     // it, and two readings of the same thing would eventually disagree.
@@ -210,6 +219,7 @@ ShellRoot {
         connected: true
 
         onConnectionStateChanged: {
+            root.streamWaiting = 0;
             if (stream.connected)
                 stream.write('{"method":"events"}\n');
             else
@@ -222,16 +232,27 @@ ShellRoot {
                 try {
                     msg = JSON.parse(line);
                 } catch (e) {
+                    // A line that is not zded's is a protocol nobody here
+                    // understands, so the mode this shell is holding is no
+                    // longer something to claim.
+                    root.modeKnown = false;
                     return;
                 }
-                if (!msg)
+                if (!msg) {
+                    root.modeKnown = false;
                     return;
+                }
                 // The mode, which is asked on this connection rather than the
                 // bar's: the bar's parser reads every reply as a queue listing.
                 // Recognised by its shape, because the protocol has no request
                 // ids and this connection carries the replies to everything the
                 // surfaces ask for.
                 if (msg.ok && msg.ok.mode !== undefined) {
+                    // The answer to the question the watchdog counts, and only
+                    // this one: an event or an acknowledgement proves the
+                    // daemon is alive without proving it is still answering
+                    // about the mode, and the mode is what this line claims.
+                    root.streamWaiting = 0;
                     root.mode = msg.ok.mode;
                     root.modeKnown = true;
                     return;
@@ -275,6 +296,11 @@ ShellRoot {
                 stream.connected = true;
                 return;
             }
+            // Two questions out with nothing back: whatever mode is on the bar
+            // is the last one zded said and not the one it is in.
+            if (root.streamWaiting >= 2)
+                root.modeKnown = false;
+            root.streamWaiting += 1;
             // And the mode, on the same tick. It changes from a keybind rather
             // than from anything the shell did, so the bar has to ask - and
             // asking here rather than on the bar's own connection keeps the
