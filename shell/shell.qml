@@ -4,15 +4,19 @@
 // `zde queue add` and every notification the session receives land in it, and
 // until now the only way to know was to go and ask.
 //
-// The mode and the mic are the other two the principle names. They are not
-// stubbed here: the mode has one value until the input daemon lands, and the
-// mic wants a PipeWire subscription rather than a poll. They arrive with what
-// owns them.
+// The mic is here now, and it is the PipeWire subscription this note used to
+// say it wanted rather than a poll of wpctl. Two states are worth a word on the
+// strip - muted, and something holding the microphone - and it is empty for the
+// rest.
+//
+// The mode is the one the principle names that is still not stubbed here: it
+// has one value until the input daemon lands, so it arrives with what owns it.
 pragma ComponentBehavior: Bound
 
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import Quickshell.Services.Pipewire
 import Quickshell.Services.UPower
 import Quickshell.Wayland
 
@@ -49,6 +53,54 @@ ShellRoot {
             && (batteryState.dev.state === UPowerDeviceState.Charging
                 || batteryState.dev.state === UPowerDeviceState.FullyCharged)
         readonly property int secsLeft: batteryState.have ? batteryState.dev.timeToEmpty : 0
+    }
+
+    // The mic, read once at the root for the same reason the battery is: the
+    // bar draws it and the IPC reports it, and two readings would eventually
+    // disagree.
+    //
+    // The default source rather than a microphone of this widget's choosing,
+    // because that is the node Mod+Ctrl+m toggles - `wpctl set-mute
+    // @DEFAULT_AUDIO_SOURCE@`, in internal/keymap/registry.go - and a key and a
+    // strip that can disagree about which mic they mean are worse than either
+    // alone. The cost is a capture from some other source going unseen, which
+    // needs the whole graph and belongs with the mixer widget (0.2).
+    QtObject {
+        id: micState
+
+        readonly property var src: Pipewire.defaultAudioSource
+        // Whether PipeWire has answered at all - the same distinction the queue
+        // makes with `known`. A machine with no microphone and a PipeWire that
+        // is not there both have no source to report, and only one of the two
+        // is a fact about the machine.
+        readonly property bool known: Pipewire.ready
+        readonly property bool have: micState.known && micState.src !== null
+        // Bound below, because muted is one of the properties PipeWire sends
+        // only for an object somebody asked about. Unbound it reads false,
+        // which on this widget is the wrong way round.
+        readonly property bool muted: micState.have
+            && micState.src.audio !== null
+            && micState.src.audio.muted
+        // Something holding the microphone. Deliberately not "bytes are
+        // moving": a stream that is open and paused starts pulling again
+        // without asking anybody, so what earns a red word on the strip is that
+        // something has it - the mic holders principle 4 names.
+        readonly property bool live: micLinks.linkGroups.length > 0
+    }
+
+    // PipeWire sends a node's name and little else until somebody asks for the
+    // rest, and muted is in the rest.
+    PwObjectTracker {
+        objects: [Pipewire.defaultAudioSource]
+    }
+
+    // What is connected to the microphone. This type drops monitor links
+    // itself, so what is left is something capturing rather than the graph's
+    // own plumbing.
+    PwNodeLinkTracker {
+        id: micLinks
+
+        node: Pipewire.defaultAudioSource
     }
 
     // One connection, held open. zded speaks line-delimited JSON, so asking
@@ -344,6 +396,21 @@ ShellRoot {
             return batteryState.pct + (batteryState.charging ? " charging" : " discharging");
         }
 
+        // What the mic reads. Five words and not the three the strip shows,
+        // because the two it hides for are different facts: "none" is PipeWire
+        // answering that there is no source, "unknown" is PipeWire not
+        // answering. A test that could not tell those apart would pass on a
+        // widget that had never once worked.
+        function mic(): string {
+            if (!micState.known)
+                return "unknown";
+            if (!micState.have)
+                return "none";
+            if (micState.muted)
+                return "muted";
+            return micState.live ? "live" : "idle";
+        }
+
         // Height and reserved space, as the panel came up. Not the same claim
         // as "the compositor honoured it" - proving that means measuring a
         // window with the bar and without it, which the smoke test does not do
@@ -415,6 +482,32 @@ ShellRoot {
                     return root.urgent > 0 ? n + "  !" + root.urgent : n;
                 }
                 color: root.urgent > 0 ? "#e5484d" : (root.linked && root.known ? "#c9ccd4" : "#7a7f8a")
+                font.pixelSize: 13
+                font.family: "monospace"
+            }
+
+            // The mic, on the bar for the reason principle 4 gives and W16 asks
+            // for: whether the room is being heard is not something to find out
+            // afterwards.
+            //
+            // Empty in every other state. No microphone, nothing holding it and
+            // a PipeWire that is not answering all draw nothing, because a
+            // strip that guesses here is worse than a quiet one - and a word
+            // that is always on the bar is a word nobody reads.
+            Text {
+                id: mic
+
+                anchors.right: battery.left
+                anchors.rightMargin: 14
+                anchors.verticalCenter: parent.verticalCenter
+                visible: mic.text !== ""
+
+                text: micState.muted ? "mic muted" : (micState.live ? "mic live" : "")
+                // The red the urgent queue and a dying battery use, for the
+                // same reason: it is what this bar keeps for the thing worth
+                // interrupting yourself over. Muted is the opposite of that, so
+                // it is said quietly.
+                color: micState.muted ? "#7a7f8a" : "#e5484d"
                 font.pixelSize: 13
                 font.family: "monospace"
             }

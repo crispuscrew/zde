@@ -249,6 +249,20 @@ let
           echo "no battery on this machine and the bar reads '$(barq battery)'"; exit 1
         }
 
+        # And no microphone, which is the same kind of case: layer 0 turns
+        # PipeWire on and QEMU gives this VM no sound card, so there is no
+        # source to find. Either word is honest - "none" is PipeWire answering
+        # that it has none, "unknown" is PipeWire not answering at all - and
+        # which of the two this VM lands on is not something the test can
+        # promise from outside. What may never appear here is one of the other
+        # three: a strip saying a room is being heard on a machine with no
+        # microphone in it is the whole reason the widget exists.
+        micread=$(barq mic)
+        case "$micread" in
+          none | unknown) ;;
+          *) echo "no microphone on this machine and the bar reads '$micread'"; exit 1 ;;
+        esac
+
         # Then the count, against a queue that changes underneath it. "0 0"
         # before, "1 0" after: the poll is two seconds, so this waits rather
         # than sleeping once and hoping.
