@@ -18,40 +18,54 @@ type fakeBus struct {
 	objs map[dbus.ObjectPath]map[string]map[string]dbus.Variant
 	err  error
 
-	mu    sync.Mutex
-	calls []string
-	fail  map[string]error
+	mu     sync.Mutex
+	calls  []string
+	bounds []time.Duration // the deadline each call carried, in the same order
+	fail   map[string]error
 }
 
 // Managed is recorded like the rest, because "it never reached the bus" is a
 // claim about reading it too: an address that is not one should be refused
 // before anything is asked of anybody.
-func (f *fakeBus) Managed() (map[dbus.ObjectPath]map[string]map[string]dbus.Variant, error) {
-	f.record("managed")
+func (f *fakeBus) Managed(within time.Duration) (map[dbus.ObjectPath]map[string]map[string]dbus.Variant, error) {
+	f.record(within, "managed")
 	if f.err != nil {
 		return nil, f.err
 	}
 	return f.objs, nil
 }
 
-func (f *fakeBus) Call(path dbus.ObjectPath, method string, args ...any) error {
-	f.record("call " + string(path) + " " + method + argText(args))
+func (f *fakeBus) Call(within time.Duration, path dbus.ObjectPath, method string, args ...any) error {
+	f.record(within, "call "+string(path)+" "+method+argText(args))
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.fail[method]
 }
 
-func (f *fakeBus) Set(path dbus.ObjectPath, iface, prop string, value any) error {
-	f.record("set " + string(path) + " " + iface + "." + prop + argText([]any{value}))
+func (f *fakeBus) Set(within time.Duration, path dbus.ObjectPath, iface, prop string, value any) error {
+	f.record(within, "set "+string(path)+" "+iface+"."+prop+argText([]any{value}))
 	return nil
 }
 
 func (f *fakeBus) Close() error { return nil }
 
-func (f *fakeBus) record(line string) {
+func (f *fakeBus) record(within time.Duration, line string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, line)
+	f.bounds = append(f.bounds, within)
+}
+
+// bound is the deadline the first call matching this text was given.
+func (f *fakeBus) bound(substr string) (time.Duration, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, c := range f.calls {
+		if strings.Contains(c, substr) {
+			return f.bounds[i], true
+		}
+	}
+	return 0, false
 }
 
 func argText(args []any) string {
@@ -436,8 +450,8 @@ type blockingBus struct {
 	block chan struct{}
 }
 
-func (s *blockingBus) Call(path dbus.ObjectPath, method string, args ...any) error {
-	err := s.fakeBus.Call(path, method, args...)
+func (s *blockingBus) Call(within time.Duration, path dbus.ObjectPath, method string, args ...any) error {
+	err := s.fakeBus.Call(within, path, method, args...)
 	if strings.HasSuffix(method, ".Pair") {
 		<-s.block
 	}
@@ -462,6 +476,74 @@ func TestAFailedPairingSaysWhy(t *testing.T) {
 	}
 	if !strings.Contains(st.Failed, "AuthenticationFailed") {
 		t.Errorf("failed = %q, want what the other end said", st.Failed)
+	}
+}
+
+// Every call carries a deadline, and the one that waits on a person carries a
+// longer one than the question does.
+//
+// Two failures in one test because they are two halves of the same decision.
+// Break the first - a call made with no bound, which is what
+// Object.Call(method, 0, ...) is - and a bluetoothd wedged on a driver leaves a
+// goroutine that never comes back, with every later bluetooth verb queued
+// behind it while the CLI has already given up. Break the second by bounding
+// Pair like a question - and zde cancels the pairing out from under somebody
+// who is still reading the number off their phone, which is zde saying no on
+// their behalf.
+func TestEveryCallIsBoundedAndPairingOutlastsTheQuestion(t *testing.T) {
+	b := oneAdapter()
+	b.objs[phonePth][deviceIface]["Paired"] = v(false)
+	c := client(b)
+	if err := c.register(); err != nil {
+		t.Fatal(err)
+	}
+	for _, do := range []func() error{
+		func() error { _, err := c.State(); return err },
+		func() error { return c.Power(true) },
+		func() error { return c.Discover(true) },
+		func() error { return c.Trust("44:5C:E9:1A:2B:3C", true) },
+		func() error { return c.Disconnect("44:5C:E9:1A:2B:3C") },
+		func() error { return c.Forget("44:5C:E9:1A:2B:3C") },
+		func() error { return c.Pair("44:5C:E9:1A:2B:3C") },
+	} {
+		if err := do(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b.settled(t, c, "Device1.Pair")
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for i, call := range b.calls {
+		if b.bounds[i] <= 0 {
+			t.Errorf("%q was made with no deadline", call)
+		}
+		if b.bounds[i] > waitFor {
+			t.Errorf("%q was given %s, which is longer than anything here waits", call, b.bounds[i])
+		}
+	}
+	// The one that waits on a person outlasts the question it is waiting for.
+	pair, made := 0*time.Second, false
+	for i, call := range b.calls {
+		if strings.Contains(call, "Device1.Pair") {
+			pair, made = b.bounds[i], true
+		}
+	}
+	if !made {
+		t.Fatalf("no pairing call was made: %v", b.calls)
+	}
+	if pair <= answerWait {
+		t.Errorf("pairing is bounded at %s and the question it waits for stands for %s", pair, answerWait)
+	}
+	// And the rest are the short bound, or a wedged bluetoothd holds a keypress.
+	for i, call := range b.calls {
+		if strings.Contains(call, "Device1.Pair") ||
+			strings.Contains(call, "Disconnect") || strings.Contains(call, "RemoveDevice") {
+			continue
+		}
+		if b.bounds[i] != askFor {
+			t.Errorf("%q was given %s, want the short bound %s", call, b.bounds[i], askFor)
+		}
 	}
 }
 

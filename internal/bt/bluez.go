@@ -1,49 +1,84 @@
 package bt
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/godbus/dbus/v5"
+)
+
+// Every call carries a deadline, and there are two of them.
+//
+// askFor is the questions and the bookkeeping: reading what bluez has, writing
+// a property, starting a scan, registering the agent. Each of those is
+// bluetoothd talking to itself and none has any business taking two seconds.
+// Having no deadline at all is the thing to avoid: zded answers keybinds on one
+// socket, and against a bluetoothd wedged on a driver an unbounded call is a
+// goroutine that never comes back, with every later bluetooth verb queued
+// behind it.
+//
+// waitFor is the calls that wait on something outside this machine. Pairing
+// waits on a person comparing six digits, connecting waits on a headset's
+// radio, and forgetting a connected device tears the link down first. It is a
+// backstop and not a policy: what decides a pairing is the agent's own refusal
+// (answerWait, agent.go), and a Pair cancelled from under it would be zde
+// saying no on somebody's behalf while they were still reading the number. So
+// the three bounds nest - the question gives up at 45 seconds, the call at 75,
+// and the CLI's own watch at 90.
+const (
+	askFor  = 2 * time.Second
+	waitFor = answerWait + 30*time.Second
 )
 
 // bus is the little of D-Bus this package uses, behind an interface.
 //
 // Not for elegance: it is what makes the verbs testable at all. CI has no
 // radio, and the things worth pinning need none - which object a verb reaches,
-// what an address that is not one does, and above all which calls pairing does
-// *not* make. A test can watch every call that went out; a machine with
-// bluetooth cannot be assumed.
+// what an address that is not one does, how long each call is given, and above
+// all which calls pairing does not make. A test can watch every call that went
+// out; a machine with bluetooth cannot be assumed.
+//
+// Every method takes its own deadline rather than sharing one hidden in the
+// implementation, so that the bound is visible where the call is made and a
+// test can see that there is one.
 type bus interface {
 	// Managed is ObjectManager: everything org.bluez has, in one reply.
-	Managed() (map[dbus.ObjectPath]map[string]map[string]dbus.Variant, error)
+	Managed(within time.Duration) (map[dbus.ObjectPath]map[string]map[string]dbus.Variant, error)
 	// Call is a method on an object org.bluez owns.
-	Call(path dbus.ObjectPath, method string, args ...any) error
+	Call(within time.Duration, path dbus.ObjectPath, method string, args ...any) error
 	// Set writes one property. Its own method rather than another Call,
 	// because Trusted is the one property zde ever writes on a device and the
 	// test that says pairing does not write it has to be able to see one.
-	Set(path dbus.ObjectPath, iface, prop string, value any) error
+	Set(within time.Duration, path dbus.ObjectPath, iface, prop string, value any) error
 	Close() error
 }
 
 // systemBus is that, on the real bus.
 type systemBus struct{ conn *dbus.Conn }
 
-func (s systemBus) Managed() (map[dbus.ObjectPath]map[string]map[string]dbus.Variant, error) {
+func (s systemBus) Managed(within time.Duration) (map[dbus.ObjectPath]map[string]map[string]dbus.Variant, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), within)
+	defer cancel()
 	var objs map[dbus.ObjectPath]map[string]map[string]dbus.Variant
 	err := s.conn.Object(busName, rootPath).
-		Call(objectManager+".GetManagedObjects", 0).Store(&objs)
+		CallWithContext(ctx, objectManager+".GetManagedObjects", 0).Store(&objs)
 	return objs, err
 }
 
-func (s systemBus) Call(path dbus.ObjectPath, method string, args ...any) error {
-	return s.conn.Object(busName, path).Call(method, 0, args...).Err
+func (s systemBus) Call(within time.Duration, path dbus.ObjectPath, method string, args ...any) error {
+	ctx, cancel := context.WithTimeout(context.Background(), within)
+	defer cancel()
+	return s.conn.Object(busName, path).CallWithContext(ctx, method, 0, args...).Err
 }
 
-func (s systemBus) Set(path dbus.ObjectPath, iface, prop string, value any) error {
+func (s systemBus) Set(within time.Duration, path dbus.ObjectPath, iface, prop string, value any) error {
+	ctx, cancel := context.WithTimeout(context.Background(), within)
+	defer cancel()
 	return s.conn.Object(busName, path).
-		Call(properties+".Set", 0, iface, prop, dbus.MakeVariant(value)).Err
+		CallWithContext(ctx, properties+".Set", 0, iface, prop, dbus.MakeVariant(value)).Err
 }
 
 func (s systemBus) Close() error { return s.conn.Close() }
@@ -111,7 +146,7 @@ func (c *Client) Close() error { return c.bus.Close() }
 // right way round to fail, and closing it properly means watching
 // NameOwnerChanged for org.bluez, which is not here.
 func (c *Client) register() error {
-	err := c.bus.Call(managerPath, agentManagerIface+".RegisterAgent", AgentPath, Capability)
+	err := c.bus.Call(askFor, managerPath, agentManagerIface+".RegisterAgent", AgentPath, Capability)
 	if err != nil && !alreadyRegistered(err) {
 		return err
 	}
@@ -121,7 +156,7 @@ func (c *Client) register() error {
 	// something else already holds it, this fails and the agent stays
 	// registered without being the default - which still serves everything zde
 	// itself starts.
-	c.bus.Call(managerPath, agentManagerIface+".RequestDefaultAgent", AgentPath)
+	c.bus.Call(askFor, managerPath, agentManagerIface+".RequestDefaultAgent", AgentPath)
 	return nil
 }
 
@@ -166,7 +201,7 @@ func (c *Client) Power(on bool) error {
 	if err != nil {
 		return err
 	}
-	return c.bus.Set(snap.adapter, adapterIface, "Powered", on)
+	return c.bus.Set(askFor, snap.adapter, adapterIface, "Powered", on)
 }
 
 // Discover starts and stops looking for what is around.
@@ -186,7 +221,7 @@ func (c *Client) Discover(on bool) error {
 	if on {
 		method = ".StartDiscovery"
 	}
-	return c.bus.Call(snap.adapter, adapterIface+method)
+	return c.bus.Call(askFor, snap.adapter, adapterIface+method)
 }
 
 // Pair asks a device to pair, and answers before it is done.
@@ -214,7 +249,7 @@ func (c *Client) Pair(addr string) error {
 	c.register()
 	return c.start("pairing "+dev.Address, func() error {
 		defer c.agent.Clear() // a passkey on screen for an attempt that is over
-		return c.bus.Call(path, deviceIface+".Pair")
+		return c.bus.Call(waitFor, path, deviceIface+".Pair")
 	})
 }
 
@@ -228,7 +263,7 @@ func (c *Client) Connect(addr string) error {
 		return err
 	}
 	return c.start("connecting "+dev.Address, func() error {
-		return c.bus.Call(path, deviceIface+".Connect")
+		return c.bus.Call(waitFor, path, deviceIface+".Connect")
 	})
 }
 
@@ -240,7 +275,7 @@ func (c *Client) Disconnect(addr string) error {
 	if err != nil {
 		return err
 	}
-	return c.bus.Call(path, deviceIface+".Disconnect")
+	return c.bus.Call(waitFor, path, deviceIface+".Disconnect")
 }
 
 // Forget removes the device: the pairing key, the trust, the lot. It is
@@ -251,7 +286,7 @@ func (c *Client) Forget(addr string) error {
 	if err != nil {
 		return err
 	}
-	return c.bus.Call(snap.adapter, adapterIface+".RemoveDevice", path)
+	return c.bus.Call(waitFor, snap.adapter, adapterIface+".RemoveDevice", path)
 }
 
 // Trust says this device may reconnect and use its services without asking
@@ -265,7 +300,7 @@ func (c *Client) Trust(addr string, yes bool) error {
 	if err != nil {
 		return err
 	}
-	return c.bus.Set(path, deviceIface, "Trusted", yes)
+	return c.bus.Set(askFor, path, deviceIface, "Trusted", yes)
 }
 
 // ready is one read of the bus with the adapter checked, for the verbs that act

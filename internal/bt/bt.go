@@ -106,7 +106,7 @@ type snapshot struct {
 // their devices, and asking per object would mean a list assembled from a
 // dozen different moments.
 func read(b bus) (snapshot, error) {
-	objs, err := b.Managed()
+	objs, err := b.Managed(askFor)
 	if err != nil {
 		if noService(err) {
 			// The bus is there and bluetoothd is not: the ordinary state of a

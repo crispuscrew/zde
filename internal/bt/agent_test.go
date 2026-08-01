@@ -28,7 +28,7 @@ func asked(call func() *dbus.Error) chan *dbus.Error {
 	return out
 }
 
-func waitFor(t *testing.T, out chan *dbus.Error) *dbus.Error {
+func outcome(t *testing.T, out chan *dbus.Error) *dbus.Error {
 	t.Helper()
 	select {
 	case derr := <-out:
@@ -79,7 +79,7 @@ func TestPairingNeedsAnExplicitYes(t *testing.T) {
 	if err := a.Answer(true); err != nil {
 		t.Fatal(err)
 	}
-	if derr := waitFor(t, out); derr != nil {
+	if derr := outcome(t, out); derr != nil {
 		t.Errorf("a pairing that was agreed to was refused: %v", derr)
 	}
 	if _, waiting := a.Pending(); waiting {
@@ -96,7 +96,7 @@ func TestUnansweredPairingIsRefused(t *testing.T) {
 	out := asked(func() *dbus.Error { return g.RequestConfirmation(phone, 123456) })
 	waitPending(t, a)
 
-	derr := waitFor(t, out)
+	derr := outcome(t, out)
 	if derr == nil {
 		t.Fatal("nobody answered and the pairing was accepted")
 	}
@@ -121,7 +121,7 @@ func TestPairingSaidNoIsRefused(t *testing.T) {
 	if err := a.Answer(false); err != nil {
 		t.Fatal(err)
 	}
-	derr := waitFor(t, out)
+	derr := outcome(t, out)
 	if derr == nil || derr.Name != errRejected {
 		t.Errorf("a refused pairing answered %v", derr)
 	}
@@ -139,7 +139,7 @@ func TestJustWorksPairingIsStillAsked(t *testing.T) {
 	if req.Kind != KindAuthorize || req.Passkey != "" {
 		t.Errorf("question = %+v, want an authorisation with nothing to compare", req)
 	}
-	if derr := waitFor(t, out); derr == nil {
+	if derr := outcome(t, out); derr == nil {
 		t.Error("nobody answered and it was allowed")
 	}
 }
@@ -158,7 +158,7 @@ func TestAnUntrustedDevicesServiceIsAsked(t *testing.T) {
 	if req.Kind != KindService || req.UUID == "" {
 		t.Errorf("question = %+v, want the service named", req)
 	}
-	if derr := waitFor(t, out); derr == nil {
+	if derr := outcome(t, out); derr == nil {
 		t.Error("nobody answered and the service was allowed")
 	}
 }
@@ -181,7 +181,7 @@ func TestASecondQuestionIsRefusedWhileOneWaits(t *testing.T) {
 		t.Errorf("the waiting question became %+v", req)
 	}
 	a.Answer(true)
-	if derr := waitFor(t, first); derr != nil {
+	if derr := outcome(t, first); derr != nil {
 		t.Errorf("the first question was answered yes and got %v", derr)
 	}
 }
@@ -197,7 +197,7 @@ func TestAnswerBeforeTheQuestionIsNotStored(t *testing.T) {
 	g := &agent1{a: a}
 	out := asked(func() *dbus.Error { return g.RequestConfirmation(phone, 7) })
 	waitPending(t, a)
-	if derr := waitFor(t, out); derr == nil {
+	if derr := outcome(t, out); derr == nil {
 		t.Error("the pairing that followed was let through by an earlier yes")
 	}
 }
@@ -256,7 +256,7 @@ func TestCancelDropsTheQuestion(t *testing.T) {
 	}
 	// The call it belonged to still ends in a refusal, because nothing ever
 	// said yes to it.
-	if derr := waitFor(t, out); derr == nil {
+	if derr := outcome(t, out); derr == nil {
 		t.Error("a cancelled pairing was accepted")
 	}
 }
