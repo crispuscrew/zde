@@ -39,10 +39,22 @@ type Monitor struct {
 	Workspaces []string `yaml:"workspaces"`
 }
 
-// App is one application the desk runs. Nothing here launches it yet.
+// App is one application the desk runs.
 type App struct {
-	App        string            `yaml:"app"`
-	Instance   string            `yaml:"instance"`
+	App      string `yaml:"app"`
+	Instance string `yaml:"instance"`
+	// AppID is the Wayland application id its window arrives with, which is
+	// not the app name above: `app` is what zinc runs, and this is what the
+	// program inside calls itself. They differ often enough to matter - a zinc
+	// app called browser opens a window that says org.mozilla.firefox.
+	//
+	// It is here because it is the only thing a window can be recognised by
+	// before it is on the screen: niri matches a window rule on app-id and
+	// title, and zinc's per-instance identity - which would be the better
+	// answer - reaches the compositor and stops there (docs/vision.md, ask 1).
+	// Without it the app still launches; it just lands where niri puts new
+	// windows rather than where the desk says.
+	AppID      string            `yaml:"app_id"`
 	Mounts     map[string]string `yaml:"mounts"`
 	Monitor    string            `yaml:"monitor"`
 	Workspace  string            `yaml:"workspace"`
@@ -147,6 +159,14 @@ func (d *Desk) check() error {
 		if app.Instance != "" && !desk.ValidDesk(app.Instance) {
 			return fmt.Errorf("manifest %q: app %q: instance %q is not a name: lowercase letters, digits and "+
 				"dashes, because it becomes part of a path", d.Name, app.App, app.Instance)
+		}
+		// It becomes a string in a KDL file the compositor parses. A quote or a
+		// backslash from a hand-edited manifest would end the string early and
+		// take niri's whole config down with it - including the binds - which
+		// is a worse day than a window in the wrong place.
+		if strings.ContainsAny(app.AppID, "\"\\\n\r") {
+			return fmt.Errorf("manifest %q: app %q: app_id %q contains a quote, a backslash or a newline, "+
+				"and it becomes a string in the compositor's config", d.Name, app.App, app.AppID)
 		}
 		for slot := range app.Mounts {
 			// The slot is a name the app declares and this manifest fills; the

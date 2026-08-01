@@ -62,6 +62,12 @@ func main() {
 	}
 	fmt.Fprintf(os.Stderr, "zded %s listening on %s\n", version, *socket)
 
+	// What the desks say about where their windows open, handed to niri before
+	// anything can be launched (internal/zded/rules.go). At startup because the
+	// manifests are files: they change when somebody edits one, not when a desk
+	// is entered.
+	srv.SyncRules()
+
 	// The signal has to reach the listener, or a stale socket outlives the
 	// daemon and the next zded refuses to start.
 	ctx, stopWatching := context.WithCancel(context.Background())

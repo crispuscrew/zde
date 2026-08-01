@@ -377,11 +377,12 @@ Not bugs, do not report them:
 - **The keyboard layout** is whatever niri defaults to. `zde.niri.extraConfig`
   is where a host's own layout goes, and whether it should be taken from the
   system's console keymap instead is still open.
-- **Where a desk's apps land.** Entering a desk starts what it declares, but
-  nothing places the windows: they open on the workspace in front of you rather
-  than on the one the manifest pins them to. Whether that is livable for a
-  three-app desk, or whether placement has to come before this is useful, is
-  the question to answer with hands.
+- **Where a desk's apps land.** With `app_id` in the manifest the window should
+  open on the workspace the desk pins it to, without appearing anywhere else
+  first. Two things only hands can answer: whether the app id you found with
+  `niri msg windows` is the one the window actually arrives with, and what
+  happens with two instances of the same app on one desk - niri matches a rule
+  on the app id alone, so both windows take the first rule that fits.
 - **Sandboxed apps.** `zcr`, `zc` and `zlg` are installed and rootless podman is
   running under them, so the machinery is there - but no app is defined, so
   `zlg` lists nothing and no key starts anything sandboxed. Defining one is
