@@ -611,8 +611,14 @@ func bluetooth(args []string) error {
 		}
 		printRadio(st)
 		return nil
-	case len(args) == 2 && (args[0] == "power" || args[0] == "scan" || args[0] == "confirm"):
+	case len(args) == 2 && (args[0] == "power" || args[0] == "scan"):
 		return c.Call("bluetooth."+args[0], nil, args[1])
+	case len(args) == 3 && args[0] == "confirm":
+		// The question's id, then the answer. Two words rather than one because
+		// an answer that does not name its question is an answer to whatever is
+		// waiting when it lands - which is not always what was read
+		// (internal/bt/agent.go, Answer). The id is printed with the question.
+		return c.Call("bluetooth.confirm", nil, args[1], args[2])
 	case len(args) == 2 && args[0] == "pair":
 		return pairDevice(c, args[1])
 	case len(args) == 2 && args[0] == "connect":
@@ -637,6 +643,20 @@ func printRadio(st bt.State) {
 		return
 	}
 	fmt.Printf("adapter    %s  %s\n", dash(st.Adapter.Name), st.Adapter.Address)
+	// Where zde stands with BlueZ, and the line only worth printing when the
+	// answer is bad. BlueZ has one default agent and gives it to whoever asked
+	// last, so anything else on this machine can take over the answering of
+	// pairing questions - silently, since nothing tells the agent it displaced.
+	// A machine in that state should be able to say so.
+	if !st.Agent.Default {
+		if st.Agent.Registered {
+			fmt.Println("agent      registered, and NOT the default: something else on this machine")
+			fmt.Println("           answers pairing questions")
+		} else {
+			fmt.Printf("agent      not registered%s\n", because(st.Agent.Why))
+			fmt.Println("           nothing here will be asked before a device pairs")
+		}
+	}
 	fmt.Printf("powered    %s\n", yesno(st.Adapter.Powered))
 	fmt.Printf("scanning   %s\n", yesno(st.Adapter.Discovering))
 	if st.Doing != "" {
@@ -656,9 +676,13 @@ func printRadio(st bt.State) {
 	}
 }
 
-// printQuestion is the pairing question, and what to do about it. Two lines,
-// because the second one is a command to run and burying it at the end of a
-// long first line is how it gets missed.
+// printQuestion is the pairing question, what it is really asking, and how to
+// answer it. Three lines, because the last one is a command to run and burying
+// it at the end of a long line is how it gets missed.
+//
+// The wording is per kind and that is the point of having kinds. "Does it
+// match?" printed over a question with nothing to match is how people learn to
+// say yes without reading, on the one surface whose whole job is to stop that.
 func printQuestion(req bt.Request) {
 	who := req.Device
 	if req.Name != "" {
@@ -666,15 +690,48 @@ func printQuestion(req bt.Request) {
 	}
 	switch req.Kind {
 	case bt.KindDisplay:
+		// Nothing to answer: typing it on the device is the answer. The count is
+		// what says somebody is actually typing.
 		fmt.Printf("asking     %s\n", who)
-		fmt.Printf("           type %s on it\n", req.Passkey)
+		typed := ""
+		if req.Entered > 0 {
+			typed = fmt.Sprintf("  (%d typed so far)", req.Entered)
+		}
+		fmt.Printf("           type %s on it%s\n", req.Passkey, typed)
 	case bt.KindService:
 		fmt.Printf("asking     %s\n", who)
-		fmt.Printf("           wants service %s - allow it with: zde system bluetooth confirm yes\n", req.UUID)
+		fmt.Printf("           wants %s\n", serviceWords(req))
+		fmt.Printf("           allow it: zde system bluetooth confirm %s yes\n", req.ID)
+	case bt.KindAuthorize:
+		// Just works pairing: there is no number, so the only thing a person can
+		// check is whether they are the one who started it. Say that, rather
+		// than asking them to compare something that does not exist.
+		fmt.Printf("asking     %s wants to pair\n", who)
+		fmt.Println("           there is nothing to compare: say yes only if you started this")
+		fmt.Printf("           zde system bluetooth confirm %s yes\n", req.ID)
 	default:
-		fmt.Printf("asking     %s  passkey %s\n", who, dash(req.Passkey))
-		fmt.Printf("           if the device shows the same: zde system bluetooth confirm yes\n")
+		fmt.Printf("asking     %s\n", who)
+		fmt.Printf("           it should be showing %s\n", req.Passkey)
+		fmt.Printf("           if it is: zde system bluetooth confirm %s yes\n", req.ID)
 	}
+}
+
+// serviceWords is what a device is asking to do, in words, with the raw UUID
+// behind it for whoever is reading a bug report.
+func serviceWords(req bt.Request) string {
+	if req.Service == "" {
+		return "a service this does not recognise: " + req.UUID
+	}
+	return req.Service + "  (" + req.UUID + ")"
+}
+
+// because turns a reason into a clause, and nothing into nothing: a line that
+// ends in a bare colon reads as something missing.
+func because(why string) string {
+	if why == "" {
+		return ""
+	}
+	return ": " + why
 }
 
 func deviceFlags(d bt.Device) string {
@@ -707,8 +764,11 @@ func pairDevice(c *zded.Client, addr string) error {
 	if err := c.Call("bluetooth.pair", nil, addr); err != nil {
 		return err
 	}
-	shown := false
-	return watchRadio(c, 90, func(st bt.State) (bool, error) {
+	// The question that was put to this terminal, by id: an answer is only ever
+	// given to the question that was printed here, and if the one waiting has
+	// become a different one, this stops rather than answering it.
+	asked := ""
+	return watchRadio(c, bt.WatchFor, func(st bt.State) (bool, error) {
 		if d, found := deviceIn(st, addr); found && d.Paired {
 			fmt.Println("paired")
 			// Said out loud, because it is the difference between this and
@@ -718,8 +778,8 @@ func pairDevice(c *zded.Client, addr string) error {
 			fmt.Println("if it should not: zde system bluetooth trust " + d.Address)
 			return true, nil
 		}
-		if st.Pending != nil && !shown {
-			shown = true
+		if st.Pending != nil && st.Pending.ID != asked {
+			asked = st.Pending.ID
 			printQuestion(*st.Pending)
 			answered, err := answerHere(c, *st.Pending)
 			if err != nil {
@@ -736,7 +796,7 @@ func pairDevice(c *zded.Client, addr string) error {
 			if st.Failed != "" {
 				return true, errors.New(st.Failed)
 			}
-			if shown {
+			if asked != "" {
 				return true, errors.New("not paired")
 			}
 		}
@@ -751,7 +811,7 @@ func connectDevice(c *zded.Client, addr string) error {
 	if err := c.Call("bluetooth.connect", nil, addr); err != nil {
 		return err
 	}
-	return watchRadio(c, 20, func(st bt.State) (bool, error) {
+	return watchRadio(c, bt.AnswerWait, func(st bt.State) (bool, error) {
 		if d, found := deviceIn(st, addr); found && d.Connected {
 			fmt.Println("connected")
 			return true, nil
@@ -773,8 +833,8 @@ func connectDevice(c *zded.Client, addr string) error {
 // watchRadio asks for the state until something has happened or the time runs
 // out. Both long verbs need it, and neither can be answered by the call that
 // started it.
-func watchRadio(c *zded.Client, secs int, stop func(bt.State) (bool, error)) error {
-	deadline := time.Now().Add(time.Duration(secs) * time.Second)
+func watchRadio(c *zded.Client, within time.Duration, stop func(bt.State) (bool, error)) error {
+	deadline := time.Now().Add(within)
 	for {
 		var st bt.State
 		if err := c.Call("bluetooth.state", &st); err != nil {
@@ -806,8 +866,14 @@ func deviceIn(st bt.State, addr string) (bt.Device, bool) {
 // from a keybind is not one, and a prompt nobody can answer is a command that
 // hangs holding a pairing open.
 //
-// A question with nothing to compare is not put here either - a passkey to type
-// on the other device is answered by typing it.
+// Two things make it safe to prompt at all. The answer names the question, so a
+// keystroke that arrives after that question died is refused by the daemon
+// rather than spent on whatever is waiting now. And the prompt does not outlive
+// the question: reading with no deadline left a "[y/N]" on a terminal for as
+// long as somebody left the window open, and the answer to it went somewhere.
+//
+// A question with nothing to answer is not put here - a passkey to type on the
+// other device is answered by typing it there.
 func answerHere(c *zded.Client, req bt.Request) (bool, error) {
 	if req.Kind == bt.KindDisplay {
 		return false, nil
@@ -816,10 +882,25 @@ func answerHere(c *zded.Client, req bt.Request) (bool, error) {
 	if err != nil || info.Mode()&os.ModeCharDevice == 0 {
 		return false, nil
 	}
-	fmt.Print("           yes or no? [y/N] ")
-	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
-	if err != nil && line == "" {
-		return false, err
+	fmt.Print("           " + prompt(req) + " [y/N] ")
+
+	// The read happens in a goroutine because there is no portable way to give
+	// stdin a deadline. It is left behind when the wait runs out, which costs a
+	// blocked goroutine in a process that is about to exit - and buys a command
+	// that comes back.
+	typed := make(chan string, 1)
+	go func() {
+		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		typed <- line
+	}()
+	var line string
+	select {
+	case line = <-typed:
+	case <-time.After(bt.AnswerWait):
+		// The question is gone by now: the agent refuses it at exactly this
+		// point. Saying so beats leaving a prompt that answers nothing.
+		fmt.Println()
+		return true, errors.New("nobody answered here in time, so it was refused")
 	}
 	// Anything that is not a yes is a no, which is the way round a pairing
 	// question has to default.
@@ -827,7 +908,22 @@ func answerHere(c *zded.Client, req bt.Request) (bool, error) {
 	if s := strings.ToLower(strings.TrimSpace(line)); s == "y" || s == "yes" {
 		answer = "yes"
 	}
-	return true, c.Call("bluetooth.confirm", nil, answer)
+	return true, c.Call("bluetooth.confirm", nil, req.ID, answer)
+}
+
+// prompt is the question in the form of a question, per kind. A person who is
+// asked "does it match?" about something with nothing to match learns that the
+// words do not mean anything, which is the habit this surface exists to not
+// build.
+func prompt(req bt.Request) string {
+	switch req.Kind {
+	case bt.KindService:
+		return "allow it?"
+	case bt.KindAuthorize:
+		return "did you start this?"
+	default:
+		return "is it showing " + req.Passkey + "?"
+	}
 }
 
 func yesno(b bool) string {
@@ -1248,8 +1344,12 @@ func usage() {
                          pair, which asks before anything happens: the passkey
                          is shown here and has to match what the device shows.
                          Pairing does not trust
-  zde system bluetooth confirm yes|no
-                         answer the pairing question that is waiting
+  zde system bluetooth confirm ID yes|no
+                         answer one pairing question, by the id printed with it.
+                         The id is not decoration: questions come and go on
+                         their own - one expires after 45 seconds, another
+                         arrives - and an answer that did not name one would be
+                         spent on whichever is waiting when it lands
   zde system bluetooth connect|disconnect ADDR
                          open or drop the link to a device already paired
   zde system bluetooth trust|untrust ADDR

@@ -3,6 +3,7 @@ package zded
 import (
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/crispuscrew/zde/internal/bt"
 )
@@ -23,8 +24,17 @@ type Bluetooth interface {
 	// Trust says a device may reconnect and use services without being asked
 	// about again. Never a side effect of pairing: see internal/bt/agent.go.
 	Trust(addr string, yes bool) error
-	// Answer is the person saying yes or no to the pairing question waiting.
-	Answer(yes bool) error
+	// Answer is the person saying yes or no to one named pairing question. The
+	// name is not decoration: a bare yes lands on whatever holds the slot when
+	// it arrives, which is not always the question that was read
+	// (internal/bt/agent.go, Answer).
+	Answer(id string, yes bool) error
+	// Alive is whether the connection behind this is still usable. Asked of the
+	// interface rather than probed for, because everything that can implement
+	// this holds a bus connection, and one that has died is the difference
+	// between a session with bluetooth and one where every verb fails until the
+	// next login.
+	Alive() bool
 	Close() error
 }
 
@@ -76,7 +86,16 @@ func (s *Server) radio() (Bluetooth, error) {
 	s.bluetoothMu.Lock()
 	defer s.bluetoothMu.Unlock()
 	if s.bluetooth != nil {
-		return s.bluetooth, nil
+		if s.bluetooth.Alive() {
+			return s.bluetooth, nil
+		}
+		// The system bus is restarted by its own updates and everything on it
+		// goes with it, including the exported agent. Kept, this would be a
+		// session where every bluetooth verb fails and no pairing question
+		// reaches anybody until the next login; dropped, the dial below puts the
+		// agent back.
+		s.bluetooth.Close()
+		s.bluetooth = nil
 	}
 	if s.openBluetooth == nil {
 		return nil, errors.New("this zded has no way to reach bluetooth")
@@ -141,19 +160,28 @@ func (s *Server) bluetoothCall(req Request) Response {
 		return Response{Error: "no bluetooth: " + err.Error()}
 	}
 	switch req.Method {
-	case "bluetooth.power", "bluetooth.scan", "bluetooth.confirm":
+	case "bluetooth.confirm":
+		// The question first, then the answer: `bluetooth.confirm 7 yes`. Two
+		// arguments rather than one because an answer that does not say what it
+		// is answering is an answer to whatever is waiting - see
+		// internal/bt/agent.go, Answer.
+		if len(req.Args) != 2 {
+			return Response{Error: "bluetooth.confirm takes the question's id and yes or no"}
+		}
+		yes, err := yesNo(req.Args[1])
+		if err != nil {
+			return Response{Error: "bluetooth.confirm takes yes or no, not " + strconv.Quote(req.Args[1])}
+		}
+		return done(r.Answer(req.Args[0], yes))
+	case "bluetooth.power", "bluetooth.scan":
 		on, err := onOff(req)
 		if err != nil {
 			return Response{Error: err.Error()}
 		}
-		switch req.Method {
-		case "bluetooth.power":
+		if req.Method == "bluetooth.power" {
 			return done(r.Power(on))
-		case "bluetooth.scan":
-			return done(r.Discover(on))
-		default:
-			return done(r.Answer(on))
 		}
+		return done(r.Discover(on))
 	case "bluetooth.pair", "bluetooth.connect", "bluetooth.disconnect",
 		"bluetooth.forget", "bluetooth.trust", "bluetooth.untrust":
 		if len(req.Args) != 1 {
@@ -182,16 +210,28 @@ func (s *Server) bluetoothCall(req Request) Response {
 // the CLI is what a person types and `scan on` says which way it goes where
 // `scan` alone does not.
 func onOff(req Request) (bool, error) {
-	words := map[string]bool{"on": true, "off": false, "yes": true, "no": false}
 	if len(req.Args) == 1 {
-		if v, known := words[req.Args[0]]; known {
-			return v, nil
+		switch req.Args[0] {
+		case "on":
+			return true, nil
+		case "off":
+			return false, nil
 		}
 	}
-	if req.Method == "bluetooth.confirm" {
-		return false, errors.New("bluetooth.confirm takes yes or no")
-	}
 	return false, errors.New(req.Method + " takes on or off")
+}
+
+// yesNo is the same for an answer to a question. Its own words, and not the
+// same set as on and off: "scan yes" and "confirm on" are both somebody typing
+// past the thing they meant.
+func yesNo(word string) (bool, error) {
+	switch word {
+	case "yes":
+		return true, nil
+	case "no":
+		return false, nil
+	}
+	return false, errors.New("not yes or no")
 }
 
 // done is a verb with nothing to say but whether it worked. The empty list is

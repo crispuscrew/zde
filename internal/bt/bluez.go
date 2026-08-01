@@ -24,13 +24,22 @@ import (
 // waits on a person comparing six digits, connecting waits on a headset's
 // radio, and forgetting a connected device tears the link down first. It is a
 // backstop and not a policy: what decides a pairing is the agent's own refusal
-// (answerWait, agent.go), and a Pair cancelled from under it would be zde
+// (AnswerWait, agent.go), and a Pair cancelled from under it would be zde
 // saying no on somebody's behalf while they were still reading the number. So
 // the three bounds nest - the question gives up at 45 seconds, the call at 75,
 // and the CLI's own watch at 90.
 const (
 	askFor  = 2 * time.Second
-	waitFor = answerWait + 30*time.Second
+	waitFor = AnswerWait + 30*time.Second
+
+	// WatchFor is for the client on the other side of the socket: how long
+	// something that started a pairing should keep asking how it went before it
+	// says so and lets go. It is out here with the other two because it is the
+	// outermost of the same nest and the numbers only mean anything together -
+	// a watch shorter than the call would report a failure while the call is
+	// still going, and one shorter than the question would report it while
+	// somebody is still reading the number.
+	WatchFor = waitFor + 15*time.Second
 )
 
 // bus is the little of D-Bus this package uses, behind an interface.
@@ -53,6 +62,8 @@ type bus interface {
 	// because Trusted is the one property zde ever writes on a device and the
 	// test that says pairing does not write it has to be able to see one.
 	Set(within time.Duration, path dbus.ObjectPath, iface, prop string, value any) error
+	// Alive is whether this connection is still usable at all.
+	Alive() bool
 	Close() error
 }
 
@@ -81,6 +92,8 @@ func (s systemBus) Set(within time.Duration, path dbus.ObjectPath, iface, prop s
 		CallWithContext(ctx, properties+".Set", 0, iface, prop, dbus.MakeVariant(value)).Err
 }
 
+func (s systemBus) Alive() bool { return s.conn != nil && s.conn.Connected() }
+
 func (s systemBus) Close() error { return s.conn.Close() }
 
 // Client is zde's whole conversation with BlueZ: one connection, held open for
@@ -98,6 +111,11 @@ type Client struct {
 	// What a long call is doing and how the last one ended (see State).
 	doing  string
 	failed string
+	// Where zde stands with the agent manager, as of the last time it asked.
+	// Kept rather than discarded because the headline claim of this package -
+	// that a person is asked before anything pairs - rests on holding the
+	// default agent role, and BlueZ hands that role to whoever asks last.
+	agentState AgentState
 }
 
 // Dial connects to the system bus and puts the agent on it.
@@ -118,7 +136,7 @@ func Dial() (*Client, error) {
 	// one is called by every app on the machine and by whoever is debugging
 	// them, and this one is called by bluetoothd, which knows the interface it
 	// asked for.
-	if err := conn.Export(&agent1{a: c.agent}, AgentPath, agentIface); err != nil {
+	if err := exportAgent(conn, c.agent); err != nil {
 		conn.Close()
 		return nil, err
 	}
@@ -148,15 +166,33 @@ func (c *Client) Close() error { return c.bus.Close() }
 func (c *Client) register() error {
 	err := c.bus.Call(askFor, managerPath, agentManagerIface+".RegisterAgent", AgentPath, Capability)
 	if err != nil && !alreadyRegistered(err) {
+		c.mu.Lock()
+		c.agentState = AgentState{Why: err.Error()}
+		c.mu.Unlock()
 		return err
 	}
 	// The default agent, so that a device pairing to this machine reaches a
 	// person too, and not only one this machine asked to pair. zde is the
-	// session's pairing agent the same way zded is its notification server. If
-	// something else already holds it, this fails and the agent stays
-	// registered without being the default - which still serves everything zde
-	// itself starts.
-	c.bus.Call(askFor, managerPath, agentManagerIface+".RequestDefaultAgent", AgentPath)
+	// session's pairing agent the same way zded is its notification server.
+	//
+	// The answer is kept, because BlueZ's model here is last-asker-wins: any
+	// process on this machine can register an agent of its own with any
+	// capability and take this role, and RequestDefaultAgent succeeds for it.
+	// Nothing tells the agent it has been displaced - no Release arrives - so
+	// this flag is exactly "the last time zde asked, it was given the role", and
+	// it is worth saying out loud rather than assuming. A machine whose pairing
+	// questions are being answered by something else should be able to say so.
+	//
+	// Asked again where a person is starting something (Pair), and not on a
+	// timer: two agents taking the role back from each other every two seconds
+	// is worse than one that reports which of them holds it.
+	def := c.bus.Call(askFor, managerPath, agentManagerIface+".RequestDefaultAgent", AgentPath)
+	c.mu.Lock()
+	c.agentState = AgentState{Registered: true, Default: def == nil}
+	if def != nil {
+		c.agentState.Why = def.Error()
+	}
+	c.mu.Unlock()
 	return nil
 }
 
@@ -170,6 +206,17 @@ func alreadyRegistered(err error) bool {
 func (c *Client) State() (State, error) {
 	snap, err := read(c.bus)
 	if err != nil {
+		if !c.bus.Alive() {
+			// The connection died under the question. It answers as an absence
+			// rather than as an error because that is what a person can read,
+			// and because it is true: with the bus gone there is no bluetooth
+			// here until something opens a new one, which the next question does
+			// (internal/zded, radio). It has to be caught here and not in read:
+			// a closed connection fails with a plain error rather than the
+			// dbus.Error that "nobody is bluetoothd" comes back as, so no
+			// inspection of the error itself can tell them apart.
+			return Absent("the system bus connection has gone: the next question opens a new one"), nil
+		}
 		return State{}, err
 	}
 	if req, ok := c.agent.Pending(); ok {
@@ -183,12 +230,22 @@ func (c *Client) State() (State, error) {
 	}
 	c.mu.Lock()
 	snap.state.Doing, snap.state.Failed = c.doing, c.failed
+	snap.state.Agent = c.agentState
 	c.mu.Unlock()
 	return snap.state, nil
 }
 
-// Answer is the person saying yes or no to the question that is waiting.
-func (c *Client) Answer(yes bool) error { return c.agent.Answer(yes) }
+// Answer is the person saying yes or no to one named question (Agent.Answer).
+func (c *Client) Answer(id string, yes bool) error { return c.agent.Answer(id, yes) }
+
+// Alive is whether the connection is still worth keeping.
+//
+// The system bus is restarted by an update, and everything on it dies with it -
+// including the exported agent. Without this the daemon would hold a dead
+// connection for the rest of the session: every verb failing, no agent on the
+// bus, and nothing to re-export it. The caller drops a client that says no and
+// dials again (internal/zded, radio).
+func (c *Client) Alive() bool { return c.bus.Alive() }
 
 // Power turns the radio itself on or off.
 //
@@ -245,10 +302,17 @@ func (c *Client) Pair(addr string) error {
 	}
 	// Registered again just before, rather than trusted from startup: see
 	// register. This is the one path where a lost registration would show up as
-	// a pairing that hangs and then fails for no visible reason.
+	// a pairing that hangs and then fails for no visible reason, and it is also
+	// where taking the default agent role back is honest - somebody is starting
+	// a pairing, so the questions it raises should come here.
 	c.register()
 	return c.start("pairing "+dev.Address, func() error {
-		defer c.agent.Clear() // a passkey on screen for an attempt that is over
+		// Only the passkey this attempt put on the screen. Clearing whatever is
+		// standing would take an incoming question - a device pairing to this
+		// machine, which nothing here started - off the screen mid-read, while
+		// bluetoothd stays blocked on it for its own 45 seconds with nobody able
+		// to answer it any more.
+		defer c.agent.ClearShown(dev.Address)
 		return c.bus.Call(waitFor, path, deviceIface+".Pair")
 	})
 }
@@ -296,9 +360,17 @@ func (c *Client) Forget(addr string) error {
 // morning" is a decision rather than a default. Nothing else in this package
 // writes this property.
 func (c *Client) Trust(addr string, yes bool) error {
-	_, path, _, err := c.find(addr)
+	_, path, dev, err := c.find(addr)
 	if err != nil {
 		return err
+	}
+	if yes && !dev.Paired {
+		// Trust on an unpaired device is a standing yes for something that has
+		// not been agreed to once: it survives in bluez's store, and the first
+		// time that address does pair, it pairs into a device that is already
+		// trusted. Untrusting is allowed either way - taking a permission back
+		// never needs a reason.
+		return errors.New(dev.Address + " is not paired, so there is nothing to trust yet: pair it first")
 	}
 	return c.bus.Set(askFor, path, deviceIface, "Trusted", yes)
 }
