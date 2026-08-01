@@ -7,10 +7,15 @@ live image needs no install and [`verify.md`](verify.md) is the shorter path.
 
 zde is early, and this is what "early" means in practice:
 
-- **Most of the cheatsheet is silent.** The desks, the queue, notifications, the
-  bar, the picker, a terminal and an editor work. The palette, the launcher,
-  ask, clip, pass, capture, media and most of the system group are keys that do
-  nothing. [`verify.md`](verify.md) has the split key by key.
+- **Part of the cheatsheet is silent.** The desks, the queue, notifications and
+  the centre that reads them, the bar, the picker, the palette, the wifi list,
+  screenshots and a terminal work. pass, the clipboard, media, the modes beyond
+  Normal, panic and zen, the calendar, the wallpapers and the power menu are
+  keys that do nothing. Three more do nothing until you say what they are:
+  ask has no tier until a machine names one, `Mod+e` has no editor until
+  `zde.apps.editor` names one (section 4), and bluetooth is a command rather
+  than a key. `Mod+semicolon` says which is which on the machine in front of
+  you; [`verify.md`](verify.md) has the same split written down.
 - **Apps are not sandboxed unless you sandbox them.** The premise of zde is that
   every app runs under zinc. The tools are installed now (`zcr`, `zc`) and the
   runtime under them is on, so a sandboxed app is a thing you can define and put
@@ -89,7 +94,7 @@ the matching `users.users.<name>`, the hostname, and the timezone. Nothing
 checks that the two agree, and a mismatch fails at evaluation with a missing
 attribute rather than anything friendlier.
 
-While you are in `configuration.nix`:
+While you are in those two files:
 
 - **The password.** The template ships `initialPassword = "zde"` so that the
   first boot lets you in. It applies once, at account creation, and it sits in
@@ -99,9 +104,16 @@ While you are in `configuration.nix`:
 - **`video` is already in the groups**, which is what makes the brightness keys
   work.
 - **A laptop** wants `zde.laptop.enable = true` in the flake's module block:
-  battery, radios, and the lid switch.
+  battery, the network radio, bluetooth, and the lid switch. A desktop that
+  wants bluetooth and none of the rest says `zde.bluetooth.enable = true`
+  instead; both are off by default, because a radio nobody asked for is a
+  listening radio nobody asked for.
 - **A second keyboard layout**, if you use one. `Mod+space` switches between
-  them and has nothing to switch to until you say so:
+  them and has nothing to switch to until you say so. The niri config is layer
+  1, so these two go in the flake's `home-manager.users.<name>` block, beside
+  `zde.enable` and the commented-out `zde.niri.extraConfig`. Not in
+  `configuration.nix`: there they are not options at all, and the build says so
+  in the least helpful way it has.
 
   ```nix
   zde.niri.xkb.layout = "us,ru";
@@ -125,8 +137,20 @@ Log in at the greeter. Then, in order:
 ```sh
 zde status              # zded up, compositor connected, zinc yes
 zde doctor              # every check on one screen, if any of that looks wrong
-zde app list            # what Mod+t and Mod+e will run
+zde app list            # what the launch keys can start on this machine
 zde keys                # every bind, one per line (Mod+slash shows this too)
+```
+
+That third line will print `help`, `lock` and `terminal`, and no editor. Those
+three have defaults because layer 1 installs the programs behind them; the
+editor zde ships is a zinc container (`common/apps/nvim`), which is layer 2's
+to build and pin, so `Mod+e` starts nothing until this machine says what an
+editor is. It says so in one line, in the flake's `home-manager.users.<name>`
+block beside `zde.enable`:
+
+```nix
+zde.apps.editor = [ "foot" "-e" "hx" ];             # a host program
+zde.apps.editor = [ "zcr" "run" "nvim" "--exec" ];  # or a sandboxed one
 ```
 
 Two desks, which is the smallest number that makes the model do anything:
@@ -155,8 +179,7 @@ one: stand on a workspace worth keeping and run
 
 ## 5. Apps, and the sandbox
 
-A desk manifest can declare what the desk is for. Nothing launches it yet, so
-this is a record rather than a machine that starts things:
+A desk manifest declares what the desk is for:
 
 ```yaml
 apps:
@@ -198,16 +221,27 @@ apps:
 `app_id` is the Wayland application id, which is not the zinc app name - `niri
 msg windows` prints the ones you have open. zded turns the pin into a niri
 window rule, so the window opens on that workspace rather than in front of you.
-Leave it out and the app still starts; adoption places it.
+Leave it out and the app still starts; adoption places it. The rules are written
+when zded starts and on `zde desk reconcile`, and not on every switch, so a
+manifest edited while the session runs wants a reconcile before the pin bites.
 
 ## 6. When it breaks
 
 It will. In descending order of how much it hurts:
 
-- **A key did nothing.** Most likely it is one of the silent ones. `Mod+slash`
-  opens the keymap in a pager, and `zde keys` prints the same list from a
-  terminal: what every key is bound to, one per line. The table in
-  [`verify.md`](verify.md) says which of them are wired to something yet.
+- **A key did nothing.** On a machine you have just installed, the likeliest one
+  is `Mod+e`: nothing is configured to be an editor until you say so (section
+  4). `zde app list` settles it in one line, since it prints what this machine
+  can start and an editor is not on it until you put one there. The key itself
+  does say so, but it says it to the journal a keybind's output goes to rather
+  than to the screen, which is why the list is the faster question.
+  Otherwise it is one of the silent ones.
+  `Mod+semicolon` is the answer from the build in front of you: every action by
+  name, with the ones nobody has written marked as such and the key each would
+  have been. `Mod+slash` opens the keymap in a pager and `zde keys` prints the
+  same list from a terminal, which is what every key is bound to, one per line.
+  The table in [`verify.md`](verify.md) says which of them are wired to
+  something yet.
 - **The session is wrong but the machine is fine.** `zde doctor` first. One line
   per check, on one screen, because this is the moment when there is no second
   machine to look anything up on:

@@ -4,9 +4,13 @@ The list of things a machine has to answer, because nothing else can.
 
 CI settles a lot: `nix flake check` evaluates both layers, the go tests pin
 the model, and the smoke test ([`nix/tests/smoke.nix`](../nix/tests/smoke.nix))
-boots a NixOS host in QEMU and drives a real niri through the desks, the queue
-and a notification. What it boots has no GPU, no keyboard, one virtual screen
-and nobody looking at it. Everything below is what that leaves over.
+boots a NixOS host in QEMU and drives a real niri through the desks, the queue,
+a notification and the centre that reads it back, a desk starting what its
+manifest declares, and the bar saying it has no microphone and no
+NetworkManager to ask. What it boots has no GPU, no keyboard, one virtual
+screen and nobody looking at it - and no microphone, no access point and no
+bluetooth adapter, which is why it can only check that those read as absent.
+Everything below is what that leaves over.
 
 Work down it in order. Each item says what to do and what should happen; where
 something is known to be missing, it says so, so the finding is not rediscovered
@@ -32,10 +36,10 @@ podman exec zde-nix sh -lc 'cd /w && nix build .#zde-iso --no-link --print-out-p
 podman cp zde-nix:<that path>/iso/zde-live.iso ./zde-live.iso
 ```
 
-Build it from the branch you mean to test. `dev` has the desks, the queue and
-notifications; **the input layer is on `feat/input-layer` and is most of section
-2**, so if that branch is still open, build from it and do the whole list in one
-boot.
+Build it from the branch you mean to test. `dev` has the desks, the queue,
+notifications and the shell; **the input layer is on `feat/input-layer` and is
+most of section 2**, so if that branch is still open, build from it and do the
+whole list in one boot.
 
 ### In a VM first
 
@@ -112,7 +116,9 @@ desk invariants, and two *virtual* screens with `--screens 2`.
 What it cannot: latency, which is meaningless under virtio and a software
 renderer; a real GPU, which is the thing that decides between a session and a
 black screen; docking and undocking; the lid, the battery, and any keyboard
-you would actually plug in.
+you would actually plug in. Nor the radios and the microphone (section 7): it
+has no adapter, no access point and no capture device, so the most it can say
+is that the bar and the CLI call each of them absent instead of guessing.
 
 ### Then
 
@@ -173,9 +179,11 @@ its units are where systemd looks; it never logs anybody in.
 - `Mod+g` opens zinc's launcher (`zlg`) over an empty list. Empty is right on
   a fresh machine - nothing has defined an app yet - and a key that draws
   nothing at all is the report.
-- `Mod+slash` opens the keymap in a pager, and `q` closes it. It is the key
-  worth pressing first on a machine where most keys are silent: it is the list
-  of the ones that are not.
+- `Mod+slash` opens the keymap in a pager, and `q` closes it. `Mod+semicolon`
+  is the palette: the same actions, filtered as you type, run by name, and with
+  the ones nobody has written yet marked as such rather than left to be found by
+  pressing them. Between the two they are what to reach for when a key does
+  nothing, and they are worth pressing before anything else on this list.
 - `Mod+Print` takes a screenshot and puts it on the clipboard. `Mod+Shift+s`
   opens niri's region picker, `Mod+Ctrl+w` takes the focused window. They land
   where niri's `screenshot-path` default puts them, `~/Pictures/Screenshots`,
@@ -265,8 +273,35 @@ ones are the point of zded holding the bus name.
 - `notify-send --wait "test"` in one terminal, `zde queue done <id>` in
   another: the first command returns.
 - An app that expects a popup and gets a queue entry: does it misbehave, or
-  quietly carry on? There is no notification centre yet, so a critical
-  notification is silent until you look.
+  quietly carry on? Nothing pops up here at all - `Mod+n` is where you look -
+  so a critical notification waits instead of interrupting, and whether that is
+  livable for a whole day is the thing to find out.
+- **`Mod+n`, the notification centre**, on the same apps. Newest first, `j`/`k`
+  and the arrows walk it, `d` dismisses through `queue.done` so the sender is
+  told, Escape closes. The rows worth hunting for are the ones from an app that
+  declared actions: the line under the list numbers every one of them with the
+  sender's own labels, a digit presses it, and the one the sender called default
+  is marked and is what Enter does. Nine is the bound, and where a sender
+  declared more, that same line says how many it cannot reach rather than
+  quietly showing fewer.
+- **What an app does once it sees "actions" claimed.** zded claims it, because
+  every action a sender declares is offered and not only the default. What it
+  does not claim is immediacy: there is no popup, so the buttons are behind
+  `Mod+n`, and an app reading the capability as "there will be a button on the
+  screen when I send" is the case nobody has met. A mail client offering archive
+  and delete, or a download offering to open the file, is what to try it with.
+- **The three modes, over a working day.** `zde attn work|focus|quiet`, and
+  `Mod+q` for quiet when you need silence now. work queues everything, focus
+  queues only what the sender called urgent, quiet queues none of it, and all
+  three keep the lot in the centre. The bar says which one you are in, and the
+  mode itself lives in the journal, so a `systemctl --user restart zded` comes
+  back in the mode you left rather than quietly reverting to work. What to feel
+  for is whether focus lets through what you actually wanted: urgency is the
+  sender's own claim, and a sender that never sets it is invisible in focus.
+- **A day's worth of arrivals.** History is a ring of 200, in memory: the 201st
+  drops the oldest, and restarting zded empties it. The queue is the half that
+  survives, because it is what you still owe. Whether 200 is a day or an hour
+  is a question about your machine and not about the number.
 - Two terminals, two `notify-send`s: neither can close or replace the other's.
   Closing from the wrong one should leave the item where it is:
 
@@ -298,23 +333,33 @@ show up in use.
   shell to say it drew the surface, so a shell that is running but stuck should
   behave the same as one that is not running. Hard to arrange on purpose; worth
   recognising if a key ever seems to do nothing.
-- **`Mod+Tab`, and the question it settles.** The picker is the first thing zde
-  draws that takes the keyboard, and the roadmap has been carrying the worry
-  that a layer surface holding focus reads to niri as nothing focused at all -
-  so a nav key pressed while it is up would spend itself putting focus back on a
-  window. Open it, close it with Escape, and then press `Mod+j` immediately: if
-  the first press goes nowhere, that is the thing, and it wants
-  `keyboardFocus` on demand rather than exclusive.
+- **The keyboard, and the question it settles.** The roadmap has been carrying
+  the worry that a layer surface holding focus reads to niri as nothing focused
+  at all - so a nav key pressed just after one closes would spend itself putting
+  focus back on a window. Every key that draws one: `Mod+Tab` and `Mod+w` for
+  the picker, `Mod+n`, `Mod+Shift+c`, `Mod+semicolon`, and `Mod+a` or
+  `Mod+Shift+a` for ask. Open each, close it with Escape, and press `Mod+j`
+  immediately: if the first press goes nowhere, that is the thing, and it wants
+  `keyboardFocus` on demand rather than exclusive. One surface behaving
+  differently from the rest is worth as much as all of them behaving badly.
 - **Whether the picker is what you want from `Mod+Tab`.** It has no text field
-  on purpose - arrows, `j`/`k`, or a digit - because filtering belongs to the
-  palette in 0.2. If you find yourself typing a desk name at it, that is the
-  argument for bringing the palette forward.
+  on purpose - arrows, `j`/`k`, or a digit - and the palette next to it does
+  have one, but it filters actions and not desks. If you find yourself typing a
+  desk name at either, that is the argument for a field here.
+- **The palette, on the day you have forgotten a key.** `Mod+semicolon`, a few
+  letters of what you want, Enter. Getting on for eighty rows means `Ctrl+n`
+  past the bottom of the list, which is the scrolling worth pressing on. A row
+  for something nobody has written refuses with the reason rather than going
+  quiet, and so does one whose program is not on this machine. Five niri natives
+  say plainly
+  that they cannot be run from here and still show their key, because the key
+  works; anything else that goes quiet when picked is a report.
 - **`Mod+w`, and whether you can tell your windows apart in it.** A row is the
   app id, the title, and the workspace the window is on, in the same surface the
   desk picker uses and with the same absence of a text field. Four terminals is
   the case to look at: if their titles do not distinguish them, the fix is
-  either the palette or a shell that sets its title, and which one it is decides
-  whether 0.2 moves.
+  either a field in this surface or a shell that sets its title, and which one
+  it is decides whether 0.2 moves.
 - **Where `Mod+w` leaves the screen you were not looking at.** Jumping to a
   window on another desk brings that whole desk up on every monitor and then
   focuses the window, because a desk is what all the monitors show at once
@@ -341,42 +386,166 @@ show up in use.
   take you where the oldest one was written, and the desk it names should still
   make sense hours later.
 
+## 7. The microphone and the radios
+
+Three things the bar and the CLI report about hardware the VM has none of. CI
+pins the empty cases - no capture device, no NetworkManager, no adapter, each
+saying so rather than guessing - and everything below is the other half.
+
+### The mic
+
+- **`Mod+Ctrl+m`, and the strip changes within a frame.** That round trip is
+  what proves the bar is subscribed to PipeWire rather than having read it once
+  at startup. `mic muted` in grey, `mic live` in red, nothing at all otherwise.
+- **A real call.** Something holding the microphone reads `mic live` for as long
+  as it holds it, and clears when the call ends. Live means held and not that
+  bytes are moving: a stream open and paused still reads live, which is the
+  conservative reading a privacy indicator wants and the one to disagree with if
+  it is wrong in practice.
+- **Unplug a USB mic mid-session.** The strip should go empty rather than keep
+  the last word it had.
+- **A capture from something that is not the default source** goes unseen, on
+  purpose: the key and the strip both mean `@DEFAULT_AUDIO_SOURCE@`, so they
+  cannot disagree about which mic they are talking about. The whole graph
+  belongs to the mixer widget in 0.2.
+
+### Wifi
+
+Needs a real access point. The VM leaves NetworkManager off on purpose, so none
+of this has met one.
+
+- `Mod+Shift+c` lists what is in range - signal, whether it is locked, whether
+  there is a saved profile - with the link you are on above it. Enter joins the
+  row you are on and asks for a password only when the network is secured and
+  nothing is saved for it; `d` drops the link.
+- **A wrong password.** Whether NetworkManager decides inside three and a half
+  seconds, or the surface falls through to "joining" and leaves you watching the
+  link. That bound is the known gap: the verdict is not pushed as an event yet,
+  so a refusal it takes twenty seconds to reach arrives as nothing.
+- **A user who is not in the `networkmanager` group** gets `AccessDenied` on
+  activate. Whether that refusal reads as what it is, is the question.
+- **A saved profile whose password has changed.** zde will not overwrite the
+  saved secret, so this is `zde net forget SSID` and then join again - the
+  refusal says so. Worth doing on a profile carrying other settings, and worth
+  watching that nothing half-made is left behind after a failure.
+- **Two access points on one SSID**: the merged row should join the strongest.
+- `zde net status`, `zde net connect SSID` (the password on stdin, never in an
+  argument), `zde net disconnect` and `zde net forget SSID` are the same thing
+  from a terminal, and the path that does not take the keyboard.
+
+### Bluetooth
+
+Needs an adapter, something to pair with, and the radio turned on:
+`zde.bluetooth.enable` on a desktop, or `zde.laptop.enable`, both off by
+default. There is no bluetooth in any surface - `zde system bluetooth` is the
+whole of it - so none of this is pressable from a key.
+
+- **A phone through `pair`**, confirming the six digits on both sides, and then
+  `zde system bluetooth` reading it as paired and **not** trusted. Reconnect it
+  and it should ask again, until `zde system bluetooth trust ADDR`.
+- **Answer nothing for 45 seconds.** The other device should report a failed
+  pairing rather than hanging: an unanswered question is a refusal, and so is
+  "no".
+- **A headset**, to find out how noisy authorising each service really is before
+  somebody decides to trust it. This is the decision in the branch most likely
+  to be reverted, and only a day with real hardware settles it.
+- **BlueZ's own D-Bus policy** for a normal user calling `RegisterAgent` on the
+  reference host. If registration is refused there, incoming pairings are
+  refused with it, and a machine nobody can pair to is the failure this asks
+  about before it happens.
+- **bluetoothd restarted underneath the session.** There is no
+  `NameOwnerChanged` watch, so the agent registration goes with it and incoming
+  pairings are refused by BlueZ until something here asks it for anything.
+  Fail-closed and known; worth recognising rather than reporting.
+
+## 8. ask
+
+Nothing is configured by default, so the first check is the one a fresh machine
+actually gets.
+
+- **`Mod+a` on a machine with no tier set** opens the window like any other: the
+  option name comes back when a question is sent, not before. So type anything
+  and press Enter, and what should arrive is `zde.ask.tiers.provider` by name,
+  the file that writes it, and what this machine does have. A window still
+  saying nothing after Enter is the report - a question that never gets answered
+  is the failure this component is arranged to design out.
+- Set one - `zde.ask.tiers.provider = [ "zcr" "run" "ask-provider" "--exec" ];`
+  in your flake's `home-manager.users.<name>` block, beside `zde.enable`, since
+  this is layer 1 and not the system module - rebuild, and ask something. **The
+  answer arrives piece by piece.** Whether that reads well, or whether a
+  paragraph assembling itself is worse than one that appears at once, is a thing
+  only eyes decide.
+- **Two minutes** caps a tier that has stopped answering without exiting.
+  Whether that is the right number with a real local model behind `local`, which
+  can take a while to say anything at all, is the open half of it.
+- **A tier whose binary is missing**, one that exits non-zero, and one that
+  exits happily having said nothing all end in words on the screen. Worth
+  breaking on purpose once, since this is the whole design.
+- **Escape** stops the answer being shown, not the tier running. Nothing is
+  written down anywhere - no journal line, no cache, no transcript - and the
+  panel does not send the previous turns as context, so each question is its own
+  run and calling it a conversation would outrun the code.
+- `zde ask oneshot <question>` answers in the terminal it was typed in and never
+  in a popup. `zde ask local` and `zde ask escalate` are the other tiers, and a
+  question read from stdin (`zde ask local < note`) is how one stays out of the
+  process list.
+
 ## Expected to be missing
 
 Not bugs, do not report them:
 
-- **Most of the shell**: there is a bar and a picker now - the desks on
-  `Mod+Tab`, the open windows on `Mod+w`, one surface for both; no notification
-  centre and no palette. The launcher on `Mod+g` is zinc's, not zde's.
-- **Most of the cheatsheet.** A bind whose command is not written yet prints
+- **The rest of the shell**: the bar and five surfaces over it - the picker
+  (desks on `Mod+Tab`, windows on `Mod+w`, one surface for both), the
+  notification centre, the connections list, the palette and the ask window.
+  There is no mixer, no media panel, no clipboard, no calendar, no power menu,
+  and no popup for anything: what arrives waits on `Mod+n`. The launcher on
+  `Mod+g` is zinc's, not zde's.
+- **Part of the cheatsheet.** A bind whose command is not written yet prints
   usage to a stderr nobody reads, so the key is silent and so is the machine.
-  What is live today, and nothing else:
+  `Mod+semicolon` says which ones those are on the machine in front of you,
+  which is the answer that comes from the build rather than from a table
+  somebody kept by hand. The same split as of writing:
 
   | Works | Silent |
   |---|---|
   | `Mod+Tab` (the desk picker), `Mod+w` (the window one) | `Mod+Shift+Escape` (panic), `Mod+Shift+z` (zen) |
-  | `Mod+j`/`k` and the arrows (nav) | `Mod+a`, `Mod+Shift+a` (ask) |
-  | `Mod+Shift+j`/`k` (move window) | `Mod+v`, `Mod+Shift+v` (clip, pass) |
-  | `Mod+r` (regulars), `Mod+u` (queue jump) | `Mod+semicolon` (palette) |
-  | `Mod+t`, `Mod+e` (terminal, editor) | `Mod+Shift+t`, `Mod+Shift+e` (launch-at) |
-  | `Mod+w` (jump to window) | `Mod+m` (modes), `Mod+n`, `Mod+c`, `Mod+p`, `Mod+q` |
-  | `Mod+g` (zinc's launcher), `Mod+Ctrl+semicolon` (lock) | and the rest of the system group |
+  | `Mod+j`/`k` and the arrows (nav) | `Mod+v`, `Mod+Shift+v` (clip, pass) |
+  | `Mod+Shift+j`/`k` (move window) | `Mod+Shift+t`, `Mod+Shift+e` (launch-at) |
+  | `Mod+r` (regulars), `Mod+u` (queue jump) | `Mod+p`, `Mod+Shift+p`, `Mod+Ctrl+p` (media) |
+  | `Mod+t` (terminal) | `Mod+m` (modes), `Mod+Shift+n` (net observer) |
+  | `Mod+n` (the notification centre), `Mod+q` (quiet) | `Mod+c` (calendar), `Mod+Shift+w` (wallpapers) |
+  | `Mod+semicolon` (the palette) | `Mod+Shift+x` (power) |
+  | `Mod+a`, `Mod+Shift+a` (ask, once a tier is set) | `XF86AudioPlay`/`Next`/`Prev` (the media target) |
+  | `Mod+Shift+c` (wifi, and the link you are on) | `Mod+e`, until `zde.apps.editor` names one (below) |
+  | `Mod+g` (zinc's launcher), `Mod+Ctrl+semicolon` (lock) | |
   | `Mod+slash` (the keymap, in a pager) | |
   | `Mod+Print`, `Mod+Shift+s`, `Mod+Ctrl+w` (screenshots) | |
   | `Mod+Shift+Tab` (last desk) | |
-  | `zde workspace next\|prev`, `zde desk *`, `zde queue *`, `zde status`, `zde doctor`, `zde keys` | |
-  | the niri natives: columns, monitors, fullscreen, float, close, overview, consume/expel | |
+  | `Mod+period`/`comma`, `Mod+Shift+m`, `Mod+Ctrl+m` (volume, mute, mic) | |
+  | `Mod+b`, `Mod+Shift+b` (brightness, on a machine with a backlight) | |
+  | `zde status`, `doctor`, `keys`, `palette`, `ask`, `attn`, `queue`/`add`/`done` | `zde net observe\|app-cut\|kill` |
+  | `zde app list\|launch`, `window jump-to`, `workspace next\|prev`, `nav down\|up` | `zde desk panic\|zen\|block`, which are not verbs at all |
+  | `zde net status\|connect\|disconnect\|forget` | `zde clip`, `pass`, `media`, `mode` |
+  | `zde system lock\|quiet\|notif-center\|connections\|bluetooth` | `zde system power\|calendar\|wallpapers` |
+  | every other `zde desk` verb: `list`, `switch`, `switcher`, `next`/`prev`/`last`, `apps`, `snapshot`, `reconcile`, `queue-jump`, `regulars`, `move-window`, `move-window-to`, `move-workspace-to` | |
+  | the niri natives: columns, monitors, fullscreen, float, close, overview, consume/expel, layout switch | |
 
-  `Mod+Shift+Escape` is worth singling out: panic is the key you reach for
-  first when something goes wrong, and it is one of the silent ones.
+  The `zde` rows are the ones worth reading twice: the CLI is one binary with
+  one dispatch, so a verb it does not know prints usage to stderr and exits, and
+  from a keybind that is indistinguishable from a key that did nothing.
+  `Mod+Shift+Escape` is worth singling out for the same reason: panic is the key
+  you reach for first when something goes wrong, and it is one of the silent
+  ones.
 - **Modes** (`Mod+m`) and the leader sequences for panic and block. They wait
   on the input layer landing.
-- **Brightness** (`Mod+b`, `Mod+Shift+b`): layer 0 installs no udev rules for
-  `brightnessctl`, so it probably cannot write the backlight as your user. If
-  it works anyway, say so - that is one line either way.
-- **The keyboard layout** is whatever niri defaults to. `zde.niri.extraConfig`
-  is where a host's own layout goes, and whether it should be taken from the
-  system's console keymap instead is still open.
+- **Brightness** (`Mod+b`, `Mod+Shift+b`) needs your user in the `video` group,
+  which is what makes `brightnessctl`'s udev rules apply to the person pressing
+  the key. The host template puts it there; whether the backlight then moves on
+  your hardware is still one line either way.
+- **The keyboard layout** is whatever niri defaults to until a host says
+  otherwise, and `zde.niri.xkb.layout` and `zde.niri.xkb.options` are where it
+  says so. Whether it should be taken from the system's console keymap instead
+  is still open.
 - **Where a desk's apps land.** With `app_id` in the manifest the window should
   open on the workspace the desk pins it to, without appearing anywhere else
   first. Two things only hands can answer: whether the app id you found with
@@ -386,9 +555,36 @@ Not bugs, do not report them:
 - **Sandboxed apps.** `zcr`, `zc` and `zlg` are installed and rootless podman is
   running under them, so the machinery is there - but no app is defined, so
   `zlg` lists nothing and no key starts anything sandboxed. Defining one is
-  zinc's `zc`, and the desk manifests that name apps do not launch them yet.
+  zinc's `zc`. A desk does start what its manifest declares, which means a
+  manifest naming apps nobody has defined starts nothing and says why in
+  `journalctl --user -u zded`.
+- **An editor**, and this is the one distinction in `zde.apps` worth reading
+  once rather than meeting three times. That option is the seam between the
+  keymap's names and this machine's programs, and three of its names have
+  defaults that layer 1 also installs: `terminal` is foot, `lock` is swaylock,
+  `help` is the keymap in a pager. `editor` has none. The editor zde ships is a
+  zinc container (`common/apps/nvim`), which is layer 2's to build and pin, and
+  a second editor on the host to cover for it would be a package nobody asked
+  for. So `Mod+e` starts nothing until a machine says what an editor is, and
+  what it does instead is legible: `no app called "editor"; there is [help lock
+  terminal]`, written to the journal a keybind's output goes to rather than to
+  the screen. `zde app list` prints the same three, which is the faster way to
+  ask. One line ends it, in the flake's `home-manager.users.<name>` block:
+
+  ```nix
+  zde.apps.editor = [ "foot" "-e" "hx" ];              # a host program
+  zde.apps.editor = [ "zcr" "run" "nvim" "--exec" ];   # or a sandboxed one
+  ```
+- **Bluetooth on a screen.** `shell/Bluetooth.qml` is a section that nothing
+  instantiates yet, so no key and no surface reaches the radio: `zde system
+  bluetooth` in a terminal is the whole of it (section 7).
+- **A tier for ask.** There is none until a machine names one, deliberately -
+  a default would be zde choosing somebody's cloud for them - so a question
+  asked on a fresh install comes back with the option to set instead of an
+  answer (section 8).
 - **Persistence**: it is a live image. The journal, the queue and anything you
-  configure are gone on reboot.
+  configure are gone on reboot, and the notification history goes with the
+  daemon rather than with the disk.
 
 ## What to do with what you find
 

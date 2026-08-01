@@ -17,24 +17,36 @@ reach out.
 
 ## Where it is
 
-Early: the spatial model works, and most of what you would press does not.
+Early: the spatial model works, the shell is most of what 0.1 asked for, and
+whole groups of the cheatsheet are still silent.
 
 **Working.** Desks over niri's workspaces - declared in a manifest, adopted
 from whatever you open, rotated between, scrolled within a band a desk cannot
-be scrolled out of, and carried into and back out of the shared regulars. A
-queue you can drop a reminder into and jump back to where it was written.
-`zded` holds the session's notification name, so an app that has never heard
-of zde arrives on the desk you were standing on instead of in a popup nobody
-was looking at. One keymap file generates the niri binds and the cheatsheet
-together, so the two cannot drift. The sandbox is installed rather than
-described: zinc is a pinned input, so a zde machine has `zcr`, `zc` and `zlg`
-and the rootless podman under them.
+be scrolled out of, and carried into and back out of the shared regulars.
+Entering a desk starts the apps its manifest declares, and one that says what
+its window calls itself opens on the workspace the desk pins it to rather than
+in front of you. A queue you can drop a reminder into and jump back to where it
+was written, and three attn modes that decide what interrupts you and never
+what is kept. `zded` holds the session's notification name, so an app that has
+never heard of zde arrives on the desk you were standing on instead of in a
+popup nobody was looking at. The shell is a bar - the queue, the mode, the mic,
+the link, the battery, the clock - and the surfaces over it: the desk picker
+and the window jump, the notification centre, the wifi list you join a network
+from, the palette that runs any action by name and marks the ones that do
+nothing yet, and ask, which puts a question to the tier a machine names and
+streams the answer back. One keymap file generates the niri binds and the
+cheatsheet together, so the two cannot drift. The sandbox is installed rather
+than described: zinc is a pinned input, so a zde machine has `zcr`, `zc` and
+`zlg` and the rootless podman under them.
 
-**Missing.** Most of the shell: there is a bar and a desk picker, and no
-notification centre and no palette - which is what most of the cheatsheet is
-waiting on, and a bind whose command is not written yet is a key that does
-nothing, silently. And the apps: a desk manifest declares what it is for, in
-the address zinc takes for an instance, and nothing launches it yet.
+**Missing.** The apps: the sandbox is installed and nothing here defines
+anything to put in it, so what `Mod+t` starts is an ordinary host program until
+you write one. pass, the clipboard history, media, the modes beyond Normal,
+panic and zen, launch-at, the calendar, the wallpapers and the power menu are
+keys that do nothing, silently - a bind whose command is not written yet prints
+usage to a stderr nobody reads, which is why the palette marks them rather than
+hiding them. Bluetooth is `zde system bluetooth` and nothing on a screen; ask
+has no tier, and `Mod+e` no editor, until a machine names them.
 [`docs/verify.md`](docs/verify.md) has the live-versus-silent split key by
 key; [`docs/roadmap.md`](docs/roadmap.md) has the order the rest arrives in.
 
