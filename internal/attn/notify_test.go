@@ -81,6 +81,25 @@ func TestNotifyFallsBackToTheBody(t *testing.T) {
 	if sink.got[0].Text != "the build failed" {
 		t.Errorf("text = %q, want the body", sink.got[0].Text)
 	}
+	// And what it becomes is a summary, with a summary's bounds: it is going on
+	// one line of the queue, where a newline would turn one item into two and
+	// the second would have no id - and the body's own bound is more than ten
+	// times as long.
+	sink.got = nil
+	if _, derr := notifier(sink).Notify(peer, "app", 0, "", "",
+		strings.Repeat("word\n", 400), nil, nil, -1); derr != nil {
+		t.Fatal(derr)
+	}
+	got := sink.got[0].Text
+	if strings.Contains(got, "\n") {
+		t.Errorf("the summary taken from a body has newlines in it: %q", got)
+	}
+	// No more than a summary's worth. Not exactly it: the bound is applied
+	// while the words are still being joined, so where it lands depends on
+	// where the last word ended.
+	if n := len([]rune(got)); n > summaryMax || n == 0 {
+		t.Errorf("kept %d characters as the summary, want between one and the summary bound of %d", n, summaryMax)
+	}
 }
 
 // An app's notification is the only copy there will ever be of something that
@@ -561,5 +580,52 @@ func TestForgettingOneLeavesTheOthersAddressable(t *testing.T) {
 	}
 	if _, ok := n.server.senderOf(uint64(newer)); !ok {
 		t.Error("the live notification has no sender any more, so its actions cannot be invoked")
+	}
+}
+
+// The body is what somebody comes back to the center to read, so it arrives
+// whole. Bounded at the summary's 300 characters it was cutting an ordinary
+// two-paragraph message in half, while five files said notifications land in
+// history with what was sent.
+func TestNotifyKeepsAWholeBody(t *testing.T) {
+	sink := &fakeSink{}
+	ordinary := strings.Repeat("word ", 300) // 1500 characters, five times the summary bound
+	if _, derr := notifier(sink).Notify(peer, "app", 0, "", "the build failed", ordinary, nil, nil, -1); derr != nil {
+		t.Fatal(derr)
+	}
+	if n := len([]rune(sink.got[0].Body)); n != len([]rune(strings.TrimSpace(ordinary))) {
+		t.Errorf("kept %d characters of a %d character body", n, len([]rune(ordinary)))
+	}
+	// And it is still a bound, because the body is whatever an app felt like
+	// sending and it is what decides how big the history gets.
+	sink.got = nil
+	if _, derr := notifier(sink).Notify(peer, "app", 0, "", "hello", strings.Repeat("я", bodyMax+500), nil, nil, -1); derr != nil {
+		t.Fatal(derr)
+	}
+	if n := len([]rune(sink.got[0].Body)); n != bodyMax {
+		t.Errorf("kept %d characters, want the bound of %d", n, bodyMax)
+	}
+}
+
+// And with its lines. A body is where the paragraph goes, and one flattened
+// into a single line is the shape of the message lost - which is the half the
+// center exists to show.
+func TestNotifyKeepsTheBodysLines(t *testing.T) {
+	sink := &fakeSink{}
+	if _, derr := notifier(sink).Notify(peer, "app", 0, "", "three things",
+		"first\n\n  second  \nthird", nil, nil, -1); derr != nil {
+		t.Fatal(derr)
+	}
+	if got := sink.got[0].Body; got != "first\nsecond\nthird" {
+		t.Errorf("body = %q, want its three lines with the blank space between them collapsed", got)
+	}
+	// The summary is still one line: it goes on one line of the queue, where a
+	// newline would turn one item into two and the second would have no id.
+	sink.got = nil
+	if _, derr := notifier(sink).Notify(peer, "app", 0, "", "two\nlines", "", nil, nil, -1); derr != nil {
+		t.Fatal(derr)
+	}
+	if got := sink.got[0].Text; got != "two lines" {
+		t.Errorf("summary = %q, want it flattened to one line", got)
 	}
 }

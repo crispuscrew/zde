@@ -93,9 +93,10 @@ type Item struct {
 	// From is what sent it, as it described itself. Empty when a person typed
 	// it. Nothing verifies it - see internal/attn.
 	From string `json:"from,omitempty"`
-	// Body is the rest of what was sent, kept but not shown: a notification is
-	// meant to land in history with its full text (docs/vision.md, principle
-	// 3), and the notification center that will show it does not exist yet.
+	// Body is the rest of what was sent, kept but not shown here: `zde queue`
+	// is one line an item, and the rest of the message is the notification
+	// center's to show (internal/attn, Record). Bounded where it arrives, at a
+	// few thousand characters rather than the summary's few hundred.
 	Body string `json:"body,omitempty"`
 	// Urgent is the sender's claim that this should interrupt rather than
 	// wait. It is a claim too, and attn's modes are what will act on it.

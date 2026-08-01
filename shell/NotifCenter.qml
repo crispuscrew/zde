@@ -296,9 +296,11 @@ PanelWindow {
         }
 
         // The body of the row you are on, which is the half a one-line list
-        // cannot show. A notification is meant to land in history with its full
-        // text (docs/vision.md, principle 3), and this is where the rest of it
-        // is.
+        // cannot show: a notification lands in history with what it said and
+        // not with a headline (docs/vision.md, principle 3), and this is where
+        // the rest of it is. On one line here, which is the surface's doing and
+        // not the record's - what was kept has its line breaks, and a paragraph
+        // drawn into a one-line slot would push the hint off the panel.
         Text {
             id: body
 
@@ -311,7 +313,7 @@ PanelWindow {
                 const r = center.rowAt(center.index);
                 if (center.note !== "")
                     return center.note;
-                return r && r.body ? r.body : "";
+                return r && r.body ? r.body.replace(/\s+/g, " ") : "";
             }
             color: center.note !== "" ? "#e5a23d" : "#9aa0ac"
             elide: Text.ElideRight

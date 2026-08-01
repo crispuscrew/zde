@@ -69,6 +69,20 @@ type Action struct {
 // gets the front of it.
 const summaryMax = 300
 
+// bodyMax bounds the rest of the message.
+//
+// Its own bound, and a much larger one, because the body is the part somebody
+// comes back to the notification center to read: at the summary's 300 it was
+// cutting an ordinary two-paragraph message in half, which made "it lands in
+// history with what was sent" a claim the code did not keep.
+//
+// Still bounded, because the body is attacker-controlled and it is what decides
+// how large the history can get. The arithmetic: HistoryMax is 200 records, so
+// 200 x 4000 characters is about 3 MB if every record is at its limit and
+// written in an alphabet that costs four bytes a character - and a few hundred
+// kilobytes in any session made of real notifications.
+const bodyMax = 4000
+
 // Notification is what an app said, narrowed to what the queue keeps.
 type Notification struct {
 	// From is the app's own claim about itself, and nothing checks it: any
@@ -83,9 +97,10 @@ type Notification struct {
 	// Text is one printable line: the summary, or the first line of the body
 	// when there is no summary.
 	Text string
-	// Body is the rest of what was sent, kept because a notification is meant
-	// to land in history with its full text (docs/vision.md, principle 3) and
-	// the notification center that will show it does not exist yet.
+	// Body is the rest of what was sent: its lines as the app wrote them, up to
+	// bodyMax characters. Kept because a notification is meant to land in
+	// history with what it said and not with a headline (docs/vision.md,
+	// principle 3), and the center is what shows it.
 	Body string
 	// Urgent is the spec's urgency 2 (critical). Apps use it for what should
 	// interrupt rather than wait, and focus mode is what reads it (mode.go).
@@ -349,11 +364,12 @@ func (n *notifications) Notify(
 ) (uint32, *dbus.Error) {
 	s := n.server
 	text := oneLine(summary)
-	rest := oneLine(body)
+	rest := bodyText(body)
 	if text == "" {
 		// Some apps put everything in the body. Something is better than an
-		// item that says nothing at all.
-		text, rest = rest, ""
+		// item that says nothing at all - and what becomes the summary is
+		// bounded like one, because it is going on one line of the queue.
+		text, rest = oneLine(body), ""
 	}
 	if text == "" {
 		return 0, dbus.MakeFailedError(errors.New("a notification with neither summary nor body says nothing"))
@@ -516,32 +532,54 @@ func urgency(hints map[string]dbus.Variant) byte {
 // add` does with the same problem - and deliberately. A person typing a
 // reminder can be told to try again; an app's notification is the only copy
 // there will ever be of something that already happened.
+func oneLine(s string) string { return clean(s, summaryMax, false) }
+
+// bodyText is the rest of the message, kept the way it was written: its line
+// breaks survive, because a body is where the paragraph goes and flattening it
+// loses the shape of the thing the center exists to show.
+func bodyText(s string) string { return clean(s, bodyMax, true) }
+
+// clean keeps what can be printed, bounded in characters rather than bytes: a
+// notification written in Cyrillic is not half a notification.
 //
 // What is dropped leaves a space behind it, so a control character between two
 // words does not join them. Zero-width joiners stay: they are invisible and
-// unprintable, and without them a family emoji arrives as three people.
-func oneLine(s string) string {
+// unprintable, and without them a family emoji arrives as three people. With
+// lines, a run of whitespace that had a newline in it becomes one newline, so
+// the paragraphs stay and the blank space between them does not.
+func clean(s string, max int, lines bool) string {
 	var b strings.Builder
 	kept := 0
-	space := false
+	// The separator owed before the next rune that gets written. A newline
+	// outranks a space: whitespace that spanned a line break was a line break.
+	gap := ""
 	for _, r := range s {
 		switch {
+		case lines && r == '\n':
+			if b.Len() > 0 {
+				gap = "\n"
+			}
+			continue
 		case unicode.IsSpace(r):
-			space = b.Len() > 0
+			if b.Len() > 0 && gap == "" {
+				gap = " "
+			}
 			continue
 		case r == '‍' || unicode.IsPrint(r):
 		default:
 			// Something was here. A word boundary is a better guess at what it
 			// meant than joining what sat on either side of it.
-			space = b.Len() > 0
+			if b.Len() > 0 && gap == "" {
+				gap = " "
+			}
 			continue
 		}
-		if space {
-			b.WriteByte(' ')
+		if gap != "" {
+			b.WriteString(gap)
 			kept++
-			space = false
+			gap = ""
 		}
-		if kept >= summaryMax {
+		if kept >= max {
 			break
 		}
 		b.WriteRune(r)

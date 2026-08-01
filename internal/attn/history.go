@@ -11,15 +11,21 @@ import (
 // one chat is a hundred a day and a build bot can send a hundred in a minute, so
 // an unbounded list is a leak in a daemon that is meant to run for weeks. Two
 // hundred is a day or two of ordinary use, which is the span "what did I miss"
-// actually asks about (docs/vision.md, ask A5) - and at the length one record
-// can reach it is about a quarter of a megabyte at worst.
+// actually asks about (docs/vision.md, ask A5) - and with the body bounded at
+// bodyMax it is about 3 MB if every record is at its limit, a few hundred
+// kilobytes in a real session.
 //
 // The queue is the part that outlives a restart, because it is what you still
-// owe. This is what already happened, and it is in memory only: writing every
-// arrival to the journal would fsync a line per notification (internal/journal,
-// recordLocked) for the sake of history that is stale by the next login. So a
-// zded restart forgets what arrived and remembers what is waiting, which is the
-// half worth keeping.
+// owe. This is what already happened, and it is in memory only.
+//
+// Not to save the fsync: every arrival writes a journal line either way, a
+// queued one to record the item and a silenced one to spend its id
+// (internal/journal, ClaimID). What it saves is the size of that line and the
+// growth of the file - the body is thousands of characters and the id is one
+// number, and a journal that carried every body would grow without bound for
+// the sake of history that is stale by the next login. So a zded restart
+// forgets what arrived and remembers what is waiting, which is the half worth
+// keeping.
 const HistoryMax = 200
 
 // Record is one arrival, as the notification center reads it back. It is what
@@ -34,7 +40,11 @@ type Record struct {
 	ID uint64 `json:"id"`
 	// From is the sender's claim about itself, unverified - see Notification.
 	From string `json:"from,omitempty"`
+	// Text is the summary, on one line: it is what the queue and the row show.
 	Text string `json:"text"`
+	// Body is the rest of the message with its line breaks, up to bodyMax
+	// characters. It is the part the center shows under the row you are on, and
+	// the reason a notification is worth keeping rather than counting.
 	Body string `json:"body,omitempty"`
 	// Urgent is the sender's claim that this should interrupt. It is also what
 	// focus mode reads to decide.
