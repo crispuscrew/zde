@@ -190,6 +190,11 @@ type Server struct {
 
 	// The radio, opened on first use and kept (bluetooth.go). openBluetooth is
 	// a field so a test can drive the verbs without a system bus under them.
+	//
+	// Its own lock, held across the dial. Two callers that both dialled would
+	// both register a pairing agent, and the one that survives that race can be
+	// the one BlueZ is not calling (bluetooth.go, radio).
+	bluetoothMu   sync.Mutex
 	bluetooth     Bluetooth
 	openBluetooth func() (Bluetooth, error)
 
@@ -282,8 +287,14 @@ func (s *Server) Serve() error {
 	}
 }
 
-// Close stops listening.
+// Close stops listening, and gives up the radio with it.
+//
+// The radio first, and outside s.mu: it is a bus connection with a pairing
+// agent exported on it, and one left behind is an agent for a session that has
+// ended - bluetoothd would keep calling it and every question would time out
+// into a refusal nobody was asked for.
 func (s *Server) Close() error {
+	s.closeRadio()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.ln == nil {

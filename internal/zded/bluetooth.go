@@ -51,35 +51,67 @@ var bluetoothMethods = map[string]bool{
 // registered: a connection per call would offer an agent and withdraw it again,
 // and a device pairing to this machine in between would reach nobody.
 //
-// Lazily, and not at startup, because of the machine this is off on. A desktop
-// with no radio should not hold a system bus connection open for something it
-// cannot do, and zded must start on a machine with no system bus at all.
+// Lazily, and not at startup, because zded has to start on a machine with no
+// system bus at all, and because a machine that never asks about bluetooth
+// should not have a connection opened for it. What it does cost is a connection
+// with the agent exported on it, from the first question until the daemon stops
+// - which is what Close gives up again.
+//
+// The lock is held across the dial and not only around the field, and that is
+// the point of it. Two callers that each dialled would each get their own bus
+// connection, each export an agent, and each register one: BlueZ keys agents by
+// the sender's unique name together with the path, so two connections are two
+// different agents and the AlreadyExists check never fires. Closing the loser
+// afterwards does not undo it either. If the loser is the one that won
+// RequestDefaultAgent, what survives is an agent that is registered and is not
+// the default, and then a phone pairing to this machine is refused by BlueZ
+// with no question reaching anybody - the incoming path the default agent
+// exists for, failing silently.
+//
+// Its own mutex rather than s.mu, which also covers the listener, the
+// subscribers and the token table: none of those has anything to say to the
+// radio, and a dial held under s.mu would put every event broadcast behind a
+// bus round trip.
 func (s *Server) radio() (Bluetooth, error) {
-	s.mu.Lock()
-	have, open := s.bluetooth, s.openBluetooth
-	s.mu.Unlock()
-	if have != nil {
-		return have, nil
+	s.bluetoothMu.Lock()
+	defer s.bluetoothMu.Unlock()
+	if s.bluetooth != nil {
+		return s.bluetooth, nil
 	}
-	if open == nil {
+	if s.openBluetooth == nil {
 		return nil, errors.New("this zded has no way to reach bluetooth")
 	}
-	r, err := open()
+	r, err := s.openBluetooth()
 	if err != nil {
 		// Not remembered, so that a bus which comes back later works without a
 		// new session.
 		return nil, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.bluetooth != nil {
-		// Two calls raced to open one; keep the first and drop this one, or the
-		// agent would be registered twice and the loser leaked.
-		r.Close()
-		return s.bluetooth, nil
-	}
 	s.bluetooth = r
 	return r, nil
+}
+
+// closeRadio gives up the connection, and the agent exported on it.
+//
+// It runs when the daemon stops answering. An exported pairing agent that
+// outlives the session it belongs to is one nothing can answer through:
+// bluetoothd would go on calling it, and every question would time out into a
+// refusal nobody was asked for.
+//
+// Under the radio's own lock and never inside s.mu, so that this stays what the
+// rest of the daemon is: one lock at a time, and none of them held across
+// somebody else's round trip.
+func (s *Server) closeRadio() {
+	s.bluetoothMu.Lock()
+	defer s.bluetoothMu.Unlock()
+	if s.bluetooth == nil {
+		return
+	}
+	// The error is dropped on purpose. This runs on the way out, the only thing
+	// it can report is that a connection which is going away was already gone,
+	// and Close answers with the listener's error - the one a caller can act on.
+	s.bluetooth.Close()
+	s.bluetooth = nil
 }
 
 // bluetoothCall answers one bluetooth method.

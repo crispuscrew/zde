@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/crispuscrew/zde/internal/bt"
 )
@@ -49,7 +50,7 @@ func (f *fakeRadio) Trust(a string, yes bool) error {
 	return nil
 }
 func (f *fakeRadio) Answer(yes bool) error { f.note(boolCall("answer", yes)); return nil }
-func (f *fakeRadio) Close() error          { return nil }
+func (f *fakeRadio) Close() error          { f.note("close"); return nil }
 
 func boolCall(what string, on bool) string {
 	if on {
@@ -130,6 +131,87 @@ func TestTheRadioIsOpenedOnceAndKept(t *testing.T) {
 	defer r.mu.Unlock()
 	if r.opens != 1 {
 		t.Errorf("the radio was opened %d times, want once", r.opens)
+	}
+}
+
+// Two questions at once dial once between them, and the second waits for the
+// first rather than opening a connection of its own.
+//
+// Break this - release the lock before the dial, which is what it used to do -
+// and both callers dial, both export a pairing agent and both register one.
+// BlueZ keys agents by the sender's unique name with the path, so two
+// connections are two agents and neither registration is refused; whichever one
+// is closed afterwards may be the one that won RequestDefaultAgent, leaving an
+// agent that is registered and is not the default. Nothing here fails visibly
+// after that: pairing from this machine still works, and a phone pairing to it
+// is refused by BlueZ with no question reaching anybody.
+func TestTwoQuestionsAtOnceDialOnce(t *testing.T) {
+	r := &fakeRadio{}
+	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
+	// A dial that announces itself and then waits, which is what a real one is:
+	// a bus connection, an Export and two calls to bluetoothd.
+	dialling := make(chan struct{}, 4)
+	release := make(chan struct{})
+	s.openBluetooth = func() (Bluetooth, error) {
+		r.mu.Lock()
+		r.opens++
+		r.mu.Unlock()
+		dialling <- struct{}{}
+		<-release
+		return r, nil
+	}
+
+	done := make(chan Response, 2)
+	for i := 0; i < 2; i++ {
+		go func() { done <- s.Dispatch(Request{Method: "bluetooth.state"}) }()
+	}
+	<-dialling // one of them is inside the dial
+	// And the other one is not, and will not be: it is waiting on the lock.
+	// Generous, because what is being watched for is a goroutine that has to be
+	// scheduled to fail the test.
+	select {
+	case <-dialling:
+		t.Fatal("both callers dialled, so both registered a pairing agent")
+	case <-time.After(500 * time.Millisecond):
+	}
+	close(release)
+	for i := 0; i < 2; i++ {
+		if resp := <-done; resp.Error != "" {
+			t.Fatal(resp.Error)
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.opens != 1 {
+		t.Errorf("the radio was dialled %d times, want once", r.opens)
+	}
+}
+
+// The session ending gives the radio up. Break this and a bus connection with
+// an exported pairing agent outlives the daemon: bluetoothd goes on calling an
+// object nothing can answer through, and every question times out into a
+// refusal nobody was asked for.
+func TestClosingTheDaemonGivesUpTheRadio(t *testing.T) {
+	r := &fakeRadio{}
+	s := withRadio(r)
+	if resp := s.Dispatch(Request{Method: "bluetooth.state"}); resp.Error != "" {
+		t.Fatal(resp.Error)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !r.did("close") {
+		t.Errorf("the daemon closed and the radio was left open: %v", r.calls)
+	}
+	// And it is forgotten, not merely closed: a later question has to open a
+	// new one rather than talking down a connection that is gone.
+	if resp := s.Dispatch(Request{Method: "bluetooth.state"}); resp.Error != "" {
+		t.Fatal(resp.Error)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.opens != 2 {
+		t.Errorf("opens = %d, want a fresh one after the close", r.opens)
 	}
 }
 
