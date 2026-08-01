@@ -371,3 +371,22 @@ func TestARecordLeavingTheHistoryForgetsItsSender(t *testing.T) {
 		t.Errorf("history holds %d, want the bound", len(seen))
 	}
 }
+
+// An empty mode is a mode to replay, not one to ask for. It reads as work when
+// the journal has never been told, and the same reading was the CLI's check -
+// so `zde attn "$MODE"` with the variable unset turned the notifications back
+// on and printed "work" as though that had been asked for. Every other way to
+// get this wrong is refused, and this is the one where the accident is loud.
+func TestSettingTheEmptyModeIsRefused(t *testing.T) {
+	s, jrn, _ := queueTestServer(t, "vshop.DP-1.code")
+	if err := jrn.SetMode("quiet"); err != nil {
+		t.Fatal(err)
+	}
+	resp := s.Dispatch(Request{Method: "attn.mode", Args: []string{""}})
+	if resp.Error == "" {
+		t.Fatal("an empty mode was accepted")
+	}
+	if got := jrn.State().Mode; got != "quiet" {
+		t.Errorf("the mode is %q: an empty argument changed it", got)
+	}
+}

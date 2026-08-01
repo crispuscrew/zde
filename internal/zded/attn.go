@@ -61,6 +61,16 @@ func (s *Server) mode() attn.Mode {
 // that is now in force - the same answer as reading it, so a keybind and a
 // person get the same line back.
 func (s *Server) setMode(name string) Response {
+	// Empty is a mode to replay, not one to ask for. ParseMode reads it as work
+	// so that a journal which has never been told comes back in the default,
+	// and that same function is what checks what a person typed - so
+	// `zde attn "$MODE"` with MODE unset turned the notifications back on and
+	// said "work" as though it had been asked to. Every other way to get this
+	// wrong is refused; this was the one direction where the accident is
+	// expensive.
+	if name == "" {
+		return Response{Error: "no mode given: it is work, focus or quiet"}
+	}
 	m, err := attn.ParseMode(name)
 	if err != nil {
 		return Response{Error: err.Error()}
