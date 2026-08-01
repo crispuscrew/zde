@@ -176,6 +176,13 @@
             pkgs.go
             pkgs.nixfmt
             pkgs.statix
+            # dbus-daemon, which internal/link's tests start one of: the
+            # NetworkManager conversation is faked on a private bus rather than
+            # at the Go boundary, because the defects it was written for live in
+            # the order of the calls and in what the other end says between them
+            # (internal/link/fakebus_test.go). Without this on PATH those tests
+            # skip, and the skip says so.
+            pkgs.dbus
           ];
         };
       });

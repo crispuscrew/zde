@@ -1,11 +1,17 @@
 package main
 
 import (
+	"bufio"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/crispuscrew/zde/internal/keymap"
 	"github.com/crispuscrew/zde/internal/link"
@@ -198,5 +204,99 @@ func TestPaletteTakesANameWithSpacesInIt(t *testing.T) {
 	// verb gets to here. Anything else means the name was never assembled.
 	if strings.Contains(err.Error(), "unknown command") {
 		t.Errorf("`zde palette window.focus left` got as far as %q", err)
+	}
+}
+
+// openPty is a terminal to type a password into, since that is the only place
+// echo means anything: a pipe echoes nothing whatever the code does, which is
+// why the test above cannot see this and this one exists.
+func openPty(t *testing.T) (master, slave *os.File) {
+	t.Helper()
+	m, err := os.OpenFile("/dev/ptmx", os.O_RDWR, 0)
+	if err != nil {
+		t.Skipf("no pty to test a password prompt on: %v", err)
+	}
+	t.Cleanup(func() { m.Close() })
+	if err := unix.IoctlSetPointerInt(int(m.Fd()), unix.TIOCSPTLCK, 0); err != nil {
+		t.Fatal(err)
+	}
+	n, err := unix.IoctlGetInt(int(m.Fd()), unix.TIOCGPTN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := os.OpenFile(fmt.Sprintf("/dev/pts/%d", n), os.O_RDWR|syscall.O_NOCTTY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	return m, s
+}
+
+func echoing(t *testing.T, f *os.File) bool {
+	t.Helper()
+	term, err := unix.IoctlGetTermios(int(f.Fd()), unix.TCGETS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return term.Lflag&unix.ECHO != 0
+}
+
+// A password typed at a terminal must not be on the terminal: what is on the
+// screen is in the scrollback, in tmux's buffer, and in whatever is recording
+// the session. And the terminal has to be handed back the way it was found -
+// a shell left echoless is one somebody has to know `stty sane` to escape.
+//
+// If this regresses, either every wifi password is typed in the clear in front
+// of whoever is in the room, or the terminal it was typed at stops showing what
+// anybody types into it afterwards.
+func TestThePasswordPromptTurnsEchoOffAndPutsItBack(t *testing.T) {
+	master, slave := openPty(t)
+	if !echoing(t, slave) {
+		t.Fatal("a fresh pty is not echoing, so this test cannot see the difference")
+	}
+
+	oldIn, oldErr := os.Stdin, os.Stderr
+	os.Stdin, os.Stderr = slave, slave
+	defer func() { os.Stdin, os.Stderr = oldIn, oldErr }()
+
+	got, err := "", error(nil)
+	done := make(chan struct{})
+	go func() {
+		got, err = readSecret("password for vshop: ")
+		close(done)
+	}()
+
+	// The prompt arriving is the sync point: it is written before the read, so
+	// once it is on the terminal the terminal is in the state the read set up.
+	seen := make(chan string, 1)
+	go func() {
+		line, _ := bufio.NewReader(master).ReadString(':')
+		seen <- line
+	}()
+	select {
+	case <-seen:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the prompt never appeared on the terminal")
+	}
+	if echoing(t, slave) {
+		t.Error("the terminal is echoing while a password is being typed into it")
+	}
+
+	if _, err := master.WriteString("hunter2\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the prompt never finished reading")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "hunter2" {
+		t.Fatalf("read %q from the terminal", got)
+	}
+	if !echoing(t, slave) {
+		t.Error("the terminal was left echoless after the prompt")
 	}
 }
