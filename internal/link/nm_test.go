@@ -99,8 +99,7 @@ func TestAJoinIsJoinedOnceTheDeviceIsOnThisAttempt(t *testing.T) {
 	// The device moves onto the new activation, past authentication, the way
 	// NetworkManager reports it: IP config, address pending.
 	go func() {
-		waitForCall(f, "AddAndActivateConnection")
-		active := lastActive(f)
+		active := waitForActive(f)
 		f.set(wifiPath, devIface, "ActiveConnection", active)
 		f.set(wifiPath, devIface, "State", uint32(stateIPConfig))
 		f.set(wifiPath, devIface, "StateReason", stateReason{uint32(stateIPConfig), 0})
@@ -127,9 +126,8 @@ func TestAProfileIsNotLeftBehindByAJoinTheAccessPointRefused(t *testing.T) {
 	// The verdict arrives after the call has given up waiting: the supplicant
 	// tried, and NetworkManager put the device in FAILED with NO_SECRETS.
 	go func() {
-		waitForCall(f, "AddAndActivateConnection")
+		active := waitForActive(f)
 		time.Sleep(50 * time.Millisecond)
-		active := lastActive(f)
 		f.set(active, actIface, "State", uint32(activeDeactivated))
 		f.set(wifiPath, devIface, "StateReason", stateReason{uint32(stateFailed), 7})
 		f.set(wifiPath, devIface, "State", uint32(stateFailed))
@@ -411,6 +409,23 @@ func waitForCall(f *nmFake, member string) {
 	for {
 		if f.askedAny(member) {
 			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// waitForActive blocks until the fake has handed an activation back, and
+// answers with it.
+//
+// Waiting for the call to be recorded is not enough, and the race detector
+// found that by losing the gap: the call is written down as it arrives and the
+// object it creates exists a moment later, so a test that read the newest
+// activation then could read none at all and set a device's ActiveConnection to
+// an empty path.
+func waitForActive(f *nmFake) dbus.ObjectPath {
+	for {
+		if p := lastActive(f); p != "" {
+			return p
 		}
 		time.Sleep(time.Millisecond)
 	}
