@@ -189,10 +189,14 @@ var registry = map[string]Entry{
 
 	// system: raw tools until zde grows its own (brightnessctl now; layout
 	// switch is a niri native). The rest routes through zde.
-	"system.lock":        {Group: "system", Desc: "lock the screen", Spawn: []string{"zde", "system", "lock"}},
-	"system.quiet":       {Group: "system", Desc: "toggle quiet (do not disturb)", Spawn: []string{"zde", "system", "quiet"}},
-	"system.power":       {Group: "system", Desc: "the power menu", Spawn: []string{"zde", "system", "power"}},
-	"system.connections": {Group: "system", Desc: "connections: bluetooth, wifi, ethernet", Spawn: []string{"zde", "system", "connections"}},
+	"system.lock":  {Group: "system", Desc: "lock the screen", Spawn: []string{"zde", "system", "lock"}},
+	"system.quiet": {Group: "system", Desc: "toggle quiet (do not disturb)", Spawn: []string{"zde", "system", "quiet"}},
+	"system.power": {Group: "system", Desc: "the power menu", Spawn: []string{"zde", "system", "power"}},
+	// connections: the wifi networks and the link you are on. The description
+	// promised bluetooth too, and a cheatsheet line is a promise a person reads
+	// before pressing the key - pairing is a conversation of its own with its
+	// own daemon, and it is not on this key yet.
+	"system.connections": {Group: "system", Desc: "the wifi networks, and the link you are on (no bluetooth yet)", Spawn: []string{"zde", "system", "connections"}},
 	"system.calendar":    {Group: "system", Desc: "the calendar and clock widget", Spawn: []string{"zde", "system", "calendar"}},
 	"system.wallpapers":  {Group: "system", Desc: "the wallpapers widget", Spawn: []string{"zde", "system", "wallpapers"}},
 	// help is a terminal on the keymap, not a widget: `zde help` printed usage

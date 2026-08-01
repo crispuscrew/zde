@@ -30,6 +30,7 @@ import (
 	"github.com/crispuscrew/zde/internal/attn"
 	"github.com/crispuscrew/zde/internal/desk"
 	"github.com/crispuscrew/zde/internal/journal"
+	"github.com/crispuscrew/zde/internal/link"
 	"github.com/crispuscrew/zde/internal/manifest"
 	"github.com/crispuscrew/zde/internal/zinc"
 )
@@ -179,6 +180,13 @@ type Server struct {
 	// in memory rather than in the journal: see attn.HistoryMax.
 	history attn.History
 
+	// The network side (net.go). openLink is a field for the same reason launch
+	// is: the tests need a manager without a system bus under them, and the
+	// machine this runs on may have no NetworkManager at all.
+	linkMu   sync.Mutex
+	link     link.Manager
+	openLink func() (link.Manager, error)
+
 	mu       sync.Mutex
 	ln       net.Listener
 	problems []string
@@ -191,7 +199,14 @@ func New(version string, jrn *journal.Journal, compositor Compositor, desks Desk
 	if desks == nil {
 		desks = noDesks{}
 	}
-	return &Server{version: version, jrn: jrn, niri: compositor, desks: desks, launch: zinc.Run}
+	return &Server{
+		version:  version,
+		jrn:      jrn,
+		niri:     compositor,
+		desks:    desks,
+		launch:   zinc.Run,
+		openLink: link.Open,
+	}
 }
 
 // DefaultSocket is where the socket lives: the runtime directory, which the
@@ -374,6 +389,38 @@ func (s *Server) Dispatch(req Request) Response {
 		default:
 			return Response{Error: "window.jump-to takes one window id, or none to open the picker"}
 		}
+	case "net.connections":
+		// The surface, and the list for whoever has no surface. One verb for
+		// both, the way desk.switcher is one verb for both.
+		if len(req.Args) != 0 {
+			return Response{Error: "net.connections takes no arguments"}
+		}
+		return s.connections()
+	case "net.status":
+		if len(req.Args) != 0 {
+			return Response{Error: "net.status takes no arguments"}
+		}
+		return s.netStatus()
+	case "net.list":
+		if len(req.Args) != 0 {
+			return Response{Error: "net.list takes no arguments"}
+		}
+		return s.netList()
+	case "net.connect":
+		// One argument for a network that needs no password from anybody - an
+		// open one, or one NetworkManager has a profile for - and two when the
+		// password is being given. Never three: there is nothing else to say
+		// about joining a network, and an argument nobody reads is a place for
+		// a secret to end up.
+		if len(req.Args) != 1 && len(req.Args) != 2 {
+			return Response{Error: "net.connect takes a network name, and a password when it needs one"}
+		}
+		return s.netConnect(req.Args)
+	case "net.disconnect":
+		if len(req.Args) != 0 {
+			return Response{Error: "net.disconnect takes no arguments"}
+		}
+		return s.netDisconnect()
 	case "desk.list":
 		m, err := s.niri.DeskMap()
 		if err != nil {
