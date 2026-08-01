@@ -2,16 +2,22 @@ package zded
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/crispuscrew/zde/internal/journal"
 )
@@ -29,8 +35,8 @@ const fakeTierMark = "zde-fake-tier"
 // and not a coin toss.
 const fakeTierGap = 400 * time.Millisecond
 
-func fakeTier(mode string) []string {
-	return []string{os.Args[0], "-test.run=^TestFakeTier$", "--", fakeTierMark, mode}
+func fakeTier(mode string, extra ...string) []string {
+	return append([]string{os.Args[0], "-test.run=^TestFakeTier$", "--", fakeTierMark, mode}, extra...)
 }
 
 // TestFakeTier is a tier when it is run as one, and nothing at all in an
@@ -60,9 +66,43 @@ func TestFakeTier(t *testing.T) {
 	case "angry":
 		fmt.Fprintln(os.Stderr, "no credentials in this container")
 		code = 1
+	case "cyrillic":
+		// Past the read buffer, in characters that do not fit in one byte: the
+		// carry that holds back half a character is invisible below 4096 bytes.
+		fmt.Fprint(os.Stdout, strings.Repeat(cyrillicWord, cyrillicTimes))
+	case "loop":
+		// A tier that has stopped answering and started repeating itself, which
+		// is the shape the cap exists for. Unbounded on purpose.
+		for {
+			if _, err := fmt.Fprint(os.Stdout, strings.Repeat("x", 4096)); err != nil {
+				break
+			}
+		}
+	case "fork":
+		// A tier that leaves a child holding its stdout and exits, which is what
+		// a shell script and a runner both do. The child says where it is, so a
+		// test can ask afterwards whether it was left running.
+		grand := exec.Command(os.Args[0], "-test.run=^TestFakeTier$", "--", fakeTierMark, "linger", args[2])
+		grand.Stdout = os.Stdout
+		if err := grand.Start(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			code = 1
+			break
+		}
+		fmt.Fprint(os.Stdout, "answered and forked")
+	case "linger":
+		os.WriteFile(args[2], []byte(strconv.Itoa(os.Getpid())), 0o600)
+		time.Sleep(30 * time.Second)
 	}
 	os.Exit(code)
 }
+
+// A word that is two bytes per character, and enough of them to cross the read
+// buffer several times.
+const (
+	cyrillicWord  = "привет "
+	cyrillicTimes = 3000
+)
 
 // writeTiers puts a tier file where zded reads one, in a config directory of
 // this test's own.
@@ -218,6 +258,182 @@ func TestATierThatSaysNothingIsAFailure(t *testing.T) {
 	}
 }
 
+// A tier that leaves a child holding its stdout must not hold the run open.
+// This is the ordinary shape of the two things the option is for - a runner and
+// a script - and it used to park the answer in a read that nothing would end:
+// past the timeout, because the timeout is enforced by a Wait that came after
+// the read, for the life of the session, with the tier still running.
+func TestATierThatForksDoesNotWedgeTheRun(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "grandchild")
+	writeTiers(t, map[string][]string{TierProvider: fakeTier("fork", pidFile)})
+	path := askServer(t)
+
+	start := time.Now()
+	text, failure := askAll(t, path, TierProvider, "answer and fork")
+	took := time.Since(start)
+	if failure != "" {
+		t.Fatalf("the ask failed: %s", failure)
+	}
+	if text != "answered and forked" {
+		t.Errorf("the tier answered %q", text)
+	}
+	// Generously below the two minute timeout, and far above the drain: what is
+	// being pinned is that the run ends with the tier rather than with whatever
+	// the tier left holding the pipe.
+	if took > 15*time.Second {
+		t.Errorf("the run took %v for a tier that answered and exited at once", took)
+	}
+
+	// And what it forked is not still running. A run that is over should not
+	// still be producing anything, and the child is in the tier's process group
+	// precisely so that it can be stopped with it.
+	raw, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatalf("the forked child never said where it was: %v", err)
+	}
+	pid, err := strconv.Atoi(string(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone := func() bool { return syscall.Kill(pid, 0) != nil }
+	for i := 0; i < 200 && !gone(); i++ {
+		// Signals are not instant, and this is the only thing in the test that
+		// happens after the answer rather than before it.
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !gone() {
+		syscall.Kill(pid, syscall.SIGKILL)
+		t.Errorf("the tier forked a child and the run left it running")
+	}
+}
+
+// An answer with no end to it is stopped, and said to have been. zded streams
+// and forgets, so the reason is the window: it holds the whole answer in one
+// text item on the thread that draws the bar.
+func TestAnEndlessAnswerIsCappedAndSaysSo(t *testing.T) {
+	writeTiers(t, map[string][]string{TierProvider: fakeTier("loop")})
+	text, failure := askAll(t, askServer(t), TierProvider, "go on for ever")
+	if len(text) > askMax+64<<10 {
+		t.Errorf("the answer ran to %d bytes with a cap of %d", len(text), askMax)
+	}
+	if len(text) < askMax {
+		t.Errorf("the answer stopped at %d bytes, short of the cap of %d", len(text), askMax)
+	}
+	if !strings.Contains(failure, "was stopped") {
+		t.Errorf("the answer was capped and the client was told %q", failure)
+	}
+}
+
+// A tier that cannot start names the tier, what it tried to run and the option
+// to fix. The path form is the one that matters: nix writes an absolute store
+// path into that option, and exec only consults PATH for a bare name - so the
+// friendly message used to be on the one path a zde machine never takes.
+func TestATierThatCannotStartNamesTheOption(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "no-such-tier")
+	writeTiers(t, map[string][]string{TierProvider: {missing}})
+	_, failure := askAll(t, askServer(t), TierProvider, "anything")
+	for _, want := range []string{missing, "zde.ask.tiers.provider", "no such file"} {
+		if !strings.Contains(failure, want) {
+			t.Errorf("a tier that cannot start reported %q, which does not mention %q", failure, want)
+		}
+	}
+}
+
+// One answer at a time down one connection. An ask.text line carries no id, so
+// two answers on one connection would be indistinguishable and the first end
+// would end both.
+func TestASecondAskOnOneConnectionIsRefused(t *testing.T) {
+	writeTiers(t, map[string][]string{TierProvider: fakeTier("slow")})
+	c, err := DialPath(askServer(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.Call(MethodAskRun, nil, TierProvider, "the first question"); err != nil {
+		t.Fatalf("the first ask: %v", err)
+	}
+	err = c.Call(MethodAskRun, nil, TierProvider, "the second question")
+	if err == nil {
+		t.Fatal("a second answer was started on a connection that was already carrying one")
+	}
+	if !strings.Contains(err.Error(), "still answering") {
+		t.Errorf("the refusal is %q, and does not say why", err)
+	}
+}
+
+// A connection that is written to and can say whether it was closed. Half of
+// what it stands in for is a client that has stopped reading; the other half is
+// a write that stops partway, which a deadline tripping mid-line produces on a
+// real socket.
+type brokenConn struct {
+	mu     sync.Mutex
+	short  bool
+	closed bool
+	wrote  int
+}
+
+func (b *brokenConn) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.short {
+		// Half a line and no error at all, which is what a socket does when its
+		// buffer fills and the deadline trips in the middle of the write.
+		b.wrote += len(p) / 2
+		return len(p) / 2, nil
+	}
+	return 0, errClosed
+}
+
+func (b *brokenConn) Close() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.closed = true
+	return nil
+}
+
+func (b *brokenConn) shut() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.closed
+}
+
+// A client that cannot be written to has to be closed rather than written at
+// again. Two reasons, and the second is the one that was wrong: a client that
+// has stopped reading needs an EOF to act on, because the answer it is waiting
+// for has stopped coming and the end of it will fail the same way. And a write
+// that stopped halfway through a line leaves a connection whose next bytes read
+// as the tail of a message nobody can parse.
+func TestASinkThatCannotTakeAWholeLineIsClosed(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		conn *brokenConn
+	}{
+		{"a write that fails", &brokenConn{}},
+		{"a write that stops halfway", &brokenConn{short: true}},
+	} {
+		k := &sink{w: c.conn}
+		if err := k.sendWithin(Event{Kind: EventAskText, Text: "half an answer"}, time.Second); err == nil {
+			t.Errorf("%s: sendWithin said the line went out", c.name)
+		}
+		if !c.conn.shut() {
+			t.Errorf("%s: the connection was left open for the next line", c.name)
+		}
+	}
+}
+
+// And the short write is reported as one rather than as success. Without the
+// count, a tripped deadline mid-line is a write that "worked" and a stream that
+// carries on into a connection carrying half a message.
+func TestAShortWriteIsAFailure(t *testing.T) {
+	conn := &brokenConn{short: true}
+	k := &sink{w: conn}
+	err := k.sendWithin(Event{Kind: EventAskText, Text: "half an answer"}, time.Second)
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Errorf("a half-written line came back as %v", err)
+	}
+}
+
 // A tier that fails says why in its own words. Without them a surface can
 // report an exit status, which tells nobody whether the container has no
 // credentials or the model name is wrong.
@@ -226,6 +442,90 @@ func TestAFailedTierReportsWhatItComplainedAbout(t *testing.T) {
 	_, failure := askAll(t, askServer(t), TierProvider, "anything")
 	if !strings.Contains(failure, "no credentials in this container") {
 		t.Errorf("the tier failed with %q, and its own words are not in it", failure)
+	}
+}
+
+// The answer goes to the connection that asked and to nobody else. This is the
+// security claim the component is built on - a question asked on the local tier
+// because it is nobody else's business must not arrive at every surface that
+// happens to be subscribed - and it is one line away from not being true, since
+// zded has a broadcast that reaches every listener.
+func TestAnAnswerGoesOnlyToTheConnectionThatAsked(t *testing.T) {
+	writeTiers(t, map[string][]string{TierProvider: fakeTier("echo")})
+	path := askServer(t)
+
+	// A shell: subscribed to everything zded pushes, which is how the picker
+	// arrives, and asking nothing itself.
+	watcher, err := DialPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Close()
+	var ack string
+	if err := watcher.Call(MethodEvents, &ack); err != nil {
+		t.Fatalf("subscribing: %v", err)
+	}
+
+	text, failure := askAll(t, path, TierProvider, "the sort of question nobody wants repeated")
+	if failure != "" {
+		t.Fatalf("the ask failed: %s", failure)
+	}
+	if !strings.Contains(text, "nobody wants repeated") {
+		t.Fatalf("the tier did not answer: %q", text)
+	}
+
+	// With a deadline rather than none: the answer is already over, so anything
+	// broadcast would be sitting on this connection waiting to be read.
+	if ev, err := watcher.NextEventBefore(time.Now().Add(250 * time.Millisecond)); err == nil {
+		t.Errorf("a subscriber that asked nothing was sent a %q event carrying %q", ev.Kind, ev.Text)
+	}
+}
+
+// The carry that holds back a character a read cut in half. Below the read
+// buffer nothing exercises it, so this is the arithmetic on its own: what is
+// held is only ever the start of a character that is not all here.
+func TestPartialRuneHoldsBackTheEndOfACharacter(t *testing.T) {
+	two := []byte("да")  // two bytes per character
+	three := []byte("日") // three
+	four := []byte("🙂")  // four
+	for _, c := range []struct {
+		name string
+		in   []byte
+		want int
+	}{
+		{"nothing at all", nil, 0},
+		{"plain ascii", []byte("hello"), 0},
+		{"whole characters", two, 0},
+		{"one byte of two", two[:len(two)-1], 1},
+		{"two bytes of three", three[:2], 2},
+		{"one byte of three", three[:1], 1},
+		{"three bytes of four", four[:3], 3},
+		// A byte that starts no character at all waits too, and is flushed when
+		// the answer ends: dropping it would be zde editing what a tier said.
+		{"a byte that is not a character", []byte{'a', 0xff}, 1},
+	} {
+		if got := partialRune(c.in); got != c.want {
+			t.Errorf("%s: held %d bytes back, want %d", c.name, got, c.want)
+		}
+	}
+}
+
+// And the same thing through a whole run: an answer in characters that do not
+// fit in one byte, longer than the read buffer, arrives as it was written. A
+// question asked in Russian is answered in Russian, and a replacement mark
+// every four thousand bytes is what this looked like before the carry.
+func TestAMultibyteAnswerSurvivesTheReadBuffer(t *testing.T) {
+	writeTiers(t, map[string][]string{TierProvider: fakeTier("cyrillic")})
+	text, failure := askAll(t, askServer(t), TierProvider, "say it in russian")
+	if failure != "" {
+		t.Fatalf("the ask failed: %s", failure)
+	}
+	if want := strings.Repeat(cyrillicWord, cyrillicTimes); text != want {
+		t.Errorf("the answer came back %d bytes and %d characters, want %d and %d",
+			len(text), utf8.RuneCountInString(text), len(want), utf8.RuneCountInString(want))
+	}
+	if strings.ContainsRune(text, utf8.RuneError) {
+		t.Errorf("the answer carries %d replacement marks", strings.Count(text, string(utf8.RuneError)))
 	}
 }
 
@@ -293,7 +593,18 @@ func TestAskWritesNothingToDisk(t *testing.T) {
 	}
 	defer jrn.Close()
 	s := New("test", jrn, &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code"}, nil)
+	// Before the temporary directory is moved, so that the socket is not one of
+	// the things being watched: what is being watched is what an answer writes.
 	path := serve(t, s)
+	// And the temporary directory too, which is where anything writing a
+	// scratch file goes without being told - and where the question turned up
+	// when this test only watched the home directory.
+	tmp := filepath.Join(home, "tmp")
+	if err := os.MkdirAll(tmp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", tmp)
+	t.Setenv("XDG_RUNTIME_DIR", tmp)
 
 	before := tree(t, home)
 	text, failure := askAll(t, path, TierProvider, "the sort of question nobody wants written down")
@@ -318,7 +629,10 @@ func tree(t *testing.T, root string) map[string]string {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() {
+		// Directories and anything that is not a file to read: a socket bound
+		// under here is not something that was written, and reading one is not
+		// something that answers.
+		if !d.Type().IsRegular() {
 			return nil
 		}
 		data, err := os.ReadFile(path)
