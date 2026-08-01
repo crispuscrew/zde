@@ -16,16 +16,39 @@ import (
 // blind while the scan that demands it did not, and the test failed on a tree
 // where nothing was wrong.
 var (
-	// Both ways the QML writes a method: as JSON text, {"method":"queue.list"},
-	// and as a QML object passed to JSON.stringify, where the key is bare. The
+	// Both ways the QML writes a request: as JSON text, {"method":"queue.list"},
+	// and as an object literal handed to root.send, where the key is bare and
+	// the newline after the brace is where gofmt's QML cousin puts it. The
 	// second form is how the picker sends desk.switch, and requiring the quotes
 	// meant this could not see the one method it was most likely to miss.
 	// Deliberately not a JSON parse: these are string literals and object
 	// literals in a QML file, and the point is to find the names wherever they
 	// are written.
-	methodInQML = regexp.MustCompile(`"?method"?\s*:\s*"([a-zA-Z0-9.-]+)"`)
-	// How the QML asks which event it is: msg.event.kind === "picker".
-	kindInQML = regexp.MustCompile(`\.kind\s*===\s*"([a-zA-Z0-9.-]+)"`)
+	//
+	// Anchored on the brace, so what is read is the first key of an object and
+	// not any property in the file that happens to be called method. That is
+	// the same mistake the kind pattern below made, found by looking for it
+	// rather than by a merge finding it: a shell that grows an httpMethod or a
+	// paymentMethod would otherwise have had this test demanding that zded
+	// implement "GET". The cost is a request whose method is not written first,
+	// which nothing here does and which would fail silently.
+	methodInQML = regexp.MustCompile(`\{\s*"?method"?\s*:\s*"([a-zA-Z0-9.-]+)"`)
+	// How the QML asks which event it is: msg.event.kind === "picker", and
+	// msg.event.kind !== "ask.text" for a shell that reads one by ruling it
+	// out. Both halves of this pattern are load-bearing and only work together.
+	//
+	// The anchor, because "kind" is an ordinary word: the network widget holds
+	// a link status in netState.kind, and an unanchored pattern read "wifi" as
+	// an event and demanded zded send it. Deriving the kinds from the Go
+	// constants cannot help with that - wifi will never be an Event constant.
+	//
+	// The operators, because a kind read as !== is a kind the shell draws, and
+	// matching only === reported it as one nothing draws. Widening the
+	// operators without the anchor is strictly worse than either: it starts
+	// reading netState.kind !== "absent" too. The loose forms are here because
+	// they cost nothing behind the anchor, and their absence would be the same
+	// false alarm one style choice later.
+	kindInQML = regexp.MustCompile(`\bevent\.kind\s*(?:===|!==|==|!=)\s*"([a-zA-Z0-9.-]+)"`)
 	// How zded declares one. The convention is the contract: a kind zded can
 	// broadcast is a constant named Event<Something> in this package, whether it
 	// stands alone or sits in a const block. One declared under another name is
@@ -175,4 +198,76 @@ func readShell(t *testing.T) []byte {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return src
+}
+
+// "kind" is an ordinary word, and only one of them is an event kind. The
+// network widget holds a link status in netState.kind, so a pattern that reads
+// any .kind comparison demands that zded start sending "wifi" - a test failing
+// on a tree where nothing is wrong, which is the failure this whole file exists
+// to avoid causing.
+func TestTheKindScannerReadsOnlyEventKinds(t *testing.T) {
+	drawn := kindsIn(kindInQML, []byte(`
+        if (msg.event.kind === "picker")
+            root.openPicker(msg.event);
+        text: netState.kind === "wifi" ? "wifi" : "wired"
+        visible: root.linkKind !== "absent"
+`))
+	if !drawn["picker"] {
+		t.Errorf("the event kind was not found: %v", drawn)
+	}
+	for _, notAnEvent := range []string{"wifi", "wired", "absent"} {
+		if drawn[notAnEvent] {
+			t.Errorf("%q is a property called kind and this read it as an event zded must send: %v", notAnEvent, drawn)
+		}
+	}
+}
+
+// A kind the shell reads by ruling it out is a kind the shell reads. The ask
+// panel does exactly that, and matching only === reported a kind it draws as
+// one nothing draws - the same false alarm from the other direction.
+func TestTheKindScannerSeesBothWaysOfAsking(t *testing.T) {
+	for _, line := range []string{
+		`if (msg.event.kind === "ask.text") root.openAsk(msg.event);`,
+		`if (msg.event.kind !== "ask.text") return;`,
+		`if (msg.event.kind == "ask.text") root.openAsk(msg.event);`,
+		`if (msg.event.kind != "ask.text") return;`,
+	} {
+		if drawn := kindsIn(kindInQML, []byte(line)); !drawn["ask.text"] {
+			t.Errorf("a kind the shell reads was invisible: %s", line)
+		}
+	}
+}
+
+// The same audit on the other pattern, before a merge does it. A request is an
+// object whose first key is the method; a property somewhere else in the file
+// that is also called method is not one, and reading it would leave this test
+// asking the dispatcher for whatever string it found.
+func TestTheMethodScannerReadsOnlyRequests(t *testing.T) {
+	found := kindsIn(methodInQML, []byte(`
+        stream.write('{"method":"queue.list"}\n');
+        root.send({
+            method: "attn.invoke",
+            args: [which, key]
+        });
+        readonly property string method: "GET"
+        function fetchIt() {
+            return http.send({
+                url: "/v1/ask",
+                method: "POST"
+            });
+        }
+`))
+	for _, want := range []string{"queue.list", "attn.invoke"} {
+		if !found[want] {
+			t.Errorf("the request for %q was not found: %v", want, found)
+		}
+	}
+	// A property that is called method, and a method key that is not the first
+	// of its object: neither is a request to zded, and reading either would
+	// leave this test asking the dispatcher to implement "POST".
+	for _, notARequest := range []string{"GET", "POST"} {
+		if found[notARequest] {
+			t.Errorf("%q is not a request and this read it as one: %v", notARequest, found)
+		}
+	}
 }
