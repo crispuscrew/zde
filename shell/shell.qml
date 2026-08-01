@@ -85,7 +85,12 @@ ShellRoot {
         // moving": a stream that is open and paused starts pulling again
         // without asking anybody, so what earns a red word on the strip is that
         // something has it - the mic holders principle 4 names.
-        readonly property bool live: micLinks.linkGroups.length > 0
+        //
+        // Gated on `have` like the others, because this is the one the strip
+        // reads directly: ungated it could put a red "mic live" on the bar in a
+        // state where mic() answers "unknown" or "none", and the word and the
+        // reading must not be able to disagree about whether a room is heard.
+        readonly property bool live: micState.have && micLinks.linkGroups.length > 0
     }
 
     // PipeWire sends a node's name and little else until somebody asks for the
