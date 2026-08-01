@@ -344,6 +344,13 @@ func runDoctor() error {
 // reaches with a key of its own, and from here they are how a private question
 // or a hard one gets asked without a shell at all.
 func ask(kind, question string) error {
+	if question == "" {
+		typed, err := questionOnStdin()
+		if err != nil {
+			return err
+		}
+		question = typed
+	}
 	c, err := zded.Dial()
 	if err != nil {
 		return err
@@ -357,12 +364,48 @@ func ask(kind, question string) error {
 		return askRun(c, zded.TierProvider, question)
 	case zded.TierLocal, zded.TierEscalate:
 		if question == "" {
-			return fmt.Errorf("zde ask %s takes the question: say what to ask", kind)
+			return fmt.Errorf("zde ask %s takes the question, in an argument or on stdin: say what to ask", kind)
 		}
 		return askRun(c, kind, question)
 	}
 	return fmt.Errorf("zde ask takes oneshot, panel, local or escalate, not %q", kind)
 }
+
+// questionOnStdin is the question when it was piped in rather than written as
+// an argument, and empty when there is nothing there to read.
+//
+// It exists because of where a question ends up. The tier is handed it on
+// stdin, zded never puts it in an argument, and the one place it does reach a
+// command line is this process's own - where `ps` shows it to anybody on the
+// machine for as long as the answer takes. That is the wrong property for the
+// tier this CLI calls private, so `zde ask local < note` and
+// `something | zde ask local` are how a question stays between the two
+// processes that need it.
+//
+// A character device is a terminal or /dev/null, and both mean there is nothing
+// waiting: reading the first would hang on a key nobody is going to press, and
+// the second is what stdin is for the process a keybind spawns.
+func questionOnStdin() (string, error) {
+	info, err := os.Stdin.Stat()
+	if err != nil || info.Mode()&os.ModeCharDevice != 0 {
+		return "", nil
+	}
+	raw, err := io.ReadAll(io.LimitReader(os.Stdin, questionMax+1))
+	if err != nil {
+		return "", err
+	}
+	if len(raw) > questionMax {
+		// Bounded, because this becomes one line of JSON to the daemon that
+		// answers every keypress. Something bigger is a job for a program with
+		// tools and files, which ask deliberately is not (docs/vision.md).
+		return "", fmt.Errorf("that is more than %d KiB, which is a document rather than a question", questionMax>>10)
+	}
+	return strings.TrimSpace(string(raw)), nil
+}
+
+// questionMax is generous for a question with something pasted into it, and far
+// below anything that would make a daemon read a file it did not want.
+const questionMax = 64 << 10
 
 // askSurface asks the shell to open one. Nothing to print when no shell
 // answers: the switcher can fall back to its list, and a question nobody has
@@ -395,7 +438,12 @@ func askRun(c *zded.Client, tier, question string) error {
 	for {
 		ev, err := c.NextEvent()
 		if err != nil {
-			return err
+			// The connection went, which is how a stopped answer arrives here:
+			// zded closes a connection it cannot write a whole line to rather
+			// than leaving the reader waiting for an end that also failed to
+			// send. Said as what happened, since "waiting for an event" is not
+			// what somebody watching an answer appear thinks they are doing.
+			return fmt.Errorf("the answer stopped coming: %w", err)
 		}
 		if ev.Kind != zded.EventAskText {
 			continue
@@ -1193,7 +1241,11 @@ func usage() {
                          the tier kept for a question the first two got wrong.
                          Every tier is a command this machine was configured
                          with (zde.ask.tiers), and an unset one is unset:
-                         nothing here talks to anybody's API
+                         nothing here talks to anybody's API.
+                         A question written as an argument is visible in ps for
+                         as long as the answer takes, so all four of these read
+                         it from stdin when it is piped in instead:
+                         zde ask local < the-question
   zde keys               the whole keymap, one key per line (Mod+slash opens
                          this in a terminal)
   zde desk switch NAME   bring a desk up on every monitor it owns, and start

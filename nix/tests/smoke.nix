@@ -626,6 +626,13 @@ let
         grep -qx 'answered: what is the capital of peru' /tmp/ask.txt || {
           echo "the ask tier did not answer through zded:"; cat /tmp/ask.txt; exit 1
         }
+        # And piped in rather than written as an argument, which is how a
+        # question stays out of `ps` while it is being answered - the form the
+        # tier called private is meant to be asked with.
+        printf 'what is the capital of peru' | zde ask oneshot 2>&1 | tee /tmp/ask-stdin.txt
+        grep -qx 'answered: what is the capital of peru' /tmp/ask-stdin.txt || {
+          echo "a question piped in was not asked:"; cat /tmp/ask-stdin.txt; exit 1
+        }
         # And a tier nobody configured fails closed, saying which option would
         # configure it. An ask that quietly did nothing is the failure this
         # whole component is arranged against.

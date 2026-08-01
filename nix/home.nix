@@ -159,6 +159,15 @@ in
 
         No history is kept anywhere, by zded or by the window: the answer is on
         the screen until the window closes, and nothing writes it down.
+
+        A run is over when the tier exits, and what the tier started is stopped
+        with it: the command runs in its own process group, and the group is
+        killed when the answer ends, when it runs out of time, or when there is
+        nobody left to read it. A tier is therefore a program that answers a
+        question and not a place to start a service from - one left running in
+        the background here goes when the answer does. One answer is capped at
+        256 KiB, because the window holds all of it on the thread that draws the
+        bar.
       '';
     };
 
