@@ -348,9 +348,10 @@ type notifications struct{ server *Server }
 
 // Notify is the spec's one method that matters. The arguments are its order,
 // not ours: icon and timeout are accepted and dropped, because a queue has
-// nowhere to put them. Of the actions, only whether there is a default one is
-// kept - that is the single action a list of rows can offer (see Invoke), and
-// the labels belong to buttons nothing draws yet.
+// nowhere to put them. The actions are kept with their labels, in the order the
+// sender declared them and bounded by actionsMax, because the center offers
+// every one of them and the capability list says so (see takeActions, Invoke,
+// GetCapabilities).
 func (n *notifications) Notify(
 	sender dbus.Sender,
 	app string,
