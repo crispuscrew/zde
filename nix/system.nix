@@ -20,6 +20,12 @@ in
   options.zde = {
     enable = lib.mkEnableOption "the zde system layer";
     laptop.enable = lib.mkEnableOption "laptop hardware support (battery, radios, brightness)";
+    # Its own switch, and off by default, because a radio is not free. A desktop
+    # that gains a listening radio nobody asked for is an attack surface nobody
+    # asked for - and `zde system bluetooth` says "adapter none" on a machine
+    # without one rather than failing, so leaving it off costs nothing but the
+    # feature. The laptop profile turns it on as part of what a laptop is.
+    bluetooth.enable = lib.mkEnableOption "the bluetooth radio (zde system bluetooth)";
   };
 
   config = lib.mkMerge [
@@ -102,13 +108,26 @@ in
       services.upower.enable = true;
       services.power-profiles-daemon.enable = true;
 
-      # The radios; nmtui/bluetuith and friends come with the user env.
+      # The network radio; nmtui and friends come with the user env. The
+      # bluetooth one has its own block below, because a desktop can want that
+      # without wanting NetworkManager.
       networking.networkmanager.enable = true;
-      hardware.bluetooth.enable = true;
 
       # Brightness and lid need nothing extra: brightnessctl goes through
       # logind, and logind's default lid-switch action (suspend) is what we
       # want.
+    })
+
+    # The bluetooth radio. Its own block rather than a line inside the laptop
+    # one, so a desktop can ask for it without taking a power daemon and
+    # NetworkManager with it - and so a laptop keeps behaving exactly as it did,
+    # since the laptop profile is one of the two ways to be here.
+    #
+    # bluetoothd is all this needs: zded speaks to it on the system bus and is
+    # the session's pairing agent itself (internal/bt), so there is no applet,
+    # no tray and no second daemon to install.
+    (lib.mkIf (cfg.enable && (cfg.laptop.enable || cfg.bluetooth.enable)) {
+      hardware.bluetooth.enable = true;
     })
   ];
 }

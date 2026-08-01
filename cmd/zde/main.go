@@ -11,13 +11,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 
 	"github.com/crispuscrew/zde/internal/apps"
 	"github.com/crispuscrew/zde/internal/attn"
+	"github.com/crispuscrew/zde/internal/bt"
 	"github.com/crispuscrew/zde/internal/doctor"
 	"github.com/crispuscrew/zde/internal/journal"
 	"github.com/crispuscrew/zde/internal/link"
@@ -70,6 +73,8 @@ func run(args []string) error {
 		return netConnect(args[2])
 	case len(args) == 2 && args[0] == "net" && args[1] == "disconnect":
 		return netDisconnect()
+	case len(args) >= 2 && args[0] == "system" && args[1] == "bluetooth":
+		return bluetooth(args[2:])
 	case len(args) == 1 && args[0] == "keys":
 		return keys()
 	case len(args) == 2 && args[0] == "app" && args[1] == "list":
@@ -434,6 +439,246 @@ func urgentMark(urgent bool) string {
 		return "!"
 	}
 	return "."
+}
+
+// bluetooth is the radio: what is around, what is paired, and the pairing
+// question that has to be answered by a person (internal/bt).
+//
+// All of it prints text, and that is deliberate. It is the half that works
+// without a compositor - on a machine whose shell has died, over ssh, in the
+// smoke test - and it is the only surface for it until the connections widget
+// exists.
+func bluetooth(args []string) error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	switch {
+	case len(args) == 0:
+		var st bt.State
+		if err := c.Call("bluetooth.state", &st); err != nil {
+			return err
+		}
+		printRadio(st)
+		return nil
+	case len(args) == 2 && (args[0] == "power" || args[0] == "scan" || args[0] == "confirm"):
+		return c.Call("bluetooth."+args[0], nil, args[1])
+	case len(args) == 2 && args[0] == "pair":
+		return pairDevice(c, args[1])
+	case len(args) == 2 && args[0] == "connect":
+		return connectDevice(c, args[1])
+	case len(args) == 2 && (args[0] == "disconnect" || args[0] == "forget" ||
+		args[0] == "trust" || args[0] == "untrust"):
+		return c.Call("bluetooth."+args[0], nil, args[1])
+	}
+	usage()
+	return fmt.Errorf("zde: unknown command %q", strings.Join(append([]string{"system", "bluetooth"}, args...), " "))
+}
+
+// printRadio is the whole state on a few lines: the adapter as key and value
+// the way `zde status` does it, then one device per line, tab separated with
+// the long field last like every other list zde prints.
+func printRadio(st bt.State) {
+	if !st.Adapter.Present {
+		// A machine with no radio says so and stops. Not an error: a desktop
+		// that never asked for bluetooth is the ordinary case, and a key that
+		// exits non-zero on it is one nobody trusts afterwards.
+		fmt.Printf("adapter    none  %s\n", st.Adapter.Why)
+		return
+	}
+	fmt.Printf("adapter    %s  %s\n", dash(st.Adapter.Name), st.Adapter.Address)
+	fmt.Printf("powered    %s\n", yesno(st.Adapter.Powered))
+	fmt.Printf("scanning   %s\n", yesno(st.Adapter.Discovering))
+	if st.Doing != "" {
+		fmt.Printf("doing      %s\n", st.Doing)
+	}
+	if st.Failed != "" {
+		fmt.Printf("failed     %s\n", st.Failed)
+	}
+	if st.Pending != nil {
+		printQuestion(*st.Pending)
+	}
+	// address, flags, signal, name. The flags are three fixed positions -
+	// paired, trusted, connected - so that a column stays a column: "p-c" is a
+	// device you agreed to that is connected and still gets asked about.
+	for _, d := range st.Devices {
+		fmt.Printf("%s\t%s\t%s\t%s\n", d.Address, deviceFlags(d), signal(d), dash(d.Name))
+	}
+}
+
+// printQuestion is the pairing question, and what to do about it. Two lines,
+// because the second one is a command to run and burying it at the end of a
+// long first line is how it gets missed.
+func printQuestion(req bt.Request) {
+	who := req.Device
+	if req.Name != "" {
+		who += "  " + req.Name
+	}
+	switch req.Kind {
+	case bt.KindDisplay:
+		fmt.Printf("asking     %s\n", who)
+		fmt.Printf("           type %s on it\n", req.Passkey)
+	case bt.KindService:
+		fmt.Printf("asking     %s\n", who)
+		fmt.Printf("           wants service %s - allow it with: zde system bluetooth confirm yes\n", req.UUID)
+	default:
+		fmt.Printf("asking     %s  passkey %s\n", who, dash(req.Passkey))
+		fmt.Printf("           if the device shows the same: zde system bluetooth confirm yes\n")
+	}
+}
+
+func deviceFlags(d bt.Device) string {
+	flag := func(on bool, c string) string {
+		if on {
+			return c
+		}
+		return "-"
+	}
+	return flag(d.Paired, "p") + flag(d.Trusted, "t") + flag(d.Connected, "c")
+}
+
+// signal is the reading in dBm, and a dash for a device that is remembered
+// rather than in the room: nothing is heard from it, which is not the same as
+// hearing it faintly.
+func signal(d bt.Device) string {
+	if d.RSSI == 0 {
+		return "-"
+	}
+	return strconv.Itoa(int(d.RSSI))
+}
+
+// pairDevice starts a pairing and stays with it.
+//
+// It has to stay: pairing is asynchronous in the daemon, because the thing it
+// waits for is a person comparing six digits on two screens - which is longer
+// than a socket round trip has any business being. So this asks, watches, shows
+// the question when it arrives, and says how it ended.
+func pairDevice(c *zded.Client, addr string) error {
+	if err := c.Call("bluetooth.pair", nil, addr); err != nil {
+		return err
+	}
+	shown := false
+	return watchRadio(c, 90, func(st bt.State) (bool, error) {
+		if d, found := deviceIn(st, addr); found && d.Paired {
+			fmt.Println("paired")
+			// Said out loud, because it is the difference between this and
+			// every other bluetooth UI: pairing is not trust, so the device
+			// will be asked about again when it reconnects.
+			fmt.Println("not trusted, so it asks again when it reconnects.")
+			fmt.Println("if it should not: zde system bluetooth trust " + d.Address)
+			return true, nil
+		}
+		if st.Pending != nil && !shown {
+			shown = true
+			printQuestion(*st.Pending)
+			answered, err := answerHere(c, *st.Pending)
+			if err != nil {
+				return true, err
+			}
+			if !answered {
+				// Nowhere to ask: a keybind's stdin is not a terminal. The
+				// question is on screen and the command to answer it is on the
+				// line under it, which is all this can honestly do.
+				return true, nil
+			}
+		}
+		if st.Doing == "" {
+			if st.Failed != "" {
+				return true, errors.New(st.Failed)
+			}
+			if shown {
+				return true, errors.New("not paired")
+			}
+		}
+		return false, nil
+	})
+}
+
+// connectDevice opens the link and waits a little to say whether it opened. The
+// daemon starts it in the background for the same reason pairing is started
+// there - a headset takes seconds - so the answer is in the next reading.
+func connectDevice(c *zded.Client, addr string) error {
+	if err := c.Call("bluetooth.connect", nil, addr); err != nil {
+		return err
+	}
+	return watchRadio(c, 20, func(st bt.State) (bool, error) {
+		if d, found := deviceIn(st, addr); found && d.Connected {
+			fmt.Println("connected")
+			return true, nil
+		}
+		if st.Pending != nil {
+			// A device that is paired and not trusted is asked about when it
+			// connects. That is what untrusted means (internal/bt/agent.go).
+			printQuestion(*st.Pending)
+			answered, err := answerHere(c, *st.Pending)
+			return !answered, err
+		}
+		if st.Doing == "" && st.Failed != "" {
+			return true, errors.New(st.Failed)
+		}
+		return false, nil
+	})
+}
+
+// watchRadio asks for the state until something has happened or the time runs
+// out. Both long verbs need it, and neither can be answered by the call that
+// started it.
+func watchRadio(c *zded.Client, secs int, stop func(bt.State) (bool, error)) error {
+	deadline := time.Now().Add(time.Duration(secs) * time.Second)
+	for {
+		var st bt.State
+		if err := c.Call("bluetooth.state", &st); err != nil {
+			return err
+		}
+		enough, err := stop(st)
+		if err != nil || enough {
+			return err
+		}
+		if time.Now().After(deadline) {
+			// Not a failure of the thing itself: the attempt is the daemon's
+			// and carries on. Say where to look.
+			return errors.New("still waiting: `zde system bluetooth` says where it got to")
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+}
+
+func deviceIn(st bt.State, addr string) (bt.Device, bool) {
+	for _, d := range st.Devices {
+		if strings.EqualFold(d.Address, addr) {
+			return d, true
+		}
+	}
+	return bt.Device{}, false
+}
+
+// answerHere asks the person at this terminal, and only at a terminal: stdin
+// from a keybind is not one, and a prompt nobody can answer is a command that
+// hangs holding a pairing open.
+//
+// A question with nothing to compare is not put here either - a passkey to type
+// on the other device is answered by typing it.
+func answerHere(c *zded.Client, req bt.Request) (bool, error) {
+	if req.Kind == bt.KindDisplay {
+		return false, nil
+	}
+	info, err := os.Stdin.Stat()
+	if err != nil || info.Mode()&os.ModeCharDevice == 0 {
+		return false, nil
+	}
+	fmt.Print("           yes or no? [y/N] ")
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && line == "" {
+		return false, err
+	}
+	// Anything that is not a yes is a no, which is the way round a pairing
+	// question has to default.
+	answer := "no"
+	if s := strings.ToLower(strings.TrimSpace(line)); s == "y" || s == "yes" {
+		answer = "yes"
+	}
+	return true, c.Call("bluetooth.confirm", nil, answer)
 }
 
 func yesno(b bool) string {
@@ -812,6 +1057,31 @@ func usage() {
                          is secured and NetworkManager has no profile for it
   zde net disconnect     drop the wifi link, keeping the saved profile
   zde app list           what it can start
+  zde system bluetooth   the radio, and what is around it: the adapter, then
+                         one device per line - address, flags, signal, name.
+                         The flags are three positions: paired, trusted,
+                         connected, a dash where it is not. Says "adapter none"
+                         on a machine with no radio rather than failing
+  zde system bluetooth power on|off
+                         the radio itself. Off unless somebody said otherwise,
+                         and nothing here turns it on as a side effect
+  zde system bluetooth scan on|off
+                         look for what is around, and stop again: a radio left
+                         scanning is one that keeps announcing itself
+  zde system bluetooth pair ADDR
+                         pair, which asks before anything happens: the passkey
+                         is shown here and has to match what the device shows.
+                         Pairing does not trust
+  zde system bluetooth confirm yes|no
+                         answer the pairing question that is waiting
+  zde system bluetooth connect|disconnect ADDR
+                         open or drop the link to a device already paired
+  zde system bluetooth trust|untrust ADDR
+                         trusted means it reconnects and uses its services
+                         without asking again - a decision, never a side effect
+                         of having paired once
+  zde system bluetooth forget ADDR
+                         remove it: the key, the trust, the lot
   zde window jump-to [ID]
                          open the window picker (Mod+w); prints the list when
                          no shell is up - id, workspace, app, title - and with
