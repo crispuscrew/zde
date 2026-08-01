@@ -197,8 +197,14 @@ var registry = map[string]Entry{
 	// before pressing the key - pairing is a conversation of its own with its
 	// own daemon, and it is not on this key yet.
 	"system.connections": {Group: "system", Desc: "the wifi networks, and the link you are on (no bluetooth yet)", Spawn: []string{"zde", "system", "connections"}},
-	"system.calendar":    {Group: "system", Desc: "the calendar and clock widget", Spawn: []string{"zde", "system", "calendar"}},
-	"system.wallpapers":  {Group: "system", Desc: "the wallpapers widget", Spawn: []string{"zde", "system", "wallpapers"}},
+	// bluetooth on its own, and deliberately unbound (common/keymap/keymap.yaml
+	// binds nothing to it): Mod+Shift+c is system.connections, and a second
+	// chord for half of one surface is a key to remember for no reason.
+	// Registered so the palette can run it by name, and so the verb has an
+	// action the day the connections surface has a bluetooth section in it.
+	"system.bluetooth":  {Group: "system", Desc: "bluetooth: what is around, pairing, and what is connected", Spawn: []string{"zde", "system", "bluetooth"}},
+	"system.calendar":   {Group: "system", Desc: "the calendar and clock widget", Spawn: []string{"zde", "system", "calendar"}},
+	"system.wallpapers": {Group: "system", Desc: "the wallpapers widget", Spawn: []string{"zde", "system", "wallpapers"}},
 	// help is a terminal on the keymap, not a widget: `zde help` printed usage
 	// to a stderr no keypress has, so the one key whose job is to say which
 	// keys work was itself one of the silent ones. It goes back to being a

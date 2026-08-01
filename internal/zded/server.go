@@ -28,6 +28,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/crispuscrew/zde/internal/attn"
+	"github.com/crispuscrew/zde/internal/bt"
 	"github.com/crispuscrew/zde/internal/desk"
 	"github.com/crispuscrew/zde/internal/journal"
 	"github.com/crispuscrew/zde/internal/link"
@@ -187,6 +188,16 @@ type Server struct {
 	link     link.Manager
 	openLink func() (link.Manager, error)
 
+	// The radio, opened on first use and kept (bluetooth.go). openBluetooth is
+	// a field so a test can drive the verbs without a system bus under them.
+	//
+	// Its own lock, held across the dial. Two callers that both dialled would
+	// both register a pairing agent, and the one that survives that race can be
+	// the one BlueZ is not calling (bluetooth.go, radio).
+	bluetoothMu   sync.Mutex
+	bluetooth     Bluetooth
+	openBluetooth func() (Bluetooth, error)
+
 	mu       sync.Mutex
 	ln       net.Listener
 	problems []string
@@ -206,6 +217,11 @@ func New(version string, jrn *journal.Journal, compositor Compositor, desks Desk
 		desks:    desks,
 		launch:   zinc.Run,
 		openLink: link.Open,
+		// Neither radio is dialled here: opening a system bus connection at
+		// startup would be zded doing that work on every machine, including the
+		// ones that have no radio and never asked for one (bluetooth.go, radio;
+		// net.go, links).
+		openBluetooth: func() (Bluetooth, error) { return bt.Dial() },
 	}
 }
 
@@ -271,8 +287,14 @@ func (s *Server) Serve() error {
 	}
 }
 
-// Close stops listening.
+// Close stops listening, and gives up the radio with it.
+//
+// The radio first, and outside s.mu: it is a bus connection with a pairing
+// agent exported on it, and one left behind is an agent for a session that has
+// ended - bluetoothd would keep calling it and every question would time out
+// into a refusal nobody was asked for.
 func (s *Server) Close() error {
+	s.closeRadio()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.ln == nil {
@@ -545,6 +567,11 @@ func (s *Server) Dispatch(req Request) Response {
 		}
 		return s.switchDesk(prev)
 	default:
+		if bluetoothMethods[req.Method] {
+			// One line here and the rest in bluetooth.go: the radio has ten
+			// verbs of its own and they have nothing to say to the desks.
+			return s.bluetoothCall(req)
+		}
 		return Response{Error: fmt.Sprintf("unknown method %q", req.Method)}
 	}
 }
