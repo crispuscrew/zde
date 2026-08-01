@@ -279,6 +279,8 @@ ShellRoot {
                     root.openWindows(msg.event);
                 else if (msg.event.kind === "notif-center")
                     root.openCenter(msg.event);
+                else if (msg.event.kind === "connections")
+                    root.openConnections(msg.event);
             }
         }
     }
@@ -444,6 +446,168 @@ ShellRoot {
         })
     }
 
+    // ---- the network ----------------------------------------------------
+    //
+    // All of it in one place: what the bar says about the link, the surface
+    // that joins one, and the connection both of them use.
+    //
+    // A connection of its own, and not the bar's. The bar's parser reads every
+    // reply as a queue listing, so a second kind of question asked on it would
+    // make the queue count wrong until the next tick; and a join is a request
+    // whose answer is worth reading - "the password was refused" is the whole
+    // point of the widget - which the events connection deliberately ignores.
+    QtObject {
+        id: netState
+
+        // What zded last said the link is: wifi, wired, none, absent.
+        property string kind: ""
+        property string ssid: ""
+        property int strength: 0
+        // known is the same bargain the queue count makes. A signal reading
+        // left on the bar after zded stopped answering looks current, and four
+        // bars of wifi on a machine whose NetworkManager died is exactly the
+        // lie this pattern exists to prevent.
+        property bool known: false
+    }
+
+    Socket {
+        id: netLink
+
+        path: Quickshell.env("XDG_RUNTIME_DIR") + "/zde/zded.sock"
+        connected: true
+
+        // What has been asked and not answered yet, oldest first. One
+        // connection carries the bar's question and the surface's join, and
+        // the answers come back in the order they were asked - without this,
+        // the answer to a join would be read as a link status and the bar would
+        // say something that is not a link.
+        property var pending: []
+
+        function ask(method, args) {
+            if (!netLink.connected)
+                return false;
+            netLink.pending.push(method);
+            netLink.write(JSON.stringify({
+                method: method,
+                args: args ?? []
+            }) + "\n");
+            return true;
+        }
+
+        onConnectionStateChanged: {
+            netLink.pending = [];
+            if (netLink.connected)
+                netLink.ask("net.status", []);
+            else
+                netState.known = false;
+        }
+
+        parser: SplitParser {
+            onRead: line => {
+                const was = netLink.pending.shift() ?? "";
+                let res = null;
+                try {
+                    res = JSON.parse(line);
+                } catch (e) {
+                    netState.known = false;
+                    return;
+                }
+                if (was === "net.status") {
+                    if (!res || res.error !== undefined || !res.ok) {
+                        netState.known = false;
+                        return;
+                    }
+                    netState.kind = res.ok.kind ?? "";
+                    netState.ssid = res.ok.ssid ?? "";
+                    netState.strength = res.ok.signal ?? 0;
+                    netState.known = true;
+                    return;
+                }
+                // A join or a disconnect. The surface is waiting to be told
+                // what became of it, and a refusal is the half worth showing:
+                // NetworkManager says whether the password was wrong or the
+                // network went out of range, and a widget that swallowed that
+                // would leave a person pressing Enter at nothing.
+                if (!res)
+                    return;
+                if (res.error !== undefined)
+                    connections.said = res.error;
+                else if (res.ok !== undefined)
+                    connections.said = String(res.ok);
+                // And ask again at once, so the bar catches up with what just
+                // changed rather than in five seconds' time.
+                netLink.ask("net.status", []);
+            }
+        }
+    }
+
+    Timer {
+        // Five seconds rather than the bar's two: a link changes when somebody
+        // walks out of a building, and a signal reading is not worth a question
+        // a second. This is also the redial, for the same reason the queue's
+        // timer is - `connected: true` is written once, and a socket that lost
+        // its daemon does not dial itself.
+        interval: 5000
+        running: true
+        repeat: true
+        triggeredOnStart: true
+        onTriggered: {
+            if (!netLink.connected) {
+                netLink.connected = true;
+                return;
+            }
+            // Two questions outstanding means the first was never answered:
+            // say nothing rather than the last thing that was true.
+            if (netLink.pending.length >= 2)
+                netState.known = false;
+            netLink.ask("net.status", []);
+        }
+    }
+
+    Links {
+        id: connections
+
+        // Straight down the socket and nowhere else. The secret is not put in
+        // a property, not logged, and not kept: the surface empties its field
+        // in the same breath as this, so the only copy left is the one
+        // NetworkManager has.
+        onJoin: (ssid, secret) => {
+            if (!netLink.ask("net.connect", secret === "" ? [ssid] : [ssid, secret]))
+                connections.said = "no connection to zded";
+        }
+        onDropped: {
+            if (!netLink.ask("net.disconnect", []))
+                connections.said = "no connection to zded";
+        }
+        onDismissed: connections.hide()
+
+        // The asker is waiting on this, briefly, to find out whether anything
+        // came of the event it sent - the same handshake the picker makes, on
+        // the connection the events arrive on.
+        onShown: token => {
+            if (stream.connected)
+                stream.write(JSON.stringify({
+                    method: "shown",
+                    args: [token]
+                }) + "\n");
+        }
+    }
+
+    // One instance, on the screen zded says is being looked at: a widget on
+    // every monitor is not a widget. Same rule as the picker, and the same
+    // fallback to the first screen when the output is not one we know.
+    function openConnections(ev) {
+        let want = null;
+        for (const s of Quickshell.screens) {
+            if (s.name === ev.output)
+                want = s;
+        }
+        connections.screen = want ?? Quickshell.screens[0] ?? null;
+        connections.show(ev.networks ?? [], ev.link ?? ({}), ev.token ?? "");
+    }
+
+    // ---- end of the network ---------------------------------------------
+
     // How a test can ask the bar what it is showing, rather than only whether
     // it is running: `qs -p <config> ipc call queue count`. A bar that never
     // read the queue and a bar reading it correctly look identical from the
@@ -526,6 +690,18 @@ ShellRoot {
             if (micState.muted)
                 return "muted";
             return micState.live ? "live" : "idle";
+        }
+
+        // What the bar makes of the link, so a machine with no NetworkManager
+        // can be told apart from a bar that never managed to ask. The VM the
+        // smoke test boots is that machine, which is why it is worth pinning:
+        // from outside, three quiet states look like the same empty strip.
+        function net(): string {
+            if (!netState.known)
+                return "unknown";
+            if (netState.kind === "wifi")
+                return "wifi " + netState.ssid + " " + netState.strength;
+            return netState.kind;
         }
 
         // Height and reserved space, as the panel came up. Not the same claim
@@ -631,6 +807,19 @@ ShellRoot {
                 font.family: "monospace"
             }
 
+            // The right-hand chain, from the clock leftwards: clock, battery,
+            // link, mic. Each item anchors to the left edge of the one before
+            // it, and two of the four can be zero-width - a desktop has no
+            // battery and a machine with no sound card has no mic - so the
+            // order has to read the same with any of them missing.
+            //
+            // The mic is last because it is the only one here that comes and
+            // goes. Anchored between the link and the battery it would push
+            // both of them sideways every time somebody joined a call, and a
+            // bar that moves while you are reading it is precisely what a
+            // keyboard-first strip should not do. At the end it grows leftwards
+            // into empty bar and nothing else moves.
+
             // The mic, on the bar for the reason principle 4 gives and W16 asks
             // for: whether the room is being heard is not something to find out
             // afterwards.
@@ -642,7 +831,7 @@ ShellRoot {
             Text {
                 id: mic
 
-                anchors.right: battery.left
+                anchors.right: netText.left
                 anchors.rightMargin: 14
                 anchors.verticalCenter: parent.verticalCenter
                 visible: mic.text !== ""
@@ -653,6 +842,50 @@ ShellRoot {
                 // interrupting yourself over. Muted is the opposite of that, so
                 // it is said quietly.
                 color: micState.muted ? "#7a7f8a" : "#e5484d"
+                font.pixelSize: 13
+                font.family: "monospace"
+            }
+
+            // The link, on the bar for the reason principle 4 gives: what a
+            // keypress depends on. Mod+Shift+c is that keypress, and this is
+            // whether it is worth pressing.
+            //
+            // Three quiet states, deliberately not one. "unknown" is zded not
+            // answering. "no manager" is a machine with no NetworkManager at
+            // all, which is not offline - it may be online through
+            // systemd-networkd, a static route or a tether, and zde simply
+            // cannot say. "no network" is NetworkManager itself saying so.
+            //
+            // Always drawn, which is what makes it the fixed point the mic
+            // hangs off: it is furniture, not an alert. On a desktop with no
+            // battery this is the thing beside the clock, with two margins
+            // between them rather than one - whitespace where the battery would
+            // be, which reads as a gap and not as a missing widget.
+            Text {
+                id: netText
+
+                anchors.right: battery.left
+                anchors.rightMargin: 14
+                anchors.verticalCenter: parent.verticalCenter
+
+                text: {
+                    if (!netState.known)
+                        return "net: unknown";
+                    switch (netState.kind) {
+                    case "wifi":
+                        // The name is the useful half - it is how you know
+                        // which of two networks you are on - with the strength
+                        // beside it, because that is what a dropout looks like
+                        // before it happens.
+                        return (netState.ssid === "" ? "wifi" : netState.ssid) + "  " + netState.strength + "%";
+                    case "wired":
+                        return "wired";
+                    case "absent":
+                        return "net: no manager";
+                    }
+                    return "no network";
+                }
+                color: netState.known && netState.kind !== "absent" ? "#c9ccd4" : "#7a7f8a"
                 font.pixelSize: 13
                 font.family: "monospace"
             }
