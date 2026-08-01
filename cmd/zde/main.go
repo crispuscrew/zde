@@ -102,6 +102,11 @@ func run(args []string) error {
 		return focusDesk("nav." + args[1])
 	case len(args) == 2 && args[0] == "desk" && (args[1] == "next" || args[1] == "prev"):
 		return focusDesk("desk." + args[1])
+	case len(args) >= 2 && args[0] == "ask":
+		// Everything after the verb is the question, so it can be typed the way
+		// it would be said: zde ask oneshot what is the capital of peru. The
+		// same bargain `zde queue add` makes with quoting.
+		return ask(args[1], strings.Join(args[2:], " "))
 	case len(args) >= 3 && args[0] == "queue" && args[1] == "add":
 		// Everything after "add" is the text, so it can be typed without
 		// quoting: zde queue add reply to ilya about the invoice.
@@ -324,6 +329,95 @@ func runDoctor() error {
 		return fmt.Errorf("zde doctor: %d of %d checks failed", n, len(report))
 	}
 	return nil
+}
+
+// ask is the quick LLM (docs/vision.md, section 2), in the two shapes it has:
+// a surface, which is what the keys press, and a terminal.
+//
+// A question typed here is answered here, and never in a popup. It was typed
+// into a terminal, so the answer belongs where it can be read back, piped and
+// kept - a popup would take it somewhere none of that is true. Without a
+// question there is nothing to type into, so the key asks the shell for a
+// window, and says so plainly when there is no shell to ask.
+//
+// local and escalate are terminal verbs only. They are the tiers the surface
+// reaches with a key of its own, and from here they are how a private question
+// or a hard one gets asked without a shell at all.
+func ask(kind, question string) error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	switch kind {
+	case "oneshot", "panel":
+		if question == "" {
+			return askSurface(c, "ask."+kind)
+		}
+		return askRun(c, zded.TierProvider, question)
+	case zded.TierLocal, zded.TierEscalate:
+		if question == "" {
+			return fmt.Errorf("zde ask %s takes the question: say what to ask", kind)
+		}
+		return askRun(c, kind, question)
+	}
+	return fmt.Errorf("zde ask takes oneshot, panel, local or escalate, not %q", kind)
+}
+
+// askSurface asks the shell to open one. Nothing to print when no shell
+// answers: the switcher can fall back to its list, and a question nobody has
+// typed yet has no list - so this says how to ask from here instead, which is
+// the only useful thing left to say.
+func askSurface(c *zded.Client, method string) error {
+	var shown bool
+	if err := c.Call(method, &shown); err != nil {
+		return err
+	}
+	if shown {
+		return nil
+	}
+	return errors.New("no shell to draw the ask window: ask from a terminal instead, " +
+		"as `zde ask oneshot what is the capital of peru`")
+}
+
+// askRun asks, and prints the answer as it arrives. This is the whole text
+// fallback: no surface, no history, one answer on stdout.
+//
+// The pieces arrive as events on this connection (internal/zded, ask.go), so
+// the printing is a write per piece and not a wait for the last one - which is
+// what a person watching a terminal wants, and what a test without a compositor
+// can watch.
+func askRun(c *zded.Client, tier, question string) error {
+	if err := c.Call(zded.MethodAskRun, nil, tier, question); err != nil {
+		return err
+	}
+	ended := true
+	for {
+		ev, err := c.NextEvent()
+		if err != nil {
+			return err
+		}
+		if ev.Kind != zded.EventAskText {
+			continue
+		}
+		if ev.Text != "" {
+			fmt.Print(ev.Text)
+			ended = strings.HasSuffix(ev.Text, "\n")
+		}
+		if !ev.Done {
+			continue
+		}
+		if !ended {
+			// A tier that streams tokens has no reason to end on a newline, and
+			// a shell prompt landing at the end of the answer reads as part of
+			// it.
+			fmt.Println()
+		}
+		if ev.Error != "" {
+			return errors.New(ev.Error)
+		}
+		return nil
+	}
 }
 
 // queueAdd says what it recorded, with the id needed to finish it.
@@ -1086,6 +1180,20 @@ func usage() {
                          open the window picker (Mod+w); prints the list when
                          no shell is up - id, workspace, app, title - and with
                          an id goes straight to that window, desk and all
+  zde ask oneshot [QUESTION]
+                         the quick LLM (Mod+a). With a question typed here the
+                         answer arrives here, streamed as it comes; without one
+                         it opens the popup, and says so when no shell can
+  zde ask panel [QUESTION]
+                         the same, in the window that stays open to keep asking
+                         (Mod+Shift+a)
+  zde ask local QUESTION the private tier, which is the one that runs with no
+                         network
+  zde ask escalate QUESTION
+                         the tier kept for a question the first two got wrong.
+                         Every tier is a command this machine was configured
+                         with (zde.ask.tiers), and an unset one is unset:
+                         nothing here talks to anybody's API
   zde keys               the whole keymap, one key per line (Mod+slash opens
                          this in a terminal)
   zde desk switch NAME   bring a desk up on every monitor it owns, and start

@@ -112,6 +112,56 @@ in
       '';
     };
 
+    ask.tiers = lib.mkOption {
+      type = lib.types.attrsOf (lib.types.listOf lib.types.str);
+      default = { };
+      example = {
+        provider = [
+          "zcr"
+          "run"
+          "ask-provider"
+          "--exec"
+        ];
+        local = [
+          "zcr"
+          "run"
+          "ask-local"
+          "--exec"
+        ];
+      };
+      description = ''
+        What ask runs for each tier (`Mod+a`, `Mod+Shift+a`). The same seam as
+        `zde.apps` and the same shape - a name to an argv - because it answers
+        the same kind of question: what this machine calls that.
+
+        A tier is a program that reads the question on stdin and writes the
+        answer to stdout, streaming it if it can. zded runs it and passes what
+        it says back to the window or to the terminal that asked
+        (`zde ask oneshot ...`).
+
+        Three names have keys on them: `provider` is the default and the fast
+        one, `local` is the private tier, and `escalate` is for a question the
+        first two got wrong. Any other name works and nothing presses it.
+
+        **There is no default, deliberately.** An unset tier is unset, and
+        asking on one says which option to set rather than quietly sending a
+        question somewhere. Nothing in zde holds an API key or speaks anyone's
+        API: the tier is a command, and the tier that talks to a provider
+        belongs in a zinc container whose egress is that one API host, the way
+        the local tier belongs in one with no network at all (docs/vision.md,
+        section 2). Those app definitions are layer 2 and are still put on a
+        machine by hand (docs/delivery.md), so this points at whatever that
+        machine actually has:
+
+        ```nix
+        zde.ask.tiers.provider = [ "zcr" "run" "ask-provider" "--exec" ];
+        ```
+
+        No history is kept anywhere, by zded or by the window: the answer is on
+        the screen until the window closes, and nothing writes it down.
+      '';
+    };
+
     niri.extraConfig = lib.mkOption {
       type = lib.types.lines;
       default = "";
@@ -230,6 +280,11 @@ in
       # What `zde app launch` reads. Generated, because the keymap's names and
       # the machine's programs are two different things and this is the seam.
       "zde/apps.json".text = builtins.toJSON cfg.apps;
+
+      # And what ask reads, in the same shape for the same reason. Written even
+      # when it is empty: the file being there and saying nothing is what makes
+      # `Mod+a` answer with the option to set rather than with a missing file.
+      "zde/ask.json".text = builtins.toJSON cfg.ask.tiers;
     };
 
     # dynamic.kdl is the seam zded writes through, so home-manager seeds it and

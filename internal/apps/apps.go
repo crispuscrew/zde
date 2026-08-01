@@ -27,11 +27,16 @@ import (
 type Apps map[string][]string
 
 // DefaultPath is where layer 1 writes them.
-func DefaultPath() string {
+func DefaultPath() string { return Path("apps.json") }
+
+// Path is a file in zde's config directory. There are two name-to-argv maps
+// there now - the apps, and ask's tiers (internal/zded, ask.go) - and where
+// zde's config lives should be one answer rather than a copy per reader.
+func Path(name string) string {
 	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
-		return filepath.Join(dir, "zde", "apps.json")
+		return filepath.Join(dir, "zde", name)
 	}
-	return filepath.Join(os.Getenv("HOME"), ".config", "zde", "apps.json")
+	return filepath.Join(os.Getenv("HOME"), ".config", "zde", name)
 }
 
 // Load reads the map. A missing file is not an error here: it is a machine

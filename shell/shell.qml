@@ -281,6 +281,47 @@ ShellRoot {
                     root.openCenter(msg.event);
                 else if (msg.event.kind === "connections")
                     root.openConnections(msg.event);
+                else if (msg.event.kind === "ask")
+                    root.openAsk(msg.event, false);
+                else if (msg.event.kind === "ask.panel")
+                    root.openAsk(msg.event, true);
+            }
+        }
+    }
+
+    // The ask connection, and a third one for a reason the second one only
+    // half had: an answer arrives on the connection that asked for it, in
+    // pieces, over as long as a model takes. On the stream's connection those
+    // pieces would sit in front of the acknowledgement a picker is waiting for,
+    // and on the bar's they would be read as a queue listing.
+    Socket {
+        id: askLink
+
+        path: Quickshell.env("XDG_RUNTIME_DIR") + "/zde/zded.sock"
+        connected: true
+
+        parser: SplitParser {
+            onRead: line => {
+                let msg = null;
+                try {
+                    msg = JSON.parse(line);
+                } catch (e) {
+                    return;
+                }
+                if (!msg)
+                    return;
+                // A refusal to run at all - no tier configured, no such tier -
+                // arrives as the reply rather than as a piece of an answer.
+                if (msg.error !== undefined) {
+                    askWindow.finished(msg.error);
+                    return;
+                }
+                if (!msg.event || msg.event.kind !== "ask.text")
+                    return;
+                if (msg.event.text)
+                    askWindow.chunk(msg.event.text);
+                if (msg.event.done)
+                    askWindow.finished(msg.event.error ?? "");
             }
         }
     }
@@ -294,6 +335,13 @@ ShellRoot {
         running: true
         repeat: true
         onTriggered: {
+            // The ask connection redials first, and outside the stream's early
+            // return: the two usually drop together, since they are the same
+            // daemon, but zded can close one alone - and then Mod+a would
+            // answer "no connection to zded" for the rest of the session while
+            // everything else on the bar looked fine.
+            if (!askLink.connected)
+                askLink.connected = true;
             if (!stream.connected) {
                 stream.connected = true;
                 return;
@@ -356,6 +404,14 @@ ShellRoot {
     function showPicker(ev, kind, rows, here) {
         picker.screen = root.screenFor(ev);
         picker.show(kind, rows, here, ev.token ?? "");
+    }
+
+    // The ask popup and the ask panel, on the screen being looked at for the
+    // same reason the picker is. Nothing else is handed over: the question is
+    // typed into the window, and the window knows nothing about sockets.
+    function openAsk(ev, isPanel) {
+        askWindow.screen = root.screenFor(ev);
+        askWindow.show(isPanel, ev.token ?? "");
     }
 
     // The screen an event asks for. One answer for every surface: two copies of
@@ -607,6 +663,33 @@ ShellRoot {
     }
 
     // ---- end of the network ---------------------------------------------
+
+    AskWindow {
+        id: askWindow
+
+        // The tier is a name and the shell passes it on: what a machine runs
+        // for "local" is zded's answer, out of the same kind of table Mod+t
+        // resolves through, and a shell that knew the command would be a second
+        // place to configure one.
+        onAsked: (tier, question) => {
+            if (askLink.connected)
+                askLink.write(JSON.stringify({
+                    method: "ask.run",
+                    args: [tier, question]
+                }) + "\n");
+            else
+                askWindow.finished("no connection to zded, so there is nothing to ask");
+        }
+        onDismissed: askWindow.hide()
+
+        onShown: token => {
+            if (stream.connected)
+                stream.write(JSON.stringify({
+                    method: "shown",
+                    args: [token]
+                }) + "\n");
+        }
+    }
 
     // How a test can ask the bar what it is showing, rather than only whether
     // it is running: `qs -p <config> ipc call queue count`. A bar that never

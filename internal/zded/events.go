@@ -60,6 +60,16 @@ type Event struct {
 	// asker learns that something was actually shown rather than merely
 	// written to (see Switcher.Shown).
 	Token string `json:"token,omitempty"`
+	// Text is a piece of an answer as it arrives (EventAskText, internal/zded
+	// ask.go). Pieces rather than one reply at the end, because an answer takes
+	// seconds and a window that shows nothing until the last of it looks broken.
+	Text string `json:"text,omitempty"`
+	// Done ends a stream, and is the only thing that does: a surface that never
+	// hears it waits for a piece that is not coming. Error says why it ended,
+	// where it ended badly - a tier nobody configured, one that would not run,
+	// one that said nothing at all.
+	Done  bool   `json:"done,omitempty"`
+	Error string `json:"error,omitempty"`
 }
 
 // EventPicker asks the shell to show the desk switcher.
@@ -73,6 +83,18 @@ const EventWindows = "windows"
 // EventCenter asks it to show the notification center: what arrived, whether
 // the mode let it through, and what became of it.
 const EventCenter = "notif-center"
+
+// EventAsk asks the shell to open the ask popup, and EventAskPanel the panel
+// that stays open. Two kinds and not one with a flag, for the reason the window
+// picker has a kind of its own: a shell that has never heard of the second
+// ignores the line rather than drawing the wrong surface.
+const (
+	EventAsk      = "ask"
+	EventAskPanel = "ask.panel"
+	// EventAskText is one piece of an answer, and with Done set, the end of one.
+	// It goes to the connection that asked and to nobody else (ask.go).
+	EventAskText = "ask.text"
+)
 
 // MethodShown is how a listener says it did the thing: the token from the
 // event it acted on. Unsolicited ones are ignored, so this cannot be used to
