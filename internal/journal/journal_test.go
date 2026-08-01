@@ -544,3 +544,38 @@ func TestClaimedIDsAreNeverHandedOutAgain(t *testing.T) {
 		t.Errorf("id %d after a restart repeats %d or %d", next, claimed, queued.ID)
 	}
 }
+
+// A compaction with nothing waiting must still write the counter down.
+//
+// This is the crossing neither of the other two makes: the id test never
+// compacts, and the compaction test leaves an item on the queue. So the line
+// that saves the counter could be made conditional on the queue having
+// something in it and both would stay green - while quiet mode is exactly that
+// state, nothing ever queued and every arrival spending an id. Compaction is
+// automatic at Open past a thousand entries, so this is not a rare shape: it is
+// what a night in quiet mode looks like, and the id it hands out afterwards is
+// one an app is still holding.
+func TestClaimedIDsSurviveACompactionOfAnEmptyQueue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "j.jsonl")
+	j := open(t, path)
+	claimed, err := j.ClaimID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q := j.State().Queue; len(q) != 0 {
+		t.Fatalf("queue = %+v, want nothing waiting: this test is about the empty case", q)
+	}
+	if err := j.Compact(); err != nil {
+		t.Fatal(err)
+	}
+	j.Close()
+
+	again := open(t, path)
+	next, err := again.ClaimID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next <= claimed {
+		t.Errorf("id %d after a compaction repeats %d, which an app is still holding", next, claimed)
+	}
+}

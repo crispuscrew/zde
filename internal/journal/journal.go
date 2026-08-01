@@ -23,8 +23,19 @@ import (
 	"github.com/crispuscrew/zde/internal/desk"
 )
 
-// compactAt is when a replay is long enough to be worth rewriting. Desk
-// switches are human-paced, so this is days of use, not minutes.
+// compactAt is when a replay is long enough to be worth rewriting.
+//
+// It was chosen when the journal held desk switches, which are human-paced, and
+// on that traffic it is days of use. It is not any more: every notification
+// writes a line here too, a queued one to record the item and a silenced one to
+// spend its id, so a machine that receives a hundred notifications a minute
+// passes a thousand entries in ten.
+//
+// What that costs is a longer replay at the next login, and a file that grows
+// for as long as the session runs - compaction happens at Open and nowhere
+// else, so nothing shortens it in between. Not fixed here: compacting under a
+// running daemon means rewriting the file every zded is appending to, and that
+// is a change to make on purpose rather than as a footnote to the modes.
 const compactAt = 1000
 
 // entry is one line of the journal.
