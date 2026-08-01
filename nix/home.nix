@@ -195,11 +195,31 @@ in
     # image and the tests already run. Name another and this stops being used.
     zde.apps = {
       terminal = lib.mkDefault defaultTerminal;
-      editor = lib.mkDefault [
-        (lib.getExe pkgs.foot)
-        "-e"
-        "nvim"
-      ];
+      # No editor default, on purpose. Every other default here is a program
+      # this module also installs, and layer 1 has no editor to install: the
+      # one zde ships is a zinc container (common/apps/nvim), which is layer
+      # 2's to build and pin, and putting a second editor on the host to cover
+      # for it would be two editor stories and a package nobody asked for.
+      #
+      # What used to be here was `foot -e nvim` on a machine with no nvim, so
+      # Mod+e opened a terminal that closed the instant it could not find the
+      # program. That is the worst way for a key to fail: nothing is left on
+      # the screen to read, and the check that a bind's command is installed
+      # sees only the terminal in front of it.
+      #
+      # With no default the same key says `no app called "editor"; there is
+      # [help lock terminal]`, which names what this machine can start. It goes
+      # to niri's log rather than to a surface, which is the honest state of
+      # affairs until the shell has somewhere to print - and it is the
+      # difference between a machine that can be diagnosed and one that only
+      # blinks. The keymap already says the editor is the one the machine names
+      # rather than one zde picks (common/keymap/keymap.yaml), so this is the
+      # default catching up with what the rest of the system says.
+      #
+      # A machine with an editor says so in one line:
+      #
+      #   zde.apps.editor = [ "foot" "-e" "hx" ];
+      #   zde.apps.editor = [ "zcr" "run" "nvim" "--exec" ];  # when zinc has it
       # A machine that leaves the house needs this working on its first day,
       # and it is one of the few keys whose absence is discovered at the worst
       # possible moment. swaylock because niri's own module already configures
