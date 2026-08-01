@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -130,6 +131,10 @@ type Status struct {
 	// Queued is how many things are waiting, which is the other half of the
 	// bar: if the bar is not up, this is the only way to see them.
 	Queued int `json:"queued"`
+	// Mode is the attn mode: work, focus or quiet (internal/attn). It is here
+	// because "why has nothing arrived for an hour" is a question with exactly
+	// one cheap answer, and a person who cannot see the bar has only this one.
+	Mode string `json:"mode"`
 	// Zinc says whether layer 2's runner is on the session's PATH (docs/
 	// delivery.md). A zde machine without it can run nothing sandboxed, which
 	// is most of what a zde machine is for - and the session's PATH is not the
@@ -170,6 +175,9 @@ type Server struct {
 	launch func(address string) error
 
 	notifier Notifier
+	// history is what has arrived, whatever the mode did about it. Bounded, and
+	// in memory rather than in the journal: see attn.HistoryMax.
+	history attn.History
 
 	mu       sync.Mutex
 	ln       net.Listener
@@ -429,6 +437,33 @@ func (s *Server) Dispatch(req Request) Response {
 			return Response{Error: "queue.done takes one id"}
 		}
 		return s.queueDone(req.Args[0])
+	case "attn.mode":
+		// One verb, read and write, for the reason window.jump-to has two
+		// arities: it is the same question - what is the mode - asked and
+		// answered, and a second name to learn buys nothing.
+		switch len(req.Args) {
+		case 0:
+			return ok(Attn{Mode: string(s.mode())})
+		case 1:
+			return s.setMode(req.Args[0])
+		default:
+			return Response{Error: "attn.mode takes one mode name, or none to read it back"}
+		}
+	case "attn.quiet":
+		if len(req.Args) != 0 {
+			return Response{Error: "attn.quiet takes no arguments: it is a toggle"}
+		}
+		return s.toggleQuiet()
+	case "attn.center":
+		if len(req.Args) != 0 {
+			return Response{Error: "attn.center takes no arguments"}
+		}
+		return s.center()
+	case "attn.invoke":
+		if len(req.Args) != 1 {
+			return Response{Error: "attn.invoke takes one notification id"}
+		}
+		return s.invoke(req.Args[0])
 	case "desk.queue-jump":
 		if len(req.Args) != 0 {
 			return Response{Error: "desk.queue-jump takes no arguments"}
@@ -965,30 +1000,62 @@ func (s *Server) queueAdd(text string) Response {
 // arrived on, which is what makes it something you can come back to rather
 // than something you caught or missed.
 //
+// The mode decides only whether it reaches the queue (internal/attn, Mode).
+// Everything that arrives is recorded either way, which is principle 3 - display
+// policy, never data policy - and it is what makes quiet mode something a person
+// can afford to leave on: the things that happened while it was on are in the
+// notification center, in the order they happened, with what they said.
+//
 // The id it answers with is the journal's, narrowed to what the notification
 // spec has room for. Nothing else in zde uses the narrow one, and the numbers
 // would have to pass four billion notifications in one journal's life to
-// disagree.
+// disagree. A notification the mode kept out of the queue is given one too, from
+// the same counter, because the app that sent it still addresses it by that
+// number on the bus.
 func (s *Server) Arrived(n attn.Notification) (uint64, error) {
 	if s.jrn == nil {
 		return 0, errors.New("no journal, so nothing can be kept")
 	}
-	it, err := s.jrn.Queue(journal.Item{
+	rec := attn.Record{
+		From:   n.From,
 		Text:   n.Text,
 		Body:   n.Body,
-		Desk:   s.whereWeAre(),
-		From:   n.From,
 		Urgent: n.Urgent,
-	})
-	if err != nil {
-		return 0, err
+		Action: n.Action,
+		At:     time.Now(),
+		Desk:   s.whereWeAre(),
 	}
-	return it.ID, nil
+	if s.mode().Queues(n.Urgent) {
+		it, err := s.jrn.Queue(journal.Item{
+			Text:   rec.Text,
+			Body:   rec.Body,
+			Desk:   rec.Desk,
+			From:   rec.From,
+			Urgent: rec.Urgent,
+		})
+		if err != nil {
+			return 0, err
+		}
+		rec.ID, rec.Queued = it.ID, true
+	} else {
+		id, err := s.jrn.ClaimID()
+		if err != nil {
+			return 0, err
+		}
+		rec.ID = id
+	}
+	s.history.Add(rec)
+	return rec.ID, nil
 }
 
 // Closed is attn.Sink: an app taking its own notification back. attn has
 // already checked the item was that sender's to close.
 func (s *Server) Closed(id uint64) error {
+	// The history keeps it and marks it, rather than dropping it. An app that
+	// takes a notification back has told the person nothing, and "the download
+	// finished and then the row vanished" is the kind of thing that makes
+	// somebody distrust the whole list.
+	s.history.Dismiss(id)
 	if s.jrn == nil {
 		return nil
 	}
@@ -998,7 +1065,15 @@ func (s *Server) Closed(id uint64) error {
 // Notifier is told when something leaves the queue by a route the sender did
 // not ask for, so it can say so on the bus. A client blocked on a
 // notification's closure has no other way to learn it is gone.
-type Notifier interface{ Dismissed(id uint64) }
+//
+// Invoke is the other direction: the person choosing a notification in the
+// center, and the app hearing about it. It answers an error because the ways it
+// can fail are ones the person has to be told about - an app that has since
+// exited hears nothing at all.
+type Notifier interface {
+	Dismissed(id uint64)
+	Invoke(id uint64) error
+}
 
 // Watching sets who to tell. Called once at startup, before anything is
 // serving, so there is nothing to lock against.
@@ -1054,6 +1129,11 @@ func (s *Server) queueDone(id string) Response {
 	if err := s.jrn.Done(n); err != nil {
 		return Response{Error: err.Error()}
 	}
+	// The same id addresses the history, whether or not this ever reached the
+	// queue: the center dismisses a notification a mode kept out with exactly
+	// this call, and finishing a queue item should stop the center showing it
+	// as still waiting.
+	s.history.Dismiss(n)
 	if s.notifier != nil {
 		// Whoever sent it may be waiting to hear that it is gone.
 		s.notifier.Dismissed(n)
@@ -1431,6 +1511,7 @@ func (s *Server) status() Status {
 	}
 	st.Shell = s.listeners() > 0
 	st.Notifications = s.notifier != nil
+	st.Mode = string(s.mode())
 	// Looked up per call rather than remembered from startup. PATH points at
 	// profile directories whose contents change under a running daemon, and
 	// zded outlives the switch that installs zinc - so asking every time is

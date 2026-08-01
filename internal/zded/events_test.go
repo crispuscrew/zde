@@ -376,4 +376,5 @@ func TestStatusSaysWhetherNotificationsAreOurs(t *testing.T) {
 
 type stubNotifier struct{}
 
-func (stubNotifier) Dismissed(uint64) {}
+func (stubNotifier) Dismissed(uint64)    {}
+func (stubNotifier) Invoke(uint64) error { return nil }

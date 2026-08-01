@@ -2433,7 +2433,7 @@ func TestNotificationKeepsTheBody(t *testing.T) {
 func TestQueueDoneTellsTheSender(t *testing.T) {
 	s, jrn, _ := queueTestServer(t, "vshop.DP-1.code")
 	told := []uint64{}
-	s.Watching(tellTale{&told})
+	s.Watching(tellTale{ids: &told})
 	it, _ := jrn.Queue(journal.Item{Text: "waiting on you", From: "app"})
 	c, err := DialPath(serve(t, s))
 	if err != nil {
@@ -2448,9 +2448,23 @@ func TestQueueDoneTellsTheSender(t *testing.T) {
 	}
 }
 
-type tellTale struct{ ids *[]uint64 }
+// tellTale is the bus, watched: what zded told the sender, and about what.
+type tellTale struct {
+	ids *[]uint64
+	// invoked is the ids whose default action was fired, and err is what the
+	// bus said about it - an app that has exited is a refusal, not a silence.
+	invoked *[]uint64
+	err     error
+}
 
 func (t tellTale) Dismissed(id uint64) { *t.ids = append(*t.ids, id) }
+
+func (t tellTale) Invoke(id uint64) error {
+	if t.invoked != nil {
+		*t.invoked = append(*t.invoked, id)
+	}
+	return t.err
+}
 
 // An app taking its own notification back.
 func TestNotificationClosed(t *testing.T) {

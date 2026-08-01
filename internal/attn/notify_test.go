@@ -3,6 +3,7 @@ package attn
 import (
 	"errors"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -362,5 +363,97 @@ func TestOnlyTheSpecIsOnTheBus(t *testing.T) {
 	}
 	for name := range want {
 		t.Errorf("%s is missing from the object on the bus", name)
+	}
+}
+
+// The default action is the one a list of rows can offer: choosing the
+// notification itself. Reading it off the pairs the spec sends - key, label,
+// key, label - is what lets the center say which rows Enter can do anything
+// with, and a center that offered every row would refuse most of them after
+// the keypress rather than before it.
+func TestNotifyNoticesTheDefaultAction(t *testing.T) {
+	for _, tc := range []struct {
+		actions []string
+		want    bool
+	}{
+		{nil, false},
+		{[]string{"default", "Open"}, true},
+		{[]string{"reply", "Reply", "default", "Open"}, true},
+		// A label is not a key. Reading every position would make "default" as
+		// a button's text look like an action that can be invoked.
+		{[]string{"open", "default"}, false},
+		{[]string{"archive", "Archive"}, false},
+	} {
+		sink := &fakeSink{}
+		if _, derr := notifier(sink).Notify(peer, "app", 0, "", "hello", "", tc.actions, nil, -1); derr != nil {
+			t.Fatal(derr)
+		}
+		if got := sink.got[0].Action; got != tc.want {
+			t.Errorf("actions %v gave Action = %v, want %v", tc.actions, got, tc.want)
+		}
+	}
+}
+
+// Invoking is how the notification center acts on a row: the sender hears
+// ActionInvoked with the id it was given and the key the spec fixes, which is
+// the only thing that makes a notification something you can answer rather
+// than only something you can read.
+func TestInvokeTellsTheSender(t *testing.T) {
+	n, _ := watched(&fakeSink{})
+	var fired []string
+	n.server.act = func(id uint64, key string) {
+		fired = append(fired, strconv.FormatUint(id, 10)+" "+key)
+	}
+	id, derr := n.Notify(peer, "Fractal", 0, "", "Ilya: about the invoice", "",
+		[]string{"default", "Open"}, nil, -1)
+	if derr != nil {
+		t.Fatal(derr)
+	}
+	if err := n.server.Invoke(uint64(id)); err != nil {
+		t.Fatalf("invoking a notification whose sender is still there: %v", err)
+	}
+	want := strconv.FormatUint(uint64(id), 10) + " " + DefaultAction
+	if len(fired) != 1 || fired[0] != want {
+		t.Errorf("emitted %v, want one %q", fired, want)
+	}
+}
+
+// A signal is a broadcast: one sent for an app that has exited goes out and is
+// heard by nobody, and the person is left looking at a row that did something
+// invisible. The refusal is what the center puts on the screen.
+func TestInvokeRefusesWhenTheAppHasGone(t *testing.T) {
+	n, _ := watched(&fakeSink{})
+	fired := 0
+	n.server.act = func(uint64, string) { fired++ }
+	n.server.holds = func(dbus.Sender) bool { return false }
+	id, derr := n.Notify(peer, "app", 0, "", "gone by now", "", []string{"default", "Open"}, nil, -1)
+	if derr != nil {
+		t.Fatal(derr)
+	}
+	err := n.server.Invoke(uint64(id))
+	if err == nil {
+		t.Fatal("invoking an action on an app that has exited was reported as done")
+	}
+	if !strings.Contains(err.Error(), "exited") {
+		t.Errorf("refusal = %q, want it to say the app has gone", err)
+	}
+	if fired != 0 {
+		t.Errorf("emitted %d signals into nothing", fired)
+	}
+}
+
+// An id nothing is holding any more - replaced, or finished - has no sender to
+// tell. Emitting anyway would address whatever notification later takes that
+// number, which is the same reuse the replaces path is scoped to sender to
+// prevent.
+func TestInvokeRefusesAnIDNobodyHolds(t *testing.T) {
+	n, _ := watched(&fakeSink{})
+	fired := 0
+	n.server.act = func(uint64, string) { fired++ }
+	if err := n.server.Invoke(4242); err == nil {
+		t.Error("invoking an id the server never handed out was reported as done")
+	}
+	if fired != 0 {
+		t.Errorf("emitted %d signals for an id nobody holds", fired)
 	}
 }

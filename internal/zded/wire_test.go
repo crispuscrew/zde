@@ -50,3 +50,34 @@ func TestTheBarAsksForMethodsThatExist(t *testing.T) {
 		}
 	}
 }
+
+// The same hole, one door along: an event kind is a string in the Go source and
+// a string in the QML, and nothing compiles either against the other. Renaming
+// EventCenter would leave zded broadcasting a kind the shell ignores, so Mod+n
+// would open nothing and print nothing - and every test in the repo would stay
+// green, because the daemon's half still works perfectly.
+func TestTheBarListensForEventsThatExist(t *testing.T) {
+	path := filepath.Join("..", "..", "shell", "shell.qml")
+	src, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	// How the QML asks: msg.event.kind === "picker".
+	re := regexp.MustCompile(`\.kind\s*===\s*"([a-z-]+)"`)
+	found := re.FindAllStringSubmatch(string(src), -1)
+	if len(found) == 0 {
+		t.Fatalf("no event kind found in %s, so this test is checking nothing: "+
+			"either the shell stopped reading events, and this test should go, "+
+			"or it spells the comparison differently now", path)
+	}
+	kinds := map[string]bool{EventPicker: true, EventWindows: true, EventCenter: true}
+	for _, m := range found {
+		if !kinds[m[1]] {
+			t.Errorf("the shell listens for the event kind %q and zded never sends it", m[1])
+		}
+		delete(kinds, m[1])
+	}
+	for kind := range kinds {
+		t.Errorf("zded sends the event kind %q and nothing in the shell draws it", kind)
+	}
+}

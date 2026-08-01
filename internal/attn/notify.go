@@ -38,6 +38,13 @@ const (
 	ReasonClosed    = 3 // the sending app called CloseNotification
 )
 
+// DefaultAction is the spec's name for the action a notification means when it
+// is chosen rather than when a button on it is pressed: open the message, show
+// the download. It is the one zde can invoke, because the notification center
+// is a list of rows and Enter is choosing a row - there is nowhere yet for the
+// other actions to be buttons.
+const DefaultAction = "default"
+
 // summaryMax bounds what one notification puts on one line of the queue,
 // counted the way a person counts: in characters. An app that sends an essay
 // gets the front of it.
@@ -62,8 +69,17 @@ type Notification struct {
 	// the notification center that will show it does not exist yet.
 	Body string
 	// Urgent is the spec's urgency 2 (critical). Apps use it for what should
-	// interrupt rather than wait, and attn's modes will read it.
+	// interrupt rather than wait, and focus mode is what reads it (mode.go).
 	Urgent bool
+	// Action says the sender declared the default action, so choosing this in
+	// the notification center has something to invoke.
+	//
+	// Most senders will not declare one. GetCapabilities does not claim
+	// "actions", so an app that asks before it sends is told no - and that is
+	// the honest answer while nothing draws a button. What this buys is the
+	// apps that send a default action anyway: they get the one action a list of
+	// rows can offer, instead of it being dropped on the floor.
+	Action bool
 }
 
 // Sink is where a notification goes. attn does not own the queue - the journal
@@ -83,6 +99,12 @@ type Server struct {
 	// emit sends NotificationClosed. A field rather than a call on the
 	// connection so that what is emitted can be watched without a bus.
 	emit func(id uint64, reason uint32)
+	// act sends ActionInvoked, the other half of the same arrangement.
+	act func(id uint64, key string)
+	// holds says whether a bus name still has an owner, which is how invoking
+	// an action can tell "sent" from "sent to nobody". A field for the same
+	// reason as the two above.
+	holds func(sender dbus.Sender) bool
 
 	mu sync.Mutex
 	// mine is what each connection has called its own notifications: sender
@@ -114,6 +136,21 @@ func Serve(sink Sink, version string) (*Server, error) {
 	s := &Server{conn: conn, sink: sink, version: version, mine: map[owned]uint64{}}
 	s.emit = func(id uint64, reason uint32) {
 		conn.Emit(busPath, busIface+".NotificationClosed", uint32(id), reason)
+	}
+	s.act = func(id uint64, key string) {
+		conn.Emit(busPath, busIface+".ActionInvoked", uint32(id), key)
+	}
+	// NameHasOwner, asked of the bus itself. A signal is a broadcast and says
+	// nothing about who heard it, so this is the only way to tell somebody that
+	// the app they are trying to act on has exited. A bus that will not answer
+	// counts as still there: refusing to invoke because the check failed would
+	// turn a bad moment on the bus into a key that does nothing.
+	s.holds = func(sender dbus.Sender) bool {
+		var has bool
+		if err := conn.BusObject().Call("org.freedesktop.DBus.NameHasOwner", 0, string(sender)).Store(&has); err != nil {
+			return true
+		}
+		return has
 	}
 	// Exported through a type that has these four methods and nothing else.
 	// ExportAll puts every exported method of what it is given on the bus, so
@@ -159,6 +196,47 @@ func (s *Server) Dismissed(id uint64) {
 	s.emitClosed(id, ReasonDismissed)
 }
 
+// Invoke fires a notification's default action: the thing its sender meant by
+// "if you choose this, do that". It is what Enter does in the notification
+// center.
+//
+// It refuses rather than emitting into nothing. ActionInvoked is a broadcast,
+// so a signal for an app that has exited goes out and is heard by nobody, and
+// the person is left looking at a row that did something invisible. The two
+// refusals are different facts and say so: nothing is holding this id any more
+// (it was replaced, or finished), and the app that sent it has gone.
+func (s *Server) Invoke(id uint64) error {
+	sender, ok := s.senderOf(id)
+	if !ok {
+		return fmt.Errorf("nothing on the bus is holding notification %d any more", id)
+	}
+	// Only where there is a bus to ask. A server built without a connection is
+	// a test one, and treating that as "the app is gone" would make this method
+	// untestable rather than safe.
+	if s.holds != nil && !s.holds(sender) {
+		return fmt.Errorf("the app that sent this has exited, so there is nothing left to act on")
+	}
+	if s.act == nil {
+		return errors.New("no bus to invoke it on")
+	}
+	s.act(id, DefaultAction)
+	return nil
+}
+
+// senderOf is the connection that sent the notification with this id. The map
+// is keyed the other way round because everything else asks the other question;
+// this is the one caller that has an id and wants the app.
+func (s *Server) senderOf(id uint64) (dbus.Sender, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k, v := range s.mine {
+		if v == id {
+			return k.sender, true
+		}
+	}
+	return "", false
+}
+
 func (s *Server) emitClosed(id uint64, reason uint32) {
 	if s.emit == nil {
 		return
@@ -182,8 +260,10 @@ func (s *Server) forget(id uint64) {
 type notifications struct{ server *Server }
 
 // Notify is the spec's one method that matters. The arguments are its order,
-// not ours: icon, actions and timeout are accepted and dropped, because a
-// queue has nowhere to put them until the notification center exists.
+// not ours: icon and timeout are accepted and dropped, because a queue has
+// nowhere to put them. Of the actions, only whether there is a default one is
+// kept - that is the single action a list of rows can offer (see Invoke), and
+// the labels belong to buttons nothing draws yet.
 func (n *notifications) Notify(
 	sender dbus.Sender,
 	app string,
@@ -225,6 +305,7 @@ func (n *notifications) Notify(
 		Text:   text,
 		Body:   rest,
 		Urgent: urgency(hints) == 2,
+		Action: hasDefault(actions),
 	})
 	if err != nil {
 		return 0, dbus.MakeFailedError(err)
@@ -263,8 +344,26 @@ func (n *notifications) CloseNotification(sender dbus.Sender, id uint32) *dbus.E
 // GetCapabilities says what this server does, and only that. Claiming actions
 // would make apps send buttons nothing can press (docs/roadmap.md,
 // cross-cutting: where a mechanism is partial, say so).
+//
+// Still not claimed, now that the center can invoke the default action: the
+// capability means every action will be offered, and a list of rows offers one.
+// It goes in the day the center draws the rest of them, and until then an app
+// that asks gets the answer that matches what it would see.
 func (n *notifications) GetCapabilities() ([]string, *dbus.Error) {
 	return []string{"body", "persistence"}, nil
+}
+
+// hasDefault reports whether the sender declared the default action. The spec
+// sends actions as pairs - key, label, key, label - so only the even positions
+// are keys, and a list with an odd length has a label missing rather than a key
+// to read.
+func hasDefault(actions []string) bool {
+	for i := 0; i+1 < len(actions); i += 2 {
+		if actions[i] == DefaultAction {
+			return true
+		}
+	}
+	return false
 }
 
 // GetServerInformation is what an app reads to decide what to send.
@@ -381,6 +480,10 @@ func introspectable() introspectXML {
     <signal name="NotificationClosed">
       <arg name="id" type="u"/>
       <arg name="reason" type="u"/>
+    </signal>
+    <signal name="ActionInvoked">
+      <arg name="id" type="u"/>
+      <arg name="action_key" type="s"/>
     </signal>
   </interface>
 </node>`)

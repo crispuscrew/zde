@@ -4,13 +4,19 @@
 // `zde queue add` and every notification the session receives land in it, and
 // until now the only way to know was to go and ask.
 //
-// The mic is here now, and it is the PipeWire subscription this note used to
-// say it wanted rather than a poll of wpctl. Two states are worth a word on the
-// strip - muted, and something holding the microphone - and it is empty for the
-// rest.
+// And the attn mode beside it, which is the other half of the same question:
+// the queue says what is waiting, the mode says what is allowed to arrive. "Why
+// has nothing come in all afternoon" is exactly what principle 4 means by
+// something a keypress depends on, and Mod+q changes it from anywhere.
 //
-// The mode is the one the principle names that is still not stubbed here: it
-// has one value until the input daemon lands, so it arrives with what owns it.
+// The mic is here too, and it is the PipeWire subscription this note used to
+// say it wanted rather than a poll of wpctl: muted, and something holding the
+// microphone, are the two states worth a word on the strip, and it is empty for
+// the rest.
+//
+// The input mode (Normal, Window, Kb-mouse, One-hand, Passthrough) is a
+// different thing with the same name, and it is the one still not here: it
+// needs the input daemon, so it arrives with what owns it.
 pragma ComponentBehavior: Bound
 
 import QtQuick
@@ -30,6 +36,12 @@ ShellRoot {
     property int urgent: 0
     property bool linked: false
     property bool known: false
+    // The attn mode, and whether zded has said. Same bargain as the count: a
+    // mode left on the bar after the daemon stopped answering is worse than no
+    // mode at all, because this is the line somebody reads to decide whether to
+    // trust the silence.
+    property string mode: ""
+    property bool modeKnown: false
     // What a panel actually came up as, reported back for the same reason the
     // count is: a strip of zero height, or one reserving nothing, is on the
     // screen as far as the compositor's layer list is concerned and invisible
@@ -200,6 +212,8 @@ ShellRoot {
         onConnectionStateChanged: {
             if (stream.connected)
                 stream.write('{"method":"events"}\n');
+            else
+                root.modeKnown = false;
         }
 
         parser: SplitParser {
@@ -210,14 +224,40 @@ ShellRoot {
                 } catch (e) {
                     return;
                 }
+                if (!msg)
+                    return;
+                // The mode, which is asked on this connection rather than the
+                // bar's: the bar's parser reads every reply as a queue listing.
+                // Recognised by its shape, because the protocol has no request
+                // ids and this connection carries the replies to everything the
+                // surfaces ask for.
+                if (msg.ok && msg.ok.mode !== undefined) {
+                    root.mode = msg.ok.mode;
+                    root.modeKnown = true;
+                    return;
+                }
+                // A refusal. Attributed to the center, which is the only
+                // surface here that asks for something that can fail while it
+                // is on the screen - and a refusal it swallowed would be a key
+                // that did nothing (docs/vision.md, principle 4). A refusal
+                // arriving from anything else while the center is up would land
+                // on it too, which is the price of a protocol with no request
+                // ids and is worth less than the silence.
+                if (msg.error !== undefined) {
+                    if (center.visible)
+                        center.note = msg.error;
+                    return;
+                }
                 // Replies to our own subscribe arrive here too; only the lines
                 // carrying an event are events.
-                if (!msg || !msg.event)
+                if (!msg.event)
                     return;
                 if (msg.event.kind === "picker")
                     root.openPicker(msg.event);
                 else if (msg.event.kind === "windows")
                     root.openWindows(msg.event);
+                else if (msg.event.kind === "notif-center")
+                    root.openCenter(msg.event);
             }
         }
     }
@@ -231,8 +271,15 @@ ShellRoot {
         running: true
         repeat: true
         onTriggered: {
-            if (!stream.connected)
+            if (!stream.connected) {
                 stream.connected = true;
+                return;
+            }
+            // And the mode, on the same tick. It changes from a keybind rather
+            // than from anything the shell did, so the bar has to ask - and
+            // asking here rather than on the bar's own connection keeps the
+            // reply away from a parser that reads every answer as a queue.
+            stream.write('{"method":"attn.mode"}\n');
         }
     }
 
@@ -266,18 +313,42 @@ ShellRoot {
                 })), "");
     }
 
+    // What arrived, for the notification center. The rows go over as they came
+    // off the socket: this shell decides nothing about them, and the surface
+    // knows how to read one.
+    function openCenter(ev) {
+        center.screen = root.screenFor(ev);
+        center.show(ev.notifications ?? [], ev.token ?? "");
+    }
+
     // One instance and not one per screen: it appears on the screen zded says
     // is being looked at, because a picker on every monitor is not a picker. An
     // unknown output falls back to the first screen, which on one monitor is
     // the right answer and on several is at least a screen.
     function showPicker(ev, kind, rows, here) {
-        let want = null;
+        picker.screen = root.screenFor(ev);
+        picker.show(kind, rows, here, ev.token ?? "");
+    }
+
+    // The screen an event asks for. One answer for every surface: two copies of
+    // this would be two ideas about which monitor is being looked at.
+    function screenFor(ev) {
         for (const s of Quickshell.screens) {
             if (s.name === ev.output)
-                want = s;
+                return s;
         }
-        picker.screen = want ?? Quickshell.screens[0] ?? null;
-        picker.show(kind, rows, here, ev.token ?? "");
+        return Quickshell.screens[0] ?? null;
+    }
+
+    // What a surface asks zded to do, on the stream connection and not the
+    // bar's: the bar's parser reads whatever arrives as a queue listing, so a
+    // reply landing there made the bar say "1 waiting" about an empty queue for
+    // two seconds. The stream's parser knows the difference.
+    function send(req) {
+        if (stream.connected)
+            stream.write(JSON.stringify(req) + "\n");
+        else
+            console.warn("zde: " + req.method + " with no connection to zded");
     }
 
     // The one process this shell starts. Everything else it does is a line on a
@@ -295,19 +366,10 @@ ShellRoot {
             // window are both zded's, over the same socket everything else uses
             // (docs/vision.md, section 2 - the shell is a thin adapter with
             // zero logic inside).
-            //
-            // On the stream connection and not the bar's. The reply to this is
-            // the list of workspaces it focused, and the bar's parser reads
-            // whatever arrives as a queue listing - so picking a desk made the
-            // bar say "1 waiting" for two seconds about a queue that was empty.
-            // The stream's parser ignores any line with no event in it.
-            if (stream.connected)
-                stream.write(JSON.stringify({
-                    method: root.pickMethod,
-                    args: [key]
-                }) + "\n");
-            else
-                console.warn("zde: picked " + key + " with no connection to zded");
+            root.send({
+                method: root.pickMethod,
+                args: [key]
+            });
         }
         onDismissed: picker.hide()
 
@@ -323,13 +385,37 @@ ShellRoot {
 
         // The asker is waiting on this, briefly, to find out whether anything
         // came of the event it sent.
-        onShown: token => {
-            if (stream.connected)
-                stream.write(JSON.stringify({
-                    method: "shown",
-                    args: [token]
-                }) + "\n");
-        }
+        onShown: token => root.send({
+            method: "shown",
+            args: [token]
+        })
+    }
+
+    NotifCenter {
+        id: center
+
+        // Enter on a row. zded decides whether there is anything to invoke and
+        // says so if not - the surface has already refused the rows it can see
+        // have no action, and this is the half only the bus knows: whether the
+        // app that sent it is still there to hear.
+        onInvoke: which => root.send({
+            method: "attn.invoke",
+            args: [which]
+        })
+
+        // d. The same verb the queue has, because it is the same act: this
+        // notification is not waiting any more, and whoever sent it gets told
+        // on the bus (internal/zded, queue.done).
+        onDrop: which => root.send({
+            method: "queue.done",
+            args: [which]
+        })
+        onDismissed: center.hide()
+
+        onShown: token => root.send({
+            method: "shown",
+            args: [token]
+        })
     }
 
     // How a test can ask the bar what it is showing, rather than only whether
@@ -470,6 +556,8 @@ ShellRoot {
             }
 
             Text {
+                id: queueLine
+
                 anchors.left: parent.left
                 anchors.leftMargin: 10
                 anchors.verticalCenter: parent.verticalCenter
@@ -487,6 +575,32 @@ ShellRoot {
                     return root.urgent > 0 ? n + "  !" + root.urgent : n;
                 }
                 color: root.urgent > 0 ? "#e5484d" : (root.linked && root.known ? "#c9ccd4" : "#7a7f8a")
+                font.pixelSize: 13
+                font.family: "monospace"
+            }
+
+            // The attn mode, next to the queue it governs. Named rather than
+            // shown as a symbol, and in the same word `zde attn` prints, so
+            // that what is on the bar and what the CLI says are one vocabulary.
+            //
+            // Nothing at all until zded has answered - the `known` pattern the
+            // count uses. A bar still reading "quiet" after the daemon went
+            // away would be the most expensive stale value on the strip: it is
+            // the line that explains an empty afternoon.
+            Text {
+                id: attnMode
+
+                anchors.left: queueLine.right
+                anchors.leftMargin: 16
+                anchors.verticalCenter: parent.verticalCenter
+                visible: root.linked && root.modeKnown
+
+                text: "attn " + root.mode
+                // Loud for the two modes that are holding things back, quiet
+                // for the one that is not: work is the state nobody needs
+                // reminding of, and the other two are the answer to a question
+                // somebody is about to ask.
+                color: root.mode === "work" ? "#7a7f8a" : "#e5a23d"
                 font.pixelSize: 13
                 font.family: "monospace"
             }
