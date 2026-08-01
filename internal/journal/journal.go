@@ -23,8 +23,19 @@ import (
 	"github.com/crispuscrew/zde/internal/desk"
 )
 
-// compactAt is when a replay is long enough to be worth rewriting. Desk
-// switches are human-paced, so this is days of use, not minutes.
+// compactAt is when a replay is long enough to be worth rewriting.
+//
+// It was chosen when the journal held desk switches, which are human-paced, and
+// on that traffic it is days of use. It is not any more: every notification
+// writes a line here too, a queued one to record the item and a silenced one to
+// spend its id, so a machine that receives a hundred notifications a minute
+// passes a thousand entries in ten.
+//
+// What that costs is a longer replay at the next login, and a file that grows
+// for as long as the session runs - compaction happens at Open and nowhere
+// else, so nothing shortens it in between. Not fixed here: compacting under a
+// running daemon means rewriting the file every zded is appending to, and that
+// is a change to make on purpose rather than as a footnote to the modes.
 const compactAt = 1000
 
 // entry is one line of the journal.
@@ -39,6 +50,10 @@ type entry struct {
 	Body    string `json:"body,omitempty"`
 	From    string `json:"from,omitempty"`
 	Urgent  bool   `json:"urgent,omitempty"`
+	// Mode is the attn mode a "mode" entry sets. Its own field rather than
+	// borrowed from To: a mode is not a workspace name, and a reader looking at
+	// the file should not have to know which kinds put what where.
+	Mode string `json:"mode,omitempty"`
 }
 
 const (
@@ -49,6 +64,7 @@ const (
 	kindQueued   = "queued"   // something is waiting, and which desk it waits on
 	kindDone     = "done"     // it is not waiting any more
 	kindLastID   = "lastid"   // the highest queue id handed out, so none repeats
+	kindMode     = "mode"     // what arrivals are allowed to do (internal/attn)
 )
 
 // State is what the journal remembers. It is a value: callers get a copy and
@@ -67,6 +83,15 @@ type State struct {
 	// what you were interrupted by is worth as much tomorrow morning as it
 	// was last night (docs/model.md, section 3).
 	Queue []Item
+	// Mode is the attn mode: what an arrival is allowed to do (internal/attn).
+	// Here rather than in the daemon's memory because a mode that resets to the
+	// default when zded restarts is a mode that lies about why nothing is
+	// arriving - and zded restarts on every rebuild that touches it.
+	//
+	// Kept as the string it was given. The journal has no opinion about which
+	// modes exist; whoever reads it parses, and an entry from a newer zde
+	// replays into a name this one does not know rather than into a refusal.
+	Mode string
 }
 
 // Item is one thing waiting. The desk is where it belongs, which is what
@@ -79,9 +104,10 @@ type Item struct {
 	// From is what sent it, as it described itself. Empty when a person typed
 	// it. Nothing verifies it - see internal/attn.
 	From string `json:"from,omitempty"`
-	// Body is the rest of what was sent, kept but not shown: a notification is
-	// meant to land in history with its full text (docs/vision.md, principle
-	// 3), and the notification center that will show it does not exist yet.
+	// Body is the rest of what was sent, kept but not shown here: `zde queue`
+	// is one line an item, and the rest of the message is the notification
+	// center's to show (internal/attn, Record). Bounded where it arrives, at a
+	// few thousand characters rather than the summary's few hundred.
 	Body string `json:"body,omitempty"`
 	// Urgent is the sender's claim that this should interrupt rather than
 	// wait. It is a claim too, and attn's modes are what will act on it.
@@ -208,6 +234,8 @@ func (j *Journal) apply(e entry) {
 		if e.ID > j.lastID {
 			j.lastID = e.ID
 		}
+	case kindMode:
+		j.state.Mode = e.Mode
 	case kindDone:
 		for i, it := range j.state.Queue {
 			if it.ID == e.ID {
@@ -254,6 +282,7 @@ func (j *Journal) State() State {
 		LastActive: make(map[string]map[string]string, len(j.state.LastActive)),
 		LastDesk:   j.state.LastDesk,
 		OnDesk:     j.state.OnDesk,
+		Mode:       j.state.Mode,
 		Queue:      append([]Item(nil), j.state.Queue...),
 	}
 	for d, byMonitor := range j.state.LastActive {
@@ -312,6 +341,33 @@ func (j *Journal) Queue(it Item) (Item, error) {
 		return Item{}, err
 	}
 	return it, nil
+}
+
+// ClaimID hands out an id without queueing anything, and records that it is
+// spent.
+//
+// A notification a mode kept out of the queue still needs a number: the app
+// that sent it addresses it by one on the bus, and the notification center
+// dismisses it by one. Taking that number from the same counter the queue uses
+// is what keeps the two from colliding - a reused id would let an app close a
+// reminder somebody typed, which is the exact thing internal/attn scopes its
+// replaces to sender to prevent.
+func (j *Journal) ClaimID() (uint64, error) {
+	// One lock over reading and claiming, for the reason Queue has: two
+	// arrivals at once would otherwise take the same number.
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	id := j.lastID + 1
+	if err := j.recordLocked(entry{Kind: kindLastID, ID: id}); err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
+// SetMode records what arrivals are allowed to do. Written down rather than
+// held in the daemon, so a zded restart comes back in the mode you left it in.
+func (j *Journal) SetMode(mode string) error {
+	return j.record(entry{Kind: kindMode, Mode: mode})
 }
 
 // Done takes something off the queue. Unknown ids are not an error: the thing
@@ -393,6 +449,14 @@ func (j *Journal) compactLocked() error {
 	}
 	if j.state.OnDesk != "" {
 		if err := write(entry{Kind: kindOnDesk, Desk: j.state.OnDesk}); err != nil {
+			return err
+		}
+	}
+	// The mode, or a compaction would silently put the session back in the
+	// default - which is the one failure a persisted mode exists to prevent,
+	// arriving at whatever moment the journal happened to get long enough.
+	if j.state.Mode != "" {
+		if err := write(entry{Kind: kindMode, Mode: j.state.Mode}); err != nil {
 			return err
 		}
 	}

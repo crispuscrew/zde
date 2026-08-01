@@ -2433,7 +2433,7 @@ func TestNotificationKeepsTheBody(t *testing.T) {
 func TestQueueDoneTellsTheSender(t *testing.T) {
 	s, jrn, _ := queueTestServer(t, "vshop.DP-1.code")
 	told := []uint64{}
-	s.Watching(tellTale{&told})
+	s.Watching(tellTale{ids: &told})
 	it, _ := jrn.Queue(journal.Item{Text: "waiting on you", From: "app"})
 	c, err := DialPath(serve(t, s))
 	if err != nil {
@@ -2448,9 +2448,35 @@ func TestQueueDoneTellsTheSender(t *testing.T) {
 	}
 }
 
-type tellTale struct{ ids *[]uint64 }
+// tellTale is the bus, watched: what zded told the sender, and about what.
+type tellTale struct {
+	ids *[]uint64
+	// invoked is what was pressed, as "id key", and err is what the bus said
+	// about it - an app that has exited is a refusal, not a silence. The key is
+	// kept because a center that offers three buttons and always sends the
+	// default would archive what somebody meant to reply to.
+	invoked *[]string
+	// forgotten is the ids the daemon said nothing can address any more.
+	forgotten *[]uint64
+	err       error
+}
 
 func (t tellTale) Dismissed(id uint64) { *t.ids = append(*t.ids, id) }
+
+// Forget is the bus side being told a notification has fallen out of the
+// history, which is the only thing that prunes what it remembers about senders.
+func (t tellTale) Forget(id uint64) {
+	if t.forgotten != nil {
+		*t.forgotten = append(*t.forgotten, id)
+	}
+}
+
+func (t tellTale) Invoke(id uint64, key string) error {
+	if t.invoked != nil {
+		*t.invoked = append(*t.invoked, strconv.FormatUint(id, 10)+" "+key)
+	}
+	return t.err
+}
 
 // An app taking its own notification back.
 func TestNotificationClosed(t *testing.T) {
