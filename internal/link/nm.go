@@ -72,10 +72,45 @@ const (
 	activeDeactivated = 4
 )
 
-// askFor bounds every call to NetworkManager. zded answers keybinds on one
-// socket, and a bus call with no deadline is a keypress that never comes back
-// if NetworkManager wedges - which it can, waiting on a driver.
+// askFor bounds a whole question put to NetworkManager, and not each call
+// inside it. zded answers keybinds on one socket, and a bus call with no
+// deadline is a keypress that never comes back if NetworkManager wedges -
+// which it can, waiting on a driver.
+//
+// One budget for the question, because the arithmetic of the other way is
+// worth writing down. Listing a room with thirty access points and eight saved
+// networks is about forty-five calls: the device list, a property read per
+// device, the access points, a property read for each of them, and one
+// GetSettings per saved profile. A deadline per call makes the ceiling
+// forty-five times this, against a client that gives up after five seconds
+// (internal/zded, Client.Call) - so on a wedged NetworkManager the caller sees
+// a timeout while zded grinds on for a minute and a half behind it, once per
+// keypress. With one budget the ceiling is the number written here.
+//
+// It buys nothing in the ordinary case: forty-five calls on a local system bus
+// are milliseconds. It is the wedged case it is for, which is the only one
+// where any of these numbers matter.
 const askFor = 2 * time.Second
+
+// within opens a budget for one question. Every call made under it shares the
+// deadline, so a question is bounded by askFor however many calls it takes.
+func (m *NM) within() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), askFor)
+}
+
+// carryOn decides what an object that will not answer means.
+//
+// One that went away between the listing and the question is skipped, and
+// carrying on is right: a USB dongle being unplugged and an access point that
+// stopped broadcasting are both ordinary. A budget that has run out is not,
+// because every remaining object would be skipped the same way and the answer
+// would be half a room with nothing on it to say that it was half.
+func carryOn(ctx context.Context, what string) error {
+	if ctx.Err() == nil {
+		return nil
+	}
+	return fmt.Errorf("NetworkManager did not finish saying %s within %s", what, askFor)
+}
 
 // NM is NetworkManager on the system bus.
 type NM struct {
@@ -120,9 +155,7 @@ func Open() (Manager, error) {
 // link for the rest of the session.
 func (m *NM) Alive() bool { return m.conn != nil && m.conn.Connected() }
 
-func (m *NM) call(path dbus.ObjectPath, method string, out []any, args ...any) error {
-	ctx, cancel := context.WithTimeout(context.Background(), askFor)
-	defer cancel()
+func (m *NM) call(ctx context.Context, path dbus.ObjectPath, method string, out []any, args ...any) error {
 	c := m.conn.Object(nmService, path).CallWithContext(ctx, method, 0, args...)
 	if c.Err != nil {
 		return c.Err
@@ -136,15 +169,15 @@ func (m *NM) call(path dbus.ObjectPath, method string, out []any, args ...any) e
 // props reads every property of one interface in one call. One round trip per
 // object rather than five: a busy room is thirty access points, and thirty
 // objects at five calls each is a widget that opens slowly for no reason.
-func (m *NM) props(path dbus.ObjectPath, iface string) (map[string]dbus.Variant, error) {
+func (m *NM) props(ctx context.Context, path dbus.ObjectPath, iface string) (map[string]dbus.Variant, error) {
 	var out map[string]dbus.Variant
-	err := m.call(path, propsGetAll, []any{&out}, iface)
+	err := m.call(ctx, path, propsGetAll, []any{&out}, iface)
 	return out, err
 }
 
-func (m *NM) prop(path dbus.ObjectPath, iface, name string, into any) error {
+func (m *NM) prop(ctx context.Context, path dbus.ObjectPath, iface, name string, into any) error {
 	var v dbus.Variant
-	if err := m.call(path, propsGet, []any{&v}, iface, name); err != nil {
+	if err := m.call(ctx, path, propsGet, []any{&v}, iface, name); err != nil {
 		return err
 	}
 	return v.Store(into)
@@ -186,18 +219,22 @@ type device struct {
 	state int
 }
 
-func (m *NM) devices() ([]device, error) {
+func (m *NM) devices(ctx context.Context) ([]device, error) {
 	var paths []dbus.ObjectPath
-	if err := m.call(nmPath, nmIface+".GetDevices", []any{&paths}); err != nil {
+	if err := m.call(ctx, nmPath, nmIface+".GetDevices", []any{&paths}); err != nil {
 		return nil, err
 	}
 	out := make([]device, 0, len(paths))
 	for _, p := range paths {
-		props, err := m.props(p, devIface)
+		props, err := m.props(ctx, p, devIface)
 		if err != nil {
 			// A device that went away between the list and the question - a
 			// USB dongle being unplugged is exactly this. One missing device is
-			// not a reason to have no answer about the others.
+			// not a reason to have no answer about the others, and a spent
+			// budget is not a machine with no radio in it.
+			if err := carryOn(ctx, "which devices it has"); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		out = append(out, device{path: p, kind: num(props, "DeviceType"), state: num(props, "State")})
@@ -215,7 +252,9 @@ func (m *NM) devices() ([]device, error) {
 // two kinds of link can honestly say, and it is why the word for it on the bar
 // is "no network" and not "offline".
 func (m *NM) Status() (Status, error) {
-	devs, err := m.devices()
+	ctx, cancel := m.within()
+	defer cancel()
+	devs, err := m.devices(ctx)
 	if err != nil {
 		return Status{}, err
 	}
@@ -237,18 +276,18 @@ func (m *NM) Status() (Status, error) {
 		st.Kind = KindWifi
 		// A wifi link whose access point cannot be read is still a wifi link:
 		// the name and the bars are what is missing, not the connection.
-		st.SSID, st.Signal = m.activeAP(wifi.path)
+		st.SSID, st.Signal = m.activeAP(ctx, wifi.path)
 	}
 	return st, nil
 }
 
 // activeAP is the name and strength of what a wifi device is on.
-func (m *NM) activeAP(dev dbus.ObjectPath) (string, int) {
+func (m *NM) activeAP(ctx context.Context, dev dbus.ObjectPath) (string, int) {
 	var ap dbus.ObjectPath
-	if err := m.prop(dev, wifiIface, "ActiveAccessPoint", &ap); err != nil || ap == "" || ap == "/" {
+	if err := m.prop(ctx, dev, wifiIface, "ActiveAccessPoint", &ap); err != nil || ap == "" || ap == "/" {
 		return "", 0
 	}
-	props, err := m.props(ap, apIface)
+	props, err := m.props(ctx, ap, apIface)
 	if err != nil {
 		return "", 0
 	}
@@ -257,8 +296,8 @@ func (m *NM) activeAP(dev dbus.ObjectPath) (string, int) {
 }
 
 // wifiDevice is the radio, or the empty path on a machine with none.
-func (m *NM) wifiDevice() (dbus.ObjectPath, error) {
-	devs, err := m.devices()
+func (m *NM) wifiDevice(ctx context.Context) (dbus.ObjectPath, error) {
+	devs, err := m.devices(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -271,8 +310,26 @@ func (m *NM) wifiDevice() (dbus.ObjectPath, error) {
 }
 
 // List is what the radio can see.
+//
+// A call per access point, plus one per saved profile: about forty-five of them
+// in a busy building, all under one budget (see askFor). Most of that can be
+// flattened and is not, yet. NetworkManager implements ObjectManager at
+// /org/freedesktop, and one GetManagedObjects returns every device and every
+// access point with all their properties - which is the device list, the
+// property read per device, the access point list and the property read per
+// access point, in one call. What it cannot flatten is the saved half: the
+// settings of a profile come from a method and not a property, so the
+// GetSettings per saved network stays whatever else changes.
+//
+// Not done here because none of it can be tried on a machine with no
+// NetworkManager on it, and it would replace the four entry points at once on
+// the shape of a reply nothing in this checkout can print. It wants a laptop
+// under it, and it is worth roughly forty of the forty-five calls when it gets
+// one.
 func (m *NM) List() ([]Network, error) {
-	dev, err := m.wifiDevice()
+	ctx, cancel := m.within()
+	defer cancel()
+	dev, err := m.wifiDevice(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -285,19 +342,23 @@ func (m *NM) List() ([]Network, error) {
 	// NetworkManager refuses one it has just done, so waiting would make the
 	// widget slow exactly when it already has an answer. What this buys is the
 	// second look: open the widget again and the list is fresher.
-	m.call(dev, wifiIface+".RequestScan", nil, map[string]dbus.Variant{}) //nolint:errcheck // rate limited or not permitted: the cache is still an answer
+	m.call(ctx, dev, wifiIface+".RequestScan", nil, map[string]dbus.Variant{}) //nolint:errcheck // rate limited or not permitted: the cache is still an answer
 
 	var aps []dbus.ObjectPath
-	if err := m.call(dev, wifiIface+".GetAllAccessPoints", []any{&aps}); err != nil {
+	if err := m.call(ctx, dev, wifiIface+".GetAllAccessPoints", []any{&aps}); err != nil {
 		return nil, err
 	}
-	saved := m.savedProfiles()
-	here, _ := m.activeAP(dev)
+	saved := m.savedProfiles(ctx)
+	here, _ := m.activeAP(ctx, dev)
 	seen := make([]Network, 0, len(aps))
 	for _, p := range aps {
-		props, err := m.props(p, apIface)
+		props, err := m.props(ctx, p, apIface)
 		if err != nil {
-			continue // gone since the list was taken
+			// Gone since the list was taken, or the budget with it.
+			if err := carryOn(ctx, "what is in range"); err != nil {
+				return nil, err
+			}
+			continue
 		}
 		ssid, ok := printableSSID(raw(props, "Ssid"))
 		if !ok {
@@ -324,14 +385,14 @@ func (m *NM) List() ([]Network, error) {
 // Errors are dropped on purpose: a profile that cannot be read is a network
 // offered as unsaved, which costs a password prompt somebody can cancel.
 // Refusing the whole list over it would cost the list.
-func (m *NM) savedProfiles() map[string]dbus.ObjectPath {
+func (m *NM) savedProfiles(ctx context.Context) map[string]dbus.ObjectPath {
 	out := map[string]dbus.ObjectPath{}
 	var profiles []dbus.ObjectPath
-	if err := m.call(setPath, setIface+".ListConnections", []any{&profiles}); err != nil {
+	if err := m.call(ctx, setPath, setIface+".ListConnections", []any{&profiles}); err != nil {
 		return out
 	}
 	for _, p := range profiles {
-		ssid, ok := m.profileSSID(p)
+		ssid, ok := m.profileSSID(ctx, p)
 		if !ok {
 			continue
 		}
@@ -347,8 +408,8 @@ func (m *NM) savedProfiles() map[string]dbus.ObjectPath {
 //
 // GetSettings never returns secrets - the password is behind GetSecrets, which
 // nothing in zde calls.
-func (m *NM) profileSSID(p dbus.ObjectPath) (string, bool) {
-	settings, err := m.settingsOf(p)
+func (m *NM) profileSSID(ctx context.Context, p dbus.ObjectPath) (string, bool) {
+	settings, err := m.settingsOf(ctx, p)
 	if err != nil {
 		return "", false
 	}
@@ -363,9 +424,9 @@ func (m *NM) profileSSID(p dbus.ObjectPath) (string, bool) {
 	return printableSSID(ssid)
 }
 
-func (m *NM) settingsOf(p dbus.ObjectPath) (map[string]map[string]dbus.Variant, error) {
+func (m *NM) settingsOf(ctx context.Context, p dbus.ObjectPath) (map[string]map[string]dbus.Variant, error) {
 	var settings map[string]map[string]dbus.Variant
-	err := m.call(p, profIface+".GetSettings", []any{&settings})
+	err := m.call(ctx, p, profIface+".GetSettings", []any{&settings})
 	return settings, err
 }
 
@@ -375,15 +436,18 @@ func (m *NM) settingsOf(p dbus.ObjectPath) (map[string]map[string]dbus.Variant, 
 // The bytes and not the string: a new profile is made with the ssid as
 // NetworkManager stores it, and re-encoding the name we printed would be a
 // second guess at something we already have exactly right.
-func (m *NM) accessPoint(dev dbus.ObjectPath, ssid string) (dbus.ObjectPath, []byte, error) {
+func (m *NM) accessPoint(ctx context.Context, dev dbus.ObjectPath, ssid string) (dbus.ObjectPath, []byte, error) {
 	var aps []dbus.ObjectPath
-	if err := m.call(dev, wifiIface+".GetAllAccessPoints", []any{&aps}); err != nil {
+	if err := m.call(ctx, dev, wifiIface+".GetAllAccessPoints", []any{&aps}); err != nil {
 		return "", nil, err
 	}
 	best, bestBytes, bestSignal := dbus.ObjectPath(""), []byte(nil), -1
 	for _, p := range aps {
-		props, err := m.props(p, apIface)
+		props, err := m.props(ctx, p, apIface)
 		if err != nil {
+			if err := carryOn(ctx, "what is in range"); err != nil {
+				return "", nil, err
+			}
 			continue
 		}
 		broadcast := raw(props, "Ssid")
@@ -405,24 +469,32 @@ func (m *NM) accessPoint(dev dbus.ObjectPath, ssid string) (dbus.ObjectPath, []b
 // and never the password (see the tests in internal/zded, which read what the
 // daemon wrote down).
 func (m *NM) Connect(ssid, secret string) error {
-	dev, err := m.wifiDevice()
+	// One budget for working out what to activate and asking for it. Not for
+	// the wait that follows: settle is meant to take seconds, and it opens a
+	// budget per look (see below).
+	ctx, cancel := m.within()
+	dev, err := m.wifiDevice(ctx)
 	if err != nil {
+		cancel()
 		return err
 	}
 	if dev == "" {
+		cancel()
 		return errors.New("this machine has no wifi radio")
 	}
-	ap, apSSID, err := m.accessPoint(dev, ssid)
+	ap, apSSID, err := m.accessPoint(ctx, dev, ssid)
 	if err != nil {
+		cancel()
 		return err
 	}
 	if ap == "" {
 		// Out of range, or not broadcasting. Said before anything is attempted,
 		// because NetworkManager's own answer to this arrives late and reads
 		// like a failure to authenticate.
+		cancel()
 		return fmt.Errorf("no network in range is called %q", ssid)
 	}
-	profile := m.savedProfiles()[ssid]
+	profile := m.savedProfiles(ctx)[ssid]
 	var added, active dbus.ObjectPath
 	if profile != "" {
 		if secret != "" {
@@ -431,15 +503,21 @@ func (m *NM) Connect(ssid, secret string) error {
 			// second profile for the same network, which is what would
 			// otherwise pile up, and it keeps whatever else that profile says -
 			// a static address, a metric - which deleting it would throw away.
-			if err := m.setSecret(profile, secret); err != nil {
+			if err := m.setSecret(ctx, profile, secret); err != nil {
+				cancel()
 				return err
 			}
 		}
-		if err := m.call(nmPath, nmIface+".ActivateConnection", []any{&active}, profile, dev, ap); err != nil {
-			return err
-		}
-	} else if err := m.call(nmPath, nmIface+".AddAndActivateConnection", []any{&added, &active},
-		wifiSettings(ssid, apSSID, secret), dev, ap); err != nil {
+		err = m.call(ctx, nmPath, nmIface+".ActivateConnection", []any{&active}, profile, dev, ap)
+	} else {
+		err = m.call(ctx, nmPath, nmIface+".AddAndActivateConnection", []any{&added, &active},
+			wifiSettings(ssid, apSSID, secret), dev, ap)
+	}
+	// The request is in. Everything after this is watching, on budgets of its
+	// own, so the asking half's deadline is done with here rather than left to
+	// expire under the wait.
+	cancel()
+	if err != nil {
 		return err
 	}
 	err = m.settle(dev, active)
@@ -450,7 +528,9 @@ func (m *NM) Connect(ssid, secret string) error {
 		// the bad one for ever. Only ever the profile added here: one that was
 		// already on the machine is somebody's, and may be carrying more than a
 		// password.
-		m.call(added, profIface+".Delete", nil) //nolint:errcheck // already reporting the join's failure, which is the useful half
+		forget, cancelForget := m.within()
+		m.call(forget, added, profIface+".Delete", nil) //nolint:errcheck // already reporting the join's failure, which is the useful half
+		cancelForget()
 	}
 	return err
 }
@@ -484,8 +564,8 @@ func wifiSettings(ssid string, apSSID []byte, secret string) map[string]map[stri
 }
 
 // setSecret puts a new password on a profile that already exists.
-func (m *NM) setSecret(profile dbus.ObjectPath, secret string) error {
-	settings, err := m.settingsOf(profile)
+func (m *NM) setSecret(ctx context.Context, profile dbus.ObjectPath, secret string) error {
+	settings, err := m.settingsOf(ctx, profile)
 	if err != nil {
 		return err
 	}
@@ -498,7 +578,7 @@ func (m *NM) setSecret(profile dbus.ObjectPath, secret string) error {
 	}
 	sec["psk"] = dbus.MakeVariant(secret)
 	settings[groupSec] = sec
-	return m.call(profile, profIface+".Update", nil, settings)
+	return m.call(ctx, profile, profIface+".Update", nil, settings)
 }
 
 // How long a join is waited on, and how often it is asked about.
@@ -536,26 +616,9 @@ func (m *NM) settle(dev, active dbus.ObjectPath) error {
 	}
 	deadline := time.Now().Add(joinWait)
 	for {
-		var state uint32
-		err := m.prop(active, actIface, "State", &state)
-		switch {
-		case gone(err):
-			// The active connection is removed when an attempt fails, so its
-			// absence is the failure. The device kept the reason.
-			return errors.New(m.whyItFailed(dev))
-		case err != nil:
+		done, err := m.decided(dev, active)
+		if err != nil || done {
 			return err
-		case state == activeActivated:
-			return nil
-		case state == activeDeactivated:
-			return errors.New(m.whyItFailed(dev))
-		}
-		// Past IP config the password has been accepted, and what is left is an
-		// address. That is a joined network by every measure a person has, and
-		// waiting for DHCP here would spend the whole budget on the half that
-		// cannot fail for a reason anybody can act on.
-		if s, _ := m.deviceState(dev); s >= stateIPConfig && s <= stateActivated {
-			return nil
 		}
 		if !time.Now().Before(deadline) {
 			return ErrStillTrying
@@ -564,9 +627,40 @@ func (m *NM) settle(dev, active dbus.ObjectPath) error {
 	}
 }
 
+// decided is one look at whether the attempt is over, on a budget of its own.
+// Its own because settle is meant to span seconds and askFor is the bound on a
+// question, not on a wait: sharing one budget across the whole poll would end
+// the wait rather than the call it was meant to bound.
+func (m *NM) decided(dev, active dbus.ObjectPath) (bool, error) {
+	ctx, cancel := m.within()
+	defer cancel()
+	var state uint32
+	err := m.prop(ctx, active, actIface, "State", &state)
+	switch {
+	case gone(err):
+		// The active connection is removed when an attempt fails, so its
+		// absence is the failure. The device kept the reason.
+		return false, errors.New(m.whyItFailed(ctx, dev))
+	case err != nil:
+		return false, err
+	case state == activeActivated:
+		return true, nil
+	case state == activeDeactivated:
+		return false, errors.New(m.whyItFailed(ctx, dev))
+	}
+	// Past IP config the password has been accepted, and what is left is an
+	// address. That is a joined network by every measure a person has, and
+	// waiting for DHCP here would spend the whole wait on the half that cannot
+	// fail for a reason anybody can act on.
+	if s, _ := m.deviceState(ctx, dev); s >= stateIPConfig && s <= stateActivated {
+		return true, nil
+	}
+	return false, nil
+}
+
 // whyItFailed is the device's own account of what went wrong, in words.
-func (m *NM) whyItFailed(dev dbus.ObjectPath) string {
-	state, reason := m.deviceState(dev)
+func (m *NM) whyItFailed(ctx context.Context, dev dbus.ObjectPath) string {
+	state, reason := m.deviceState(ctx, dev)
 	if state == stateFailed || reason != 0 {
 		return refusal(reason)
 	}
@@ -576,16 +670,16 @@ func (m *NM) whyItFailed(dev dbus.ObjectPath) string {
 // deviceState is the device's state and the reason it is in it. StateReason
 // carries both from one read; a NetworkManager that will not answer it still
 // answers State, and a state with no reason is better than neither.
-func (m *NM) deviceState(dev dbus.ObjectPath) (state, reason int) {
+func (m *NM) deviceState(ctx context.Context, dev dbus.ObjectPath) (state, reason int) {
 	var sr struct {
 		State  uint32
 		Reason uint32
 	}
-	if err := m.prop(dev, devIface, "StateReason", &sr); err == nil {
+	if err := m.prop(ctx, dev, devIface, "StateReason", &sr); err == nil {
 		return int(sr.State), int(sr.Reason)
 	}
 	var s uint32
-	if err := m.prop(dev, devIface, "State", &s); err == nil {
+	if err := m.prop(ctx, dev, devIface, "State", &s); err == nil {
 		return int(s), 0
 	}
 	return 0, 0
@@ -594,7 +688,9 @@ func (m *NM) deviceState(dev dbus.ObjectPath) (state, reason int) {
 // Disconnect drops the wifi link and leaves the profile where it is, so the
 // network can be rejoined without typing anything again.
 func (m *NM) Disconnect() error {
-	dev, err := m.wifiDevice()
+	ctx, cancel := m.within()
+	defer cancel()
+	dev, err := m.wifiDevice(ctx)
 	if err != nil {
 		return err
 	}
@@ -602,13 +698,13 @@ func (m *NM) Disconnect() error {
 		return errors.New("this machine has no wifi radio")
 	}
 	var active dbus.ObjectPath
-	if err := m.prop(dev, devIface, "ActiveConnection", &active); err != nil {
+	if err := m.prop(ctx, dev, devIface, "ActiveConnection", &active); err != nil {
 		return err
 	}
 	if active == "" || active == "/" {
 		return errors.New("no wifi connection to drop")
 	}
-	return m.call(nmPath, nmIface+".DeactivateConnection", nil, active)
+	return m.call(ctx, nmPath, nmIface+".DeactivateConnection", nil, active)
 }
 
 // gone reports whether an error is D-Bus for "that object is not there any

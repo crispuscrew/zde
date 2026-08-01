@@ -1,6 +1,7 @@
 package link
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -122,5 +123,33 @@ func TestAVanishedObjectIsAnAnswerAndNotABrokenBus(t *testing.T) {
 	}
 	if gone(nil) {
 		t.Error("no error at all was read as an object that went away")
+	}
+}
+
+// Every enumeration here skips an object that will not answer, because an
+// access point that stopped broadcasting between the listing and the question
+// is ordinary. A budget that has run out looks identical from inside the loop
+// and means the opposite: every object after it will be skipped too. If this
+// regresses, a NetworkManager gone slow answers with three networks out of
+// thirty and nothing says the list is short - and a network missing from a list
+// is indistinguishable from one out of range, so the answer to it is to press
+// the key again and get the same short list.
+func TestASpentBudgetIsNotAVanishedAccessPoint(t *testing.T) {
+	live, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := carryOn(live, "what is in range"); err != nil {
+		t.Errorf("one access point that went away ended the whole list: %v", err)
+	}
+
+	spent, stop := context.WithCancel(context.Background())
+	stop()
+	err := carryOn(spent, "what is in range")
+	if err == nil {
+		t.Fatal("the budget ran out and the list came back looking whole")
+	}
+	// And it says which question ran out, because "NetworkManager was slow" is
+	// not something anybody can do anything with.
+	if !strings.Contains(err.Error(), "what is in range") {
+		t.Errorf("the refusal does not say what is missing from the answer: %v", err)
 	}
 }
