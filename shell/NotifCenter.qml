@@ -51,9 +51,10 @@ PanelWindow {
     readonly property int footer: 96
 
     // What this surface has to say back, shown under the rows. The one thing a
-    // read-only list cannot do is explain why a key did nothing, and most rows
-    // here have nothing to invoke - zde does not claim the notification spec's
-    // actions capability, so most apps never send one.
+    // list cannot do on its own is explain why a key did nothing: a row whose
+    // sender declared no actions, one whose sender has since exited, and a
+    // digit past the end of the actions it did declare all look identical until
+    // something says which it was.
     property string note: ""
 
     // What the event asked for, sent back once this is actually up. The asker
