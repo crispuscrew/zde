@@ -165,8 +165,8 @@ var registry = map[string]Entry{
 	"app.launch-at": {Group: "launch", Desc: "prompt for a location, then launch", Spawn: []string{"zde", "app", "launch-at"}, Arg: argName},
 
 	// ask: the quick LLM.
-	"ask.oneshot": {Group: "ask", Desc: "one-shot question popup", Spawn: []string{"zde", "ask", "oneshot"}},
-	"ask.panel":   {Group: "ask", Desc: "the ask panel", Spawn: []string{"zde", "ask", "panel"}},
+	"ask.oneshot": {Group: "ask", Desc: "one-shot question popup", Spawn: []string{"zde", "ask", "oneshot"}, written: true},
+	"ask.panel":   {Group: "ask", Desc: "the ask panel", Spawn: []string{"zde", "ask", "panel"}, written: true},
 
 	// pass: the trusted secrets window - the safe path for passwords. Types
 	// into the focused field over the clipboard's dead body (never touches
