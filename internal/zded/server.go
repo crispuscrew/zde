@@ -342,6 +342,16 @@ func (s *Server) handle(conn net.Conn) {
 			k.reply(ok("listening"))
 			continue
 		}
+		if req.Method == MethodAskRun {
+			// Answered by the connection, like events, and for a stronger
+			// reason: the answer is a stream of lines to this connection alone,
+			// and it takes as long as a model takes. In a goroutine so that this
+			// read loop keeps answering meanwhile - the shell acknowledges a
+			// picker on the connection it asks on, and a twenty second answer
+			// must not be what Mod+Tab waits for.
+			go s.askRun(k, req.Args)
+			continue
+		}
 		k.reply(s.Dispatch(req))
 	}
 }
@@ -397,6 +407,22 @@ func (s *Server) Dispatch(req Request) Response {
 			return Response{Error: "desk.switcher takes no arguments"}
 		}
 		return s.switcher()
+	case "ask.oneshot", "ask.panel":
+		// The surface, and only the surface: the question is typed into it, so
+		// there is nothing to pass here. Which one is the kind of the event,
+		// because that is the whole difference between them.
+		if len(req.Args) != 0 {
+			return Response{Error: req.Method + " takes no arguments: the question is typed into the window"}
+		}
+		if req.Method == "ask.panel" {
+			return s.askSurface(EventAskPanel)
+		}
+		return s.askSurface(EventAsk)
+	case MethodAskRun:
+		// Handled by the connection rather than here (see handle), for the same
+		// reason events are: an answer is not one reply. Named here so it is a
+		// method zded has rather than one it has never heard of.
+		return Response{Error: MethodAskRun + " is asked of a connection that keeps it open, and this one is not"}
 	case "window.jump-to":
 		// One verb, two arities. The picker and the choice are the same
 		// question asked twice - which window - and with none to ask it of, the

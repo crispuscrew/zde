@@ -34,6 +34,15 @@ let
     exec ${pkgs.coreutils}/bin/touch /tmp/zde-locked
   '';
 
+  # An ask tier that needs no network, no key and no model: it reads the
+  # question on stdin and answers with it. What this proves is the seam - a
+  # home-manager option becomes a file, zded runs the command it names with the
+  # question on its stdin, and what it says streams back - and deliberately not
+  # anybody's model.
+  fakeTier = pkgs.writeShellScriptBin "zde-fake-tier" ''
+    exec ${pkgs.gnused}/bin/sed -e 's/^/answered: /'
+  '';
+
   # One script, so the quoting lives in a shell file rather than inside a
   # Python string inside a Nix string.
   liveCheck = pkgs.writeShellScript "zde-live-check" ''
@@ -608,6 +617,33 @@ let
         # prove.
         zde status 2>&1 | tee /tmp/status.txt
         grep -qx 'compositor connected' /tmp/status.txt
+
+        # ask, through the whole seam: the tier is a command layer 1 was
+        # configured with, zded runs it with the question on its stdin, and the
+        # answer streams back to a terminal - which is what the key does on a
+        # session with no shell to draw a window.
+        zde ask oneshot what is the capital of peru 2>&1 | tee /tmp/ask.txt
+        grep -qx 'answered: what is the capital of peru' /tmp/ask.txt || {
+          echo "the ask tier did not answer through zded:"; cat /tmp/ask.txt; exit 1
+        }
+        # And piped in rather than written as an argument, which is how a
+        # question stays out of `ps` while it is being answered - the form the
+        # tier called private is meant to be asked with.
+        printf 'what is the capital of peru' | zde ask oneshot 2>&1 | tee /tmp/ask-stdin.txt
+        grep -qx 'answered: what is the capital of peru' /tmp/ask-stdin.txt || {
+          echo "a question piped in was not asked:"; cat /tmp/ask-stdin.txt; exit 1
+        }
+        # And a tier nobody configured fails closed, saying which option would
+        # configure it. An ask that quietly did nothing is the failure this
+        # whole component is arranged against.
+        if zde ask local something private 2>&1 | tee /tmp/ask-local.txt; then
+          echo "the local tier is not configured and the ask worked anyway:"
+          cat /tmp/ask-local.txt; exit 1
+        fi
+        grep -q 'zde.ask.tiers.local' /tmp/ask-local.txt || {
+          echo "the refusal does not say which option to set:"
+          cat /tmp/ask-local.txt; exit 1
+        }
 
         # A desk that exists only as a manifest is created and entered.
         zde desk switch vshop 2>&1 | tee /tmp/switch.txt
@@ -1416,6 +1452,11 @@ pkgs.testers.runNixOSTest {
       # rather than only that nothing complained.
       zde = {
         apps.lock = [ "${fakeLocker}/bin/swaylock" ];
+
+        # One ask tier and only one: the provider. The other two stay unset on
+        # purpose, so that the live check can assert both halves - a tier that
+        # answers, and a tier nobody configured saying which option would.
+        ask.tiers.provider = [ "${fakeTier}/bin/zde-fake-tier" ];
 
         # A second keyboard layout, which is what Mod+space switches between.
         # With one layout that key does nothing, which is what every zde
