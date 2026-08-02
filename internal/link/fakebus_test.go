@@ -132,8 +132,11 @@ type world map[dbus.ObjectPath]map[string]map[string]dbus.Variant
 // a link changes while it is being asked about, and every defect this file was
 // written for is about what zde concluded when it did.
 type nmFake struct {
-	// conn is the fake's own connection to the bus, set by serve.
+	// conn is the fake's own connection to the bus, set by serve, and t is the
+	// test it is serving - so a world put together wrongly is reported against
+	// the test that did it.
 	conn *dbus.Conn
+	t    *testing.T
 
 	mu sync.Mutex
 	// objs is the world. Read and written by the test while calls are in
@@ -162,6 +165,8 @@ type nmFake struct {
 	// added counts the profiles this fake was asked to create, so a test can
 	// name the one that a join left behind.
 	added int
+	// newest is the activation object the fake handed back most recently.
+	newest dbus.ObjectPath
 }
 
 const (
@@ -202,6 +207,7 @@ func serve(t *testing.T, f *nmFake) *NM {
 		f.nextActive = 1 // ACTIVATING
 	}
 	f.conn = conn
+	f.t = t
 	for path := range f.objs {
 		f.export(t, path)
 	}
@@ -249,6 +255,15 @@ func (f *nmFake) get(path dbus.ObjectPath, iface, name string) dbus.Variant {
 	return f.objs[path][iface][name]
 }
 
+// answerable is whether the fake can hold a value as a property and still
+// answer with it. Only object paths can fail: the bus library will not marshal
+// one that is empty or does not start with a slash, and everything else these
+// tests put in a property is a number, a string or a list.
+func answerable(v any) bool {
+	p, ok := v.(dbus.ObjectPath)
+	return !ok || p.IsValid()
+}
+
 // setSlow changes how long a read takes while a call is in flight, which is how
 // a test says "the bus went slow at exactly this moment".
 // setFail makes a member answer with a D-Bus error from now on.
@@ -279,7 +294,24 @@ func (f *nmFake) setSlow(d time.Duration) {
 
 // set changes the world under a call in flight, which is what most of these
 // tests are about.
+//
+// It refuses to hold an object path that is not one. A property answered with
+// an empty path is a reply the bus library cannot marshal, so the fake sends an
+// error instead of a value - and the code under test then spends its whole
+// budget on a device it thinks will not answer, four seconds later and three
+// screens away from the line that did it. Worse than the wasted time: a fake
+// that answers invalidly teaches the code to tolerate something NetworkManager
+// never sends.
+//
+// Errorf and not Fatalf, because most of these writes happen on a goroutine
+// staging a change mid-call, and FailNow on a goroutine that is not the test's
+// stops that goroutine rather than the test.
 func (f *nmFake) set(path dbus.ObjectPath, iface, name string, v any) {
+	if !answerable(v) {
+		f.t.Errorf("%s.%s was set to %q, which is not an object path: "+
+			"NetworkManager answers with a path or with nothing", iface, name, v)
+		return
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.objs[path] == nil {
@@ -478,12 +510,25 @@ func (o *nmObject) DeactivateConnection(active dbus.ObjectPath) *dbus.Error {
 func (f *nmFake) activate(dev dbus.ObjectPath) dbus.ObjectPath {
 	f.mu.Lock()
 	path := dbus.ObjectPath(fmt.Sprintf("/org/freedesktop/NetworkManager/ActiveConnection/new%d", len(f.calls)))
+	state := f.nextActive
+	f.mu.Unlock()
+
+	// On the bus first. Everything that learns about an activation learns
+	// through the fake, so an object that is visible before it can answer is a
+	// window where a read of it comes back "no such object" - which the code
+	// under test reads, correctly, as an activation that has been torn down.
+	f.exportLater(path)
+
+	f.mu.Lock()
 	if f.objs[path] == nil {
 		f.objs[path] = map[string]map[string]dbus.Variant{}
 	}
-	f.objs[path][actIface] = map[string]dbus.Variant{"State": dbus.MakeVariant(f.nextActive)}
+	f.objs[path][actIface] = map[string]dbus.Variant{"State": dbus.MakeVariant(state)}
+	// What the fake handed back last, remembered rather than worked out again
+	// afterwards: these are named new1, new2, new10, and the newest of those by
+	// string order is new2.
+	f.newest = path
 	f.mu.Unlock()
-	f.exportLater(path)
 	return path
 }
 

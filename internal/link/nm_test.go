@@ -53,6 +53,36 @@ func TestTheFakeBusAnswersAsNetworkManagerDoes(t *testing.T) {
 	}
 }
 
+// The harness has to refuse to answer with something NetworkManager could never
+// send. An empty object path is the one that bit: the bus library cannot
+// marshal it, so the fake replies with an error to a property read instead of a
+// value, and the code under test - correctly - reads a device it cannot ask
+// about as one that has not moved yet. It then spends its whole four second
+// budget on that and reports a join as still trying, four seconds and three
+// screens away from the line that staged the empty path.
+//
+// If this regresses, that failure comes back, and worse than the wasted time is
+// what it teaches: a test suite where the code under test has to tolerate a
+// reply the real bus never sends.
+func TestTheFakeRefusesToAnswerWithAPathThatIsNotOne(t *testing.T) {
+	if answerable(dbus.ObjectPath("")) {
+		t.Error("an empty object path would have been answered with")
+	}
+	if answerable(dbus.ObjectPath("no-slash")) {
+		t.Error("something that is not a path would have been answered with")
+	}
+	if !answerable(onHome) {
+		t.Error("an ordinary activation path was refused")
+	}
+	// Everything else these worlds hold is a number, a string or a list, and
+	// none of that can be malformed by being empty.
+	for _, v := range []any{uint32(3), byte(84), "home", []byte("home"), []dbus.ObjectPath{}} {
+		if !answerable(v) {
+			t.Errorf("%T was refused", v)
+		}
+	}
+}
+
 // A join is not joined while the device is still on the network you are
 // leaving. NetworkManager hands back an activation object in ACTIVATING and
 // leaves the device reading ACTIVATED for the old link for the first moments
@@ -431,15 +461,10 @@ func waitForActive(f *nmFake) dbus.ObjectPath {
 	}
 }
 
-// lastActive is the activation object the fake handed back most recently.
+// lastActive is the activation object the fake handed back most recently, as
+// the fake itself recorded it.
 func lastActive(f *nmFake) dbus.ObjectPath {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	newest := dbus.ObjectPath("")
-	for path := range f.objs {
-		if strings.Contains(string(path), "ActiveConnection/new") && path > newest {
-			newest = path
-		}
-	}
-	return newest
+	return f.newest
 }
