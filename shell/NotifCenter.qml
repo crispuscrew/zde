@@ -71,12 +71,21 @@ PanelWindow {
     signal shown(string token)
 
     function show(newRows, newToken) {
+        const wasUp = center.visible;
         center.rows = newRows ?? [];
         center.token = newToken ?? "";
         center.note = "";
         // The newest, which is what somebody opening this is looking for.
         center.index = 0;
         center.visible = true;
+        if (wasUp && center.token !== "") {
+            // Already up, so visible did not change and onVisibleChanged did not
+            // fire - and Mod+n is waiting to hear that something drew it. Left
+            // unacknowledged it waits out its window and takes the shell-is-dead
+            // path, which prints the whole history to a keybind's stdout
+            // (internal/zded, ackWait).
+            center.shown(center.token);
+        }
     }
 
     // On the window becoming visible rather than at the end of show(), so what

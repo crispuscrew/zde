@@ -62,6 +62,7 @@ PanelWindow {
     signal action(string name)
 
     function show(kind, newRows, here, token) {
+        const wasUp = picker.visible;
         picker.kind = kind;
         picker.rows = newRows;
         picker.on = here ?? "";
@@ -72,6 +73,15 @@ PanelWindow {
         // place you would press Enter to reach - starts at the first.
         picker.index = Math.max(0, newRows.findIndex(r => r.key === picker.on));
         picker.visible = true;
+        if (wasUp && picker.token !== "") {
+            // Already up, so visible did not change and onVisibleChanged did not
+            // fire - and the key that asked for this is waiting to hear that
+            // something drew it. Unacknowledged, it waits out its whole window
+            // and takes the shell-is-dead path, which prints every row to a
+            // keybind's stdout: Mod+w with the picker already open did exactly
+            // that, on this same surface (internal/zded, ackWait).
+            picker.shown(picker.token);
+        }
     }
 
     // On the window becoming visible rather than at the end of show(), so what
