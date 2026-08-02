@@ -96,17 +96,35 @@ func TestWhetherANetworkIsSecuredComesFromItsFlags(t *testing.T) {
 // a wrong password and a network that went out of range become the same
 // shrug, which is the failure this whole branch was told not to have.
 func TestARefusalSaysWhichRefusal(t *testing.T) {
-	if got := refusal(7); !strings.Contains(got, "password") {
-		t.Errorf("NO_SECRETS = %q, which does not mention the password", got)
+	if got := refusal(7, true); !strings.Contains(got, "password was refused") {
+		t.Errorf("NO_SECRETS after a password = %q", got)
 	}
-	if got := refusal(53); !strings.Contains(got, "range") {
+	if got := refusal(53, true); !strings.Contains(got, "range") {
 		t.Errorf("SSID_NOT_FOUND = %q, which does not say it is not there", got)
 	}
 	// A reason nobody has mapped keeps its number rather than being guessed
 	// at: the number is what somebody can look up, and a wrong guess sends
 	// them to the router for a problem that is in the room.
-	if got := refusal(214); !strings.Contains(got, "214") {
+	if got := refusal(214, true); !strings.Contains(got, "214") {
 		t.Errorf("an unmapped reason came back as %q, with no way to look it up", got)
+	}
+}
+
+// NetworkManager says NO_SECRETS both when the password it was given was
+// rejected and when it wanted one that nobody had. Reading "the password was
+// refused" when you were never asked for a password sends a person to change a
+// password that was never the problem, which is the opposite of what to do.
+//
+// If this regresses, joining an open network that turns out not to be open, or
+// a saved profile whose stored password NetworkManager will not use, both
+// accuse a password nobody typed.
+func TestARefusalWithNoPasswordOfferedAsksForOne(t *testing.T) {
+	got := refusal(7, false)
+	if strings.Contains(got, "refused") {
+		t.Errorf("no password was offered and the refusal is about one being refused: %q", got)
+	}
+	if !strings.Contains(got, "wants a password") {
+		t.Errorf("NO_SECRETS with nothing offered = %q, which does not say what to do", got)
 	}
 }
 
@@ -151,5 +169,35 @@ func TestASpentBudgetIsNotAVanishedAccessPoint(t *testing.T) {
 	// not something anybody can do anything with.
 	if !strings.Contains(err.Error(), "what is in range") {
 		t.Errorf("the refusal does not say what is missing from the answer: %v", err)
+	}
+}
+
+// The last thing between a password and everything that reads an error: the
+// daemon's answer, the CLI's stderr, a bug report. NetworkManager names the
+// property it did not like rather than the value, so this has never had
+// anything to do - which is the only condition under which an assertion is
+// worth having, and no reason to take it out.
+//
+// If this regresses, the one message that reaches a person unedited is the one
+// message that can carry their wifi password.
+func TestAnAnswerThatQuotesThePasswordIsNotRepeated(t *testing.T) {
+	const secret = "correct-horse-battery-staple"
+
+	kept := errors.New("802-11-wireless-security.psk: property is invalid")
+	if got := withoutSecret(kept, secret); got != kept {
+		t.Errorf("an ordinary refusal was replaced: %v", got)
+	}
+	quoted := errors.New("cannot use psk " + secret + ": too short")
+	got := withoutSecret(quoted, secret)
+	if strings.Contains(got.Error(), secret) {
+		t.Errorf("the password came through the last check: %v", got)
+	}
+	if got.Error() == "" {
+		t.Error("the answer was replaced with nothing, so nobody is told anything")
+	}
+	// And an error from a join that carried no password at all is untouched,
+	// since there is nothing to compare it against.
+	if got := withoutSecret(kept, ""); got != kept {
+		t.Errorf("an open network's refusal was replaced: %v", got)
 	}
 }

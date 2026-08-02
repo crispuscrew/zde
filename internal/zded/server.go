@@ -487,6 +487,11 @@ func (s *Server) Dispatch(req Request) Response {
 			return Response{Error: "net.connect takes a network name, and a password when it needs one"}
 		}
 		return s.netConnect(req.Args)
+	case "net.forget":
+		if len(req.Args) != 1 {
+			return Response{Error: "net.forget takes one network name"}
+		}
+		return s.netForget(req.Args[0])
 	case "net.disconnect":
 		if len(req.Args) != 0 {
 			return Response{Error: "net.disconnect takes no arguments"}

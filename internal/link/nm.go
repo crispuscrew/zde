@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/crispuscrew/zde/internal/bus"
@@ -63,6 +65,10 @@ const (
 	typeEthernet = 1
 	typeWifi     = 2
 
+	// A radio that is up and joined to nothing. Worth naming because it is what
+	// an idle second radio reads as, and telling it from one that is not there
+	// to be used is how the right radio gets asked.
+	stateDisconnected = 30
 	// Past this the password has been accepted and what is left is an address.
 	stateIPConfig  = 70
 	stateActivated = 100
@@ -96,7 +102,18 @@ const askFor = 2 * time.Second
 // within opens a budget for one question. Every call made under it shares the
 // deadline, so a question is bounded by askFor however many calls it takes.
 func (m *NM) within() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), askFor)
+	return m.until(time.Now().Add(askFor))
+}
+
+// until is within for a question that already knows when it has to be over: a
+// join, which is a sequence of calls and then a wait, and which has to answer
+// before the caller stops listening. No call runs past askFor, and none runs
+// past the end of the thing it belongs to.
+func (m *NM) until(end time.Time) (context.Context, context.CancelFunc) {
+	if soon := time.Now().Add(askFor); soon.Before(end) {
+		end = soon
+	}
+	return context.WithDeadline(context.Background(), end)
 }
 
 // carryOn decides what an object that will not answer means.
@@ -116,6 +133,17 @@ func carryOn(ctx context.Context, what string) error {
 // NM is NetworkManager on the system bus.
 type NM struct {
 	conn *dbus.Conn
+	// absent is set when the bus says nobody answers to NetworkManager's name
+	// any more. The connection does not die with the service - it is a
+	// connection to the bus, not to NetworkManager - so without this a daemon
+	// that was stopped mid-session reads as a manager that has stopped
+	// answering, and the bar says zded is broken about a machine where nothing
+	// is.
+	absent atomic.Bool
+	// watchers is the joins still being watched after the call that started
+	// them answered. Nothing in production waits on it; the tests do, because
+	// what happens behind the answer is most of what a join does.
+	watchers sync.WaitGroup
 }
 
 // Open connects, or says that there is nothing here to connect to.
@@ -159,12 +187,22 @@ func Open() (Manager, error) {
 // restarts - an update, a `systemctl restart` - and the socket dies with it;
 // without this the daemon would hold a dead connection and report an unknown
 // link for the rest of the session.
-func (m *NM) Alive() bool { return m.conn != nil && m.conn.Connected() }
+func (m *NM) Alive() bool { return m.conn != nil && m.conn.Connected() && !m.absent.Load() }
+
+// Close gives the bus connection back. A manager that is dropped and not closed
+// leaks the socket and the two goroutines the bus library runs on it, once per
+// reopen - and reopening is what happens every time NetworkManager restarts.
+func (m *NM) Close() error {
+	if m.conn == nil {
+		return nil
+	}
+	return m.conn.Close()
+}
 
 func (m *NM) call(ctx context.Context, path dbus.ObjectPath, method string, out []any, args ...any) error {
 	c := m.conn.Object(nmService, path).CallWithContext(ctx, method, 0, args...)
 	if c.Err != nil {
-		return c.Err
+		return m.noteAbsence(c.Err)
 	}
 	if len(out) == 0 {
 		return nil
@@ -187,6 +225,25 @@ func (m *NM) prop(ctx context.Context, path dbus.ObjectPath, iface, name string,
 		return err
 	}
 	return v.Store(into)
+}
+
+// noteAbsence turns the bus saying "nobody answers to that name" into the
+// absence of a manager, and remembers it so the daemon drops this connection
+// and finds out for itself next time (internal/zded, links).
+//
+// It is the one case where NetworkManager going away is invisible from the
+// socket: the connection is to the bus, and the bus is still there.
+func (m *NM) noteAbsence(err error) error {
+	var derr dbus.Error
+	if !errors.As(err, &derr) {
+		return err
+	}
+	switch derr.Name {
+	case "org.freedesktop.DBus.Error.ServiceUnknown", "org.freedesktop.DBus.Error.NameHasNoOwner":
+		m.absent.Store(true)
+		return fmt.Errorf("%w: %s", ErrNoManager, derr.Name)
+	}
+	return err
 }
 
 // num reads a NetworkManager number whatever width it chose for it: Strength
@@ -265,13 +322,10 @@ func (m *NM) Status() (Status, error) {
 		return Status{}, err
 	}
 	st := Status{Kind: KindNone}
-	wifi := device{}
-	for _, d := range devs {
-		if d.kind == typeWifi && wifi.path == "" {
-			wifi = d
-			st.Wifi = true
-		}
-	}
+	// The same radio List and Connect will use, from the same reading, so that
+	// the bar and the widget cannot end up describing different devices.
+	wifi := pickWifi(devs)
+	st.Wifi = wifi.path != ""
 	for _, d := range devs {
 		if d.kind == typeEthernet && d.state == stateActivated {
 			st.Kind = KindWired
@@ -301,18 +355,48 @@ func (m *NM) activeAP(ctx context.Context, dev dbus.ObjectPath) (string, int) {
 	return ssid, num(props, "Strength")
 }
 
-// wifiDevice is the radio, or the empty path on a machine with none.
+// wifiDevice is the radio to ask, or the empty path on a machine with none.
 func (m *NM) wifiDevice(ctx context.Context) (dbus.ObjectPath, error) {
 	devs, err := m.devices(ctx)
 	if err != nil {
 		return "", err
 	}
+	return pickWifi(devs).path, nil
+}
+
+// pickWifi chooses between radios, because a laptop with a dongle plugged in
+// has two and NetworkManager lists them in whatever order it has them.
+//
+// The connected one wins: it is the one carrying the traffic, so it is the one
+// the bar is about and the one whose room the widget should list. Failing that,
+// one that is up and joined to nothing beats one the kernel or NetworkManager
+// has parked - an unmanaged or unavailable radio can be asked and answers
+// nothing, which reads on the bar as a machine with no network on a machine
+// that is online.
+//
+// Taking the first of them, which is what this did, meant an idle dongle
+// enumerated before the built-in radio made the bar say "no network" over a
+// working link, with nothing on screen to say which radio had been asked.
+func pickWifi(devs []device) device {
+	var first, idle device
 	for _, d := range devs {
-		if d.kind == typeWifi {
-			return d.path, nil
+		if d.kind != typeWifi {
+			continue
+		}
+		if d.state == stateActivated {
+			return d
+		}
+		if first.path == "" {
+			first = d
+		}
+		if idle.path == "" && d.state >= stateDisconnected {
+			idle = d
 		}
 	}
-	return "", nil
+	if idle.path != "" {
+		return idle
+	}
+	return first
 }
 
 // List is what the radio can see.
@@ -354,7 +438,10 @@ func (m *NM) List() ([]Network, error) {
 	if err := m.call(ctx, dev, wifiIface+".GetAllAccessPoints", []any{&aps}); err != nil {
 		return nil, err
 	}
-	saved := m.savedProfiles(ctx)
+	saved, err := m.savedProfiles(ctx)
+	if err != nil {
+		return nil, err
+	}
 	here, _ := m.activeAP(ctx, dev)
 	seen := make([]Network, 0, len(aps))
 	for _, p := range aps {
@@ -391,22 +478,30 @@ func (m *NM) List() ([]Network, error) {
 // Errors are dropped on purpose: a profile that cannot be read is a network
 // offered as unsaved, which costs a password prompt somebody can cancel.
 // Refusing the whole list over it would cost the list.
-func (m *NM) savedProfiles(ctx context.Context) map[string]dbus.ObjectPath {
+func (m *NM) savedProfiles(ctx context.Context) (map[string]dbus.ObjectPath, error) {
 	out := map[string]dbus.ObjectPath{}
 	var profiles []dbus.ObjectPath
 	if err := m.call(ctx, setPath, setIface+".ListConnections", []any{&profiles}); err != nil {
-		return out
+		return nil, err
 	}
 	for _, p := range profiles {
 		ssid, ok := m.profileSSID(ctx, p)
 		if !ok {
+			// A profile that would not answer is skipped like any other object
+			// that went away - and a budget that ran out is not, for the reason
+			// carryOn gives. This column is not cosmetic: it decides whether
+			// anybody is asked for a password, and whether a join adds a second
+			// profile for a network that already has one.
+			if err := carryOn(ctx, "which networks it has saved"); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		if _, had := out[ssid]; !had {
 			out[ssid] = p
 		}
 	}
-	return out
+	return out, nil
 }
 
 // profileSSID is the network a saved profile is for, and false for a profile
@@ -474,71 +569,139 @@ func (m *NM) accessPoint(ctx context.Context, dev dbus.ObjectPath, ssid string) 
 // kept, logged, or put in an error. Every error out of here names the network
 // and never the password (see the tests in internal/zded, which read what the
 // daemon wrote down).
-func (m *NM) Connect(ssid, secret string) error {
-	// One budget for working out what to activate and asking for it. Not for
-	// the wait that follows: settle is meant to take seconds, and it opens a
-	// budget per look (see below).
-	ctx, cancel := m.within()
+//
+// The whole of it - working out what to activate, asking, and waiting for the
+// answer - fits inside connectWithin, because a verdict that arrives after the
+// caller has gone is a verdict nobody reads.
+func (m *NM) Connect(ssid, secret string) (err error) {
+	// The last check on the way out, on every path at once. Everything below
+	// is written not to put the password in an error, and this is the one place
+	// where the password and the error are both in hand to prove it.
+	defer func() { err = withoutSecret(err, secret) }()
+
+	end := time.Now().Add(connectWithin)
+	ctx, cancel := m.until(end)
+	defer cancel()
+
 	dev, err := m.wifiDevice(ctx)
 	if err != nil {
-		cancel()
 		return err
 	}
 	if dev == "" {
-		cancel()
 		return errors.New("this machine has no wifi radio")
 	}
 	ap, apSSID, err := m.accessPoint(ctx, dev, ssid)
 	if err != nil {
-		cancel()
 		return err
 	}
 	if ap == "" {
 		// Out of range, or not broadcasting. Said before anything is attempted,
 		// because NetworkManager's own answer to this arrives late and reads
 		// like a failure to authenticate.
-		cancel()
 		return fmt.Errorf("no network in range is called %q", ssid)
 	}
-	profile := m.savedProfiles(ctx)[ssid]
-	var added, active dbus.ObjectPath
-	if profile != "" {
-		if secret != "" {
-			// A password for a network that already has a profile: the password
-			// changed, or the saved one was wrong. Updating beats adding a
-			// second profile for the same network, which is what would
-			// otherwise pile up, and it keeps whatever else that profile says -
-			// a static address, a metric - which deleting it would throw away.
-			if err := m.setSecret(ctx, profile, secret); err != nil {
-				cancel()
-				return err
-			}
-		}
-		err = m.call(ctx, nmPath, nmIface+".ActivateConnection", []any{&active}, profile, dev, ap)
-	} else {
-		err = m.call(ctx, nmPath, nmIface+".AddAndActivateConnection", []any{&added, &active},
-			wifiSettings(ssid, apSSID, secret), dev, ap)
-	}
-	// The request is in. Everything after this is watching, on budgets of its
-	// own, so the asking half's deadline is done with here rather than left to
-	// expire under the wait.
-	cancel()
+	saved, err := m.savedProfiles(ctx)
 	if err != nil {
 		return err
 	}
-	err = m.settle(dev, active)
-	if err != nil && !errors.Is(err, ErrStillTrying) && added != "" {
-		// The profile this call created did not work. Left on disk it would be
-		// a saved network with a wrong password, and a saved network is exactly
-		// the one nothing asks a password for - so the next attempt would use
-		// the bad one for ever. Only ever the profile added here: one that was
-		// already on the machine is somebody's, and may be carrying more than a
-		// password.
-		forget, cancelForget := m.within()
-		m.call(forget, added, profIface+".Delete", nil) //nolint:errcheck // already reporting the join's failure, which is the useful half
-		cancelForget()
+	profile := saved[ssid]
+
+	a := attempt{dev: dev, ssid: ssid, offered: secret != ""}
+	if profile != "" {
+		if secret != "" {
+			// A password for a network NetworkManager already has a profile
+			// for. This used to write the new one into that profile before
+			// anything was tried, which is a destructive edit on a guess: one
+			// typo and a working network is gone, with nothing holding the old
+			// password because GetSettings does not return secrets.
+			//
+			// So it is refused, and the refusal names the way out. Forgetting
+			// is a deliberate act, it is one key on the surface, and it is the
+			// only thing here that deletes a profile a person did not create
+			// with this widget.
+			return fmt.Errorf("%s is already saved, and this will not overwrite "+
+				"what is saved: forget it first, then join it again", ssid)
+		}
+		if err := m.call(ctx, nmPath, nmIface+".ActivateConnection", []any{&a.active}, profile, dev, ap); err != nil {
+			return err
+		}
+	} else {
+		if err := m.call(ctx, nmPath, nmIface+".AddAndActivateConnection", []any{&a.added, &a.active},
+			wifiSettings(ssid, apSSID, secret), dev, ap); err != nil {
+			return err
+		}
+	}
+
+	err = m.settle(a, end)
+	if err != nil {
+		// The answer goes back now and the watching carries on behind it,
+		// whatever the answer was. A refusal is usually not in yet - the
+		// supplicant retries for longer than anybody can be kept waiting - and
+		// when it lands, the profile this call created has to go with it. One
+		// path rather than a delete here and a watcher for the rest, because
+		// two ways to delete a profile is one more than anybody can hold in
+		// their head about a thing that destroys something.
+		m.watch(a)
 	}
 	return err
+}
+
+// attempt is one join being watched: what was asked for, and where the answer
+// will come from. Together rather than four arguments, because every one of
+// these is needed to read a verdict and to act on it, and the two that decide
+// whether a profile is deleted are the easiest to pass in the wrong order.
+type attempt struct {
+	dev    dbus.ObjectPath
+	active dbus.ObjectPath
+	// added is the profile this join created, and the empty path when it
+	// activated one that was already there. Only ever this one is deleted.
+	added dbus.ObjectPath
+	ssid  string
+	// offered is whether a password went with the request, which is the
+	// difference between "the password was refused" and "this network wants
+	// one" for the same reason code.
+	offered bool
+}
+
+// refused is NetworkManager's own verdict on an attempt, as opposed to a bus
+// that would not answer or a budget that ran out.
+//
+// A type and not a string, because one thing turns on the difference: whether
+// the profile this join created is deleted. A verdict means it is wrong and
+// must go; anything else means nobody knows yet, and deleting it would end a
+// join that was still going.
+type refused struct{ why string }
+
+func (r refused) Error() string { return r.why }
+
+// forget deletes a profile, on a budget of its own. Errors go nowhere useful:
+// this runs when something else has already failed, and the failure is the half
+// worth reporting.
+func (m *NM) forget(profile dbus.ObjectPath) {
+	if profile == "" {
+		return
+	}
+	ctx, cancel := m.within()
+	defer cancel()
+	m.call(ctx, profile, profIface+".Delete", nil) //nolint:errcheck // see above
+}
+
+// Forget drops a saved network, which is how a password that has changed gets
+// typed again: the widget asks for one only when there is no profile, so
+// without this a network with a wrong password saved against it can never be
+// joined from zde again.
+func (m *NM) Forget(ssid string) error {
+	ctx, cancel := m.within()
+	defer cancel()
+	saved, err := m.savedProfiles(ctx)
+	if err != nil {
+		return err
+	}
+	profile, ok := saved[ssid]
+	if !ok {
+		return fmt.Errorf("no saved network is called %q", ssid)
+	}
+	return m.call(ctx, profile, profIface+".Delete", nil)
 }
 
 // wifiSettings is a new profile, in the shape NetworkManager's Settings takes.
@@ -569,106 +732,157 @@ func wifiSettings(ssid string, apSSID []byte, secret string) map[string]map[stri
 	return settings
 }
 
-// setSecret puts a new password on a profile that already exists.
-func (m *NM) setSecret(ctx context.Context, profile dbus.ObjectPath, secret string) error {
-	settings, err := m.settingsOf(ctx, profile)
-	if err != nil {
-		return err
-	}
-	sec, ok := settings[groupSec]
-	if !ok {
-		sec = map[string]dbus.Variant{}
-	}
-	if _, ok := sec["key-mgmt"]; !ok {
-		sec["key-mgmt"] = dbus.MakeVariant("wpa-psk")
-	}
-	sec["psk"] = dbus.MakeVariant(secret)
-	settings[groupSec] = sec
-	return m.call(ctx, profile, profIface+".Update", nil, settings)
-}
-
-// How long a join is waited on, and how often it is asked about.
+// The clock a join runs against.
 //
-// Short, because this is answered on the socket a keybind is waiting on: the
-// client gives a call five seconds (internal/zded, Client.Call) and a person
-// gives it fewer. Association is the fast half and an address is the slow one,
-// so a wait this long catches the refusals NetworkManager makes its mind up
-// about quickly - a wrong password usually, a network that vanished - and
-// hands back ErrStillTrying for the rest.
+// callerWaits is what zded's client gives any call (internal/zded, Client.Call).
+// connectWithin is what a join is allowed of it, with the rest left for the
+// socket and for zded's own work: a join that answers at five seconds and one
+// that never answers are the same thing to whoever pressed the key, and the
+// widget would show a timeout for a join that was about to work.
 //
-// What it does not catch is a refusal NetworkManager takes twenty seconds to
-// decide, which happens when the supplicant retries. That comes back as "still
-// trying", and the surface then watches the link rather than the call. Pushing
-// the verdict as an event when it finally lands is the fix, and it is not built.
+// Association is the fast half of joining and an address is the slow one, so
+// this catches the refusals NetworkManager makes its mind up about quickly and
+// hands back ErrStillTrying for the rest. A wrong password is usually in the
+// second group: the supplicant retries. That is what watch is for.
 const (
-	joinWait  = 3500 * time.Millisecond
-	joinCheck = 150 * time.Millisecond
+	callerWaits   = 5 * time.Second
+	connectWithin = 4 * time.Second
+	joinCheck     = 150 * time.Millisecond
+
+	// watchFor is how long the verdict is waited for after the call has
+	// answered. Longer than any of the above, because nothing is waiting on it
+	// - and bounded, because a goroutine per keypress that never ends is a leak
+	// with a keyboard shortcut. NetworkManager gives up on a wifi association
+	// well inside a minute.
+	watchFor   = 60 * time.Second
+	watchEvery = time.Second
 )
+
+// watch keeps looking after the call has answered, and deletes the profile this
+// join created if the verdict turns out to be no.
+//
+// This is the half of a wrong password that does not fit in a keypress. The
+// call says "still trying" and somebody reads that; a minute later
+// NetworkManager gives up, and without this the profile it left behind is a
+// saved network with a wrong password in it - which is the one thing nothing
+// ever asks a password for again.
+//
+// Nothing is told when this finishes. It writes to NetworkManager and to
+// nothing in zde, so there is no state to race with, and the next question
+// about the link asks NetworkManager rather than this.
+func (m *NM) watch(a attempt) {
+	if a.added == "" {
+		// Nothing to undo: this join activated a profile that was already
+		// there, and that one is not ours to delete.
+		return
+	}
+	m.watchers.Add(1)
+	go func() {
+		defer m.watchers.Done()
+		end := time.Now().Add(watchFor)
+		for time.Now().Before(end) {
+			done, err := m.decided(a, end)
+			switch {
+			case done:
+				return // it landed, and the profile is the machine's now
+			case errors.As(err, &refused{}):
+				m.forget(a.added)
+				return
+			case err != nil:
+				// A bus that will not answer is not a verdict. Try again for as
+				// long as there is time; if the whole window goes that way, the
+				// profile stays, because deleting one on a guess is the failure
+				// this is here to avoid rather than one to swap it for.
+			}
+			time.Sleep(watchEvery)
+		}
+	}()
+}
 
 // settle waits for NetworkManager to make up its mind about one attempt.
 //
 // The active connection is watched rather than the device, because the device
 // is still reading ACTIVATED from the network you are leaving for the first
-// moments of joining another - a race that reports a join as done before it
-// has begun. The device is asked only for the reason, which is the one thing
-// the active connection does not carry.
-func (m *NM) settle(dev, active dbus.ObjectPath) error {
-	if active == "" || active == "/" {
+// moments of joining another. The device is asked as well, but only once it is
+// on this attempt - see decided.
+func (m *NM) settle(a attempt, end time.Time) error {
+	if a.active == "" || a.active == "/" {
 		// Nothing to watch. NetworkManager always hands back a handle for an
 		// activation it accepted, so this is a shape nobody has seen - and
 		// asking the bus about an empty path would answer about the path
 		// rather than about the network.
 		return ErrStillTrying
 	}
-	deadline := time.Now().Add(joinWait)
 	for {
-		done, err := m.decided(dev, active)
-		if err != nil || done {
-			return err
-		}
-		if !time.Now().Before(deadline) {
+		if !time.Now().Before(end) {
 			return ErrStillTrying
+		}
+		done, err := m.decided(a, end)
+		switch {
+		case done:
+			return nil
+		case err == nil:
+		case errors.Is(err, context.DeadlineExceeded) && !time.Now().Before(end):
+			// Our own clock, not NetworkManager's answer: the wait ran out
+			// while a read was in flight. That is still-trying by another name,
+			// and reporting it as a bus error would put "context deadline
+			// exceeded" on a widget about a join that is still going.
+			return ErrStillTrying
+		default:
+			return err
 		}
 		time.Sleep(joinCheck)
 	}
 }
 
-// decided is one look at whether the attempt is over, on a budget of its own.
-// Its own because settle is meant to span seconds and askFor is the bound on a
-// question, not on a wait: sharing one budget across the whole poll would end
-// the wait rather than the call it was meant to bound.
-func (m *NM) decided(dev, active dbus.ObjectPath) (bool, error) {
-	ctx, cancel := m.within()
+// decided is one look at whether the attempt is over, on a budget of its own -
+// its own because the wait it belongs to is meant to span seconds and askFor is
+// the bound on a call.
+//
+// Two objects, and the order matters. The activation says whether this attempt
+// is done; the device says whether the password was accepted, which is the
+// earlier moment and the one worth answering on, since what is left after it is
+// an address and DHCP cannot fail for a reason anybody can act on.
+//
+// But the device is only asked about once it is on this attempt. Until then it
+// is still describing the network being left - ACTIVATED, on the old link - and
+// reading that as a verdict is how a join answered "joined" in a millisecond
+// while the machine had not moved.
+func (m *NM) decided(a attempt, end time.Time) (bool, error) {
+	ctx, cancel := m.until(end)
 	defer cancel()
 	var state uint32
-	err := m.prop(ctx, active, actIface, "State", &state)
+	err := m.prop(ctx, a.active, actIface, "State", &state)
 	switch {
 	case gone(err):
 		// The active connection is removed when an attempt fails, so its
 		// absence is the failure. The device kept the reason.
-		return false, errors.New(m.whyItFailed(ctx, dev))
+		return false, refused{m.whyItFailed(ctx, a)}
 	case err != nil:
 		return false, err
 	case state == activeActivated:
 		return true, nil
 	case state == activeDeactivated:
-		return false, errors.New(m.whyItFailed(ctx, dev))
+		return false, refused{m.whyItFailed(ctx, a)}
 	}
-	// Past IP config the password has been accepted, and what is left is an
-	// address. That is a joined network by every measure a person has, and
-	// waiting for DHCP here would spend the whole wait on the half that cannot
-	// fail for a reason anybody can act on.
-	if s, _ := m.deviceState(ctx, dev); s >= stateIPConfig && s <= stateActivated {
+	var on dbus.ObjectPath
+	if err := m.prop(ctx, a.dev, devIface, "ActiveConnection", &on); err != nil || on != a.active {
+		return false, nil
+	}
+	if s, _ := m.deviceState(ctx, a.dev); s >= stateIPConfig && s <= stateActivated {
 		return true, nil
+	}
+	if s, _ := m.deviceState(ctx, a.dev); s == stateFailed {
+		return false, refused{m.whyItFailed(ctx, a)}
 	}
 	return false, nil
 }
 
 // whyItFailed is the device's own account of what went wrong, in words.
-func (m *NM) whyItFailed(ctx context.Context, dev dbus.ObjectPath) string {
-	state, reason := m.deviceState(ctx, dev)
+func (m *NM) whyItFailed(ctx context.Context, a attempt) string {
+	state, reason := m.deviceState(ctx, a.dev)
 	if state == stateFailed || reason != 0 {
-		return refusal(reason)
+		return refusal(reason, a.offered)
 	}
 	return "NetworkManager did not join it, and gave no reason"
 }

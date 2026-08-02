@@ -44,14 +44,22 @@ PanelWindow {
     // A join that failed has to say why (internal/link, refusal); a widget that
     // closed on failure would be the silence this exists to end.
     property string said: ""
-    // True while a password is being typed. Only ever true while this surface
-    // is up: hiding it puts this back to false and empties the field.
-    property bool asking: false
+    // The network a password is being typed for, and the empty string when
+    // none is. The name and not a flag, because what the prompt is for has to
+    // be a thing the surface remembers rather than a thing it works out again
+    // when Enter is pressed: the highlight can move under an open prompt - a
+    // click on another row, or an arrow key that the text field does not use
+    // and so passes on - and a password typed for one network must never be
+    // sent to another. Against an access point somebody set up in the room,
+    // that hands them an offline-crackable exchange for the real passphrase.
+    property string asked: ""
+    readonly property bool asking: connections.asked !== ""
 
     // join(ssid, secret) is the whole output of this surface, with drop() for
     // the one that needs no argument. The shell sends them; nothing here knows
     // what a socket is.
     signal join(string ssid, string secret)
+    signal forget(string ssid)
     signal dropped
     signal dismissed
     signal shown(string token)
@@ -94,14 +102,33 @@ PanelWindow {
     // stopAsking is also how the secret goes away: one place, called from
     // everywhere that leaves the prompt, so no path out of it can forget.
     function stopAsking() {
-        connections.asking = false;
+        connections.asked = "";
         secret.text = "";
+    }
+
+    // Moving the highlight cancels an open prompt rather than dragging it to
+    // another row. The rule is the same wherever the selection can change: what
+    // was typed was typed for the network that was named, and once that is no
+    // longer the network in front of you there is nothing safe to do with it.
+    // forgotten is what the shell says when NetworkManager has dropped a saved
+    // network: the row stops being saved, so the next Enter on it asks for a
+    // password. The rows arrive with the event and nothing re-lists them while
+    // the surface is up, so this is the one place a row changes.
+    function forgotten(ssid) {
+        connections.rows = connections.rows.map(r => r.ssid !== ssid ? r : ({
+                    ssid: r.ssid,
+                    signal: r.signal,
+                    secure: r.secure,
+                    saved: false,
+                    active: r.active
+                }));
     }
 
     function step(by) {
         const n = connections.rows.length;
         if (n === 0)
             return;
+        connections.stopAsking();
         connections.index = (connections.index + by + n) % n;
     }
 
@@ -114,27 +141,33 @@ PanelWindow {
     function choose(i) {
         if (i < 0 || i >= connections.rows.length)
             return;
+        // Whatever was being typed was for the row that was highlighted when
+        // the prompt opened. Choosing anything - the same row again included -
+        // starts over rather than carrying a half-typed password across.
+        connections.stopAsking();
         connections.index = i;
         const row = connections.rows[i];
         if (row.secure === true && row.saved !== true) {
             connections.said = "";
-            connections.asking = true;
+            connections.asked = row.ssid;
             return;
         }
         connections.said = "joining " + row.ssid;
         connections.join(row.ssid, "");
     }
 
-    // send is Enter in the password field. The secret goes out and the field is
+    // send is Enter in the password field. It goes to the network the prompt
+    // was opened for, read off what was remembered then and not off the
+    // highlight now - the highlight is a thing a mouse can move. The field is
     // emptied in the same breath.
     function send() {
-        if (connections.rows.length === 0)
+        const ssid = connections.asked;
+        if (ssid === "")
             return;
-        const row = connections.rows[connections.index];
         const typed = secret.text;
         connections.stopAsking();
-        connections.said = "joining " + row.ssid;
-        connections.join(row.ssid, typed);
+        connections.said = "joining " + ssid;
+        connections.join(ssid, typed);
     }
 
     visible: false
@@ -211,6 +244,17 @@ PanelWindow {
                 else if (event.text === "d") {
                     connections.said = "dropping the link";
                     connections.dropped();
+                } else if (event.text === "f") {
+                    // Forget, which is the only key here that destroys
+                    // something - and the only way back from a password saved
+                    // wrong, since a saved network is never asked about again.
+                    const row = connections.rows[connections.index];
+                    if (row && row.saved === true) {
+                        connections.said = "forgetting " + row.ssid;
+                        connections.forget(row.ssid);
+                    } else {
+                        connections.said = "nothing is saved for that network";
+                    }
                 } else {
                     return;
                 }
@@ -273,7 +317,10 @@ PanelWindow {
             anchors.left: parent.left
             anchors.leftMargin: 12
             visible: connections.asking
-            text: "password:"
+            // Named, because this is the moment a person decides whether to
+            // type a passphrase: a prompt that says only "password" is a prompt
+            // that cannot be wrong about which network it is for.
+            text: "password for " + connections.asked + ":"
             color: "#c9ccd4"
             font.pixelSize: 12
             font.family: "monospace"
@@ -304,7 +351,7 @@ PanelWindow {
             anchors.bottom: parent.bottom
             anchors.left: parent.left
             anchors.margins: 12
-            text: "1-9 join    j k move    d disconnect    esc close"
+            text: "1-9 join    j k move    f forget    d disconnect    esc close"
             color: "#7a7f8a"
             font.pixelSize: 11
             font.family: "monospace"
