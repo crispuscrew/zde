@@ -28,6 +28,10 @@ type fakeLink struct {
 	// got is what Connect was handed, so a test can prove the secret went to
 	// NetworkManager and nowhere else.
 	got []string
+	// forgot is every network Forget was asked about, which is the one verb
+	// here that destroys something.
+	forgot    []string
+	forgetErr error
 }
 
 func (f *fakeLink) Status() (link.Status, error) { return f.status, nil }
@@ -40,6 +44,13 @@ func (f *fakeLink) Connect(ssid, secret string) error {
 	f.got = append(f.got, ssid, secret)
 	f.mu.Unlock()
 	return f.joinErr
+}
+
+func (f *fakeLink) Forget(ssid string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.forgot = append(f.forgot, ssid)
+	return f.forgetErr
 }
 
 func (f *fakeLink) Disconnect() error { return nil }
@@ -339,5 +350,35 @@ func TestConnectionsOpensOnAMachineWithNoManager(t *testing.T) {
 	}
 	if len(cn.Networks) != 0 {
 		t.Errorf("networks = %+v, on a machine with nothing to ask", cn.Networks)
+	}
+}
+
+// Forgetting a network is the way out of a password that was saved wrong, and
+// it is the one verb in this widget that destroys something. If this
+// regresses, either the way out is gone - and a network with a wrong password
+// saved against it can never be joined from zde again, because nothing asks for
+// a password while a profile is there - or the verb reaches NetworkManager
+// with the wrong name.
+func TestForgettingNamesTheNetworkAndOnlyThatOne(t *testing.T) {
+	f := &fakeLink{}
+	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
+	withLink(s, f, nil)
+
+	resp := s.Dispatch(Request{Method: "net.forget", Args: []string{"home"}})
+	if resp.Error != "" {
+		t.Fatalf("net.forget: %s", resp.Error)
+	}
+	f.mu.Lock()
+	forgot := append([]string(nil), f.forgot...)
+	f.mu.Unlock()
+	if len(forgot) != 1 || forgot[0] != "home" {
+		t.Errorf("NetworkManager was asked to forget %q", forgot)
+	}
+	// And it takes exactly one name: no name is a verb that would have to guess
+	// which network to destroy.
+	for _, args := range [][]string{{}, {"a", "b"}} {
+		if resp := s.Dispatch(Request{Method: "net.forget", Args: args}); resp.Error == "" {
+			t.Errorf("net.forget %q was accepted", args)
+		}
 	}
 }

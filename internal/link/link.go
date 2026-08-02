@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"unicode"
 	"unicode/utf8"
 )
@@ -79,6 +80,10 @@ type Manager interface {
 	// for one NetworkManager already has a profile for; it is never logged,
 	// never journalled, and never put on anybody's command line.
 	Connect(ssid, secret string) error
+	// Forget drops a saved network. It is how a password that has changed gets
+	// typed again - nothing asks for one while a profile is there - and it is
+	// the only thing here that deletes a profile somebody else made.
+	Forget(ssid string) error
 	// Disconnect drops the wifi link, and leaves the profile saved.
 	Disconnect() error
 }
@@ -167,6 +172,30 @@ func printableSSID(raw []byte) (string, bool) {
 	return s, true
 }
 
+// withoutSecret is the last thing a join's answer passes through: an error that
+// quotes the password does not get repeated, whatever else it says.
+//
+// This is an assertion rather than a fix for anything known. NetworkManager
+// names the property it did not like - "802-11-wireless-security.psk: property
+// is invalid" - and does not appear to echo values, so nothing has ever been
+// seen coming through here. It is worth the six lines because this is the one
+// boundary where the password and the message are both in hand: an error out of
+// here reaches the daemon's answer, the CLI's stderr, and whatever a person
+// pastes into a bug report, and a password that gets that far is one nobody can
+// take back.
+//
+// The whole error goes rather than the password being cut out of it. A message
+// we understand well enough to edit is one we understand well enough to trust,
+// and this exists for the case where neither is true - and editing would also
+// mangle an ordinary refusal for anybody whose passphrase happens to be a word
+// like "password".
+func withoutSecret(err error, secret string) error {
+	if err == nil || secret == "" || !strings.Contains(err.Error(), secret) {
+		return err
+	}
+	return errors.New("NetworkManager's answer quoted the password, so it is not being repeated")
+}
+
 // secured is whether joining this network needs a password.
 //
 // Read off the flags rather than guessed from the name, and all three words:
@@ -181,9 +210,19 @@ func secured(flags, wpa, rsn int) bool {
 // can do something about. The numbers are NMDeviceStateReason; the ones not
 // named here are printed as themselves rather than guessed at, because a wrong
 // diagnosis sends somebody to the router for a problem that is in the room.
-func refusal(reason int) string {
+//
+// offered is whether a password went with the attempt, and it changes what one
+// of these means rather than how it is worded. NO_SECRETS is what
+// NetworkManager says both when the password it was given was rejected and when
+// it needed one and nobody had one to give - and "the password was refused" is
+// a bad thing to read when you were never asked for a password, because the
+// thing to do about it is the opposite.
+func refusal(reason int, offered bool) string {
 	switch reason {
 	case 7: // NO_SECRETS
+		if !offered {
+			return "that network wants a password, and none was offered"
+		}
 		return "the password was refused"
 	case 8, 10, 11: // SUPPLICANT_DISCONNECT, SUPPLICANT_FAILED, SUPPLICANT_TIMEOUT
 		return "the access point stopped answering, which is usually a wrong password"

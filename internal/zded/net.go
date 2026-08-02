@@ -80,6 +80,12 @@ func (s *Server) links() (link.Manager, error) {
 		if alive, ok := s.link.(interface{ Alive() bool }); !ok || alive.Alive() {
 			return s.link, nil
 		}
+		// Handed back rather than dropped on the floor: a bus connection is a
+		// socket and two goroutines, and this happens once per NetworkManager
+		// restart for the life of the session.
+		if closer, ok := s.link.(interface{ Close() error }); ok {
+			closer.Close() //nolint:errcheck // it is already the connection that stopped working
+		}
 		s.link = nil
 	}
 	if !s.noManagerAt.IsZero() && time.Since(s.noManagerAt) < noManagerFor {
@@ -177,6 +183,24 @@ func (s *Server) netConnect(args []string) Response {
 		return Response{Error: "joining " + ssid + ": " + err.Error()}
 	}
 	return ok("joined " + ssid)
+}
+
+// netForget drops a saved network, which is the only way to change a password
+// zde has already saved: nothing asks for one while a profile is there, so
+// without this a network with a wrong password against it can never be joined
+// from zde again.
+func (s *Server) netForget(ssid string) Response {
+	if ssid == "" {
+		return Response{Error: "net.forget takes the name of a network"}
+	}
+	m, err := s.links()
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	if err := m.Forget(ssid); err != nil {
+		return Response{Error: err.Error()}
+	}
+	return ok("forgot " + ssid)
 }
 
 func (s *Server) netDisconnect() Response {

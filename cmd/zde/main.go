@@ -10,6 +10,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	// Aliased because this file already has a signal(): the bluetooth widget's
+	// column of dBm readings took the plain name first.
+	sig "os/signal"
 	"strconv"
 	"strings"
 	"syscall"
@@ -71,6 +74,8 @@ func run(args []string) error {
 		// long as the process lives (/proc/<pid>/cmdline) - so there is no
 		// spelling of this command that can leak one. It comes from stdin.
 		return netConnect(args[2])
+	case len(args) == 3 && args[0] == "net" && args[1] == "forget":
+		return netForget(args[2])
 	case len(args) == 2 && args[0] == "net" && args[1] == "disconnect":
 		return netDisconnect()
 	case len(args) >= 2 && args[0] == "system" && args[1] == "bluetooth":
@@ -1166,6 +1171,24 @@ func netConnect(ssid string) error {
 	return nil
 }
 
+// netForget drops a saved network. It is how a password that has changed gets
+// typed again: nothing asks for one while NetworkManager has a profile, so a
+// network saved with the wrong password is otherwise unjoinable from zde for
+// good.
+func netForget(ssid string) error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	var said string
+	if err := c.Call("net.forget", &said, ssid); err != nil {
+		return err
+	}
+	fmt.Println(said)
+	return nil
+}
+
 func netDisconnect() error {
 	c, err := zded.Dial()
 	if err != nil {
@@ -1208,6 +1231,14 @@ func readSecret(prompt string) (string, error) {
 // hush turns a terminal's echo off and answers with how to put it back. A
 // stdin that is not a terminal - a pipe from `pass show wifi` - echoes nothing
 // to begin with, so there is nothing to turn off and nothing to restore.
+//
+// Ctrl+C at the prompt puts it back too. Interrupting a password prompt is an
+// ordinary thing to do, and a terminal left echoless afterwards is a terminal
+// somebody has to know `stty sane` to get out of - every password prompt on the
+// machine traps this, and the comment here used to claim zde did while it did
+// not. The signal is then raised again with the handler gone, so the shell that
+// started this still sees a process that was interrupted rather than one that
+// chose to exit.
 func hush(f *os.File) func() {
 	fd := int(f.Fd())
 	before, err := unix.IoctlGetTermios(fd, unix.TCGETS)
@@ -1219,7 +1250,29 @@ func hush(f *os.File) func() {
 	if err := unix.IoctlSetTermios(fd, unix.TCSETS, &quiet); err != nil {
 		return func() {}
 	}
-	return func() { unix.IoctlSetTermios(fd, unix.TCSETS, before) } //nolint:errcheck // nothing useful to do about a terminal that will not take its settings back
+	restore := func() {
+		unix.IoctlSetTermios(fd, unix.TCSETS, before) //nolint:errcheck // nothing useful to do about a terminal that will not take its settings back
+	}
+
+	interrupted := make(chan os.Signal, 1)
+	sig.Notify(interrupted, os.Interrupt, syscall.SIGTERM)
+	over := make(chan struct{})
+	go func() {
+		select {
+		case caught := <-interrupted:
+			restore()
+			sig.Stop(interrupted)
+			// With nothing listening any more this goes back to killing the
+			// process, which is what it was always going to do.
+			syscall.Kill(os.Getpid(), caught.(syscall.Signal)) //nolint:errcheck // the process is on its way out
+		case <-over:
+		}
+	}()
+	return func() {
+		close(over)
+		sig.Stop(interrupted)
+		restore()
+	}
 }
 
 func deskList() error {
@@ -1327,6 +1380,9 @@ func usage() {
                          on this machine can read a running process's
                          arguments - and it is only asked for when the network
                          is secured and NetworkManager has no profile for it
+  zde net forget SSID    drop what NetworkManager has saved for a network,
+                         which is how a changed password gets typed again -
+                         nothing asks for one while a profile is there
   zde net disconnect     drop the wifi link, keeping the saved profile
   zde app list           what it can start
   zde system bluetooth   the radio, and what is around it: the adapter, then

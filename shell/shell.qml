@@ -609,7 +609,14 @@ ShellRoot {
         function ask(method, args) {
             if (!netLink.connected)
                 return false;
-            netLink.pending.push(method);
+            // The method and the network it is about, so a reply can be matched
+            // to what it answers. The first argument only, and never the rest:
+            // the second argument of a join is the password, and this is a
+            // queue that outlives the write.
+            netLink.pending.push({
+                method: method,
+                about: (args && args.length > 0) ? args[0] : ""
+            });
             netLink.write(JSON.stringify({
                 method: method,
                 args: args ?? []
@@ -627,7 +634,10 @@ ShellRoot {
 
         parser: SplitParser {
             onRead: line => {
-                const was = netLink.pending.shift() ?? "";
+                const was = netLink.pending.shift() ?? {
+                    method: "",
+                    about: ""
+                };
                 let res = null;
                 try {
                     res = JSON.parse(line);
@@ -635,7 +645,7 @@ ShellRoot {
                     netState.known = false;
                     return;
                 }
-                if (was === "net.status") {
+                if (was.method === "net.status") {
                     if (!res || res.error !== undefined || !res.ok) {
                         netState.known = false;
                         return;
@@ -644,6 +654,19 @@ ShellRoot {
                     netState.ssid = res.ok.ssid ?? "";
                     netState.strength = res.ok.signal ?? 0;
                     netState.known = true;
+                    // And the surface, while it is up. A join often answers
+                    // "joining" rather than "joined" - NetworkManager takes
+                    // longer to decide than a keypress can wait - and the
+                    // header saying where you are is how that ends: it changes
+                    // when the link does. Without this the widget would sit
+                    // there naming the network you left, which is the same lie
+                    // the bar's known/unknown pattern exists to prevent.
+                    //
+                    // The link and not the rows. Signal moves on its own, so
+                    // re-listing would reorder what somebody is choosing from
+                    // under their hands.
+                    if (connections.visible)
+                        connections.link = res.ok;
                     return;
                 }
                 // A join or a disconnect. The surface is waiting to be told
@@ -655,8 +678,16 @@ ShellRoot {
                     return;
                 if (res.error !== undefined)
                     connections.said = res.error;
-                else if (res.ok !== undefined)
+                else if (res.ok !== undefined) {
                     connections.said = String(res.ok);
+                    // A network that has been forgotten is not saved any more,
+                    // and the rows were handed over when the surface opened.
+                    // Without this the row would still read as saved and Enter
+                    // would join it without asking for the password that was
+                    // just thrown away, which is the whole point of the key.
+                    if (was.method === "net.forget")
+                        connections.forgotten(was.about);
+                }
                 // And ask again at once, so the bar catches up with what just
                 // changed rather than in five seconds' time.
                 netLink.ask("net.status", []);
@@ -700,6 +731,14 @@ ShellRoot {
         }
         onDropped: {
             if (!netLink.ask("net.disconnect", []))
+                connections.said = "no connection to zded";
+        }
+
+        // Forgetting is the way out of a password saved wrong: nothing asks for
+        // one while NetworkManager has a profile, so without this a typo makes
+        // a network unjoinable from zde for good.
+        onForget: ssid => {
+            if (!netLink.ask("net.forget", [ssid]))
                 connections.said = "no connection to zded";
         }
         onDismissed: connections.hide()
