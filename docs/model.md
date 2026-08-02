@@ -122,7 +122,13 @@ on_exit:  []
 ## 6. The action map
 
 Physical keys are a scheme on top, assigned later (vision.md, principle 2).
-Modes gate which actions are live.
+Modes gate which actions are live. Not everything here is written, and not
+everything written here has a chord. The keymap registry is the part that has a
+key or a reason to be reachable by name, and that is what `palette.open` lists,
+marking each row runnable or not on the build in front of you. The rest are the
+CLI's: `zde desk switch`, `desk snapshot`, `desk reconcile`,
+`desk move-workspace-to`, `ask local` and `attn <mode>` all work today with no
+row in any surface. A missing palette row means no key, not no verb.
 
 | Group | Actions |
 |---|---|
@@ -130,7 +136,7 @@ Modes gate which actions are live.
 | monitor | `focus <dir>`, `move-window <dir>`, `move-workspace <dir>` |
 | workspace | `next`/`prev` (band-clamped), `overview` |
 | window | `focus <dir>`, `move <dir>`, `resize`, `preset-width`, `consume`/`expel`, `float`, `fullscreen`, `close`, `capture-block`, `jump-to` (pick any open window and go to where it is; travels the hierarchy, and rearranges nothing) |
-| launch | `launcher.open` (zlg), `palette.open` (run any action by name, and answer an expression typed in place of one), `app.launch <name>`, `app.launch-at <name>` (prompts for a directory), `app.launch-here` (context fills the slot), `app.jump-or-launch`, `app.new-instance` (always fresh) |
+| launch | `launcher.open` (zlg), `palette.open` (run any action by name, filtered as you type, with the ones nobody has written marked as such; answering an expression typed in place of a name is 0.2), `app.launch <name>`, `app.launch-at <name>` (prompts for a directory), `app.launch-here` (context fills the slot), `app.jump-or-launch`, `app.new-instance` (always fresh) |
 | ask | `oneshot`, `panel`, `escalate`, `local` |
 | pass | `open` (trusted secrets window; types into the focused field, never the clipboard), `type` (trusted window only) |
 | clip | `history`, `clear` |
@@ -139,7 +145,7 @@ Modes gate which actions are live.
 | audio | `vol-up`, `vol-down`, `mute`, `app-vol`, `sink-switch`, `app-sink`, `mic-mute` |
 | net | `observe`, `kill` (global toggle, loud bar state), `app-cut <app>` |
 | modes | `menu` (pick a mode), `normal`, `window`, `kb-mouse`, `one-hand`, `passthrough` |
-| system | `lock`, `lock-preset` (switch BEFORE lock), `power`, `quiet`, `connections` (wifi and the link, `forget` to drop a saved one), `bluetooth` (its own action, unbound), `calendar`, `wallpapers`, `brightness-up`/`brightness-dn`, `help`, `notif-center`, `doctor`, `update`, `layout-switch` (native) |
+| system | `lock`, `lock-preset` (switch BEFORE lock), `power`, `quiet` (toggle), `attn <mode>` (work / focus / quiet by name; the CLI has it, no key is free for it), `connections` (wifi, and the link you are on; `forget` drops a saved network), `bluetooth` (the radio, what is around it, and pairing; no key of its own, since a second chord for half of one surface is a key to remember for no reason), `calendar`, `wallpapers`, `brightness-up`/`brightness-dn`, `help`, `notif-center`, `doctor`, `update`, `layout-switch` (native) |
 
 Launch placement: manifest pin first; else adoption (focused workspace,
 current scroll position, active desk); guest mode restricts launching to the

@@ -21,8 +21,12 @@ then Beautiful.**
    contract; keys are assigned once usage shows the frequencies. Modes:
    Normal, Window, Kb-mouse, One-hand, Passthrough, visible in the bar.
 3. **Display policy, never data policy.** Notifications always land in
-   history, full text and timestamp. Quiet and focus modes stop popups only;
-   review happens in the notification center.
+   history, timestamped, with what was sent kept to its own bound: 300
+   characters of summary, 4000 of body, and an app that puts everything in the
+   body keeps a body. The bounds are there because a notification is
+   attacker-controlled and is what sizes the history; they are the only thing
+   that ever shortens a record, and no mode decides what is kept. Quiet and
+   focus modes stop popups only; review happens in the notification center.
 4. **Visible state.** Whatever a keypress depends on is on the bar: media
    target, mic, mode, queue depth, mic/camera holders, net-kill.
 5. **Two-lane secrets.** The clipboard has history; secrets never enter it.

@@ -82,8 +82,13 @@ nix build .#zde-smoke    # a few min. Boots it: greeter, units, config, podman.
 up still passes it - that is the smoke test's job. It boots a host in QEMU and
 checks that greetd is up, that niri's user units are where systemd reads them,
 that home-manager wrote the generated config, and that niri's own parser
-accepts it. It runs in CI on any change to the system definition, so in
-practice you push and let it answer; run it locally when you want it sooner.
+accepts it. It has grown well past that since: a compositor runs nested inside
+it, so the test also drives the desks, the queue, a notification arriving and
+being read back in the centre, a desk starting what its manifest declares, and
+the bar saying it has no microphone and no NetworkManager rather than guessing
+([`verify.md`](verify.md) says what it still cannot reach). It runs in CI on any
+change to the system definition, so in practice you push and let it answer; run
+it locally when you want it sooner.
 
 The smoke test needs KVM. In the CI workflow a udev rule opens `/dev/kvm` to
 non-root; locally, `nix build` needs the `kvm` system feature, which nix

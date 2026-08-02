@@ -31,9 +31,13 @@ worked examples, and `zcr recheck` re-resolves a `SourceTag` and reports
 whether the digest moved. Neither is wired into zde. Nothing about zde's own update
 path (`update.md`) covers layer 2 yet.
 
-Laptop hardware (upower, power profiles, wifi/bt radios) is a toggle in the
-system module: `zde.laptop.enable`. Desktops leave it off; the 0.4 laptop
-profile (roadmap) builds its UIs on top of it in layer 1.
+Laptop hardware (upower, power profiles, the network radio) is a toggle in the
+system module: `zde.laptop.enable`. The bluetooth radio has a switch of its
+own, `zde.bluetooth.enable`, off by default and turned on by the laptop one
+too, so a desktop can ask for bluetooth without taking a power daemon and
+NetworkManager with it. Desktops leave both off, which is a machine with no
+radio listening on its behalf; the 0.4 laptop profile (roadmap) builds the rest
+of its UIs on top of them in layer 1.
 
 ## Reference platform: NixOS
 
@@ -92,8 +96,9 @@ parse fails the build rather than the login.
 
 On top of it, layer 0 enables niri and starts it through
 greetd (tuigreet, no graphical display manager), so the machine boots into the
-compositor that reads layer 1's config. What it boots into is still bare: the
-generated binds spawn zde tools that land with roadmap 0.1.
+compositor that reads layer 1's config. What it boots into is no longer bare:
+roadmap 0.1 has landed, so the generated binds spawn tools that are there, and
+the ones nobody has written yet say so in the palette rather than in silence.
 
 Two things check that, since no dev host has nix. `nix flake check` evaluates a
 throwaway host with both layers on (`nix/test-host.nix`), which is what catches

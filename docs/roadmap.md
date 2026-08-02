@@ -15,6 +15,34 @@ attribution; asks 5-6 land with their consumers.
 - shell MVP: bar (mode, queue, mic, clock), picker, notification center.
 - ask MVP: popup + panel, provider/local tiers, escalate.
 
+Every line of that has landed, and a desk now starts what its manifest declares
+and pins each app to the workspace it named. Three things arrived beside the
+list rather than in it: the connections surface (`Mod+Shift+c`), which is 0.4's
+wifi TUI in the shape the shell wanted; the palette (`Mod+semicolon`), which is
+0.2's and came early because a good part of the cheatsheet is still silent and
+a palette is what says which part; and bluetooth, as `zde system bluetooth`
+with nothing on a screen.
+
+Where those lines stop short is what is left of the phase, and none of it
+blocks 0.2:
+
+- a desk's own attn policy. `policies.attn` in a manifest is read by nobody, so
+  the mode is the session's and not the desk's, and the per-desk display
+  policies [`vision.md`](vision.md) gives attn are one mode wide.
+- a popup. The "actions" capability is claimed and every action a sender
+  declares is offered in the center, up to the nine a digit can reach, with the
+  rest counted and said rather than dropped quietly - but the offer is behind
+  `Mod+n` rather than in front of you. It is a claim about reach and not about
+  immediacy, and nothing in 0.1 makes it both.
+- history dies with the daemon: a ring of 200 in memory, because the journal
+  fsyncs per line and this is history that is stale by the next login. The queue
+  is the half that survives.
+- ask has no tier until a machine names one, and the panel does not carry the
+  previous turns as context.
+- nothing is sandboxed until somebody defines an app. Layer 2 is provisioned by
+  hand ([`delivery.md`](delivery.md)), so a manifest can name an app that does
+  not exist and the launch is a line in zded's log.
+
 ## 0.2 - Daily driver
 
 - pass: derivation + pepper + counters, trusted window, type-out.
@@ -22,13 +50,15 @@ attribution; asks 5-6 land with their consumers.
 - capture: shots, replay clip, send-to.
 - media/audio: target (pick/next/pin) + bar widget, mixer widget, device
   switch, mic OSD.
-- launch surfaces: palette, zlg, jump / jump-or-launch / new-instance,
-  launch-here.
+- launch surfaces: the palette (landed early, with 0.1's shell, running actions
+  by name and marking the ones nobody has written), zlg, jump / jump-or-launch
+  / new-instance, launch-here.
 - calc, in the palette: type an expression where you would type an action name,
   and the answer is the first row - Enter copies it, and nothing has opened a
   window. It belongs to the palette rather than beside it because the whole
-  point is not choosing a calculator first, and it is listed here rather than
-  in 0.1 because there is no palette until this phase.
+  point is not choosing a calculator first. The palette arriving in 0.1 does not
+  bring this with it: the surface is one thing and a second engine behind the
+  same field is another.
   - The engine is `qalc` (qalculate's CLI) in a zinc container with no network,
     which is what buys units, hex, and precision without zde parsing anything
     itself: a hand-rolled parser is the kind of thing that is wrong quietly.
@@ -58,8 +88,12 @@ attribution; asks 5-6 land with their consumers.
 - film desk: PipeWire limiter, luma-clamp shader, end-of-film sleep, ambient
   side monitors.
 - gaming desk: gamescope, auto-Passthrough + never-release set, replay.
-- laptop profile: battery/brightness/power, wifi/bt TUIs, single-monitor
-  degradation, workspace placement re-applied on dock/undock.
+- laptop profile: battery/brightness/power, single-monitor degradation,
+  workspace placement re-applied on dock/undock. The wifi and bluetooth halves
+  came early and in different shapes - wifi as a shell surface on
+  `Mod+Shift+c`, bluetooth as `zde system bluetooth` with no surface at all -
+  so what is left here is folding bluetooth into that surface and the rest of
+  what a laptop is.
 
 Delivery ([`delivery.md`](delivery.md)): the flake skeleton exists; the home
 module grows with each 0.1 component; ISO and `install.sh` after 0.1 is
@@ -101,16 +135,30 @@ turned "when someone has hardware" into something anyone can do this evening.
   workspace is the thing people reach for, or whether they want to name an
   empty one and fill it afterwards, which this refuses because an empty
   workspace is never adopted and so has no name to move.
-- a single unreadable file in the desks directory takes every manifest with
-  it: the loader fails the whole read, and the caller swallows the error, so
-  desks silently stop being declared. Worth failing one file at a time.
+- a single unreadable file in the desks directory taking every manifest with
+  it: answered, by failing one file at a time. The loader returns what it read
+  and what it could not, `zde doctor` names the files it could not, and the
+  rest of the desks are declared.
 - nav with a layer-shell surface up: one holding keyboard focus reads as
   nothing focused at all, so a press spends itself putting focus back on a
-  window instead of going anywhere. The picker is that surface and it ships
-  now, taking the keyboard only while it is visible - so the thing to try is a
-  nav key the instant after it closes ([`verify.md`](verify.md), a day of
-  work). Not settled here: driving a real key into a nested compositor did not
-  work well enough to trust the answer.
+  window instead of going anywhere. There are five such surfaces now - the
+  picker, the notification center, the connections list, the palette and the
+  ask window - each taking the keyboard only while it is visible, so the thing
+  to try is a nav key the instant after each one closes
+  ([`verify.md`](verify.md), a day of work). Not settled here: driving a real
+  key into a nested compositor did not work well enough to trust the answer.
+- attn actions, with "actions" claimed and every declared one offered in the
+  center: whether a claim about reach is read by real senders as a claim about
+  immediacy. The buttons are behind `Mod+n` because there is no popup, and an
+  app that changes what it sends the moment it sees the capability is the case
+  nobody has met yet.
+- the join verdict: NetworkManager can take longer to refuse a wrong password
+  than the IPC deadline allows, so the surface stops waiting and watches the
+  link instead. Pushing the verdict as an event is the fix and is not built;
+  whether it is needed is a wrong password on real hardware.
+- ask against a real tier: whether an answer arriving piece by piece reads
+  well, and whether two minutes is the right cap once a local model that thinks
+  before it speaks sits behind `local`.
 - nav latency, by hand on real hardware rather than by arithmetic: one Mod+j
   spawns a `zde`, and behind it zded asks niri for the focused window, moves
   it, asks again, and on a rotation re-reads the map and the focused name a
@@ -132,10 +180,14 @@ turned "when someone has hardware" into something anyone can do this evening.
 - caps:hyper landing in a usable modifier (stock xkb folds Hyper into Mod4).
 - kanata mouse-button interception (fallback: evsieve).
 - Quickshell under multi-monitor hotplug (swap path exists).
-- netns stats readable without ask 6, as a degraded first cut.
+- netns stats: answered by zinc's `zcr net` (ask 6), so netview reads the
+  generated rules' own counters rather than guessing. What is left is netview,
+  in 0.3.
 - NixOS: greetd reaching niri-session on real hardware (CI only evaluates the
   host, it never boots it), rootless podman subuids, Quickshell from its
-  flake, kanata uinput permissions, NVIDIA with niri.
+  flake, kanata uinput permissions, NVIDIA with niri, and BlueZ's D-Bus policy
+  for a normal user calling `RegisterAgent` - if the session cannot register a
+  pairing agent, incoming pairings are refused.
 - laptop: power-profiles-daemon vs TLP on real battery life.
 
 ## Cross-cutting
