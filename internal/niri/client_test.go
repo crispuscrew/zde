@@ -259,6 +259,36 @@ func TestFocusWindowNotHandled(t *testing.T) {
 	}
 }
 
+// The palette runs a niri native by the name its bind gives it, and niri wants
+// that name in its own spelling. Convert it wrongly and every native row in the
+// palette reaches the compositor as an action it has never heard of - which no
+// Go type can catch, because both spellings are strings.
+func TestPerformSpellsTheActionTheWayNiriDoes(t *testing.T) {
+	var sent asked
+	path := fakeNiriAsked(t, &sent, `{"Ok":"Handled"}`)
+	if err := dial(t, path).Perform("consume-window-into-column"); err != nil {
+		t.Fatal(err)
+	}
+	lines := sent.all()
+	if len(lines) != 1 {
+		t.Fatalf("niri was asked %v, want one action", lines)
+	}
+	if !strings.Contains(lines[0], `{"Action":{"ConsumeWindowIntoColumn":{}}}`) {
+		t.Errorf("asked %s, want niri's ConsumeWindowIntoColumn", lines[0])
+	}
+}
+
+// And a name niri does not know comes back as niri's refusal rather than as a
+// palette row that appeared to work. That is what lets Perform derive the
+// spelling instead of keeping a table of twenty of them.
+func TestPerformCarriesNirisRefusal(t *testing.T) {
+	path := fakeNiri(t, `{"Err":"unknown action"}`)
+	err := dial(t, path).Perform("frobnicate-window")
+	if err == nil || !strings.Contains(err.Error(), "unknown action") {
+		t.Errorf("got %v, want niri's refusal", err)
+	}
+}
+
 // niri answers a request it did not like with Err, and that is not our error
 // to swallow.
 func TestErrReply(t *testing.T) {

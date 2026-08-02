@@ -224,6 +224,15 @@ func (compositor) FocusWindowVertically(down bool) error {
 	return c.FocusWindowVertically(down)
 }
 
+func (compositor) Perform(action string) error {
+	c, err := niri.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	return c.Perform(action)
+}
+
 func (compositor) FocusWorkspace(name string) error {
 	c, err := niri.Dial()
 	if err != nil {

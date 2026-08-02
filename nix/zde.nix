@@ -28,6 +28,12 @@ buildGoModule {
       ../vendor
       ../cmd
       ../internal
+      # And the keymap, which is data rather than a doc: cmd/zde's tests read
+      # the shipped one to check that every action claiming to be written really
+      # is a verb this binary answers, and the check phase runs in a sandbox
+      # holding only what is listed here. Editing the keymap rebuilds the
+      # binary, which is right - the keymap is half of what that test checks.
+      ../common/keymap
     ];
   };
   vendorHash = null;

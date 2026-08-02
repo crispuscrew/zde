@@ -114,3 +114,32 @@ func EmitText(km *Keymap) string {
 	}
 	return b.String()
 }
+
+// listed is one line of that file read back: one bind, as the build that
+// generated the binds beside it wrote it down.
+type listed struct{ key, action, desc string }
+
+// parseText reads back what EmitText wrote. It lives beside the emitter
+// deliberately: the format has one owner, and a reader in another file is how
+// two halves of one format come to disagree about a tab.
+// TestTheCheatsheetSurvivesBeingReadBack holds them together.
+//
+// A line it cannot read is dropped rather than refused. What is being read is a
+// generated file and the reader is the palette: one unreadable line costs one
+// row, and refusing the file costs every key on the machine.
+func parseText(data []byte) []listed {
+	var out []listed
+	for _, line := range strings.Split(string(data), "\n") {
+		// A group name sits on its own line, unindented, and the binds under it
+		// are indented. Nothing else is in the file.
+		if !strings.HasPrefix(line, "  ") {
+			continue
+		}
+		parts := strings.Split(line[2:], "\t")
+		if len(parts) != 3 {
+			continue
+		}
+		out = append(out, listed{key: parts[0], action: parts[1], desc: parts[2]})
+	}
+	return out
+}

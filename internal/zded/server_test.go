@@ -47,7 +47,11 @@ type fakeCompositor struct {
 	adopted []string
 	moves   []bool   // vertical window moves asked for, down is true
 	carried []string // workspaces the focused window was moved to
-	failOn  string
+	// performed is niri's own actions asked for, by name. The name is the thing
+	// worth keeping: it is a string all the way to the compositor, so a typo in
+	// one is invisible to Go.
+	performed []string
+	failOn    string
 }
 
 func (f *fakeCompositor) DeskMap() (*desk.Map, error) {
@@ -146,6 +150,24 @@ func (f *fakeCompositor) FocusedOutput() (string, error) {
 		return "", f.err
 	}
 	return f.output, nil
+}
+
+// Perform behaves like niri: it is handed the action's name and either knows it
+// or does not.
+func (f *fakeCompositor) Perform(action string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	f.performed = append(f.performed, action)
+	return nil
+}
+
+func (f *fakeCompositor) performCalls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.performed...)
 }
 
 func (f *fakeCompositor) MoveWindowToWorkspace(name string) error {
