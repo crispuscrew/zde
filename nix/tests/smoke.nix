@@ -1724,6 +1724,14 @@ pkgs.testers.runNixOSTest {
       assert "help" in apps, f"no help app, so Mod+slash opens nothing: {apps}"
       for name, argv in apps.items():
           machine.succeed(f"su -l zde -c 'test -x {argv[0]}'")
+          # And behind a terminal's -e, which hides a second program: the line
+          # above is satisfied by the terminal itself, so `foot -e nvim` on a
+          # machine with no nvim passed this check and opened a window that shut
+          # again the moment it looked for the editor. That is how Mod+e shipped
+          # naming a program layer 1 does not install.
+          if "-e" in argv and argv.index("-e") + 1 < len(argv):
+              inner = argv[argv.index("-e") + 1]
+              machine.succeed(f"su -l zde -c 'command -v {inner}'")
 
       # The keymap as a key shows it. `zde help` printed usage to a stderr no
       # keypress has, which on a desktop where most keys are silent made the one

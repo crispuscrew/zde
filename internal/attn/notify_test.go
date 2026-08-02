@@ -629,3 +629,39 @@ func TestNotifyKeepsTheBodysLines(t *testing.T) {
 		t.Errorf("summary = %q, want it flattened to one line", got)
 	}
 }
+
+// A notification with no summary is ordinary - notify-send with one argument
+// sends one - and it used to be the one shape where zde kept less than the app
+// sent: the body was promoted to the summary, bounded at the summary's 300
+// characters, and then thrown away. Everything past the first line of a
+// message that arrived whole was gone.
+func TestNotifyKeepsTheBodyOfASummarylessNotification(t *testing.T) {
+	sink := &fakeSink{}
+	long := strings.Repeat("word ", 400) // 2000 characters, and no summary at all
+	if _, derr := notifier(sink).Notify(peer, "app", 0, "", "", long, nil, nil, -1); derr != nil {
+		t.Fatal(derr)
+	}
+	got := sink.got[0]
+	// The row is a row: bounded like the summary it is standing in for.
+	if n := len([]rune(got.Text)); n > summaryMax || n == 0 {
+		t.Errorf("summary is %d characters, want between one and %d", n, summaryMax)
+	}
+	// And the message is all there, under the body's own bound.
+	if n := len([]rune(got.Body)); n != len([]rune(strings.TrimSpace(long))) {
+		t.Errorf("kept %d characters of body, want the whole %d that arrived",
+			n, len([]rune(strings.TrimSpace(long))))
+	}
+}
+
+// And when the whole message fits on the line, there is nothing left to show
+// under it: the center would draw the same sentence twice, once as the row and
+// once as its body.
+func TestNotifyDoesNotRepeatAShortBody(t *testing.T) {
+	sink := &fakeSink{}
+	if _, derr := notifier(sink).Notify(peer, "app", 0, "", "", "the build failed", nil, nil, -1); derr != nil {
+		t.Fatal(derr)
+	}
+	if got := sink.got[0]; got.Text != "the build failed" || got.Body != "" {
+		t.Errorf("notification = %+v, want the line as the summary and nothing repeated under it", got)
+	}
+}

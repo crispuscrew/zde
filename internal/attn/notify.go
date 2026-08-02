@@ -348,9 +348,10 @@ type notifications struct{ server *Server }
 
 // Notify is the spec's one method that matters. The arguments are its order,
 // not ours: icon and timeout are accepted and dropped, because a queue has
-// nowhere to put them. Of the actions, only whether there is a default one is
-// kept - that is the single action a list of rows can offer (see Invoke), and
-// the labels belong to buttons nothing draws yet.
+// nowhere to put them. The actions are kept with their labels, in the order the
+// sender declared them and bounded by actionsMax, because the center offers
+// every one of them and the capability list says so (see takeActions, Invoke,
+// GetCapabilities).
 func (n *notifications) Notify(
 	sender dbus.Sender,
 	app string,
@@ -366,10 +367,23 @@ func (n *notifications) Notify(
 	text := oneLine(summary)
 	rest := bodyText(body)
 	if text == "" {
-		// Some apps put everything in the body. Something is better than an
-		// item that says nothing at all - and what becomes the summary is
-		// bounded like one, because it is going on one line of the queue.
-		text, rest = oneLine(body), ""
+		// Some apps put everything in the body, and a notification with no
+		// summary is ordinary: notify-send with one argument sends one. The
+		// front of the message becomes the summary and is bounded like one,
+		// because that is the line the queue and the center's row draw.
+		//
+		// The body stays. Discarding it here was a notification losing
+		// everything past 300 characters for no reason but which field it
+		// arrived in - the one shape where zde kept less than the app sent,
+		// against a principle that says what arrives lands in history whole
+		// (docs/vision.md, principle 3).
+		text = oneLine(body)
+		if rest == text {
+			// The whole message fitted on the line. Keeping it as well would
+			// have the center draw the same sentence twice, once as the row
+			// and once underneath it.
+			rest = ""
+		}
 	}
 	if text == "" {
 		return 0, dbus.MakeFailedError(errors.New("a notification with neither summary nor body says nothing"))
