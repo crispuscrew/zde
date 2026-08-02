@@ -19,6 +19,7 @@ type fakeBus struct {
 	err  error
 
 	mu     sync.Mutex
+	dead   bool
 	calls  []string
 	bounds []time.Duration // the deadline each call carried, in the same order
 	fail   map[string]error
@@ -45,6 +46,14 @@ func (f *fakeBus) Call(within time.Duration, path dbus.ObjectPath, method string
 func (f *fakeBus) Set(within time.Duration, path dbus.ObjectPath, iface, prop string, value any) error {
 	f.record(within, "set "+string(path)+" "+iface+"."+prop+argText([]any{value}))
 	return nil
+}
+
+// dead is a bus whose connection has gone, the way it does when the system bus
+// is restarted under a running daemon.
+func (f *fakeBus) Alive() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return !f.dead
 }
 
 func (f *fakeBus) Close() error { return nil }
@@ -501,7 +510,9 @@ func TestEveryCallIsBoundedAndPairingOutlastsTheQuestion(t *testing.T) {
 		func() error { _, err := c.State(); return err },
 		func() error { return c.Power(true) },
 		func() error { return c.Discover(true) },
-		func() error { return c.Trust("44:5C:E9:1A:2B:3C", true) },
+		// The earbuds, because they are the paired one here: trust is refused
+		// on a device that has not been agreed to once.
+		func() error { return c.Trust("AA:BB:CC:DD:EE:01", true) },
 		func() error { return c.Disconnect("44:5C:E9:1A:2B:3C") },
 		func() error { return c.Forget("44:5C:E9:1A:2B:3C") },
 		func() error { return c.Pair("44:5C:E9:1A:2B:3C") },
@@ -532,8 +543,8 @@ func TestEveryCallIsBoundedAndPairingOutlastsTheQuestion(t *testing.T) {
 	if !made {
 		t.Fatalf("no pairing call was made: %v", b.calls)
 	}
-	if pair <= answerWait {
-		t.Errorf("pairing is bounded at %s and the question it waits for stands for %s", pair, answerWait)
+	if pair <= AnswerWait {
+		t.Errorf("pairing is bounded at %s and the question it waits for stands for %s", pair, AnswerWait)
 	}
 	// And the rest are the short bound, or a wedged bluetoothd holds a keypress.
 	for i, call := range b.calls {
@@ -571,5 +582,200 @@ func TestTheQuestionCarriesTheDevicesName(t *testing.T) {
 	if st.Pending.Name != "Ilya's phone" || st.Pending.Passkey != "004291" {
 		t.Errorf("pending = %+v", st.Pending)
 	}
-	c.agent.Answer(false)
+	// And it carries the name the answer has to give back.
+	if st.Pending.ID == "" {
+		t.Error("the question that crossed the socket has no id to answer")
+	}
+	c.agent.Answer(st.Pending.ID, false)
+}
+
+// A device names itself, and the name is drawn on a surface with a question on
+// it. Break this and a device called "\n  0000 matches, allow" writes a line of
+// its own above the real one, or moves the cursor with an escape sequence and
+// paints over it - and the same name injects rows into the tab separated list
+// the CLI prints. The device is still perfectly usable by its address, which is
+// why refusing the name costs nothing.
+func TestARemoteNameCannotForgeALine(t *testing.T) {
+	for _, forged := range []string{
+		"line\nbreak",
+		"tab\tseparated",
+		"\x1b[1A\x1b[2Kpasskey 004291 matches",
+		"bell\a",
+		"zero​width",
+	} {
+		b := oneAdapter()
+		b.objs[phonePth][deviceIface]["Alias"] = v(forged)
+		st, err := client(b).State()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var phone Device
+		for _, d := range st.Devices {
+			if d.Address == "44:5C:E9:1A:2B:3C" {
+				phone = d
+			}
+		}
+		if phone.Address == "" {
+			t.Fatalf("%q took the device out of the list entirely", forged)
+		}
+		if phone.Name != "" {
+			t.Errorf("name %q reached the surface as %q", forged, phone.Name)
+		}
+	}
+	// An ordinary name, including one that is not English, is left alone.
+	for _, ordinary := range []string{"Ilya's phone", "Наушники", "WH-CH720N"} {
+		b := oneAdapter()
+		b.objs[phonePth][deviceIface]["Alias"] = v(ordinary)
+		st, err := client(b).State()
+		if err != nil {
+			t.Fatal(err)
+		}
+		kept := false
+		for _, d := range st.Devices {
+			if d.Name == ordinary {
+				kept = true
+			}
+		}
+		if !kept {
+			t.Errorf("an ordinary name %q was thrown away", ordinary)
+		}
+	}
+	// And a name too long to be a name is cut rather than allowed to push the
+	// question off the top of a terminal.
+	b := oneAdapter()
+	b.objs[phonePth][deviceIface]["Alias"] = v(strings.Repeat("n", 400))
+	st, err := client(b).State()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range st.Devices {
+		if len([]rune(d.Name)) > nameMax {
+			t.Errorf("a %d character name reached the surface", len([]rune(d.Name)))
+		}
+	}
+}
+
+// A property the bus did not send reads false. Break this and a device object
+// without Paired or Trusted in it - which is what an object being built looks
+// like, and what a bus that is not bluez would give - reads as paired and
+// trusted, which is the security-shaped direction to get it wrong in.
+func TestAPropertyTheBusDidNotSendReadsFalse(t *testing.T) {
+	b := &fakeBus{objs: map[dbus.ObjectPath]map[string]map[string]dbus.Variant{
+		hci0: {adapterIface: {"Address": v("00:11:22:33:44:55")}},
+		phonePth: {deviceIface: {
+			"Address": v("44:5C:E9:1A:2B:3C"),
+		}},
+	}}
+	st, err := client(b).State()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Adapter.Powered || st.Adapter.Discovering {
+		t.Errorf("an adapter that said nothing reads %+v", st.Adapter)
+	}
+	if len(st.Devices) != 1 {
+		t.Fatalf("devices = %+v", st.Devices)
+	}
+	if d := st.Devices[0]; d.Paired || d.Trusted || d.Connected {
+		t.Errorf("a device that said nothing reads %+v", d)
+	}
+}
+
+// Trust is about a device you have already agreed to once. Break this and a
+// standing yes can be left on an address that has never paired: it survives in
+// bluez's own store, and the first time that address does pair, it pairs into a
+// device that is already trusted.
+func TestTrustNeedsAPairingToBeAbout(t *testing.T) {
+	b := oneAdapter()
+	b.objs[phonePth][deviceIface]["Paired"] = v(false)
+	c := client(b)
+	if err := c.Trust("44:5C:E9:1A:2B:3C", true); err == nil {
+		t.Error("trusted a device that has never paired")
+	}
+	if b.made("Trusted") {
+		t.Errorf("the property was written anyway: %v", b.calls)
+	}
+	// Taking a permission back never needs a reason, so untrusting is allowed.
+	if err := c.Trust("44:5C:E9:1A:2B:3C", false); err != nil {
+		t.Errorf("untrusting an unpaired device: %v", err)
+	}
+}
+
+// Whether zde is the agent BlueZ actually calls, kept rather than discarded.
+//
+// BlueZ has one default agent and gives the role to whoever asked last, so any
+// process on this machine can take over the answering of pairing questions and
+// nothing tells the agent it displaced. Break this and the surface goes on
+// looking calm while something else says yes on this machine's behalf.
+func TestWhetherTheDefaultAgentRoleWasGivenIsKept(t *testing.T) {
+	b := oneAdapter()
+	c := client(b)
+	if err := c.register(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := c.State()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.Agent.Registered || !st.Agent.Default {
+		t.Errorf("agent = %+v, want registered and default", st.Agent)
+	}
+
+	// And when something else holds the role, that is what it says.
+	taken := oneAdapter()
+	taken.fail = map[string]error{
+		agentManagerIface + ".RequestDefaultAgent": errors.New("something else is the default agent"),
+	}
+	other := client(taken)
+	if err := other.register(); err != nil {
+		t.Fatal(err)
+	}
+	st, err = other.State()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Agent.Default {
+		t.Error("the role was refused and the state says zde holds it")
+	}
+	if !st.Agent.Registered || st.Agent.Why == "" {
+		t.Errorf("agent = %+v, want registered, not default, and why", st.Agent)
+	}
+}
+
+// A connection that has died says so, so that the daemon holding it can drop
+// it. Break this and the system bus restarting costs the session every
+// bluetooth verb and the agent with it, until the next login.
+func TestADeadConnectionSaysSo(t *testing.T) {
+	b := oneAdapter()
+	c := client(b)
+	if !c.Alive() {
+		t.Fatal("a working connection says it is dead")
+	}
+	b.mu.Lock()
+	b.dead = true
+	b.mu.Unlock()
+	if c.Alive() {
+		t.Error("a connection that has gone says it is fine")
+	}
+	// And what it answers in the meantime is an absence with a reason rather
+	// than a raw error, because that is what a person can read.
+	b.err = errors.New("dbus: connection closed by user")
+	st, err := c.State()
+	if err != nil {
+		t.Fatalf("a dead connection answered with an error: %v", err)
+	}
+	if st.Adapter.Present || st.Adapter.Why == "" {
+		t.Errorf("adapter = %+v, want an absence with a reason", st.Adapter)
+	}
+}
+
+// The waits nest: the question is the shortest, the call that carries it is
+// longer, and the client watching is longest. Break the order and something
+// gives up on a pairing that is still going - the call cancelling a question
+// somebody is reading, or the client reporting a failure that has not happened.
+func TestTheWaitsNest(t *testing.T) {
+	if !(AnswerWait < waitFor && waitFor < WatchFor) {
+		t.Errorf("question %s, call %s, watch %s: they have to nest outwards",
+			AnswerWait, waitFor, WatchFor)
+	}
 }

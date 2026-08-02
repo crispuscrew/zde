@@ -17,6 +17,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/godbus/dbus/v5"
 )
@@ -67,10 +69,28 @@ type Device struct {
 	RSSI int16 `json:"rssi,omitempty"`
 }
 
+// AgentState is where zde stands with BlueZ's agent manager, as of the last
+// time it asked.
+//
+// It is on the surface and in the CLI because the promise this package makes -
+// nothing pairs without a person being asked - holds only while zde is the
+// agent BlueZ calls. BlueZ has one default agent and gives the role to whoever
+// asked last, any local process may ask, and nothing tells the one it displaced.
+// So this is a claim with a timestamp attached in spirit: zde asked, and this is
+// what it was told. Default false is the line that matters - something else on
+// this machine is answering pairing questions.
+type AgentState struct {
+	Registered bool `json:"registered"`
+	Default    bool `json:"default"`
+	// Why is what the last attempt said when it did not work.
+	Why string `json:"why,omitempty"`
+}
+
 // State is the whole answer to "what is going on with bluetooth".
 type State struct {
-	Adapter Adapter  `json:"adapter"`
-	Devices []Device `json:"devices"`
+	Adapter Adapter    `json:"adapter"`
+	Agent   AgentState `json:"agent"`
+	Devices []Device   `json:"devices"`
 	// Pending is the pairing question waiting for a person, when there is one.
 	Pending *Request `json:"pending,omitempty"`
 	// Doing is the long call still running, as "pairing AA:BB:.." or
@@ -138,7 +158,11 @@ func read(b bus) (snapshot, error) {
 			Powered:     boolOf(props, "Powered"),
 			Discovering: boolOf(props, "Discovering"),
 			Address:     stringOf(props, "Address"),
-			Name:        stringOf(props, "Alias"),
+			// The adapter's name is this machine's own and still goes through
+			// the filter: it is set by whoever set it, it is drawn beside names
+			// that came in over the air, and one exception on this path is one
+			// more thing to be sure about later.
+			Name: printable(stringOf(props, "Alias")),
 		}
 		break
 	}
@@ -163,8 +187,11 @@ func read(b bus) (snapshot, error) {
 			continue // bluez does not do this; a device without one is not addressable
 		}
 		d := Device{
-			Address:   addr,
-			Name:      stringOf(props, "Alias"),
+			Address: addr,
+			// The name is whatever the device says it is (see printable). The
+			// address above is the identity; this is decoration, and it is
+			// treated like decoration.
+			Name:      printable(stringOf(props, "Alias")),
 			Paired:    boolOf(props, "Paired"),
 			Trusted:   boolOf(props, "Trusted"),
 			Connected: boolOf(props, "Connected"),
@@ -271,9 +298,55 @@ func noService(err error) bool {
 	return false
 }
 
+// nameMax bounds a device name to something that fits a row. A Bluetooth name
+// can be 248 bytes, and a name that long is a name that pushes the question
+// somebody is meant to be reading off the top of a terminal.
+const nameMax = 64
+
+// printable is what a remote string is allowed to be on its way to a screen,
+// and empty for one there is no safe version of.
+//
+// A device name is chosen by the device, and everything within range gets to
+// choose one. Everything that reads it is line and column based - the CLI
+// prints tab separated rows and a pairing question above them, the surface
+// draws one row per device - so a name carrying a newline is a row somebody
+// else wrote, and one carrying an escape sequence can move the cursor and paint
+// over the line above: the confirmation a person is about to say yes to.
+//
+// Dropped rather than escaped, and this is where bluetooth differs from a wifi
+// SSID (internal/link, printableSSID). There, refusing the name means refusing
+// the network, because the name is how you join it. Here the address is the
+// identity and every verb takes one, so a device with no safe name is still a
+// device you can pair, connect and forget - it just shows as its address.
+// Nothing is lost by refusing the decoration.
+func printable(s string) string {
+	if s == "" || !utf8.ValidString(s) {
+		return ""
+	}
+	n := 0
+	for _, r := range s {
+		// IsPrint takes the ASCII space, so a name with spaces in it is fine;
+		// tabs, newlines, escapes and the zero-width formatting characters go.
+		if !unicode.IsPrint(r) {
+			return ""
+		}
+		n++
+		if n > nameMax {
+			// Cut rather than refused: length is not a trick, it is a long name,
+			// and the front of it is what a person recognises.
+			return string([]rune(s)[:nameMax])
+		}
+	}
+	return s
+}
+
 // The property readers. Typed rather than converted: a property that is not
 // the type the interface says it is means we are talking to something that is
 // not BlueZ, and reading it as a zero value beats inventing a number.
+//
+// A property the bus did not send at all reads as the zero value too, and for
+// the two that matter that is the safe direction: a device object with no
+// Paired or Trusted in it reads as neither.
 func boolOf(props map[string]dbus.Variant, name string) bool {
 	var b bool
 	if v, ok := props[name]; ok {

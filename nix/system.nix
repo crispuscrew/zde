@@ -128,6 +128,18 @@ in
     # no tray and no second daemon to install.
     (lib.mkIf (cfg.enable && (cfg.laptop.enable || cfg.bluetooth.enable)) {
       hardware.bluetooth.enable = true;
+
+      # And it comes up off. nixpkgs powers the radio on at boot by default,
+      # which quietly turns "this machine has the bluetooth verbs" into "this
+      # machine has a radio talking from the moment it starts", including while
+      # it sits at a login screen in a room full of strangers. `zde system
+      # bluetooth` says `powered no` and points at `power on`, so what this
+      # costs is one command on the days you want it - and a default nobody
+      # chose is not a decision.
+      #
+      # mkDefault, so a host that would rather have it up at boot says so
+      # without fighting this module.
+      hardware.bluetooth.powerOnBoot = lib.mkDefault false;
     })
   ];
 }

@@ -2,6 +2,7 @@ package bt
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -76,7 +77,7 @@ func TestPairingNeedsAnExplicitYes(t *testing.T) {
 	case <-time.After(10 * time.Millisecond):
 	}
 
-	if err := a.Answer(true); err != nil {
+	if err := a.Answer(req.ID, true); err != nil {
 		t.Fatal(err)
 	}
 	if derr := outcome(t, out); derr != nil {
@@ -116,9 +117,9 @@ func TestPairingSaidNoIsRefused(t *testing.T) {
 	a := quick()
 	g := &agent1{a: a}
 	out := asked(func() *dbus.Error { return g.RequestConfirmation(phone, 1) })
-	waitPending(t, a)
+	req := waitPending(t, a)
 
-	if err := a.Answer(false); err != nil {
+	if err := a.Answer(req.ID, false); err != nil {
 		t.Fatal(err)
 	}
 	derr := outcome(t, out)
@@ -155,7 +156,9 @@ func TestAnUntrustedDevicesServiceIsAsked(t *testing.T) {
 	})
 
 	req := waitPending(t, a)
-	if req.Kind != KindService || req.UUID == "" {
+	// In words, not only as a number: 0000110b is headphones, and nobody can
+	// answer a question about 0000110b.
+	if req.Kind != KindService || req.UUID == "" || req.Service == "" {
 		t.Errorf("question = %+v, want the service named", req)
 	}
 	if derr := outcome(t, out); derr == nil {
@@ -169,7 +172,7 @@ func TestASecondQuestionIsRefusedWhileOneWaits(t *testing.T) {
 	a := quick()
 	g := &agent1{a: a}
 	first := asked(func() *dbus.Error { return g.RequestConfirmation(phone, 1) })
-	waitPending(t, a)
+	standing := waitPending(t, a)
 
 	other := dbus.ObjectPath("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF")
 	if derr := g.RequestConfirmation(other, 2); derr == nil {
@@ -180,7 +183,7 @@ func TestASecondQuestionIsRefusedWhileOneWaits(t *testing.T) {
 	if req, _ := a.Pending(); req.Device != "44:5C:E9:1A:2B:3C" {
 		t.Errorf("the waiting question became %+v", req)
 	}
-	a.Answer(true)
+	a.Answer(standing.ID, true)
 	if derr := outcome(t, first); derr != nil {
 		t.Errorf("the first question was answered yes and got %v", derr)
 	}
@@ -191,7 +194,7 @@ func TestASecondQuestionIsRefusedWhileOneWaits(t *testing.T) {
 // pairing nobody looked at.
 func TestAnswerBeforeTheQuestionIsNotStored(t *testing.T) {
 	a := quick()
-	if err := a.Answer(true); err == nil {
+	if err := a.Answer("1", true); err == nil {
 		t.Error("a yes was accepted with nothing waiting for one")
 	}
 	g := &agent1{a: a}
@@ -229,7 +232,7 @@ func TestAPasskeyToTypeIsShownAndNeedsNoAnswer(t *testing.T) {
 		t.Errorf("question = %+v, waiting = %v", req, waiting)
 	}
 	// There is no yes or no to give it: the answer is typing it on the device.
-	if err := a.Answer(true); err == nil {
+	if err := a.Answer(req.ID, true); err == nil {
 		t.Error("a passkey to type accepted a yes")
 	}
 	// And it ends when the attempt does, rather than holding the slot.
@@ -261,37 +264,6 @@ func TestCancelDropsTheQuestion(t *testing.T) {
 	}
 }
 
-// What goes on the bus is the Agent1 interface and nothing else.
-//
-// The reasoning is internal/attn's, and so is the failure it prevents:
-// whatever the connection is handed has every one of its exported methods
-// published, so exporting the Agent itself would put Answer on the bus - and
-// then anything that can reach this object could say yes to its own pairing.
-func TestOnlyTheAgentSpecIsOnTheBus(t *testing.T) {
-	want := map[string]bool{
-		"Release":              true,
-		"RequestPinCode":       true,
-		"DisplayPinCode":       true,
-		"RequestPasskey":       true,
-		"DisplayPasskey":       true,
-		"RequestConfirmation":  true,
-		"RequestAuthorization": true,
-		"AuthorizeService":     true,
-		"Cancel":               true,
-	}
-	typ := reflect.TypeOf(&agent1{})
-	for i := 0; i < typ.NumMethod(); i++ {
-		name := typ.Method(i).Name
-		if !want[name] {
-			t.Errorf("%s is exported to bluetoothd and is not part of Agent1", name)
-		}
-		delete(want, name)
-	}
-	for name := range want {
-		t.Errorf("%s is missing from the agent on the bus", name)
-	}
-}
-
 // The capability zde registers with. DisplayYesNo means "there is a person
 // here and they will be asked"; NoInputNoOutput, which is what every short
 // example uses, means "accept whatever asks".
@@ -299,4 +271,290 @@ func TestTheCapabilityIsDisplayYesNo(t *testing.T) {
 	if Capability != "DisplayYesNo" {
 		t.Errorf("capability = %q, which is not a person being asked", Capability)
 	}
+}
+
+// An answer is spent on the question it names, and on nothing else.
+//
+// This is the attack the id exists for, and it needs nobody to do anything
+// wrong. Your phone's question is on the screen; bluetoothd cancels it, or it
+// simply reaches its 45 seconds; a stranger's device asks in the same second;
+// the person - still reading the first passkey - presses y. With one slot and a
+// bare yes, that y pairs the stranger. Break this and that is the behaviour
+// again, and it looks like nothing at all from the outside.
+func TestAnAnswerIsSpentOnTheQuestionItNames(t *testing.T) {
+	a := quick()
+	g := &agent1{a: a}
+	mine := asked(func() *dbus.Error { return g.RequestConfirmation(phone, 4291) })
+	first := waitPending(t, a)
+
+	// The first question goes away on its own, the way bluetoothd's Cancel or
+	// the wait running out would take it.
+	g.Cancel()
+	if derr := outcome(t, mine); derr == nil {
+		t.Fatal("a cancelled pairing was accepted")
+	}
+
+	stranger := dbus.ObjectPath("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF")
+	theirs := asked(func() *dbus.Error { return g.RequestConfirmation(stranger, 999999) })
+	second := waitPending(t, a)
+	if second.ID == first.ID {
+		t.Fatal("two questions in a row got the same id, so naming one names both")
+	}
+
+	// The keystroke that was meant for the first question.
+	if err := a.Answer(first.ID, true); err == nil {
+		t.Error("an answer for a question that is gone was accepted")
+	}
+	if derr := outcome(t, theirs); derr == nil {
+		t.Error("the stranger's pairing was let through by an answer meant for another question")
+	}
+}
+
+// The question the person is looking at can still be answered by name.
+func TestTheWaitingQuestionIsAnsweredByName(t *testing.T) {
+	a := quick()
+	g := &agent1{a: a}
+	out := asked(func() *dbus.Error { return g.RequestConfirmation(phone, 1) })
+	req := waitPending(t, a)
+	if err := a.Answer(req.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if derr := outcome(t, out); derr != nil {
+		t.Errorf("the question that was answered yes got %v", derr)
+	}
+}
+
+// A passkey being typed expires like everything else. Break this and a keyboard
+// carried out of range mid-pairing leaves the one slot taken for the rest of
+// the session: every later question, including a device pairing to this
+// machine, is refused for being second, and nobody is ever asked.
+func TestAPasskeyOnTheScreenExpires(t *testing.T) {
+	a := quick()
+	g := &agent1{a: a}
+	if derr := g.DisplayPasskey(phone, 42, 0); derr != nil {
+		t.Fatal(derr)
+	}
+	waitPending(t, a)
+
+	gone := false
+	for i := 0; i < 200; i++ {
+		if _, waiting := a.Pending(); !waiting {
+			gone = true
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if !gone {
+		t.Fatal("the passkey is still on the screen long after the question died")
+	}
+	// And the slot is free for a real one.
+	out := asked(func() *dbus.Error { return g.RequestConfirmation(phone, 7) })
+	req := waitPending(t, a)
+	if err := a.Answer(req.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if derr := outcome(t, out); derr == nil {
+		t.Error("the question after the expired passkey was accepted")
+	}
+}
+
+// The same passkey arriving again is the same question, with more of it.
+//
+// bluetoothd sends DisplayPasskey once per digit the other device takes. Break
+// this and every digit after the first is refused as a second question, which
+// is the pairing that is going well being told no - and the count, which is the
+// only sign that anybody is typing at all, is thrown away.
+func TestTheSamePasskeyAgainIsTheSameQuestion(t *testing.T) {
+	a := quick()
+	g := &agent1{a: a}
+	if derr := g.DisplayPasskey(phone, 42, 0); derr != nil {
+		t.Fatal(derr)
+	}
+	first := waitPending(t, a)
+	for _, typed := range []uint16{1, 2, 3} {
+		if derr := g.DisplayPasskey(phone, 42, typed); derr != nil {
+			t.Fatalf("digit %d of the passkey was refused: %v", typed, derr)
+		}
+	}
+	req, waiting := a.Pending()
+	if !waiting || req.ID != first.ID {
+		t.Errorf("question = %+v, want the one already on the screen (%s)", req, first.ID)
+	}
+	if req.Entered != 3 {
+		t.Errorf("entered = %d, want the count bluetoothd sent", req.Entered)
+	}
+	// A different device is still a second question, and still refused.
+	other := dbus.ObjectPath("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF")
+	if derr := g.DisplayPasskey(other, 99, 0); derr == nil {
+		t.Error("another device's passkey took the slot from the one being typed")
+	}
+}
+
+// A locally started pairing takes down its own passkey and nothing else.
+//
+// Break this and a `zde system bluetooth pair` that fails in a second removes
+// an incoming question mid-read - a device pairing to this machine, which
+// nothing here started - while bluetoothd stays blocked on it for its own 45
+// seconds with nobody able to answer it any more.
+func TestClearingAPairingLeavesSomebodyElsesQuestion(t *testing.T) {
+	a := quick()
+	g := &agent1{a: a}
+	out := asked(func() *dbus.Error { return g.RequestConfirmation(phone, 4291) })
+	req := waitPending(t, a)
+
+	// An attempt for another device ending is not this question ending.
+	a.ClearShown("AA:BB:CC:DD:EE:FF")
+	if _, waiting := a.Pending(); !waiting {
+		t.Fatal("somebody else's pairing attempt took the question off the screen")
+	}
+	// Nor is an attempt for this device: a question with a yes and a no on it
+	// ends when it is answered, and this one has not been.
+	a.ClearShown(req.Device)
+	if _, waiting := a.Pending(); !waiting {
+		t.Error("a confirmation the person was reading was cleared by a pairing attempt")
+	}
+	a.Answer(req.ID, false)
+	outcome(t, out)
+
+	// The passkey this machine put on the screen is the one it takes down.
+	if derr := g.DisplayPasskey(phone, 42, 0); derr != nil {
+		t.Fatal(derr)
+	}
+	a.ClearShown("44:5C:E9:1A:2B:3C")
+	if _, waiting := a.Pending(); waiting {
+		t.Error("the passkey outlived the attempt that put it there")
+	}
+}
+
+// What a device is asking for, in words. Break this and the question reads
+// "0000110b-0000-1000-8000-00805f9b34fb wants authorising", which nobody can
+// answer - so they say yes, which is the habit this surface exists to not build.
+func TestAServiceQuestionSaysWhatTheServiceIs(t *testing.T) {
+	if got := serviceName("0000110B-0000-1000-8000-00805f9b34fb"); got == "" {
+		t.Error("headphones are not named")
+	}
+	// The one worth reading twice: a device asking to be a keyboard is asking to
+	// type into anything the session has open.
+	if got := serviceName("00001124-0000-1000-8000-00805f9b34fb"); !strings.Contains(got, "keyboard") {
+		t.Errorf("the HID profile reads %q", got)
+	}
+	// Anything else falls back to the raw UUID rather than inventing a name.
+	for _, uuid := range []string{
+		"", "not-a-uuid", "0000ffff-0000-1000-8000-00805f9b34fb",
+		"12345678-1234-1234-1234-123456789abc",
+	} {
+		if got := serviceName(uuid); got != "" {
+			t.Errorf("serviceName(%q) = %q, want nothing invented", uuid, got)
+		}
+	}
+}
+
+// What bluetoothd sees on the bus: the wrapper, at the path the agent manager
+// is told about.
+//
+// Reflection over the Go type cannot show this. Handing Export the Agent itself
+// would compile and register and look right, and godbus would find no method
+// whose last return is *dbus.Error - so it would export nothing at all, every
+// call from bluetoothd would fail, and no pairing would ever ask anybody.
+func TestTheAgentGoesOnTheBusAsTheWrapper(t *testing.T) {
+	e := &fakeExporter{}
+	a := NewAgent()
+	if err := exportAgent(e, a); err != nil {
+		t.Fatal(err)
+	}
+	wrapper, ok := e.v.(*agent1)
+	if !ok {
+		t.Fatalf("exported %T, want the Agent1 wrapper", e.v)
+	}
+	if wrapper.a != a {
+		t.Error("the object on the bus is not backed by the agent that was handed over")
+	}
+	if e.path != AgentPath || e.iface != agentIface {
+		t.Errorf("exported at %q as %q", e.path, e.iface)
+	}
+}
+
+// fakeExporter is a bus connection's Export and nothing else.
+type fakeExporter struct {
+	v     any
+	path  dbus.ObjectPath
+	iface string
+}
+
+func (f *fakeExporter) Export(v any, path dbus.ObjectPath, iface string) error {
+	f.v, f.path, f.iface = v, path, iface
+	return nil
+}
+
+// The interface as bluetoothd sees it: the method names, their argument types,
+// and the *dbus.Error that makes godbus export them at all.
+//
+// The names alone are not the surface. A method whose argument becomes a uint64
+// no longer matches Agent1's "ou" and every confirmation dies with a signature
+// error; one whose last return is not *dbus.Error is silently not exported;
+// one renamed is a call bluetoothd makes into nothing. All three compile, and
+// all three are a pairing that never asks anybody.
+func TestTheAgentMatchesBluezsInterface(t *testing.T) {
+	// method -> the D-Bus signature of its arguments, then of its results.
+	want := map[string][2]string{
+		"Release":              {"", ""},
+		"RequestPinCode":       {"o", "s"},
+		"DisplayPinCode":       {"os", ""},
+		"RequestPasskey":       {"o", "u"},
+		"DisplayPasskey":       {"ouq", ""},
+		"RequestConfirmation":  {"ou", ""},
+		"RequestAuthorization": {"o", ""},
+		"AuthorizeService":     {"os", ""},
+		"Cancel":               {"", ""},
+	}
+	typ := reflect.TypeOf(&agent1{})
+	errType := reflect.TypeOf(&dbus.Error{})
+	for i := 0; i < typ.NumMethod(); i++ {
+		m := typ.Method(i)
+		spec, known := want[m.Name]
+		if !known {
+			t.Errorf("%s is on the bus for bluetoothd to call and is not part of Agent1", m.Name)
+			continue
+		}
+		delete(want, m.Name)
+		// The last return is what godbus binds on: without it the method is not
+		// exported and bluetoothd's call fails with UnknownMethod.
+		if n := m.Type.NumOut(); n == 0 || m.Type.Out(n-1) != errType {
+			t.Errorf("%s does not end in *dbus.Error, so godbus would not export it", m.Name)
+			continue
+		}
+		if got := signatureOf(argsOf(m.Type, true)); got != spec[0] {
+			t.Errorf("%s takes %q, and Agent1 says %q", m.Name, got, spec[0])
+		}
+		if got := signatureOf(argsOf(m.Type, false)); got != spec[1] {
+			t.Errorf("%s answers %q, and Agent1 says %q", m.Name, got, spec[1])
+		}
+	}
+	for name := range want {
+		t.Errorf("%s is missing, so bluetoothd would call into nothing", name)
+	}
+}
+
+// argsOf is a method's arguments without the receiver, or its results without
+// the trailing *dbus.Error: the parts that become a D-Bus signature.
+func argsOf(t reflect.Type, in bool) []reflect.Type {
+	var out []reflect.Type
+	if in {
+		for i := 1; i < t.NumIn(); i++ {
+			out = append(out, t.In(i))
+		}
+		return out
+	}
+	for i := 0; i < t.NumOut()-1; i++ {
+		out = append(out, t.Out(i))
+	}
+	return out
+}
+
+func signatureOf(types []reflect.Type) string {
+	var b strings.Builder
+	for _, t := range types {
+		b.WriteString(dbus.SignatureOfType(t).String())
+	}
+	return b.String()
 }

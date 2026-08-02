@@ -17,6 +17,7 @@ type fakeRadio struct {
 	st bt.State
 
 	mu    sync.Mutex
+	dead  bool
 	calls []string
 	opens int
 }
@@ -49,8 +50,19 @@ func (f *fakeRadio) Trust(a string, yes bool) error {
 	f.note(boolCall("trust "+a, yes))
 	return nil
 }
-func (f *fakeRadio) Answer(yes bool) error { f.note(boolCall("answer", yes)); return nil }
-func (f *fakeRadio) Close() error          { f.note("close"); return nil }
+func (f *fakeRadio) Answer(id string, yes bool) error {
+	f.note(boolCall("answer "+id, yes))
+	return nil
+}
+func (f *fakeRadio) Close() error { f.note("close"); return nil }
+
+// Alive is the connection behind the radio still being there. A fake has none
+// to lose, so it says so until a test says otherwise.
+func (f *fakeRadio) Alive() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return !f.dead
+}
 
 func boolCall(what string, on bool) string {
 	if on {
@@ -106,7 +118,7 @@ func TestBluetoothActionsRefuseWithNoRadio(t *testing.T) {
 	for _, m := range []Request{
 		{Method: "bluetooth.pair", Args: []string{"44:5C:E9:1A:2B:3C"}},
 		{Method: "bluetooth.scan", Args: []string{"on"}},
-		{Method: "bluetooth.confirm", Args: []string{"yes"}},
+		{Method: "bluetooth.confirm", Args: []string{"7", "yes"}},
 	} {
 		resp := s.Dispatch(m)
 		if resp.Error == "" {
@@ -234,8 +246,8 @@ func TestBluetoothVerbsReachWhatTheyName(t *testing.T) {
 		{Request{Method: "bluetooth.forget", Args: []string{addr}}, "forget " + addr},
 		{Request{Method: "bluetooth.trust", Args: []string{addr}}, "trust " + addr + " on"},
 		{Request{Method: "bluetooth.untrust", Args: []string{addr}}, "trust " + addr + " off"},
-		{Request{Method: "bluetooth.confirm", Args: []string{"yes"}}, "answer on"},
-		{Request{Method: "bluetooth.confirm", Args: []string{"no"}}, "answer off"},
+		{Request{Method: "bluetooth.confirm", Args: []string{"7", "yes"}}, "answer 7 on"},
+		{Request{Method: "bluetooth.confirm", Args: []string{"7", "no"}}, "answer 7 off"},
 	} {
 		if resp := s.Dispatch(tc.req); resp.Error != "" {
 			t.Fatalf("%s: %s", tc.req.Method, resp.Error)
@@ -255,10 +267,14 @@ func TestBluetoothVerbsRefuseWhatTheyCannotRead(t *testing.T) {
 	for _, req := range []Request{
 		{Method: "bluetooth.state", Args: []string{"extra"}},
 		{Method: "bluetooth.confirm"},
-		{Method: "bluetooth.confirm", Args: []string{"maybe"}},
+		{Method: "bluetooth.confirm", Args: []string{"yes"}},
+		{Method: "bluetooth.confirm", Args: []string{"7"}},
+		{Method: "bluetooth.confirm", Args: []string{"7", "maybe"}},
+		{Method: "bluetooth.confirm", Args: []string{"7", "on"}},
 		{Method: "bluetooth.scan", Args: []string{"sometimes"}},
 		{Method: "bluetooth.pair"},
 		{Method: "bluetooth.pair", Args: []string{"one", "two"}},
+		{Method: "bluetooth.scan", Args: []string{"yes"}},
 	} {
 		if resp := s.Dispatch(req); resp.Error == "" {
 			t.Errorf("%s %v was accepted", req.Method, req.Args)
@@ -290,5 +306,39 @@ func TestTheWaitingQuestionCrossesTheSocket(t *testing.T) {
 	}
 	if st.Pending == nil || st.Pending.Passkey != "004291" {
 		t.Errorf("state = %+v, want the passkey that is waiting", st)
+	}
+}
+
+// A radio whose connection has died is dropped and dialled again. Break this
+// and a system bus restart costs the session every bluetooth verb until the
+// next login - with the pairing agent gone from the bus and nothing to put it
+// back, so a device pairing to this machine reaches nobody at all.
+func TestADeadRadioIsDroppedAndDialledAgain(t *testing.T) {
+	r := &fakeRadio{}
+	s := withRadio(r)
+	if resp := s.Dispatch(Request{Method: "bluetooth.state"}); resp.Error != "" {
+		t.Fatal(resp.Error)
+	}
+	r.mu.Lock()
+	r.dead = true
+	r.mu.Unlock()
+
+	if resp := s.Dispatch(Request{Method: "bluetooth.state"}); resp.Error != "" {
+		t.Fatal(resp.Error)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.opens != 2 {
+		t.Errorf("opens = %d, want a second dial after the connection died", r.opens)
+	}
+	// And the dead one was let go of rather than leaked.
+	closed := 0
+	for _, c := range r.calls {
+		if c == "close" {
+			closed++
+		}
+	}
+	if closed != 1 {
+		t.Errorf("the dead connection was closed %d times, want once", closed)
 	}
 }
