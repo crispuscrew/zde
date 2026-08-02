@@ -99,6 +99,7 @@ PanelWindow {
     }
 
     function show(newRows, token) {
+        const wasUp = palette.visible;
         palette.rows = newRows;
         palette.token = token ?? "";
         query.text = "";
@@ -106,6 +107,14 @@ PanelWindow {
         palette.running = false;
         palette.failed = "";
         palette.visible = true;
+        if (wasUp && palette.token !== "") {
+            // Already up, so visible did not change and onVisibleChanged did
+            // not fire - and the key that asked for this is waiting to hear
+            // that something drew it. Unacknowledged it waits out its whole
+            // window and takes the shell-is-dead path, which prints all
+            // seventy-odd rows to a keybind's stdout (internal/zded, ackWait).
+            palette.shown(palette.token);
+        }
     }
 
     // On the window becoming visible rather than at the end of show(), so what

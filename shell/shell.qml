@@ -416,7 +416,7 @@ ShellRoot {
     // off the socket: this shell decides nothing about them, and the surface
     // knows how to read one.
     function openCenter(ev) {
-        center.screen = root.screenFor(ev);
+        root.present(center, ev);
         center.show(ev.notifications ?? [], ev.token ?? "");
     }
 
@@ -425,7 +425,7 @@ ShellRoot {
     // unknown output falls back to the first screen, which on one monitor is
     // the right answer and on several is at least a screen.
     function showPicker(ev, kind, rows, here) {
-        picker.screen = root.screenFor(ev);
+        root.present(picker, ev);
         picker.show(kind, rows, here, ev.token ?? "");
     }
 
@@ -433,7 +433,7 @@ ShellRoot {
     // same reason the picker is. Nothing else is handed over: the question is
     // typed into the window, and the window knows nothing about sockets.
     function openAsk(ev, isPanel) {
-        askWindow.screen = root.screenFor(ev);
+        root.present(askWindow, ev);
         askWindow.show(isPanel, ev.token ?? "");
     }
 
@@ -442,7 +442,7 @@ ShellRoot {
     // works at all is zded's answer, not the shell's - most of the keymap is
     // bound to commands nobody has written yet.
     function openPalette(ev) {
-        palette.screen = root.screenFor(ev);
+        root.present(palette, ev);
         palette.show((ev.actions ?? []).map(a => ({
                     name: a.name,
                     desc: a.desc ?? "",
@@ -450,6 +450,35 @@ ShellRoot {
                     live: a.live === true,
                     why: a.why ?? ""
                 })), ev.token ?? "");
+    }
+
+    // The surface that is up. Every surface here is a full-screen overlay that
+    // takes an exclusive keyboard grab while it is visible, and niri hands that
+    // grab to the oldest one of them - map order, no reverse - while drawing
+    // the newest on top. So two of them up at once is keys going to the one
+    // nobody can see: the notification center over the desk picker sends Enter
+    // and the digits to the picker, which switches desk, and l locks the
+    // screen; the other way round, d dismisses a notification and tells the app
+    // that sent it, and over the connections surface d drops the wifi. Two
+    // full-screen dims at 0.35 also composite to 0.58, so the screen darkens
+    // per surface into the bargain.
+    property var up: null
+
+    // So: one at a time, decided here. Every opener calls this before it shows
+    // anything - take down whatever was up, and put this one on the screen the
+    // event names. In one place rather than in each surface, because a surface
+    // that has to know its siblings is one that has to be edited every time
+    // there is a new one, which is the coupling their own headers argue against.
+    //
+    // `up` is the surface put up last and not the surface that is visible: a
+    // dismissed one leaves its name here, and hiding what is already hidden is
+    // a no-op. Keeping it honest would mean a line in every place a surface
+    // closes, which is the several places to forget that this exists to avoid.
+    function present(surface, ev) {
+        if (root.up && root.up !== surface)
+            root.up.hide();
+        root.up = surface;
+        surface.screen = root.screenFor(ev);
     }
 
     // The screen an event asks for. One answer for every surface: two copies of
@@ -688,15 +717,12 @@ ShellRoot {
     }
 
     // One instance, on the screen zded says is being looked at: a widget on
-    // every monitor is not a widget. Same rule as the picker, and the same
-    // fallback to the first screen when the output is not one we know.
+    // every monitor is not a widget. Through the same helper as the picker,
+    // because this had a copy of screenFor inlined and the copies had already
+    // drifted - the one above answers with the first output that matches, this
+    // one answered with the last.
     function openConnections(ev) {
-        let want = null;
-        for (const s of Quickshell.screens) {
-            if (s.name === ev.output)
-                want = s;
-        }
-        connections.screen = want ?? Quickshell.screens[0] ?? null;
+        root.present(connections, ev);
         connections.show(ev.networks ?? [], ev.link ?? ({}), ev.token ?? "");
     }
 

@@ -57,6 +57,7 @@ PanelWindow {
     signal shown(string token)
 
     function show(newRows, newLink, token) {
+        const wasUp = connections.visible;
         connections.rows = newRows;
         connections.link = newLink ?? ({});
         connections.token = token ?? "";
@@ -67,6 +68,14 @@ PanelWindow {
         // which is the strongest one and the one worth joining.
         connections.index = Math.max(0, newRows.findIndex(r => r.active === true));
         connections.visible = true;
+        if (wasUp && connections.token !== "") {
+            // Already up, so visible did not change and onVisibleChanged did not
+            // fire - and the key is waiting to hear that something drew it.
+            // Left unacknowledged it waits out its window and takes the
+            // shell-is-dead path, which prints every SSID in range to a
+            // keybind's stdout (internal/zded, ackWait).
+            connections.shown(connections.token);
+        }
     }
 
     // On the window becoming visible rather than at the end of show(), so what
