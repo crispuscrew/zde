@@ -355,6 +355,21 @@ let
           echo "the picker never opened with the right contents: $(pickerq state)"
           journalctl --user -u zde-bar.service --no-pager | tail -20; exit 1
         fi
+        # One layer surface by namespace, or nothing. One object per line first:
+        # niri answers on a single line with every surface on it, so a grep
+        # without splitting is a grep about the whole screen - it would read the
+        # bar's namespace and another surface's keyboard grab as one entry.
+        layerof() {
+          nirimsg --json layers 2>/dev/null | tr '{' '\n' | grep "\"namespace\":\"$1\"" || true
+        }
+        # How many surfaces hold the keyboard. Exactly one is the rule this
+        # shell now keeps: they are all full-screen overlays taking an exclusive
+        # grab, and niri gives that grab to the oldest of them while drawing the
+        # newest on top.
+        grabbers() {
+          nirimsg --json layers 2>/dev/null | tr '{' '\n' |
+            grep -c '"keyboard_interactivity":"Exclusive"' || true
+        }
         # On the screen, and named ours: the bar is on a layer too, so this looks
         # for the picker's own namespace rather than any surface at all.
         nirimsg --json layers 2>&1 | tee /tmp/layers-picker.txt
@@ -366,10 +381,68 @@ let
         # half nothing else here would notice: driving it through IPC works just
         # as well with the keyboard never taken. niri prints the interactivity in
         # the same reply, so this costs nothing.
-        grep -q '"keyboard_interactivity":"Exclusive"' /tmp/layers-picker.txt || {
+        #
+        # Read off the picker's own entry rather than grepped across the whole
+        # reply. Across it, this only says that something on the screen has the
+        # keyboard - which is also true when the grab is on the surface
+        # underneath, the fault checked below - and it held here at all because
+        # the bar happens to set no keyboardFocus.
+        layerof zde-picker | grep -q '"keyboard_interactivity":"Exclusive"' || {
           echo "the picker is on screen without the keyboard, so no key would reach it:"
           cat /tmp/layers-picker.txt; exit 1
         }
+
+        # Mod+Tab again, on a picker that is already up. Nothing about the
+        # surface changes, so the handler that acknowledges the event never
+        # fires unless show() says so itself - and without that the key waits
+        # out its whole ack window, decides no shell drew anything, and prints
+        # every desk to a keybind's stdout over whatever is on the screen.
+        XDG_RUNTIME_DIR=$mgr zde desk switcher 2>&1 | tee /tmp/switcher-again.txt
+        [ ! -s /tmp/switcher-again.txt ] || {
+          echo "the picker was already up and asking again printed the list anyway:"
+          cat /tmp/switcher-again.txt; exit 1
+        }
+        picker_open || {
+          echo "asking again while it was up left the picker as: $(pickerq state)"; exit 1
+        }
+
+        # And the notification center over the top of it, which is what this
+        # section is really about. Every surface here is a full-screen overlay
+        # taking an exclusive keyboard grab, and niri picks the holder of that
+        # grab in map order, oldest first - so two of them up at once puts the
+        # keys on the one underneath. On this pair that is a desk list nobody
+        # can see reading Enter and the digits, which switch desk, and l, which
+        # locks the screen.
+        #
+        # So: one at a time. The surface asked for last is up and has the
+        # keyboard, and the one before it is off the screen rather than merely
+        # behind - which is also what stops two full-screen dims compositing
+        # into a darker one.
+        XDG_RUNTIME_DIR=$mgr zde system notif-center 2>&1 | tee /tmp/center-over-picker.txt
+        [ ! -s /tmp/center-over-picker.txt ] || {
+          echo "a shell was listening and the center printed the history anyway:"
+          cat /tmp/center-over-picker.txt; exit 1
+        }
+        one_surface() {
+          [ -z "$(layerof zde-picker)" ] && [ "$(grabbers)" = "1" ] &&
+            layerof zde-notif-center | grep -q '"keyboard_interactivity":"Exclusive"'
+        }
+        if ! waitfor 20 one_surface; then
+          echo "the center opened over the picker and both are up, so the keyboard is on the one underneath ($(pickerq state)):"
+          nirimsg --json layers; exit 1
+        fi
+
+        # And back the other way, which is the same rule from the other side and
+        # is how the picker comes to be up again for everything below: asking
+        # for it takes the center off the screen rather than stacking under it.
+        XDG_RUNTIME_DIR=$mgr zde desk switcher >/dev/null
+        back_to_picker() {
+          picker_open && [ -z "$(layerof zde-notif-center)" ] && [ "$(grabbers)" = "1" ]
+        }
+        if ! waitfor 20 back_to_picker; then
+          echo "the picker was asked for over the center and the two are both up: $(pickerq state)"
+          nirimsg --json layers; exit 1
+        fi
 
         # Dismissing, before choosing: the way out that changes nothing. It is
         # the path Escape takes, and without this the whole hide-without-picking
