@@ -295,6 +295,32 @@ func (j *Journal) State() State {
 	return out
 }
 
+// Waiting is what is on the queue, oldest first, as a copy.
+//
+// Its own method rather than State().Queue because of who asks and how often. A
+// person reads the queue when they wonder what they owe; the bar reads it on a
+// clock, and so does the mode below it, which between them is sixty questions a
+// minute for as long as the session runs. State copies everything the journal
+// remembers to answer any of them - the queue, and a map of desks with a map of
+// monitors inside each - so reading one field cost a copy of all of them.
+//
+// Still a copy of the field: a caller that could reach back in here through the
+// slice it was handed would be able to edit the queue without writing a line.
+func (j *Journal) Waiting() []Item {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return append([]Item(nil), j.state.Queue...)
+}
+
+// Mode is the attn mode as it was written down, and its own method for the
+// reason Waiting is: the bar asks for it on a clock, and one string is not a
+// reason to copy a session's worth of desk positions.
+func (j *Journal) Mode() string {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.state.Mode
+}
+
 // Skipped is how many lines the replay could not use: a torn tail, or entries
 // from a version that knows kinds this one does not. doctor reports it.
 func (j *Journal) Skipped() int {

@@ -195,15 +195,29 @@ type Server struct {
 	linkMu   sync.Mutex
 	link     link.Manager
 	openLink func() (link.Manager, error)
+	// What the last dial said when there was no manager to reach, and when it
+	// said it. A machine with no NetworkManager is the ordinary desktop, and the
+	// bar asks every five seconds (net.go, noManagerFor).
+	noManager   error
+	noManagerAt time.Time
 
 	// The radio, opened on first use and kept (bluetooth.go). openBluetooth is
 	// a field so a test can drive the verbs without a system bus under them.
 	//
-	// Its own lock, held across the dial. Two callers that both dialled would
-	// both register a pairing agent, and the one that survives that race can be
-	// the one BlueZ is not calling (bluetooth.go, radio).
+	// Two locks, and which one covers what is the difference between a daemon
+	// that stops when it is told to and one that does not. bluetoothDial is held
+	// across the dial, because two callers that both dialled would both register
+	// a pairing agent and the survivor can be the one BlueZ is not calling.
+	// bluetoothMu covers the field alone and is never held across anybody's
+	// round trip, so Close can give the radio up while a dial is still in flight
+	// (bluetooth.go, radio and closeRadio).
+	bluetoothDial sync.Mutex
 	bluetoothMu   sync.Mutex
 	bluetooth     Bluetooth
+	// bluetoothGone counts the times the radio has been given up, so a dial
+	// that was in flight when the session ended can tell that what it is
+	// holding belongs to nobody.
+	bluetoothGone uint64
 	openBluetooth func() (Bluetooth, error)
 
 	mu       sync.Mutex
@@ -548,7 +562,10 @@ func (s *Server) Dispatch(req Request) Response {
 		if s.jrn == nil {
 			return Response{Error: "no journal, so nothing is waiting"}
 		}
-		return ok(s.jrn.State().Queue)
+		// The queue on its own, not the whole of what the journal remembers cut
+		// down to it: this is the bar's question and it is asked every two
+		// seconds (internal/journal, Waiting).
+		return ok(s.jrn.Waiting())
 	case "queue.done":
 		if len(req.Args) != 1 {
 			return Response{Error: "queue.done takes one id"}
@@ -1173,8 +1190,10 @@ func (s *Server) Arrived(n attn.Notification) (uint64, error) {
 	// no bound would grow by one for every notification the session ever
 	// received - and the modes made that worse, because a notification a mode
 	// keeps off the queue is one nobody can finish, so nothing else prunes it.
-	if gone := s.history.Add(rec); gone != 0 && s.notifier != nil {
-		s.notifier.Forget(gone)
+	if gone := s.history.Add(rec); gone != 0 {
+		if w := s.watcher(); w != nil {
+			w.Forget(gone)
+		}
 	}
 	return rec.ID, nil
 }
@@ -1210,9 +1229,33 @@ type Notifier interface {
 	Forget(id uint64)
 }
 
-// Watching sets who to tell. Called once at startup, before anything is
-// serving, so there is nothing to lock against.
-func (s *Server) Watching(n Notifier) { s.notifier = n }
+// Watching sets who to tell.
+//
+// Under the lock, because there is no moment when nothing else is looking. It
+// was written without one on the reasoning that this happens at startup before
+// anything serves, and neither half of that was true: attn.Serve exports the
+// interface and takes org.freedesktop.Notifications before it returns, so from
+// that moment any app on the session bus can call Notify, which arrives at
+// Arrived and reads this field. The daemon answers its own socket by then too
+// (cmd/zded). An interface value is two words and a torn read of one is not a
+// nil check that fails, it is a call into an address that was never a method
+// table.
+func (s *Server) Watching(n Notifier) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.notifier = n
+}
+
+// watcher is who to tell, or nil when nothing took the bus name.
+//
+// Read out from under the lock and then used, never called with the lock held:
+// every method on it puts a message on the session bus, and holding s.mu across
+// that would queue every event broadcast behind whatever the bus is doing.
+func (s *Server) watcher() Notifier {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.notifier
+}
 
 // whereWeAre is the desk to file something arriving against, and never an
 // error: a notification with no desk still waits, and one refused because niri
@@ -1269,9 +1312,9 @@ func (s *Server) queueDone(id string) Response {
 	// this call, and finishing a queue item should stop the center showing it
 	// as still waiting.
 	s.history.Dismiss(n)
-	if s.notifier != nil {
+	if w := s.watcher(); w != nil {
 		// Whoever sent it may be waiting to hear that it is gone.
-		s.notifier.Dismissed(n)
+		w.Dismissed(n)
 	}
 	return ok([]string{})
 }
@@ -1285,7 +1328,7 @@ func (s *Server) queueJump() Response {
 	if s.jrn == nil {
 		return Response{Error: "no journal, so nothing is waiting"}
 	}
-	q := s.jrn.State().Queue
+	q := s.jrn.Waiting()
 	if len(q) == 0 {
 		return Response{Error: "nothing is waiting"}
 	}
@@ -1645,7 +1688,7 @@ func (s *Server) status() Status {
 		st.Queued = len(js.Queue)
 	}
 	st.Shell = s.listeners() > 0
-	st.Notifications = s.notifier != nil
+	st.Notifications = s.watcher() != nil
 	st.Mode = string(s.mode())
 	// Looked up per call rather than remembered from startup. PATH points at
 	// profile directories whose contents change under a running daemon, and

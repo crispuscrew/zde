@@ -23,6 +23,35 @@ type fakeBus struct {
 	calls  []string
 	bounds []time.Duration // the deadline each call carried, in the same order
 	fail   map[string]error
+	// held is a call that has been taken and not answered, which is what a
+	// bluetoothd waiting on a device's radio looks like from here.
+	held map[string]chan struct{}
+}
+
+// holdOn makes any call whose text contains this wait for the channel.
+func (f *fakeBus) holdOn(substr string, until chan struct{}) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.held == nil {
+		f.held = map[string]chan struct{}{}
+	}
+	f.held[substr] = until
+}
+
+// waitIfHeld blocks a recorded call for as long as the test wants it blocked.
+func (f *fakeBus) waitIfHeld(line string) {
+	f.mu.Lock()
+	var on chan struct{}
+	for substr, ch := range f.held {
+		if strings.Contains(line, substr) {
+			on = ch
+			break
+		}
+	}
+	f.mu.Unlock()
+	if on != nil {
+		<-on
+	}
 }
 
 // Managed is recorded like the rest, because "it never reached the bus" is a
@@ -37,7 +66,9 @@ func (f *fakeBus) Managed(within time.Duration) (map[dbus.ObjectPath]map[string]
 }
 
 func (f *fakeBus) Call(within time.Duration, path dbus.ObjectPath, method string, args ...any) error {
-	f.record(within, "call "+string(path)+" "+method+argText(args))
+	line := "call " + string(path) + " " + method + argText(args)
+	f.record(within, line)
+	f.waitIfHeld(line)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.fail[method]
@@ -121,6 +152,19 @@ func (f *fakeBus) settled(t *testing.T, c *Client, substr string) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("no %s was ever made: %v", substr, f.calls)
+}
+
+// idle waits for whatever a verb started in the background to be over, so that
+// the next one is not refused for arriving while the radio is busy.
+func idle(t *testing.T, c *Client) {
+	t.Helper()
+	for i := 0; i < 400; i++ {
+		if st, err := c.State(); err == nil && st.Doing == "" {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("the radio never stopped being busy")
 }
 
 const (
@@ -348,11 +392,68 @@ func TestTrustIsItsOwnDecision(t *testing.T) {
 // the only way to revoke a pairing broken.
 func TestForgetRemovesTheDeviceFromTheAdapter(t *testing.T) {
 	b := oneAdapter()
-	if err := client(b).Forget("44:5C:E9:1A:2B:3C"); err != nil {
+	c := client(b)
+	if err := c.Forget("44:5C:E9:1A:2B:3C"); err != nil {
 		t.Fatal(err)
 	}
+	// Started rather than waited for, so the call is looked at once it has been
+	// made and not the moment it was asked for.
+	b.settled(t, c, "Adapter1.RemoveDevice")
 	if !b.made("call " + string(hci0) + " org.bluez.Adapter1.RemoveDevice " + string(phonePth)) {
 		t.Errorf("forget did not remove the device: %v", b.calls)
+	}
+}
+
+// The two verbs that tear a link down answer at once and do the waiting behind
+// it, the way pairing and connecting already did.
+//
+// Break this - wait for the call on the request goroutine, which is what these
+// two used to do - and a device that has stopped answering holds that goroutine
+// for the 75 seconds a long call is given, while the client on the other end of
+// the socket gives up after 5. The person is told it failed by a daemon that is
+// still doing it, and every later bluetooth question queues behind an answer
+// nobody is left to read.
+func TestDroppingALinkAnswersBeforeBlueZHasFinished(t *testing.T) {
+	for _, tc := range []struct {
+		what  string
+		call  func(*Client) error
+		made  string
+		doing string
+	}{
+		{"disconnect", func(c *Client) error { return c.Disconnect("AA:BB:CC:DD:EE:01") },
+			"Device1.Disconnect", "disconnecting AA:BB:CC:DD:EE:01"},
+		{"forget", func(c *Client) error { return c.Forget("AA:BB:CC:DD:EE:01") },
+			"Adapter1.RemoveDevice", "forgetting AA:BB:CC:DD:EE:01"},
+	} {
+		b := oneAdapter()
+		// A BlueZ that has taken the call and is still thinking about it, which
+		// is what a device whose radio has gone looks like from here.
+		hold := make(chan struct{})
+		b.holdOn(tc.made, hold)
+		c := client(b)
+
+		answered := make(chan error, 1)
+		go func() { answered <- tc.call(c) }()
+		select {
+		case err := <-answered:
+			if err != nil {
+				t.Fatalf("%s: %v", tc.what, err)
+			}
+		case <-time.After(2 * time.Second):
+			close(hold)
+			t.Fatalf("%s waited for BlueZ, and the client gives up after 5 seconds", tc.what)
+		}
+		// And it is not silence: what the radio is doing is in State, so a
+		// surface can say so while it happens.
+		st, err := c.State()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Doing != tc.doing {
+			t.Errorf("%s: doing = %q, want %q", tc.what, st.Doing, tc.doing)
+		}
+		close(hold)
+		b.settled(t, c, tc.made)
 	}
 }
 
@@ -520,6 +621,10 @@ func TestEveryCallIsBoundedAndPairingOutlastsTheQuestion(t *testing.T) {
 		if err := do(); err != nil {
 			t.Fatal(err)
 		}
+		// Three of these are started rather than waited for, and the radio does
+		// one thing at a time: without this the next one is refused for arriving
+		// while the last is still going.
+		idle(t, c)
 	}
 	b.settled(t, c, "Device1.Pair")
 

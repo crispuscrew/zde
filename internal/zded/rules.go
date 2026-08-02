@@ -88,6 +88,16 @@ func writeRules(path, content string) error {
 	if old, err := os.ReadFile(path); err == nil && string(old) == content {
 		return nil
 	}
+	// The directory as well, because nothing else makes it. niri's config
+	// directory exists on a machine somebody has configured niri on by hand, and
+	// zded is started on machines where nobody has: layer 1 generates niri's
+	// config into the store and includes this path from it, so the first startup
+	// on a fresh account found no ~/.config/niri to write into, said so once on
+	// stderr, and every pinned app then opened wherever niri felt like putting
+	// it. 0755 like the journal's: it is config, and nothing secret is in it.
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
 	// Renamed over rather than truncated in place: a config half-written when
 	// niri reads it is a config niri refuses, and it refuses the whole file -
 	// the binds go with it.

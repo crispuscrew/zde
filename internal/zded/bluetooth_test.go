@@ -227,6 +227,104 @@ func TestClosingTheDaemonGivesUpTheRadio(t *testing.T) {
 	}
 }
 
+// A daemon that has been asked one bluetooth question stops when it is told to,
+// even while the bus it is connecting to has said nothing at all.
+//
+// This is the whole of the SIGTERM defect, on a scratch socket. Break it - one
+// mutex over both the field and the dial, which is what this was - and Close
+// sits in Mutex.Lock behind somebody else's round trip. Measured against a
+// socket that accepts and never speaks: the signal handler never got past the
+// lock, zded went on answering queue.list after SIGTERM, left its socket file
+// behind, and only SIGKILL ended it. On a real machine that is a ninety second
+// logout while systemd waits.
+func TestClosingDoesNotWaitForABusThatWillNotAnswer(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
+	dialling := make(chan struct{})
+	hang := make(chan struct{})
+	defer close(hang)
+	s.openBluetooth = func() (Bluetooth, error) {
+		close(dialling)
+		<-hang
+		return nil, errors.New("the bus never spoke")
+	}
+	path := socketPath(t)
+	if err := s.Listen(path); err != nil {
+		t.Fatal(err)
+	}
+	served := make(chan error, 1)
+	go func() { served <- s.Serve() }()
+
+	c, err := DialPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	// This one never comes back: it is inside the dial for as long as the test
+	// holds it there, which is what a bus that accepts and says nothing does.
+	go c.Call("bluetooth.state", nil) //nolint:errcheck // it is not meant to answer
+	<-dialling
+
+	closed := make(chan error, 1)
+	go func() { closed <- s.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close waited for the bus, so a session ending waits for it too")
+	}
+	select {
+	case <-served:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the listener outlived Close")
+	}
+	// And nothing is answering there any more, which is the part somebody
+	// watching a logout would actually notice.
+	if late, err := DialPath(path); err == nil {
+		late.Close()
+		t.Error("zded went on answering its socket after Close")
+	}
+}
+
+// A radio that arrives after the session has ended belongs to nobody, so it is
+// closed rather than kept. Break this and the connection a slow dial finally
+// opens is stored into a daemon that has stopped, with a pairing agent exported
+// on it - which is the leak closeRadio exists to prevent, reached by the one
+// path that goes around it.
+func TestARadioThatArrivesAfterTheCloseIsGivenUp(t *testing.T) {
+	r := &fakeRadio{}
+	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
+	dialling := make(chan struct{})
+	release := make(chan struct{})
+	s.openBluetooth = func() (Bluetooth, error) {
+		r.mu.Lock()
+		r.opens++
+		r.mu.Unlock()
+		close(dialling)
+		<-release
+		return r, nil
+	}
+
+	asked := make(chan Response, 1)
+	go func() { asked <- s.Dispatch(Request{Method: "bluetooth.scan", Args: []string{"on"}}) }()
+	<-dialling
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+
+	if resp := <-asked; resp.Error == "" {
+		t.Error("a verb answered through a radio the daemon had already given up")
+	}
+	if !r.did("close") {
+		t.Errorf("the late radio was kept: %v", r.calls)
+	}
+	if r.did("discover on") {
+		t.Errorf("the verb ran on a connection that belonged to a session that had ended: %v", r.calls)
+	}
+}
+
 // Each verb reaches the thing it names, and untrust is not trust. Break the
 // trust pair and the one verb that revokes a standing permission does the
 // opposite of what it says.

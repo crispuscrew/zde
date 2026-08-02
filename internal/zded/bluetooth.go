@@ -67,35 +67,49 @@ var bluetoothMethods = map[string]bool{
 // with the agent exported on it, from the first question until the daemon stops
 // - which is what Close gives up again.
 //
-// The lock is held across the dial and not only around the field, and that is
-// the point of it. Two callers that each dialled would each get their own bus
-// connection, each export an agent, and each register one: BlueZ keys agents by
-// the sender's unique name together with the path, so two connections are two
-// different agents and the AlreadyExists check never fires. Closing the loser
-// afterwards does not undo it either. If the loser is the one that won
+// One dial at a time, under bluetoothDial, and that is the point of that lock.
+// Two callers that each dialled would each get their own bus connection, each
+// export an agent, and each register one: BlueZ keys agents by the sender's
+// unique name together with the path, so two connections are two different
+// agents and the AlreadyExists check never fires. Closing the loser afterwards
+// does not undo it either. If the loser is the one that won
 // RequestDefaultAgent, what survives is an agent that is registered and is not
 // the default, and then a phone pairing to this machine is refused by BlueZ
 // with no question reaching anybody - the incoming path the default agent
 // exists for, failing silently.
 //
-// Its own mutex rather than s.mu, which also covers the listener, the
-// subscribers and the token table: none of those has anything to say to the
-// radio, and a dial held under s.mu would put every event broadcast behind a
-// bus round trip.
+// The field has a second lock, and it is held around the field and nowhere
+// else. One lock doing both jobs is what made Close wait for a bus: closeRadio
+// wanted the same mutex this held across the dial, so a signal arriving while
+// somebody's first bluetooth question was still connecting sat in Mutex.Lock -
+// zded went on answering the socket through SIGTERM, left its socket file
+// behind, and needed SIGKILL. The dial is bounded now (internal/bus), which
+// shortens that window; splitting the locks is what closes it.
+//
+// Neither of them is s.mu, which also covers the listener, the subscribers and
+// the token table: none of those has anything to say to the radio, and a dial
+// held under s.mu would put every event broadcast behind a bus round trip.
 func (s *Server) radio() (Bluetooth, error) {
+	s.bluetoothDial.Lock()
+	defer s.bluetoothDial.Unlock()
+
 	s.bluetoothMu.Lock()
-	defer s.bluetoothMu.Unlock()
-	if s.bluetooth != nil {
-		if s.bluetooth.Alive() {
-			return s.bluetooth, nil
-		}
+	have, gone := s.bluetooth, s.bluetoothGone
+	if have != nil && !have.Alive() {
 		// The system bus is restarted by its own updates and everything on it
 		// goes with it, including the exported agent. Kept, this would be a
 		// session where every bluetooth verb fails and no pairing question
 		// reaches anybody until the next login; dropped, the dial below puts the
 		// agent back.
-		s.bluetooth.Close()
 		s.bluetooth = nil
+		s.bluetoothMu.Unlock()
+		have.Close()
+		have = nil
+	} else {
+		s.bluetoothMu.Unlock()
+	}
+	if have != nil {
+		return have, nil
 	}
 	if s.openBluetooth == nil {
 		return nil, errors.New("this zded has no way to reach bluetooth")
@@ -106,7 +120,17 @@ func (s *Server) radio() (Bluetooth, error) {
 		// new session.
 		return nil, err
 	}
+	s.bluetoothMu.Lock()
+	if s.bluetoothGone != gone {
+		s.bluetoothMu.Unlock()
+		// The session ended while this was connecting. Keeping it would be the
+		// exact thing closeRadio exists to prevent: a pairing agent exported on
+		// a connection nobody is going to answer through.
+		r.Close()
+		return nil, errors.New("zded gave up the radio while this was connecting")
+	}
 	s.bluetooth = r
+	s.bluetoothMu.Unlock()
 	return r, nil
 }
 
@@ -117,20 +141,28 @@ func (s *Server) radio() (Bluetooth, error) {
 // bluetoothd would go on calling it, and every question would time out into a
 // refusal nobody was asked for.
 //
-// Under the radio's own lock and never inside s.mu, so that this stays what the
-// rest of the daemon is: one lock at a time, and none of them held across
-// somebody else's round trip.
+// Under the field's own lock and never inside s.mu, and never behind the dial
+// either, so that this stays what the rest of the daemon is: one lock at a
+// time, and none of them held across somebody else's round trip. It waits for
+// nothing, which is what a signal handler needs of it.
+//
+// The count is what tells a dial still in flight that its connection is nobody's
+// (see radio). Without it, a radio dialled after this ran would be stored into a
+// server that has stopped, and the agent it exports would outlive the session
+// after all.
 func (s *Server) closeRadio() {
 	s.bluetoothMu.Lock()
-	defer s.bluetoothMu.Unlock()
-	if s.bluetooth == nil {
+	r := s.bluetooth
+	s.bluetooth = nil
+	s.bluetoothGone++
+	s.bluetoothMu.Unlock()
+	if r == nil {
 		return
 	}
 	// The error is dropped on purpose. This runs on the way out, the only thing
 	// it can report is that a connection which is going away was already gone,
 	// and Close answers with the listener's error - the one a caller can act on.
-	s.bluetooth.Close()
-	s.bluetooth = nil
+	r.Close()
 }
 
 // bluetoothCall answers one bluetooth method.

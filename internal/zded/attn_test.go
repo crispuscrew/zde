@@ -372,6 +372,53 @@ func TestARecordLeavingTheHistoryForgetsItsSender(t *testing.T) {
 	}
 }
 
+// Nothing is quiet about the moment zded becomes the notification server.
+//
+// attn.Serve exports the interface and takes org.freedesktop.Notifications
+// before it returns, so from that instant any app on the session bus can call
+// Notify, which arrives here - and the daemon is answering its own socket by
+// then as well (cmd/zded). Watching is what runs after all of that, and it
+// writes the field the arrival path reads.
+//
+// Break it - the bare assignment this used to be, under a comment claiming
+// there was nothing to lock against - and `go test -race` says so from here. An
+// interface value is two words, and a torn read of one is not a nil check that
+// comes out wrong, it is a call through an address that was never a method
+// table.
+func TestSettingTheNotifierWhileThingsArriveIsNotARace(t *testing.T) {
+	s, jrn, _ := queueTestServer(t, "vshop.DP-1.code")
+	// Quiet, so each arrival spends an id rather than queueing: the same path,
+	// with less written down on the way.
+	if err := jrn.SetMode("quiet"); err != nil {
+		t.Fatal(err)
+	}
+	// The history full, because what an arrival reads the notifier for is
+	// telling the bus side that a record has fallen off the end of it.
+	for i := 0; i < attn.HistoryMax; i++ {
+		if _, err := s.Arrived(attn.Notification{From: "app", Text: "one of many"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	start := make(chan struct{})
+	arriving := make(chan error, 1)
+	go func() {
+		<-start
+		for i := 0; i < 200; i++ {
+			if _, err := s.Arrived(attn.Notification{From: "app", Text: "and another"}); err != nil {
+				arriving <- err
+				return
+			}
+		}
+		arriving <- nil
+	}()
+	close(start)
+	s.Watching(tellTale{ids: &[]uint64{}, forgotten: &[]uint64{}})
+	if err := <-arriving; err != nil {
+		t.Fatal(err)
+	}
+}
+
 // An empty mode is a mode to replay, not one to ask for. It reads as work when
 // the journal has never been told, and the same reading was the CLI's check -
 // so `zde attn "$MODE"` with the variable unset turned the notifications back

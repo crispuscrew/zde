@@ -3,6 +3,7 @@ package journal
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -577,5 +578,60 @@ func TestClaimedIDsSurviveACompactionOfAnEmptyQueue(t *testing.T) {
 	}
 	if next <= claimed {
 		t.Errorf("id %d after a compaction repeats %d, which an app is still holding", next, claimed)
+	}
+}
+
+// Reading one field costs one field, whatever else the journal is remembering.
+//
+// The bar asks for the queue every two seconds and for the mode every two
+// seconds after that, which is sixty questions a minute for as long as the
+// session runs. Both of them used to go through State, which copies everything:
+// the queue, and a map of desks with a map of monitors inside each. So the cost
+// of the cheapest question in the daemon grew with how long somebody had been
+// using their machine.
+//
+// Measured as allocations rather than as time, and by comparison rather than
+// against a number: what is wrong with State here is that its cost follows the
+// size of what is remembered, so the test is that these two do not.
+func TestReadingOneFieldDoesNotCopyTheWholeJournal(t *testing.T) {
+	j := open(t, filepath.Join(t.TempDir(), "j.jsonl"))
+	if _, err := j.Queue(Item{Text: "reply to ilya", Desk: "vshop"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.SetMode("quiet"); err != nil {
+		t.Fatal(err)
+	}
+
+	small := testing.AllocsPerRun(100, func() { j.Waiting(); j.Mode() })
+
+	// A session that has been running a while: a hundred desks, each with a
+	// remembered workspace per monitor. Written straight into the state rather
+	// than through the file, because this is about what a read copies and not
+	// about what a replay produces.
+	j.mu.Lock()
+	for i := 0; i < 100; i++ {
+		j.state.LastActive["desk"+strconv.Itoa(i)] = map[string]string{"DP-1": "code", "DP-2": "web"}
+	}
+	j.mu.Unlock()
+
+	big := testing.AllocsPerRun(100, func() { j.Waiting(); j.Mode() })
+	if big != small {
+		t.Errorf("reading the queue and the mode costs %v allocations with a hundred desks remembered and %v with none: it is copying the whole state to answer with one field",
+			big, small)
+	}
+}
+
+// And it is still a copy: a caller that could reach back in here through the
+// slice it was handed would be able to take something off the queue without
+// writing a line for it.
+func TestWaitingHandsBackACopy(t *testing.T) {
+	j := open(t, filepath.Join(t.TempDir(), "j.jsonl"))
+	if _, err := j.Queue(Item{Text: "reply to ilya"}); err != nil {
+		t.Fatal(err)
+	}
+	got := j.Waiting()
+	got[0].Text = "something else entirely"
+	if again := j.Waiting(); again[0].Text != "reply to ilya" {
+		t.Errorf("the queue now says %q, edited through what a reader was handed", again[0].Text)
 	}
 }

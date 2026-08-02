@@ -35,6 +35,24 @@ type Connections struct {
 	Networks []link.Network `json:"networks"`
 }
 
+// noManagerFor is how long "there is no NetworkManager on this machine" is
+// believed before anybody asks again.
+//
+// It is believed at all because of the arithmetic. The bar asks for the link
+// every five seconds for as long as the session runs, and on a machine with no
+// NetworkManager - which is every zde desktop, since layer 0 installs it for
+// laptops only (nix/system.nix, zde.laptop.enable) - each of those questions
+// opened a private system bus connection, ran a SASL handshake, said Hello,
+// asked who owns the name and closed again. Seventeen thousand times a day, for
+// an answer that changes when somebody rebuilds the machine.
+//
+// It is believed for a while and not for ever because a rebuild does not
+// reliably restart this daemon, and a zded that could never notice
+// NetworkManager arriving would need a logout before it told the truth. Five
+// minutes is a wait somebody sits through once, against three hundred dials a
+// day instead of seventeen thousand.
+const noManagerFor = 5 * time.Minute
+
 // links is the network side, opened the first time something asks and kept.
 //
 // Lazily, because a machine with no NetworkManager has to be a state and not a
@@ -43,10 +61,13 @@ type Connections struct {
 // NetworkManager is restarted by its own updates, and a daemon holding a dead
 // socket would report an unknown link for the rest of the session.
 //
-// A machine with no manager pays for the dial on every question the bar asks -
-// once every five seconds, and a unix socket's worth of work. Remembering the
-// absence would be cheaper, and would also be a daemon that never notices
-// NetworkManager arriving, which is what a rebuild does.
+// Only the absence is remembered, and not any other failure: an absence is a
+// fact about the machine, and a bus that answered badly once is worth asking
+// again. A connect that ran out of time arrives here as an absence too
+// (internal/link, Open), which is the same answer for the same reason - it is
+// what a daemon that cannot reach a manager can honestly say - and it is what
+// keeps a wedged system bus from costing one abandoned dial every five seconds
+// (internal/bus).
 func (s *Server) links() (link.Manager, error) {
 	s.linkMu.Lock()
 	defer s.linkMu.Unlock()
@@ -61,14 +82,23 @@ func (s *Server) links() (link.Manager, error) {
 		}
 		s.link = nil
 	}
+	if !s.noManagerAt.IsZero() && time.Since(s.noManagerAt) < noManagerFor {
+		// In the words the last dial used, so that a person reading the refusal
+		// gets what actually went wrong rather than a summary of it.
+		return nil, s.noManager
+	}
 	open := s.openLink
 	if open == nil {
 		open = link.Open
 	}
 	m, err := open()
 	if err != nil {
+		if errors.Is(err, link.ErrNoManager) {
+			s.noManager, s.noManagerAt = err, time.Now()
+		}
 		return nil, err
 	}
+	s.noManager, s.noManagerAt = nil, time.Time{}
 	s.link = m
 	return m, nil
 }

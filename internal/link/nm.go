@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/crispuscrew/zde/internal/bus"
 	"github.com/godbus/dbus/v5"
 )
 
@@ -124,10 +125,15 @@ type NM struct {
 // as a state, and this is the one place that can tell it apart from a bus that
 // is there and unhappy.
 func Open() (Manager, error) {
-	conn, err := dbus.ConnectSystemBus()
+	// Bounded, because everything else here is and the connect was the one part
+	// that was not (internal/bus). This is called from the bar's poll: a system
+	// bus that accepts the socket and then says nothing would otherwise hold the
+	// daemon's link lock for as long as it liked, once every five seconds.
+	conn, err := bus.System()
 	if err != nil {
-		// No system bus at all. A machine can be perfectly online like that;
-		// what it cannot be is asked about it this way.
+		// No system bus at all, or one that will not finish saying hello. A
+		// machine can be perfectly online like that; what it cannot be is asked
+		// about it this way.
 		return nil, fmt.Errorf("%w: %v", ErrNoManager, err)
 	}
 	// Bounded like every other call here: a bus daemon that accepts a message

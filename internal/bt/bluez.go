@@ -7,6 +7,9 @@ import (
 	"sync"
 	"time"
 
+	// Renamed on the way in, because the name bus is already taken here by the
+	// little interface every verb below calls through.
+	bounded "github.com/crispuscrew/zde/internal/bus"
 	"github.com/godbus/dbus/v5"
 )
 
@@ -123,8 +126,13 @@ type Client struct {
 // A bus it cannot reach is an error and not an absent adapter: "there is no
 // system bus here" is a broken machine, and saying "no bluetooth" about it
 // would send somebody looking at their radio.
+//
+// Bounded, like every call below it (internal/bus). The library's own connect
+// waits for as long as whatever is on the other end of the socket wants it to,
+// and this one is reached from a keybind, with the daemon's radio lock about to
+// be taken behind it.
 func Dial() (*Client, error) {
-	conn, err := dbus.ConnectSystemBus()
+	conn, err := bounded.System()
 	if err != nil {
 		return nil, fmt.Errorf("system bus: %w", err)
 	}
@@ -331,26 +339,43 @@ func (c *Client) Connect(addr string) error {
 	})
 }
 
-// Disconnect drops the link. Not started in the background: taking a link down
-// is local and immediate, and a person who asked for it should be told it
-// happened.
+// Disconnect drops the link, and answers before BlueZ has finished doing it.
+//
+// It used to wait, on the reasoning that taking a link down is local and
+// immediate. It is not: Disconnect on a device that has stopped answering waits
+// on its radio, and this call carried the same 75 second bound as pairing while
+// the client on the other end of the socket gives up at five. What a person got
+// for pressing the key was a failure, from a daemon that was still working on
+// it - and the request goroutine was held for a minute and a quarter behind an
+// answer nobody was left to read.
+//
+// So it goes through start, like pairing and connecting, and how it ended
+// arrives through State.
 func (c *Client) Disconnect(addr string) error {
-	_, path, _, err := c.find(addr)
+	_, path, dev, err := c.find(addr)
 	if err != nil {
 		return err
 	}
-	return c.bus.Call(waitFor, path, deviceIface+".Disconnect")
+	return c.start("disconnecting "+dev.Address, func() error {
+		return c.bus.Call(waitFor, path, deviceIface+".Disconnect")
+	})
 }
 
 // Forget removes the device: the pairing key, the trust, the lot. It is
 // RemoveDevice on the adapter rather than anything on the device, because after
 // this there is no device object to call.
+//
+// Started rather than waited on, for the reason Disconnect is: forgetting a
+// device that is connected takes the link down first, so it is the same wait
+// with a longer job in front of it.
 func (c *Client) Forget(addr string) error {
-	snap, path, _, err := c.find(addr)
+	snap, path, dev, err := c.find(addr)
 	if err != nil {
 		return err
 	}
-	return c.bus.Call(waitFor, snap.adapter, adapterIface+".RemoveDevice", path)
+	return c.start("forgetting "+dev.Address, func() error {
+		return c.bus.Call(waitFor, snap.adapter, adapterIface+".RemoveDevice", path)
+	})
 }
 
 // Trust says this device may reconnect and use its services without asking
