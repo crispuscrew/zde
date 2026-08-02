@@ -2172,6 +2172,50 @@ func queueTestServer(t *testing.T, focused string) (*Server, *journal.Journal, *
 	return New("test", jrn, niri, nil), jrn, niri
 }
 
+// The two questions the bar asks on a clock stay the same price as the session
+// gets longer.
+//
+// queue.list and attn.mode are sixty of the daemon's requests a minute between
+// them, for as long as somebody is logged in, and each of them reads one field.
+// Both used to read that field out of a copy of everything the journal
+// remembers - the queue, and a map of desks with a map of monitors inside each -
+// so the cost of the cheapest thing zded does grew with how many desks had been
+// visited since login.
+//
+// Measured by comparison rather than against a number, because what was wrong
+// with it was the shape of the cost and not its size (internal/journal,
+// Waiting).
+func TestTheBarsPollDoesNotCopyTheWholeJournal(t *testing.T) {
+	s, jrn, _ := queueTestServer(t, "vshop.DP-1.code")
+	if resp := s.Dispatch(Request{Method: "queue.add", Args: []string{"reply to ilya"}}); resp.Error != "" {
+		t.Fatal(resp.Error)
+	}
+	poll := func() {
+		s.Dispatch(Request{Method: "queue.list"})
+		s.Dispatch(Request{Method: "attn.mode"})
+	}
+	small := testing.AllocsPerRun(50, poll)
+
+	// A session that has been used: a hundred desks, each remembering where it
+	// was left on two monitors.
+	for i := 0; i < 100; i++ {
+		for _, monitor := range []string{"DP-1", "DP-2"} {
+			n, err := desk.NewName("d"+strconv.Itoa(i), monitor, "code")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := jrn.SetActive(n); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	big := testing.AllocsPerRun(50, poll)
+	if big > small {
+		t.Errorf("one poll costs %v allocations after a hundred desks and %v before it: the bar is paying for the whole journal to read two fields",
+			big, small)
+	}
+}
+
 // What is waiting, and where it waits. The desk is what separates a queue from
 // a list.
 func TestQueueAddRecordsTheDeskItCameFrom(t *testing.T) {
