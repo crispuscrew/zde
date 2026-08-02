@@ -81,9 +81,12 @@ func resolve(src sourceBind) (Bind, error) {
 		return Bind{}, fmt.Errorf("%q: %w", src.Action, err)
 	}
 	key := c.String()
-	if e, ok := registry[src.Action]; ok && !e.parametric() {
-		return Bind{Action: src.Action, Key: key, Entry: e}, nil
+	if e, arg, ok := behind(src.Action); ok {
+		return Bind{Action: src.Action, Key: key, Arg: arg, Entry: e}, nil
 	}
+	// Which of the ways it is not an action. behind says only that it is none
+	// of them, and a keymap is a file somebody edits, so the refusal has to be
+	// the one that names the mistake.
 	id, arg, found := strings.Cut(src.Action, " ")
 	if !found {
 		return Bind{}, fmt.Errorf("unknown action %q", src.Action)
@@ -95,10 +98,30 @@ func resolve(src sourceBind) (Bind, error) {
 	if !e.parametric() {
 		return Bind{}, fmt.Errorf("action %q takes no argument, got %q", id, arg)
 	}
-	if err := checkArg(e, arg); err != nil {
-		return Bind{}, fmt.Errorf("%q: %w", src.Action, err)
+	// The action exists and takes an argument, so the argument is what behind
+	// refused: checkArg is the only thing left that can have said no.
+	return Bind{}, fmt.Errorf("%q: %w", src.Action, checkArg(e, arg))
+}
+
+// behind is what one action, spelled the way a keymap and a cheatsheet spell
+// it, means: the entry, and the argument where the action carries one.
+//
+// resolve's lookup half without a chord in front of it, because the palette
+// reads actions off the generated cheatsheet, where the chord has already been
+// resolved and the action is all that is left.
+func behind(action string) (Entry, string, bool) {
+	if e, ok := registry[action]; ok && !e.parametric() {
+		return e, "", true
 	}
-	return Bind{Action: src.Action, Key: key, Arg: arg, Entry: e}, nil
+	id, arg, found := strings.Cut(action, " ")
+	if !found {
+		return Entry{}, "", false
+	}
+	e, ok := registry[id]
+	if !ok || !e.parametric() || checkArg(e, arg) != nil {
+		return Entry{}, "", false
+	}
+	return e, arg, true
 }
 
 func checkArg(e Entry, arg string) error {

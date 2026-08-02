@@ -17,6 +17,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/crispuscrew/zde/internal/desk"
@@ -160,6 +161,41 @@ func (c *Client) Action(action any, what string) error {
 		return fmt.Errorf("niri: %s: not handled: %s", what, okRaw)
 	}
 	return nil
+}
+
+// Perform runs one of niri's own actions, named the way a bind names it:
+// kebab-case, as the keymap registry writes it (internal/keymap).
+//
+// It is how the palette runs a row that niri handles itself. Half the keymap is
+// niri's own - the columns, the monitors, the screenshots - and those keys work
+// today, so a palette that could not run them would be listing what it cannot
+// do beside what it can.
+//
+// Only the actions that carry no argument, which is what the empty object says.
+// niri's arguments are its own types on the wire - a column width is not the
+// string "-10%" but the change that string parses to - and spelling one here
+// would be zde guessing at another project's protocol from the outside. The key
+// still does those; the palette says so rather than guessing (internal/zded,
+// whyNot). The empty object is the shape niri already takes for an action with
+// no argument (see FocusWindowVertically), and an action it does not know comes
+// back as niri's own refusal rather than as silence.
+func (c *Client) Perform(action string) error {
+	name := variant(action)
+	return c.Action(map[string]any{name: map[string]any{}}, name)
+}
+
+// variant is a bind's action name in the spelling niri's IPC uses for it:
+// focus-column-left is FocusColumnLeft. One rule rather than a table of twenty,
+// because a table would be a second copy of the same list to keep true.
+func variant(action string) string {
+	parts := strings.Split(action, "-")
+	for i, p := range parts {
+		if p == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(p[:1]) + p[1:]
+	}
+	return strings.Join(parts, "")
 }
 
 // FocusWorkspace focuses a workspace by name. Focusing one makes the monitor

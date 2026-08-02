@@ -267,12 +267,20 @@ ShellRoot {
                 if (msg.error !== undefined) {
                     if (center.visible)
                         center.note = msg.error;
+                    else if (palette.running)
+                        palette.ran(msg.error);
                     return;
                 }
                 // Replies to our own subscribe arrive here too; only the lines
                 // carrying an event are events.
-                if (!msg.event)
+                if (!msg.event) {
+                    // A run that worked, which is what closes the palette: it
+                    // stays up until the answer comes, so that a refusal has a
+                    // surface to appear on rather than a parser that drops it.
+                    if (palette.running)
+                        palette.ran("");
                     return;
+                }
                 if (msg.event.kind === "picker")
                     root.openPicker(msg.event);
                 else if (msg.event.kind === "windows")
@@ -285,6 +293,8 @@ ShellRoot {
                     root.openAsk(msg.event, false);
                 else if (msg.event.kind === "ask.panel")
                     root.openAsk(msg.event, true);
+                else if (msg.event.kind === "palette")
+                    root.openPalette(msg.event);
             }
         }
     }
@@ -425,6 +435,21 @@ ShellRoot {
     function openAsk(ev, isPanel) {
         askWindow.screen = root.screenFor(ev);
         askWindow.show(isPanel, ev.token ?? "");
+    }
+
+    // Every action zde has, by name. The key goes on the row because half of
+    // what a palette is for is learning the key you forgot, and whether the row
+    // works at all is zded's answer, not the shell's - most of the keymap is
+    // bound to commands nobody has written yet.
+    function openPalette(ev) {
+        palette.screen = root.screenFor(ev);
+        palette.show((ev.actions ?? []).map(a => ({
+                    name: a.name,
+                    desc: a.desc ?? "",
+                    key: a.key ?? "",
+                    live: a.live === true,
+                    why: a.why ?? ""
+                })), ev.token ?? "");
     }
 
     // The screen an event asks for. One answer for every surface: two copies of
@@ -704,6 +729,35 @@ ShellRoot {
         }
     }
 
+    ActionPalette {
+        id: palette
+
+        // The shell decides nothing here either: which action a name means, and
+        // whether running it spawns a command or asks niri, are zded's
+        // (docs/vision.md, section 2). On the stream connection, for the reason
+        // the picker's choice is - the bar's parser reads every line it gets as
+        // a queue listing.
+        //
+        // The surface is left up: it hides itself when the answer says the row
+        // ran (see the parser above). With no connection there will be no
+        // answer, so that is said here instead of leaving it waiting.
+        onChosen: name => {
+            if (!stream.connected) {
+                palette.ran("no connection to zded");
+                return;
+            }
+            root.send({
+                method: "palette.run",
+                args: [name]
+            });
+        }
+        onDismissed: palette.hide()
+        onShown: token => root.send({
+            method: "shown",
+            args: [token]
+        })
+    }
+
     // How a test can ask the bar what it is showing, rather than only whether
     // it is running: `qs -p <config> ipc call queue count`. A bar that never
     // read the queue and a bar reading it correctly look identical from the
@@ -749,6 +803,49 @@ ShellRoot {
                 return "closed";
             picker.action(name);
             return "acted";
+        }
+    }
+
+    // The palette, over the same IPC and for the same reason: a machine with no
+    // input devices cannot type into it, and typing is the whole interaction.
+    IpcHandler {
+        target: "palette"
+
+        // What it is showing: how many actions it was handed, and how many the
+        // filter leaves. Two numbers rather than one, because a filter that
+        // matched everything and one that was never applied look identical from
+        // a single count.
+        function state(): string {
+            if (!palette.visible)
+                return "closed";
+            return "open " + palette.rows.length + " " + palette.matches.length;
+        }
+
+        function filter(text: string): string {
+            if (!palette.visible)
+                return "closed";
+            palette.narrow(text);
+            return "filtered";
+        }
+
+        // Through run(), not straight to chosen(): the gate that refuses a row
+        // nothing is written behind is the whole design, and a hatch that went
+        // round it left CI never touching it. "cannot" is that gate saying no,
+        // which is a thing worth being able to assert.
+        function run(name: string): string {
+            if (!palette.visible)
+                return "closed";
+            const i = palette.matches.findIndex(r => r.name === name);
+            if (i < 0)
+                return "no such row";
+            palette.index = i;
+            palette.run();
+            return palette.running ? "ran" : "cannot";
+        }
+
+        function dismiss(): string {
+            palette.dismissed();
+            return "closed";
         }
     }
 
