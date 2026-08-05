@@ -1,26 +1,35 @@
 package attn
 
 import (
+	"sort"
 	"sync"
 	"time"
 )
 
-// HistoryMax is how many arrivals zded keeps in memory.
+// PerSenderMax is how many arrivals zded keeps from any one sender.
 //
-// Bounded because notifications arrive at machine speed and not at human speed:
-// one chat is a hundred a day and a build bot can send a hundred in a minute, so
-// an unbounded list is a leak in a daemon that is meant to run for weeks. Two
-// hundred is a day or two of ordinary use, which is the span "what did I miss"
-// actually asks about (docs/vision.md, ask A5) - and with the body bounded at
-// bodyMax it is about 3 MB if every record is at its limit, a few hundred
-// kilobytes in a real session.
+// A ring each, rather than one ring for the whole session, because one ring
+// let a single app answer the question for everybody: a download posting a
+// hundred progress updates left a hundred records, and "what did I miss" came
+// back as one download and nothing else (docs/vision.md, ask A5). With a ring
+// per sender a loud app evicts nothing but itself.
 //
-// All two hundred are this session's. What outlives the daemon is two smaller
+// Thirty, and they are thirty distinct notifications rather than thirty
+// renderings of one, because a notification carrying replaces_id now lands on
+// top of the record it supersedes instead of beside it (see Replace). That is
+// a day or two of one ordinary app, which is the span the question asks about.
+//
+// A session of five apps therefore holds fewer records than the flat two
+// hundred this used to be, and answers better: thirty from each of five is a
+// worse number and a truer history than a hundred and ninety from one app and
+// ten from the rest.
+//
+// All of them are this session's. What outlives the daemon is two smaller
 // things: the queue, because it is what you still owe, and a snapshot of the
-// newest snapshotMax records with their bodies cut to snapshotBodyMax
-// (snapshot.go). So a restart costs the tail of the ring and most of the long
-// bodies, and what it keeps is enough to answer "what did I miss" across a
-// reboot instead of starting every session blank.
+// newest snapshotMax records across every sender, with their bodies cut to
+// snapshotBodyMax (snapshot.go). So a restart costs the tail of every ring and
+// most of the long bodies, and what it keeps is enough to answer "what did I
+// miss" across a reboot instead of starting every session blank.
 //
 // The journal is still not where that lives, and the argument is about the
 // shape of the two files rather than about what is in them today. Every arrival
@@ -37,12 +46,63 @@ import (
 // What this comment used to claim, and what is not true, is that the journal
 // does not carry bodies. It carries the whole body of everything the mode
 // queues, fsynced, and has since long before this branch (internal/journal,
-// Queue) - and the queue it replays into is not bounded the way this ring is.
-// So the shape argument above is the reason the history goes in a file of its
-// own; it is not a reason to believe a notification body is only ever in one
-// place on the disk. It is not, the queue's copy is a separate change, and
+// Queue) - and the queue it replays into is not bounded the way these rings
+// are. So the shape argument above is the reason the history goes in a file of
+// its own; it is not a reason to believe a notification body is only ever in
+// one place on the disk. It is not, the queue's copy is a separate change, and
 // stating it the other way here was the comment flattering the code.
-const HistoryMax = 200
+const PerSenderMax = 30
+
+// SendersMax is how many senders hold a ring of their own at once. When a
+// thirteenth name arrives, the sender nothing has been heard from for longest
+// loses its ring.
+//
+// Bounded because From is the sender's own claim and nothing verifies it
+// (notify.go, Notification.From). An app that varies its name mints a ring per
+// variation, so a map keyed on it is unbounded in senders even while every
+// ring inside it is bounded - the same leak, one level up.
+//
+// Twelve is more names than a session that is not being played with has: chat,
+// mail, the browser, a download, a build, the calendar, battery, bluetooth and
+// updates is nine.
+//
+// The arithmetic, done the way the ring's above is. Twelve rings plus the
+// nameless one (see nobody) is thirteen, at thirty records each: 390 records.
+// A record at its limit is a summary of summaryMax, a body of bodyMax, and a
+// sender name bounded at summaryMax too - 4600 characters, which in an
+// alphabet that costs four bytes a character is about 18 KB. So the ceiling is
+// near 7 MB, against the 3 MB the flat ring of two hundred counted, and it is
+// still a few hundred kilobytes in any session made of real notifications:
+// a ceiling only binds when something is trying to reach it. The actions are
+// outside this count as they were outside the old one - nine of them, each key
+// and label bounded only by summaryMax, is another 21 KB a record in a worst
+// case nothing has ever sent.
+//
+// What goes when a sender is evicted is the whole of its ring, in one step:
+// every record that name ever sent. Add answers with every id in it, so the
+// caller can let go of all of them (see Add). There is no half-evicted sender,
+// because what is bounded here is the number of names and not the number of
+// records under them.
+//
+// It is a bound on memory and not a defence. Until a sender is known by the
+// socket it arrived on rather than by what it says about itself
+// (docs/vision.md, principle 6), an app that mints twelve names can push every
+// real sender out - as an app that sent two hundred notifications could push
+// everything out before this change. What the rings fix is the ordinary case,
+// which is an honest app that is merely loud.
+const SendersMax = 12
+
+// nobody is the ring for a record whose sender named itself nothing. It is
+// neither counted against SendersMax nor ever chosen by it.
+//
+// No app can land here. A notification off the bus that gives no name, or a
+// name of "-", is recorded under the bus's own name for its connection instead
+// (notify.go, claim), and the bus hands that out rather than letting the peer
+// choose it. So an empty From is never an app's doing: it is zde's own, or a
+// person's, or a row off a snapshot file written before something had a name.
+// Losing those to make room for an app's twelfth invented name is the one
+// eviction nobody could defend.
+const nobody = ""
 
 // Record is one arrival, as the notification center reads it back. It is what
 // the queue item cannot say on its own: when it happened, and whether the mode
@@ -55,6 +115,8 @@ type Record struct {
 	// (internal/journal, ClaimID).
 	ID uint64 `json:"id"`
 	// From is the sender's claim about itself, unverified - see Notification.
+	// It is also which ring this record lives in, which is why the number of
+	// distinct ones is bounded (see SendersMax).
 	From string `json:"from,omitempty"`
 	// Text is the summary, on one line: it is what the queue and the row show.
 	Text string `json:"text"`
@@ -128,12 +190,33 @@ func (r Record) Allows(key string) bool {
 	return false
 }
 
-// History is what arrived, bounded at HistoryMax and oldest first. Safe for
-// concurrent use: arrivals come off the bus and the center asks over the
-// socket, on different goroutines.
+// History is what arrived: a bounded ring per sender, bounded again in how
+// many senders have one. Safe for concurrent use, because arrivals come off
+// the bus and the center asks over the socket, on different goroutines.
+//
+// The rings are what stops one app filling the history. Putting them back
+// together is what reading does: Recent and Snapshot both answer with a single
+// list, newest first across every sender, because that is the shape the center
+// reads and the shape the question has - what happened while I was away, most
+// recent thing first.
 type History struct {
-	mu      sync.Mutex
-	records []Record
+	mu sync.Mutex
+	// rings is one sender's records each, keyed by the name that sender
+	// claimed. A sender holding no records is not in here at all, so the map
+	// is at most SendersMax names plus nobody's.
+	rings map[string]*ring
+	// seq numbers arrivals in the order this history received them, and it is
+	// the only order it trusts. Record.At is when the daemon says a thing
+	// arrived, and a restored record's At came off a file anything could have
+	// edited - so merging the rings on it would let a snapshot with a date in
+	// the year 3000 sit at the top of the center for ever.
+	seq int64
+	// back numbers restored arrivals, downwards from zero, so that everything
+	// a snapshot puts back sorts behind everything this session received (see
+	// Restore). Signed for exactly this: there is no room below zero in a
+	// uint64, and the alternative is renumbering every live record on a
+	// restore.
+	back int64
 	// rev counts the times what is in here changed. It is what lets the writer
 	// tell an idle session from a busy one without comparing records: the
 	// snapshot is rewritten on a clock, and a laptop where nothing has arrived
@@ -142,39 +225,229 @@ type History struct {
 	rev uint64
 }
 
-// Add records an arrival and answers with the id of the record it pushed out,
-// or zero when it pushed out nothing.
+// ring is one sender's records, oldest first, at most PerSenderMax of them.
+type ring struct{ at []entry }
+
+// entry is a record together with the order it arrived in.
 //
-// The id is answered rather than dropped on the floor because a record leaving
-// here is the moment nothing can address that notification any more: it cannot
-// be dismissed, invoked or listed, so whatever else is holding state about it
-// should let go too (internal/attn, Forget).
-func (h *History) Add(r Record) uint64 {
+// The order is here and not on the Record because a Record is what goes over
+// the socket and into the snapshot file, and this number means nothing outside
+// the history that issued it.
+type entry struct {
+	rec Record
+	seq int64
+}
+
+// last is when this ring was last added to, and a ring is never empty while it
+// is in the map.
+func (r *ring) last() int64 { return r.at[len(r.at)-1].seq }
+
+// prepend puts records in front of what this ring already holds, and trims to
+// the bound from the front.
+//
+// A slice of its own rather than appending onto what the caller handed us:
+// that slice is the file's, and growing it in place would write through to
+// whatever else is still holding it.
+func (r *ring) prepend(es []entry) {
+	all := make([]entry, 0, len(es)+len(r.at))
+	all = append(all, es...)
+	all = append(all, r.at...)
+	if len(all) > PerSenderMax {
+		all = all[len(all)-PerSenderMax:]
+	}
+	r.at = all
+}
+
+// Add records an arrival and answers with the id of every record it pushed
+// out, oldest first.
+//
+// The ids are answered rather than dropped on the floor because a record
+// leaving here is the moment nothing can address that notification any more:
+// it cannot be dismissed, invoked or listed, so whatever else is holding state
+// about it should let go too (internal/attn, Forget).
+//
+// A list, where this used to answer with one id, because one arrival can now
+// cost more than one record. It pushes the oldest out of its own sender's ring
+// when that ring is full, and it pushes out a whole ring - every record a
+// sender ever sent - when its name is the thirteenth and one of the twelve has
+// to go. A caller that kept only the first would leak exactly what the answer
+// exists to stop leaking.
+//
+// Nil when nothing went, which is the ordinary case and allocates nothing.
+func (h *History) Add(r Record) []uint64 {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.records = append(h.records, r)
+	return h.add(r)
+}
+
+// Replace is an arrival that supersedes one already here: the record with the
+// old id comes out, and the new one goes in at the top. It answers as Add
+// does, and an old id that is no longer here is not an error - there is
+// nothing to supersede, and the arrival is still an arrival.
+//
+// This is what replaces_id means, kept rather than flattened. A notification
+// carrying one is not a second notification: it is the same one saying
+// something new, a download at 2% rather than at 1%. Appending was the root of
+// the noise that the rings above only bound - a hundred progress updates left
+// a hundred records, ninety-nine of them marked dismissed and not one of them
+// worth reading.
+//
+// What it costs is the superseded text, which is gone rather than kept beside
+// the new words. That is a sender editing its own history, and it is worth
+// being plain that it is allowed. replaces_id is scoped to the connection that
+// sent the original (notify.go), so a sender can only rewrite what it said
+// itself; an app that does not want a thing read does not send it in the first
+// place; and against that narrow loss, keeping every superseded rendering is
+// what made the history unable to answer its one question. It is not what
+// principle 3 forbids either - that is a *mode* deciding what is kept, and
+// nothing on this path reads the mode.
+//
+// At the top and not in its old place, because a download that has just
+// finished is the most recent thing that happened and the center is read
+// newest first.
+//
+// The old id is not in what comes back. The bus side let go of it before this
+// was called, on the same path that looked it up (notify.go, the replaces
+// branch), and the notification is not gone in any case: it is this record,
+// under a new id.
+func (h *History) Replace(old uint64, r Record) []uint64 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.remove(old)
+	return h.add(r)
+}
+
+// add is Add with the lock already held.
+func (h *History) add(r Record) []uint64 {
+	h.seq++
+	ring := h.ringFor(r.From)
+	ring.at = append(ring.at, entry{rec: r, seq: h.seq})
 	h.rev++
-	if len(h.records) <= HistoryMax {
-		return 0
+	var gone []uint64
+	if len(ring.at) > PerSenderMax {
+		gone = append(gone, ring.at[0].rec.ID)
+		// Copied down rather than resliced from the front: a reslice leaves the
+		// backing array growing to the right for ever, which is the leak this
+		// bound exists to stop, only slower.
+		copy(ring.at, ring.at[1:])
+		ring.at = ring.at[:PerSenderMax]
 	}
-	gone := h.records[0].ID
-	// Copied down rather than resliced from the front: a reslice leaves the
-	// backing array growing to the right for ever, which is the leak this bound
-	// exists to stop, only slower.
-	copy(h.records, h.records[1:])
-	h.records = h.records[:HistoryMax]
-	return gone
+	return append(gone, h.dropExtraSenders()...)
+}
+
+// remove takes one record out of whichever ring holds it, and says whether it
+// found one.
+//
+// A ring left empty goes with it. Without that, a sender that has said nothing
+// since would hold a name against SendersMax for the rest of the session while
+// holding no records at all.
+func (h *History) remove(id uint64) bool {
+	for from, r := range h.rings {
+		for i, e := range r.at {
+			if e.rec.ID != id {
+				continue
+			}
+			n := len(r.at)
+			copy(r.at[i:], r.at[i+1:])
+			// The slot the copy vacated still points at the record that was
+			// there, and a body is up to bodyMax characters: left as it is, the
+			// backing array would hold a message nothing can read for as long
+			// as this ring lives.
+			r.at[n-1] = entry{}
+			r.at = r.at[:n-1]
+			if len(r.at) == 0 {
+				delete(h.rings, from)
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// ringFor is a sender's ring, made if this is the first thing it has sent.
+func (h *History) ringFor(from string) *ring {
+	if h.rings == nil {
+		h.rings = map[string]*ring{}
+	}
+	r := h.rings[from]
+	if r == nil {
+		r = &ring{}
+		h.rings[from] = r
+	}
+	return r
+}
+
+// dropExtraSenders drops whole rings until SendersMax names are left, and
+// answers with every id that went with them.
+//
+// The ring that goes is the one nothing has been heard from for longest,
+// measured by its newest record. Used means sent: the center reads the whole
+// history in one call, so a read says nothing about any one sender and must
+// not be what keeps a name alive.
+//
+// nobody's ring is neither counted nor a candidate (see nobody).
+func (h *History) dropExtraSenders() []uint64 {
+	var gone []uint64
+	for {
+		named := len(h.rings)
+		if _, ours := h.rings[nobody]; ours {
+			named--
+		}
+		if named <= SendersMax {
+			return gone
+		}
+		quietest, since, found := "", int64(0), false
+		for from, r := range h.rings {
+			if from == nobody {
+				continue
+			}
+			// No two records share a seq, so there is no tie for the map's
+			// random order to break differently on two runs.
+			if last := r.last(); !found || last < since {
+				quietest, since, found = from, last, true
+			}
+		}
+		for _, e := range h.rings[quietest].at {
+			gone = append(gone, e.rec.ID)
+		}
+		delete(h.rings, quietest)
+	}
+}
+
+// newestFirst is every record here in the order this history received them,
+// newest first, across every sender. Called with the lock held.
+//
+// Sorted rather than merged ring by ring: there are at most SendersMax+1 rings
+// of PerSenderMax records, so this is a few hundred items, and it runs when
+// somebody presses Mod+n or when the snapshot is written on its two-minute
+// clock. The arrival path, which is the one a hundred notifications a minute
+// reach, never comes through here.
+func (h *History) newestFirst() []entry {
+	n := 0
+	for _, r := range h.rings {
+		n += len(r.at)
+	}
+	all := make([]entry, 0, n)
+	for _, r := range h.rings {
+		all = append(all, r.at...)
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].seq > all[j].seq })
+	return all
 }
 
 // Recent is what arrived, newest first, as a copy. Newest first because that is
 // the order the center reads in and the order the question is asked in: what
 // happened while I was away, most recent thing first.
+//
+// One list, whatever the rings did. Which sender a record was filed under is a
+// bound and not an answer, and nobody asks "what did I miss, per app".
 func (h *History) Recent() []Record {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	out := make([]Record, 0, len(h.records))
-	for i := len(h.records) - 1; i >= 0; i-- {
-		out = append(out, h.records[i])
+	all := h.newestFirst()
+	out := make([]Record, len(all))
+	for i, e := range all {
+		out[i] = e.rec
 	}
 	return out
 }
@@ -184,9 +457,11 @@ func (h *History) Recent() []Record {
 func (h *History) Find(id uint64) (Record, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	for _, r := range h.records {
-		if r.ID == id {
-			return r, true
+	for _, r := range h.rings {
+		for _, e := range r.at {
+			if e.rec.ID == id {
+				return e.rec, true
+			}
 		}
 	}
 	return Record{}, false
@@ -198,11 +473,13 @@ func (h *History) Find(id uint64) (Record, bool) {
 func (h *History) Dismiss(id uint64) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	for i := range h.records {
-		if h.records[i].ID == id {
-			h.records[i].Dismissed = true
-			h.rev++
-			return true
+	for _, r := range h.rings {
+		for i := range r.at {
+			if r.at[i].rec.ID == id {
+				r.at[i].rec.Dismissed = true
+				h.rev++
+				return true
+			}
 		}
 	}
 	return false
@@ -217,28 +494,51 @@ func (h *History) Rev() uint64 {
 	return h.rev
 }
 
-// Restore puts a snapshot's records back, oldest first, in front of whatever
-// this session has already received (snapshot.go, ReadSnapshot).
+// Restore puts a snapshot's records back, behind whatever this session has
+// already received (snapshot.go, ReadSnapshot). It takes them oldest first,
+// which is the order the file is in.
 //
-// In front, because the ring is in the order things happened and these happened
-// before the daemon started. Trimmed from the front for the reason Add trims
-// there: the bound keeps the newest, so a restore that arrives after a busy
-// minute costs the restored records rather than the live ones.
+// Behind, because the history is read in the order things happened and these
+// happened before the daemon started. They are numbered downwards from zero so
+// that every one of them sorts below every live arrival, whichever ring each
+// of them lands in.
+//
+// Both bounds hold over the result. A ring that overflows loses from its
+// front, which is the restored end, for the reason the bound exists at all:
+// the newest are what the question is about, and what this session actually
+// received is worth more than what it was told about the last one. A name that
+// pushes the sender count over its bound loses its ring whole - and the ring
+// that goes is always one holding nothing but restored records, because a
+// restored record sorts below every live one and this is the least recently
+// used that comes out.
+//
+// What that eviction pushed out is not answered, unlike Add's. Nothing on the
+// bus is holding a restored id: the connection that sent it ended with the
+// last session, which is the same reason a restored row refuses to invoke
+// anything (internal/zded, invoke). This also runs before anything can arrive
+// (cmd/zded, LoadHistory).
 func (h *History) Restore(records []Record) {
 	if len(records) == 0 {
 		return
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	// A slice of its own rather than appending onto what the caller handed us:
-	// that slice is the file's, and growing it in place would write through to
-	// whatever else is still holding it.
-	all := make([]Record, 0, len(records)+len(h.records))
-	all = append(all, records...)
-	all = append(all, h.records...)
-	if len(all) > HistoryMax {
-		all = all[len(all)-HistoryMax:]
+	// Numbered before they are filed, so that a second restore in one session
+	// goes behind the first as well as behind every live record.
+	h.back -= int64(len(records))
+	// Grouped and then prepended once per sender: a ring is rebuilt once
+	// however many of the file's records belong to it.
+	order := make([]string, 0, len(records))
+	byFrom := make(map[string][]entry, len(records))
+	for i, r := range records {
+		if _, seen := byFrom[r.From]; !seen {
+			order = append(order, r.From)
+		}
+		byFrom[r.From] = append(byFrom[r.From], entry{rec: r, seq: h.back + int64(i)})
 	}
-	h.records = all
+	for _, from := range order {
+		h.ringFor(from).prepend(byFrom[from])
+	}
+	h.dropExtraSenders()
 	h.rev++
 }

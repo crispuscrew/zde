@@ -271,7 +271,11 @@ ones are the point of zded holding the bus name.
   lands in `zde queue` with its text and the desk you were on.
 - **A volume OSD or anything that reuses one id.** It must replace, not pile
   up. This is what per-sender id mapping is for and it has never met a real
-  client.
+  client. In the centre it should be one row, not a hundred: a notification
+  carrying `replaces_id` is written over the record it supersedes and moves to
+  the top, rather than landing beside it. A download's progress bar is the
+  other shape to try it with - `Mod+n` during the download and again after it,
+  and both times it is one row saying what the download says now.
 - `notify-send --wait "test"` in one terminal, `zde queue done <id>` in
   another: the first command returns.
 - An app that expects a popup and gets a queue entry: does it misbehave, or
@@ -381,13 +385,29 @@ ones are the point of zded holding the bus name.
   upgrading from an earlier zde, which wrote the whole message down, `grep` for
   one you remember before you upgrade and again afterwards: the first `zded`
   start on the new build rewrites the file without them.
+- **A day's worth of arrivals.** History is a bounded ring per sender, in
+  memory: 30 records each, for at most 12 named senders plus the nameless ring
+  a person's own entries use. The 31st from one app drops that app's oldest and
+  nothing else, which is the thing to feel for - leave a download or a build bot
+  running all afternoon and the mail from the morning should still be in
+  `Mod+n`. Whether 30 is a day or an hour of one app is a question about your
+  machine and not about the number.
+- **A thirteenth app that sends you something.** The names are bounded too,
+  because an app's name for itself is its own claim and nothing checks it. When
+  a thirteenth arrives, the sender nothing has been heard from for longest
+  loses its ring whole - every record it ever sent, in one step. On a real
+  machine, count the distinct senders in `Mod+n` over a week: if twelve is
+  routinely too few, that is the number to report, and it is one constant
+  (`internal/attn`, `SendersMax`).
 - **What a restart keeps.** `systemctl --user restart zded`, then `Mod+n`. The
   newest 40 records are still there and each says so on its own row - `waiting ·
-  earlier`, because the time column is a clock with no date on it. Bodies are
-  cut to 400 characters and a row that was cut says that too, under the list,
-  rather than ending mid-sentence. Gone: the rest of the ring, the rest of every
-  long body, and the actions - a digit on a restored row answers with why there
-  is nothing left to press instead of sending a keypress to a bus nobody is on.
+  earlier`, because the time column is a clock with no date on it. The newest 40
+  across every sender, not 40 from each: the file answers the same question the
+  centre does. Bodies are cut to 400 characters and a row that was cut says that
+  too, under the list, rather than ending mid-sentence. Gone: the rest of every
+  ring, the rest of every long body, and the actions - a digit on a restored row
+  answers with why there is nothing left to press instead of sending a keypress
+  to a bus nobody is on.
   The file is `~/.local/state/zde/history.json`, and it should be `0600`
   (`ls -l`), because it is notification bodies and nothing else.
 - **And what a crash keeps.** The snapshot is written every two minutes and
