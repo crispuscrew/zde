@@ -155,6 +155,15 @@ func (s *Server) invoke(id, key string) Response {
 	if !found {
 		return Response{Error: "nothing in the history has id " + id + ", so there is nothing to act on"}
 	}
+	if rec.Restored {
+		// Its own refusal, and the reason is not the one below. A restored
+		// record has no actions because the snapshot does not keep them
+		// (internal/attn, Snapshot), so saying its sender declared none would
+		// be blaming an app for what a restart did - and even where it did
+		// declare some, the connection that offered them ended with the last
+		// session.
+		return Response{Error: strconv.Quote(rec.Text) + " arrived before this session started, so whatever it offered went with the app that sent it"}
+	}
 	if len(rec.Actions) == 0 {
 		return Response{Error: strconv.Quote(rec.Text) + " came with no actions: its app sent a notification, not a button"}
 	}

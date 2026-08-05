@@ -62,6 +62,44 @@ func TestHistoryMarksWhatWasDismissed(t *testing.T) {
 	}
 }
 
+// A restore is yesterday, and yesterday goes behind today.
+//
+// The ring is in the order things happened, so records from the last session
+// belong at its old end - and when the two together are more than the bound, it
+// is the restored ones that go, because the bound keeps the newest and what
+// this session has actually received is worth more than what it was told about
+// the last one.
+func TestARestoredHistorySitsBehindWhatHasAlreadyArrived(t *testing.T) {
+	var h History
+	h.Add(Record{ID: 100, Text: "arrived just now"})
+	h.Restore([]Record{{ID: 1, Text: "from last time", Restored: true}})
+	got := h.Recent()
+	if len(got) != 2 || got[0].ID != 100 || got[1].ID != 1 {
+		t.Fatalf("history reads %+v, want the live one above the restored one", got)
+	}
+
+	// And the bound holds over the two together, or a snapshot could push out
+	// what this session has just been sent.
+	var full History
+	for i := uint64(1); i <= HistoryMax; i++ {
+		full.Add(Record{ID: 1000 + i, Text: "live"})
+	}
+	old := make([]Record, 10)
+	for i := range old {
+		old[i] = Record{ID: uint64(i + 1), Text: "from last time"}
+	}
+	full.Restore(old)
+	seen := full.Recent()
+	if len(seen) != HistoryMax {
+		t.Fatalf("history holds %d records after a restore, want the bound of %d", len(seen), HistoryMax)
+	}
+	for _, r := range seen {
+		if r.Text != "live" {
+			t.Fatalf("a restored record survived a full history: %+v", r)
+		}
+	}
+}
+
 // Recent hands out a copy. A caller that could reach back into the history
 // through it - the socket layer marshals whatever it is given, on another
 // goroutine - would be writing into the daemon's state by accident.

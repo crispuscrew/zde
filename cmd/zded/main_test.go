@@ -33,7 +33,7 @@ func TestKeybindsAreAnsweredWhileTheSessionBusIsStuck(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- run(ctx, socket, filepath.Join(dir, "j.jsonl"), filepath.Join(dir, "desks"),
+		done <- run(ctx, socket, filepath.Join(dir, "j.jsonl"), filepath.Join(dir, "desks"), filepath.Join(dir, "history.json"),
 			func(attn.Sink, string) (*attn.Server, error) {
 				close(taking)
 				<-stuck

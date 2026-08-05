@@ -35,7 +35,10 @@ PanelWindow {
     // draw appears in two steps.
     //
     // A row is one attn.Record as it comes off the socket: id, from, text,
-    // body, urgent, at, queued, dismissed, action.
+    // body, urgent, at, queued, dismissed, action - and for the rows that came
+    // back from the snapshot rather than arriving here, restored and
+    // bodyClipped (internal/attn, snapshot.go). Those two are what stops this
+    // surface drawing yesterday's history as though it were this session's.
     property var rows: []
     property int index: 0
 
@@ -140,16 +143,28 @@ PanelWindow {
         const r = center.rowAt(center.index);
         if (!r)
             return;
-        center.note = list.length > 0 ? "no default action: press its number instead" : "nothing to invoke: " + (r.from ?? "it") + " sent a notification, not a button";
+        center.note = list.length > 0 ? "no default action: press its number instead" : center.nothingToPress(r);
+    }
+
+    // Why a row has nothing to press. Two different facts, and telling them
+    // apart is the point: a sender that offered no buttons, and a row from
+    // before the restart, whose buttons were not kept and whose app is not on
+    // the bus any more (internal/attn, Snapshot). Saying the first about the
+    // second would blame an app for what a restart did.
+    function nothingToPress(r) {
+        if (r.restored)
+            return "this arrived before the session restarted: there is nothing left to press it on";
+        return "nothing to invoke: " + (r.from ?? "it") + " sent a notification, not a button";
     }
 
     // A digit: the action in that position. Out of range is said rather than
     // ignored, because a key that does nothing on a surface offering numbered
     // things reads as the surface being broken.
     function press(i) {
-        const list = center.actionsOf(center.rowAt(center.index));
+        const r = center.rowAt(center.index);
+        const list = center.actionsOf(r);
         if (i < 0 || i >= list.length) {
-            center.note = list.length === 0 ? "this one has no actions to press" : "there is no action " + (i + 1) + " on this one";
+            center.note = list.length === 0 ? (r ? center.nothingToPress(r) : "nothing here to press") : "there is no action " + (i + 1) + " on this one";
             return;
         }
         center.fire(list[i]);
@@ -181,12 +196,13 @@ PanelWindow {
     // What became of one, in a word. "silent" is the one worth having: it says
     // a mode kept this off the queue, which is the difference between an app
     // that stopped sending and a session that stopped listening.
+    //
+    // A restored row says so as well, on the row itself, because nothing else
+    // on it would: the time column is a clock with no date on it (see when),
+    // and after a reboot a row from Tuesday reads as one from ten minutes ago.
     function became(r) {
-        if (r.dismissed)
-            return "done";
-        if (r.queued)
-            return "waiting";
-        return "silent";
+        const what = r.dismissed ? "done" : (r.queued ? "waiting" : "silent");
+        return r.restored ? what + " · earlier" : what;
     }
 
     // The clock time it arrived. A day and a time would be more precise and
@@ -323,7 +339,13 @@ PanelWindow {
                 const r = center.rowAt(center.index);
                 if (center.note !== "")
                     return center.note;
-                return r && r.body ? r.body.replace(/\s+/g, " ") : "";
+                const shown = r && r.body ? r.body.replace(/\s+/g, " ") : "";
+                // A body the snapshot cut short says so. Without it the front
+                // of a message and the whole of one look identical, and a row
+                // that ends mid-sentence reads as the app having sent that -
+                // which is the one thing zde promises it does not do
+                // (docs/vision.md, principle 3).
+                return r && r.bodyClipped ? shown + "  … only the front of this was kept" : shown;
             }
             color: center.note !== "" ? "#e5a23d" : "#9aa0ac"
             elide: Text.ElideRight
@@ -348,7 +370,7 @@ PanelWindow {
                 const r = center.rowAt(center.index);
                 const list = center.actionsOf(r);
                 if (list.length === 0)
-                    return "no actions on this one";
+                    return r && r.restored ? "from before the restart: nothing on it can be pressed" : "no actions on this one";
                 let parts = [];
                 for (let i = 0; i < list.length; i++)
                     parts.push((i + 1) + " " + list[i].label + (list[i].key === "default" ? " (enter)" : ""));
