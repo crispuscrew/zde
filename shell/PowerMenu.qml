@@ -9,15 +9,17 @@
 // What it adds to the picker is the second question. Three of these rows end
 // things nobody can get back, so choosing one does not run it - it puts what is
 // about to be lost on the screen and waits for a y. The lines are zded's, not
-// this file's: how many windows close, what is only in the daemon's memory, who
-// else is logged in, what is holding sleep. A confirmation that only asked "are
-// you sure" would teach people to press through it, which is the habit this
-// surface exists not to build.
+// this file's: how many windows close, what the notification center is holding
+// that the queue never got, who else is logged in, what is holding sleep. A
+// confirmation that only asked "are you sure" would teach people to press
+// through it, which is the habit this surface exists not to build.
 //
 // y and not Enter. Enter is the key that chose the row, and a person who
 // presses it twice in the rhythm of choosing something would power the machine
 // off with the second press - so the key that confirms is deliberately not the
-// key that got here, and it is on the screen beside the question.
+// key that got here, and it is on the screen beside the question. Space says
+// yes as well, and only because y cannot be typed on every keyboard this runs
+// on; the reasoning is beside the code that reads them.
 //
 // Not Power.qml: a file is a QML type, and a name that generic is one to
 // collide with. ActionPalette.qml carries the same scar - QtQuick has a Palette
@@ -130,6 +132,18 @@ PanelWindow {
         // takes it away rather than leaving it over somebody else's.
         menu.failed = "";
         menu.index = (menu.index + by + n) % n;
+    }
+
+    // A digit goes to that row and stops there. It is a way of moving and not a
+    // way of running: choose() runs a row outright when it has nothing to
+    // confirm, so a digit wired to it made `1` lock the screen and `3` suspend
+    // the machine from one press - on the one surface built around no single
+    // keypress ending anything.
+    function moveTo(i) {
+        if (i < 0 || i >= menu.rows.length || menu.asking !== "")
+            return;
+        menu.failed = "";
+        menu.index = i;
     }
 
     // Choosing a row: the ones that end something ask first, the rest go.
@@ -247,7 +261,20 @@ PanelWindow {
                 // way round a question about a machine going off has to
                 // default. Enter is not the one, on purpose: it is the key that
                 // got here.
-                if (event.text === "y" || event.text === "Y")
+                //
+                // Two keys, then, and space is the second for a reason. Matched
+                // on event.key rather than on the letter, but that is only half
+                // an answer: Qt goes looking through the other keyboard layouts
+                // for a Latin keysym only while Control is down
+                // (QXkbCommon::keysymToQtKey), so with a Cyrillic layout
+                // active this key is Н and its text is "н", and a surface with
+                // no second way could not be said yes to at all. A host's
+                // layout is its own (local.kdl) and this session sets none, so
+                // that is a machine somebody has. Space has no layout anywhere
+                // - xkb gives the space bar XK_space in every one of them - and
+                // it is not a key anybody arrives here on, since what got here
+                // was Enter or a click.
+                if (event.key === Qt.Key_Y || event.key === Qt.Key_Space)
                     menu.confirm();
                 else
                     menu.backOut();
@@ -271,13 +298,19 @@ PanelWindow {
             default:
                 // j and k for a hand on home row, and a digit for the row in
                 // that position - the same three ways the picker is driven,
-                // because this is the same kind of list.
-                if (event.text === "j")
+                // because this is the same kind of list. All three move; none
+                // of them runs anything, which is Enter's job alone.
+                //
+                // By key and not by text, for the reason the y above is: with a
+                // non-Latin layout active the letters these keys produce are
+                // not j and k, and a list drivable only from the arrow keys is
+                // half a list.
+                if (event.key === Qt.Key_J)
                     menu.step(1);
-                else if (event.text === "k")
+                else if (event.key === Qt.Key_K)
                     menu.step(-1);
-                else if (event.text >= "1" && event.text <= "9")
-                    menu.choose(parseInt(event.text, 10) - 1);
+                else if (event.key >= Qt.Key_1 && event.key <= Qt.Key_9)
+                    menu.moveTo(event.key - Qt.Key_1);
                 else {
                     return;
                 }
@@ -416,9 +449,9 @@ PanelWindow {
             text: {
                 if (menu.asking !== "") {
                     const r = menu.asked;
-                    return "y " + ((r && r.label) ? r.label : menu.asking) + "    any other key backs out";
+                    return "y or space " + ((r && r.label) ? r.label : menu.asking) + "    any other key backs out";
                 }
-                return "1-5 pick    j k move    enter choose    esc close";
+                return "1-5 j k move    enter choose    esc close";
             }
             color: menu.asking !== "" ? "#e5a23d" : "#7a7f8a"
             font.pixelSize: 11

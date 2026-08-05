@@ -497,13 +497,19 @@ show up in use.
   be one, is a question for a broken machine rather than for an argument here.
 - **The power menu**: `Mod+Shift+x`. Five rows - lock, log out, suspend, reboot,
   power off - with `j`/`k`, the arrows or a digit to move, Enter to choose and
-  Escape to close. The three that end something ask a second time and put what
-  is about to be lost under the question: the windows that close, the arrivals
-  that exist only in the daemon's memory, anybody else logged in. **`y` confirms
-  and every other key backs out**; Enter deliberately does not, because Enter is
-  the key that got you there and a second press in the rhythm of choosing would
-  power the machine off. Whether that is the right key is a thing for fingers
-  rather than for an argument.
+  Escape to close. A digit moves to that row and stops there rather than running
+  it, which is why `1` does not lock the screen from under you. The three that
+  end something ask a second time and put what is about to be lost under the
+  question: the windows that close, the arrivals the queue never got, anybody
+  else logged in. **`y` or the space bar confirms and every other key backs
+  out**; Enter deliberately does not, because Enter is the key that got you
+  there and a second press in the rhythm of choosing would power the machine
+  off. Space is there because `y` is not on every keyboard: the keys are read by
+  keycode, and Qt only goes looking through your other layouts for a Latin one
+  while Control is held, so with a Cyrillic or Greek layout active nothing else
+  on the surface can say yes. Try it with your second layout on if you keep one.
+  Whether those are the right keys is a thing for fingers rather than for an
+  argument.
   - **The lock row and `Mod+Ctrl+semicolon` lock the same way**, because both
     run whatever `zde.apps.lock` names. One of them working and the other not is
     the report.
@@ -526,15 +532,41 @@ show up in use.
     ```
 
     The suspend row should start asking first, naming that inhibitor and the
-    reason it gave, and `y` should bring logind's refusal back onto the surface.
-    A machine that suspends anyway is fine and worth noting, since it means
-    polkit let it past. A surface that closes with nothing happening is the
-    exact failure this menu is arranged around, and it is the thing to report.
-  - **Somebody else logged in.** Log in as a second user on Ctrl+Alt+F3 and open
-    the menu: reboot and power off should say so before anything is pressed.
-    Confirm one and read what comes back - logind wants an administrator's
-    password to end a second person's session, nothing here can ask for one, so
-    it should refuse in words.
+    reason it gave, and confirming should bring the refusal back onto the
+    surface still naming it. That refusal is logind's own and not polkit's: on
+    systemd 257 and later a block lock ends the call inside
+    `verify_shutdown_creds` before polkit is asked about the ignore-inhibit
+    action at all. 258 says so as `org.freedesktop.login1.BlockedByInhibitorLock`
+    and "Operation denied due to active block inhibitor"; 257 said the same
+    thing as a plain access-denied. Neither names the program or the reason, and
+    zde puts those back from `ListInhibitors`. `systemd-inhibit` takes a
+    `--mode=block` lock unless told otherwise and that is the kind that is
+    enforced; `--mode=block-weak` is deliberately not enforced against the user
+    who owns it, so a suspend that happens anyway is what to expect from *that*
+    one and is not this check. Here, a machine that suspends anyway is the
+    report, and so is a surface that closes with nothing happening - which is
+    the exact failure this menu is arranged around.
+  - **Somebody else logged in.** Log in as a second user on Ctrl+Alt+F3, come
+    back to your own vt, and open the menu: reboot and power off should name
+    them under the row, before anything is pressed. Read that line and press
+    Escape. **Do not confirm it.** systemd's own policy gives `allow_active` the
+    value `yes` for `org.freedesktop.login1.reboot-multiple-sessions` and for
+    `power-off-multiple-sessions`
+    (`/usr/share/polkit-1/actions/org.freedesktop.login1.policy`), so the
+    session in front of the screen is allowed both outright - a yes here reboots
+    the machine and takes the other person's afternoon with it. The warning is
+    the check. The refusal is not one to go looking for on a desktop: it belongs
+    to a session polkit does not call active, which is a second one on another
+    vt while somebody else's is in front.
+  - **A greeter is not a person.** On a machine with a display manager, the
+    greeter is a session of another uid on another vt, and it must not appear on
+    those rows. logind counts only the classes `user`, `user-early`,
+    `user-light` and `user-early-light` when it decides whether a reboot needs
+    the second authorisation (`have_multiple_sessions`,
+    `src/login/logind-dbus.c`), and zde reads the class off `ListSessionsEx` so
+    that it counts the same ones. `loginctl list-sessions` prints the classes
+    beside the ids. A menu that says gdm or greetd is logged in here as well is
+    the report.
   - **With no shell**, which is a session somebody very much wants to log out
     of: `systemctl --user stop zde-bar`, then `zde system power` prints the five
     rows with what each costs underneath, and `zde system power suspend` runs

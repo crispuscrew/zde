@@ -26,10 +26,11 @@ with nothing on a screen; and the power menu (`Mod+Shift+x`), which belongs
 here rather than in the laptop profile it was filed under - logging out of this
 desktop meant opening a terminal, which is not a thing to ship a phase on. It
 is lock, log out, suspend, reboot and power off, the three that end something
-asking first and saying what is about to be lost; the lock is the same locker
-`zde system lock` runs, and the rest is logind's, so a refusal - an inhibitor
-holding sleep, a second person logged in - comes back as a refusal rather than
-as a key that did nothing.
+asking first and saying what is about to be lost - the windows that close, the
+arrivals the queue never got, anybody else logged in. The lock is the same
+locker `zde system lock` runs, and the rest is logind's, so a refusal - an
+inhibitor holding sleep, a polkit that will not take the verb from this session
+- comes back as a refusal in words rather than as a key that did nothing.
 
 Where those lines stop short is what is left of the phase, and none of it
 blocks 0.2:
