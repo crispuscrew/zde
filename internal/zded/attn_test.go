@@ -733,16 +733,112 @@ func TestAnArrivalWithNoDeskDrawsNothingOnlyWhereADeskIsPrivate(t *testing.T) {
 	}
 }
 
-// held is a listener that takes the first line and does not finish taking it
-// until the test says so. A shell mid-frame, or one that has stopped drawing and
-// not closed its socket.
-type held struct {
+// A second manifest naming a desk that is already declared is not how the
+// first one's `private: true` disappears.
+//
+// The manifests are keyed on the name inside the file and the first in
+// directory order wins, with the loser reported as a problem
+// (internal/manifest, LoadDir). So a copy of a private desk's manifest that
+// leaves the flag out decides the question by alphabetical order. Both files
+// are refused instead: the one that lost could have been the private
+// declaration, and nothing here can tell which.
+func TestADuplicateManifestDoesNotPutAPrivateDesksCardOnTheScreen(t *testing.T) {
+	s, rec := popupServer(t, "clinic.DP-1.mail", map[string]string{
+		// Sorts first, so it is the one LoadDir keeps: this is the copy
+		// winning, which is the case that has to be refused.
+		"aa-clinic": "name: clinic\nmonitors: { DP-1: { workspaces: [mail] } }\n",
+		"clinic":    "name: clinic\nprivate: true\nmonitors: { DP-1: { workspaces: [mail] } }\n",
+		"work":      "name: work\nmonitors: { DP-1: { workspaces: [code] } }\n",
+	})
+	if _, err := s.Arrived(attn.Notification{From: "clinic", Text: "your results are in"}); err != nil {
+		t.Fatal(err)
+	}
+	// Then take the copy away and send one that must draw. It proves the first
+	// was withheld rather than the popup path being broken - the pump writes in
+	// the order things arrived, so a card for the second is a card the first
+	// never got - and taking the copy away is what makes the machine ordinary
+	// again, since while it is there nothing on it can be placed with
+	// confidence and nothing is drawn at all.
+	if err := os.Remove(filepath.Join(string(s.desks.(manifest.Dir)), "aa-clinic.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	s.niri.(*fakeCompositor).focused = "work.DP-1.code"
+	if _, err := s.Arrived(attn.Notification{From: "ci", Text: "the build failed"}); err != nil {
+		t.Fatal(err)
+	}
+	got := waitForEvents(t, rec, EventAttnPopup, 1)
+	if len(got) != 1 {
+		t.Fatalf("%d cards were drawn, want only the one from the open desk", len(got))
+	}
+	if drawn := got[0].Notifications[0]; drawn.Text != "the build failed" {
+		t.Errorf("the card said %q: a duplicate manifest that says nothing about privacy was enough to put a private desk's notification on the screen", drawn.Text)
+	}
+}
+
+// The regulars are reachable from every desk and cannot be declared by any
+// manifest (internal/manifest, check), so they are the one name that is
+// certainly not the private desk. Answering them with the doubt owed to an
+// undeclared desk cost every card on them - most of a day, for somebody who
+// works out of the regulars - on any machine that declares one private desk
+// anywhere.
+func TestTheRegularsStillDrawCardsWhereADeskIsPrivate(t *testing.T) {
+	s, rec := popupServer(t, "regulars.DP-1.2", map[string]string{
+		"work":   "name: work\nmonitors: { DP-1: { workspaces: [code] } }\n",
+		"clinic": "name: clinic\nprivate: true\nmonitors: { DP-1: { workspaces: [mail] } }\n",
+	})
+	if _, err := s.Arrived(attn.Notification{From: "ci", Text: "the build failed"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitForEvents(t, rec, EventAttnPopup, 1); len(got) != 1 {
+		t.Errorf("%d cards were drawn for an arrival on the regulars, and no manifest can declare the regulars private", len(got))
+	}
+	if st := s.status(); st.Unplaced != 0 {
+		t.Errorf("status counts %d unplaced arrivals, and the regulars are a desk zde named itself", st.Unplaced)
+	}
+}
+
+// What the fail-closed answer costs is counted and said. Otherwise it is a
+// session that stops drawing cards on a machine where nothing is wrong with the
+// manifests and nothing appears in any log: the daemon refusing to show things
+// looks exactly like the popup not working.
+func TestACardNobodyCanPlaceIsCountedWhereADeskIsPrivate(t *testing.T) {
+	guarded, _ := popupServer(t, "", map[string]string{
+		"work":   "name: work\nmonitors: { DP-1: { workspaces: [code] } }\n",
+		"clinic": "name: clinic\nprivate: true\nmonitors: { DP-1: { workspaces: [mail] } }\n",
+	})
+	guarded.niri.(*fakeCompositor).err = errors.New("no compositor")
+	if _, err := guarded.Arrived(attn.Notification{From: "app", Text: "could be anything"}); err != nil {
+		t.Fatal(err)
+	}
+	if st := guarded.status(); st.Unplaced != 1 {
+		t.Errorf("status counts %d unplaced arrivals, want the one it drew no card for", st.Unplaced)
+	}
+
+	// And on the ordinary machine there is nothing to count: the same arrival
+	// draws its card, so nothing was refused and saying otherwise would send
+	// somebody looking for a problem they do not have.
+	open, _ := popupServer(t, "", map[string]string{
+		"work": "name: work\nmonitors: { DP-1: { workspaces: [code] } }\n",
+	})
+	open.niri.(*fakeCompositor).err = errors.New("no compositor")
+	if _, err := open.Arrived(attn.Notification{From: "app", Text: "could be anything"}); err != nil {
+		t.Fatal(err)
+	}
+	if st := open.status(); st.Unplaced != 0 {
+		t.Errorf("status counts %d unplaced arrivals on a machine where no desk is private", st.Unplaced)
+	}
+}
+
+// stuckListener takes the first line and does not finish taking it until the
+// test says so. A shell mid-frame, or one that has stopped drawing and not
+// closed its socket.
+type stuckListener struct {
 	mu      sync.Mutex
 	lines   int
 	release chan struct{}
 }
 
-func (h *held) Write(p []byte) (int, error) {
+func (h *stuckListener) Write(p []byte) (int, error) {
 	h.mu.Lock()
 	first := h.lines == 0
 	h.lines++
@@ -753,7 +849,7 @@ func (h *held) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (h *held) count() int {
+func (h *stuckListener) count() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.lines
@@ -768,15 +864,25 @@ func (h *held) count() int {
 // them is in the history, and what the shell was ever offered stops at the
 // backlog. A synchronous popup path fails this by hanging on the first arrival,
 // which is the failure worth being unable to miss.
+//
+// The flood is spread over several senders on purpose. What this test is about
+// is the popup path costing a record, and a history that bounds what any one
+// name may hold would otherwise answer for it: 64 arrivals under one name is a
+// measurement of that bound and not of this one, and the test would fail the
+// day the bound changed while nothing was wrong with the path it names.
 func TestAFloodOfArrivalsNeverWaitsForTheShellAndLosesNoRecord(t *testing.T) {
 	s, _, _ := queueTestServer(t, "vshop.DP-1.code")
 	defer s.Close()
-	h := &held{release: make(chan struct{})}
+	h := &stuckListener{release: make(chan struct{})}
 	s.listen(&sink{w: h})
 
+	// Eight each from eight senders: enough of both to be a flood, and few
+	// enough of either that nothing the history bounds is being tested here.
+	const senders = 8
 	const flood = popupBacklog * 4
 	for i := 0; i < flood; i++ {
-		if _, err := s.Arrived(attn.Notification{From: "ci", Text: "build " + strconv.Itoa(i)}); err != nil {
+		from := "bot-" + strconv.Itoa(i%senders)
+		if _, err := s.Arrived(attn.Notification{From: from, Text: "build " + strconv.Itoa(i)}); err != nil {
 			t.Fatalf("arrival %d was lost: %v", i, err)
 		}
 	}

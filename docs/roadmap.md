@@ -27,10 +27,12 @@ The popup has landed since, and it is what turns the "actions" capability from a
 claim about reach into one about immediacy as well. A notification appears where
 you are looking, with the summary, the body and every button its sender
 declared, and takes itself away after a few seconds. It takes no keyboard when
-it arrives: five layer surfaces already share one exclusive grab and it took a
-fix to keep them to one at a time, so a sixth that grabbed on every arrival -
-at the choice of any app on the session bus - would be the worst offender on the
-machine. Its buttons are clickable the whole time it is up, and `Mod+Ctrl+n` is
+it arrives: every other surface the shell draws over the bar shares one
+exclusive grab, and it took a fix to keep them to one at a time, so one more
+that grabbed on every arrival - at the choice of any app on the session bus -
+would be the worst offender on the machine. The number of them is deliberately
+not written here: it is a count several branches are each adding to, and a
+sentence that has to be renumbered is a sentence that ends up wrong. Its buttons are clickable the whole time it is up, and `Mod+Ctrl+n` is
 the one deliberate key that hands it the keyboard, which it then holds only
 while a finger is on it. Two things decide whether a card appears at all, and
 they are kept apart because they are different people's decisions: the session's
@@ -164,7 +166,7 @@ turned "when someone has hardware" into something anyone can do this evening.
   to try is a nav key the instant after each one closes
   ([`verify.md`](verify.md), a day of work). Not settled here: driving a real
   key into a nested compositor did not work well enough to trust the answer.
-  The notification popup is a sixth surface and the one that answers this
+  The notification popup is one more surface and the one that answers this
   differently: it takes no keyboard at all until `Mod+Ctrl+n`, and then gives it
   back after ten seconds without a keypress. So the thing to try on that one is
   the opposite - notifications arriving while you type, and whether a single

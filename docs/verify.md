@@ -301,9 +301,9 @@ ones are the point of zded holding the bus name.
     ```
 
     `"keyboard_interactivity":"None"` is right. Anything else is the report, and
-    it is the most serious one on this page: five surfaces already share one
-    exclusive grab, and a sixth taking it at the choice of any app on the
-    session bus is a way to steal a keystroke.
+    it is the most serious one on this page: every other surface over the bar
+    already shares one exclusive grab, and one more taking it at the choice of
+    any app on the session bus is a way to steal a keystroke.
   - **The buttons work with the mouse, always.** Click one and the sending app
     should see that action.
   - **`Mod+Ctrl+n` hands it the keyboard**, and only then: the card you are on
@@ -324,10 +324,12 @@ ones are the point of zded holding the bus name.
     for i in $(seq 100); do notify-send -a curl "downloading $i%"; done
     ```
 
-    And `zde system notif-center` afterwards holding as many of the two hundred
-    as its ring does, because the screen is the only thing either popup bound is
-    about. Two hundred is the ring's whole length, so this is also the way to
-    watch the oldest fall off the end of it.
+    And `zde system notif-center` afterwards holding as many of them as its own
+    bound allows, because the screen is the only thing either popup bound is
+    about. Two hundred of anything is more than the history keeps, so this is
+    also the way to watch the oldest fall off the end of it. What that bound is
+    is written in one place and deliberately not here (`internal/attn`), because
+    it is a number under change.
   - **The modes as display.** quiet shows no card at all, focus shows only what
     the sender called urgent, work shows everything - and after each of the
     three, `Mod+n` has the lot. A mode that changed what is in the centre is the
@@ -419,8 +421,8 @@ show up in use.
   immediately: if the first press goes nowhere, that is the thing, and it wants
   `keyboardFocus` on demand rather than exclusive. One surface behaving
   differently from the rest is worth as much as all of them behaving badly.
-  The notification popup is the sixth surface and the deliberate exception: it
-  never takes the keyboard until `Mod+Ctrl+n`, so what to try on that one is a
+  The notification popup is the deliberate exception to all of it: it never
+  takes the keyboard until `Mod+Ctrl+n`, so what to try on that one is a
   notification arriving in the middle of a sentence you are typing (section 5).
 - **Whether the picker is what you want from `Mod+Tab`.** It has no text field
   on purpose - arrows, `j`/`k`, or a digit - and the palette next to it does

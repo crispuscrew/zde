@@ -102,9 +102,11 @@ const EventAttnPopup = "attn.popup"
 // is the only thing that ever does.
 //
 // A popup appears without asking for the keyboard, which is the whole design.
-// Five layer surfaces already take an exclusive grab while they are up, niri
-// hands that grab to the oldest of them, and it took a fix to keep them to one
-// at a time (shell/shell.qml, present). A surface that grabbed on every arrival
+// Every other surface the shell draws over the bar takes an exclusive grab while
+// it is up, niri hands that grab to the oldest of them, and it took a fix to
+// keep them to one at a time (shell/shell.qml, present). How many of them there
+// are is left uncounted on purpose: it is a number several branches are each
+// adding to, and what matters here is that this one is not among them. A surface that grabbed on every arrival
 // would be taking the keyboard out of whatever you were typing into, several
 // times an hour, unasked - the worst offender on the machine. So a popup's
 // buttons are clickable whenever it is up, and reachable from the keyboard only

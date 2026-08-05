@@ -321,6 +321,13 @@ func status() error {
 	if st.Skipped > 0 {
 		fmt.Printf("journal    %d entries could not be read\n", st.Skipped)
 	}
+	// The cost of a fail-closed answer, said rather than left to be discovered
+	// as a session that stops drawing cards. It is only ever non-zero on a
+	// machine that declares a private desk, and it says which of the two things
+	// to fix: a desk nothing has named yet, or a compositor nothing can read.
+	if st.Unplaced > 0 {
+		fmt.Printf("unplaced   %d arrivals drew no card: no desk could be named for them, and one here is private\n", st.Unplaced)
+	}
 	// The desks that are not there. Printed last and one per line, because this
 	// is the answer to "why is my desk gone", and a count would send someone
 	// looking through the directory for which one.

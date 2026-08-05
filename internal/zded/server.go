@@ -153,6 +153,12 @@ type Status struct {
 	// carries on with the manifests that do work, and says here which ones it
 	// gave up on.
 	BadManifests []string `json:"badManifests,omitempty"`
+	// Unplaced is how many arrivals drew no card only because nothing could say
+	// which desk they came in on while a desk here is declared private. It is
+	// the fail-closed answer being loud about what it costs: on that machine the
+	// alternative is a session that quietly stops showing anything and never
+	// says why (internal/zded, privateArrival).
+	Unplaced int `json:"unplaced,omitempty"`
 }
 
 // DeskApp is one app a desk declares (docs/model.md, section 5), as the two
@@ -231,6 +237,10 @@ type Server struct {
 	mu       sync.Mutex
 	ln       net.Listener
 	problems []string
+	// unplaced counts the arrivals this session drew no card for only because
+	// nothing could say which desk they were on, on a machine that declares a
+	// private desk (attn.go, couldNotPlace).
+	unplaced uint64
 	subs     map[*sink]struct{}
 	waiting  map[string]chan struct{}
 	tokens   uint64
@@ -1182,6 +1192,7 @@ func (s *Server) Arrived(n attn.Notification) (uint64, error) {
 	if s.jrn == nil {
 		return 0, errors.New("no journal, so nothing can be kept")
 	}
+	on := s.whereWeAre()
 	rec := attn.Record{
 		From:    n.From,
 		Text:    n.Text,
@@ -1190,7 +1201,14 @@ func (s *Server) Arrived(n attn.Notification) (uint64, error) {
 		Actions: n.Actions,
 		Extra:   n.Extra,
 		At:      time.Now(),
-		Desk:    s.whereWeAre(),
+		Desk:    on,
+		// Decided here, once, while the desk it arrived on is known. The popup
+		// path used to ask again for itself, which was a second read and parse
+		// of every manifest on the machine for every notification - on the far
+		// end of a Notify the sending app is blocked on - and two reads can
+		// disagree if a manifest is saved between them (attn.go, maybePop and
+		// privateArrival).
+		Private: s.privateArrival(on),
 	}
 	// One reading of the mode for both decisions. Asked twice it could answer
 	// twice - `zde attn quiet` lands between them - and a notification that was
@@ -1736,6 +1754,7 @@ func (s *Server) status() Status {
 	st.Zinc = err == nil
 	s.mu.Lock()
 	st.BadManifests = append([]string(nil), s.problems...)
+	st.Unplaced = int(s.unplaced)
 	s.mu.Unlock()
 	return st
 }

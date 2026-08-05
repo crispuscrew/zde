@@ -1,10 +1,12 @@
 package zded
 
 import (
+	"log"
 	"strconv"
 	"time"
 
 	"github.com/crispuscrew/zde/internal/attn"
+	"github.com/crispuscrew/zde/internal/desk"
 )
 
 // The attn half of the daemon: the verbs that read and change the mode, and the
@@ -93,7 +95,14 @@ func (s *Server) maybePop(rec attn.Record, mode attn.Mode) {
 	// notification arriving while somebody stood on a desk they had declared
 	// private put its sender, its summary and its body on the screen for five
 	// seconds, which is the one thing that desk exists to prevent.
-	if s.privateArrival(rec.Desk) {
+	//
+	// Read off the record rather than asked again here. The answer was decided
+	// when the arrival was placed, which is where the desk is known (Arrived),
+	// and asking a second time is a directory of manifests read and parsed twice
+	// per notification, on the far end of a D-Bus call the sending app is
+	// blocked on - for two answers that could disagree if a manifest were saved
+	// between them.
+	if rec.Private {
 		return
 	}
 	// Which screen, asked here rather than in the pump. The pump runs on its own
@@ -130,36 +139,87 @@ func (s *Server) maybePop(rec attn.Record, mode attn.Mode) {
 // feat/attn-persist (#78), where "lying around" means a file that outlives the
 // session. It is deliberately one function and not two, because two ways of
 // asking whether a desk is private is two places for the answer to be wrong;
-// whichever of the two branches lands second should keep one copy of this.
+// whichever of the two branches lands second should keep one copy of this, and
+// the two copies are byte for byte the same so that doing so is mechanical.
 //
-// Fail closed, which is principle 9, and it decides the three cases that are
-// not a plain yes or no:
+// It is called once per arrival, from Arrived, and the answer travels on the
+// record (internal/attn, Record.Private). Every path that would put a
+// notification somewhere other than this session's memory reads that field
+// rather than asking here again.
 //
+// Fail closed, which is principle 9, and it decides the cases that are not a
+// plain yes or no:
+//
+//   - the regulars are the one band no manifest can declare (internal/manifest,
+//     check), so they are the one name that cannot be a private desk, and they
+//     are answered before any of the doubt below. Without that they counted as
+//     an undeclared desk - and they are reachable from every desk, so one
+//     private desk anywhere on the machine turned the cards off for a band
+//     somebody can spend the day in.
 //   - the manifests cannot be read at all: we cannot tell which desk is
-//     private, so nothing leaves the daemon.
+//     private, so no card is drawn.
+//   - one of them would not parse, or two of them name the same desk: the file
+//     that lost could be the private declaration of any desk here, this one
+//     included, so no card is drawn while either is true. Asked before the desk
+//     is looked up and not after, which is the difference between a rule and a
+//     comment: LoadDir keeps the first of two manifests naming one desk and
+//     calls the second a problem, so a copied manifest that leaves `private:`
+//     out was otherwise all it took to un-declare a private desk. `zde status`
+//     names the file (see rememberProblems).
 //   - the desk is not declared, or nothing could say which desk it was (niri
 //     unreadable, or a session where nothing is named yet): then it could have
 //     been the private one, so it is refused whenever this machine declares a
 //     private desk at all. On the ordinary machine, which declares none, there
-//     is nothing to protect and it goes ahead.
-//   - one of the manifests would not parse: the broken file could be the
-//     private desk's, and a typo must not be how a private desk stops being
-//     one. `zde status` names the file (see rememberProblems).
+//     is nothing to protect and the card is drawn. That last doubt is counted
+//     and said, because it is otherwise a session that quietly stops showing
+//     anything (see couldNotPlace).
 func (s *Server) privateArrival(deskName string) bool {
+	if deskName == desk.Regulars {
+		return false
+	}
 	all, problems, err := s.desks.All()
 	if err != nil {
 		return true
 	}
 	s.rememberProblems(problems)
+	if len(problems) > 0 {
+		return true
+	}
 	if d, declared := all[deskName]; declared && deskName != "" {
 		return d.Private
 	}
 	for _, d := range all {
 		if d.Private {
+			s.couldNotPlace()
 			return true
 		}
 	}
-	return len(problems) > 0
+	return false
+}
+
+// couldNotPlace records one arrival that was refused only because nothing could
+// say which desk it was on, and says so the first time it happens.
+//
+// The refusal above is right and it is also invisible. On a machine that
+// declares a private desk, a session where nothing has been named yet - or a
+// compositor that cannot be read - answers every arrival the same way, and what
+// a person sees is a feature that does not work, with no reason given anywhere.
+// One line in `journalctl --user -u zded` at the moment it first happens, and a
+// running count in `zde status`, are what make that a thing somebody can find
+// rather than a thing they have to guess.
+//
+// Counted rather than logged every time: notifications arrive at machine speed,
+// and a hundred a minute would be a hundred lines a minute. The first line says
+// what is happening; the count says how much of the session it has cost.
+func (s *Server) couldNotPlace() {
+	s.mu.Lock()
+	first := s.unplaced == 0
+	s.unplaced++
+	s.mu.Unlock()
+	if first {
+		log.Print("zded: nothing can say which desk these are arriving on and a desk here is declared private, " +
+			"so they are being kept in memory only - `zde status` counts them")
+	}
 }
 
 // pop offers one arrival to whatever is drawing popups, and never waits for it.

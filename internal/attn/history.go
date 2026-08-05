@@ -70,6 +70,21 @@ type Record struct {
 	// can say some are out of its reach rather than showing a list that quietly
 	// stops (see actionsMax).
 	Extra int `json:"moreActions,omitempty"`
+	// Private says this arrived on a desk whose manifest declares private, and
+	// it is what every path that would put a notification anywhere but this
+	// session's own memory has to check first (docs/vision.md, section 3 -
+	// private desks are history only).
+	//
+	// Decided once, where the desk it arrived on is known (internal/zded,
+	// Arrived), and carried rather than asked again. The manifests are a
+	// directory of files: asking them again on every path that writes or shows
+	// a record is a directory read and a YAML parse per notification, on the
+	// far end of a D-Bus call the sending app is blocked on - and two paths
+	// that asked separately could get two answers about one arrival.
+	//
+	// Never serialised, in either direction. A surface has no use for it, and a
+	// file that could carry it would be a file that could clear it.
+	Private bool `json:"-"`
 }
 
 // Allows reports whether this notification declared that action.
