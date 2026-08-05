@@ -34,18 +34,30 @@ blocks 0.2:
   rest counted and said rather than dropped quietly - but the offer is behind
   `Mod+n` rather than in front of you. It is a claim about reach and not about
   immediacy, and nothing in 0.1 makes it both.
-- history survives the daemon in part. The ring of 200 is memory, and the newest
-  40 of it are written to a file of their own beside the journal - bodies cut to
-  400 characters, 0600, rewritten every two minutes and on the way out - so
-  "what did I miss" answers across a reboot instead of starting every login
-  blank. Not the journal, which fsyncs per line and would grow without bound for
-  the sake of bodies (internal/attn, HistoryMax). What a restart still costs is
-  the rest of the ring, the rest of every long body, and the actions: nothing
+- history survives the daemon in part. It is a ring of 30 per sender in memory,
+  for at most 12 named senders plus the nameless ring a person's own entries
+  use, and the newest 40 of it - across all of them, not 40 from each - are
+  written to a file of their own beside the journal, bodies cut to 400
+  characters, 0600, rewritten every two minutes and on the way out. So "what did
+  I miss" answers across a reboot instead of starting every login blank. A file
+  of its own rather than the journal, which is appended to on every arrival and
+  rewritten only when a daemon starts, so whatever goes in it is carried until
+  the next login (internal/attn, PerSenderMax). What a restart still costs is
+  the rest of every ring, the rest of every long body, and the actions: nothing
   can be pressed on a row whose app was on the last session's bus, and the
   center says so rather than offering buttons that go nowhere. What arrived on a
   desk declared `private: true` never reaches that file - which is a claim about
   that file and not about the disk, because the journal still records the body
   of anything the mode queued.
+- one loud app no longer answers the question for everybody. A ring each means
+  a download posting a hundred progress updates spends its own thirty and
+  nobody else's, and a notification carrying `replaces_id` is written over the
+  record it supersedes instead of landing beside it, so that download is one
+  row. What is not fixed is a sender that varies the name it claims: names are
+  bounded too, at 12, with the least recently used ring dropped whole, but an
+  app that mints twelve names can still push every real sender out. Only
+  attribution by channel closes that ([`vision.md`](vision.md), principle 6 and
+  ask 4), and nothing in zde reads `zcr bus` yet.
 - ask has no tier until a machine names one, and the panel does not carry the
   previous turns as context.
 - nothing is sandboxed until somebody defines an app. Layer 2 is provisioned by

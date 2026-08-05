@@ -13,12 +13,16 @@ import (
 
 // filled is a history with n arrivals in it, numbered from one, so a test can
 // say what it expects to find at either end of the bound.
+//
+// Spread over senders, because the history is a ring each now: one sender's
+// worth of arrivals would be measuring PerSenderMax wherever the test meant to
+// measure the whole of it (history.go).
 func filled(n int) *History {
 	var h History
 	for i := 1; i <= n; i++ {
 		h.Add(Record{
 			ID:   uint64(i),
-			From: "app",
+			From: sender(i),
 			Text: "number " + strconv.Itoa(i),
 			Body: "the body of number " + strconv.Itoa(i),
 			At:   time.Now(),
@@ -26,6 +30,9 @@ func filled(n int) *History {
 	}
 	return &h
 }
+
+// sender is which of the bounded number of senders arrival i came from.
+func sender(i int) string { return "app " + strconv.Itoa(i%SendersMax) }
 
 // The question the whole file answers: a person logs out, logs in, presses
 // Mod+n, and what was happening before the restart is still there.
@@ -52,7 +59,7 @@ func TestWhatArrivedBeforeARestartIsStillThereAfterIt(t *testing.T) {
 	if seen[0].ID != 3 || seen[2].ID != 1 {
 		t.Errorf("it reads %d, %d, %d: not newest first", seen[0].ID, seen[1].ID, seen[2].ID)
 	}
-	if seen[0].Text != "number 3" || seen[0].Body != "the body of number 3" || seen[0].From != "app" {
+	if seen[0].Text != "number 3" || seen[0].Body != "the body of number 3" || seen[0].From != sender(3) {
 		t.Errorf("record = %+v, want what was sent, not a headline", seen[0])
 	}
 	if !seen[0].Restored {
@@ -60,22 +67,58 @@ func TestWhatArrivedBeforeARestartIsStillThereAfterIt(t *testing.T) {
 	}
 }
 
-// Only the newest few. The ring is two hundred because that is the span a
-// session's "what did I miss" asks about; the file is snapshotMax because
-// across a restart the question is what was happening when it ended, and
-// everything before that is archaeology somebody has to scroll past.
-func TestASnapshotKeepsOnlyTheNewestFewOfTheRing(t *testing.T) {
-	recs := filled(HistoryMax).Snapshot()
+// Only the newest few. The rings hold a day or two of every sender because
+// that is the span a session's "what did I miss" asks about; the file is
+// snapshotMax because across a restart the question is what was happening when
+// it ended, and everything before that is archaeology somebody has to scroll
+// past.
+func TestASnapshotKeepsOnlyTheNewestFewOfTheHistory(t *testing.T) {
+	full := SendersMax * PerSenderMax
+	recs := filled(full).Snapshot()
 	if len(recs) != snapshotMax {
 		t.Fatalf("the snapshot holds %d records, want the bound of %d", len(recs), snapshotMax)
 	}
-	// Oldest first in the file, which is the order the ring is in: Restore puts
-	// them back without reversing anything.
-	if recs[0].ID != uint64(HistoryMax-snapshotMax+1) {
-		t.Errorf("the oldest kept is %d, want %d: it should be the newest snapshotMax and no more", recs[0].ID, HistoryMax-snapshotMax+1)
+	// Oldest first in the file, which is the order the history is read back in:
+	// Restore puts them back without reversing anything.
+	if recs[0].ID != uint64(full-snapshotMax+1) {
+		t.Errorf("the oldest kept is %d, want %d: it should be the newest snapshotMax and no more", recs[0].ID, full-snapshotMax+1)
 	}
-	if recs[len(recs)-1].ID != HistoryMax {
+	if recs[len(recs)-1].ID != uint64(full) {
 		t.Errorf("the newest kept is %d, want the last one added", recs[len(recs)-1].ID)
+	}
+}
+
+// The file answers the same question the center does, so it is filled the same
+// way the center is read: the newest across every sender, and not the newest
+// of one.
+//
+// The trap is a snapshot that walked the rings instead of the history. It
+// would come back the right length and hold one app's whole morning, which is
+// the thing a per-sender history could quietly turn a restart into.
+func TestASnapshotTakesTheNewestAcrossEverySender(t *testing.T) {
+	var h History
+	senders := []string{"mail", "curl", "chat"}
+	id := uint64(0)
+	for round := 0; round < PerSenderMax; round++ {
+		for _, from := range senders {
+			id++
+			h.Add(Record{ID: id, From: from, Text: "number " + strconv.FormatUint(id, 10), At: time.Now()})
+		}
+	}
+
+	recs := h.Snapshot()
+	if len(recs) != snapshotMax {
+		t.Fatalf("the snapshot holds %d records, want the bound of %d", len(recs), snapshotMax)
+	}
+	if recs[0].ID != id-snapshotMax+1 || recs[len(recs)-1].ID != id {
+		t.Errorf("the file runs %d to %d, want the newest %d of everything that arrived", recs[0].ID, recs[len(recs)-1].ID, snapshotMax)
+	}
+	written := map[string]bool{}
+	for _, r := range recs {
+		written[r.From] = true
+	}
+	if len(written) != len(senders) {
+		t.Errorf("the file holds %d senders, want all %d: the newest across them, not one sender's newest", len(written), len(senders))
 	}
 }
 

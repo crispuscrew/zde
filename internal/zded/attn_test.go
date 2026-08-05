@@ -353,7 +353,7 @@ func TestARecordLeavingTheHistoryForgetsItsSender(t *testing.T) {
 	s.Watching(tellTale{ids: &[]uint64{}, forgotten: &forgotten})
 
 	var first uint64
-	for i := 0; i < attn.HistoryMax+2; i++ {
+	for i := 0; i < attn.PerSenderMax+2; i++ {
 		id, err := s.Arrived(attn.Notification{From: "app", Text: "one of many"})
 		if err != nil {
 			t.Fatal(err)
@@ -367,8 +367,116 @@ func TestARecordLeavingTheHistoryForgetsItsSender(t *testing.T) {
 	}
 	// And nothing was forgotten that is still on the list, or the center would
 	// be showing rows the bus can no longer act on.
-	if seen := s.history.Recent(); len(seen) != attn.HistoryMax {
+	if seen := s.history.Recent(); len(seen) != attn.PerSenderMax {
 		t.Errorf("history holds %d, want the bound", len(seen))
+	}
+}
+
+// One download, ninety-nine progress updates, one row.
+//
+// replaces_id is the sender saying this is the same notification with something
+// new to say, so the record is written over rather than added beside. Appending
+// was what let one app answer "what did I miss" for the whole session: a
+// hundred rows of the same download, ninety-nine of them marked done, and
+// everything else pushed off the end behind them.
+func TestOneDownloadIsOneRowOfHistoryHoweverOftenItMoves(t *testing.T) {
+	s, _, _ := queueTestServer(t, "vshop.DP-1.code")
+	if _, err := s.Arrived(attn.Notification{From: "mail", Text: "Ilya: about the invoice"}); err != nil {
+		t.Fatal(err)
+	}
+	id, err := s.Arrived(attn.Notification{From: "curl", Text: "downloading 1%"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 2; i <= 100; i++ {
+		// Closed first and then Arrived, which is the order the bus side does
+		// it in (internal/attn, Notify).
+		if err := s.Closed(id); err != nil {
+			t.Fatal(err)
+		}
+		id, err = s.Arrived(attn.Notification{
+			From:     "curl",
+			Text:     "downloading " + strconv.Itoa(i) + "%",
+			Replaces: id,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	seen := s.history.Recent()
+	if len(seen) != 2 {
+		t.Fatalf("the history holds %d rows after one download and ninety-nine updates of it", len(seen))
+	}
+	if seen[0].ID != id || seen[0].Text != "downloading 100%" {
+		t.Errorf("the newest row is %+v, want the download as it last said it was", seen[0])
+	}
+	if seen[0].Dismissed {
+		t.Error("the row says the download is done, and the update that replaced it says it is not")
+	}
+	if seen[1].Text != "Ilya: about the invoice" {
+		t.Errorf("the row behind it is %+v, want the one the download never touched", seen[1])
+	}
+	// And the queue is what it always was: one item for the download, because
+	// each update finishes the last (internal/attn, Notify). The mail is the
+	// other one.
+	q := s.jrn.State().Queue
+	downloads := 0
+	for _, it := range q {
+		if it.From == "curl" {
+			downloads++
+		}
+	}
+	if len(q) != 2 || downloads != 1 {
+		t.Errorf("queue = %+v, want the mail and one download: a download is one thing waiting", q)
+	}
+}
+
+// A sender leaves the history all at once - its ring goes whole when its name
+// is one too many (internal/attn, SendersMax) - so one arrival can make a
+// ring's worth of notifications unaddressable at a stroke.
+//
+// Every one of those ids has to reach the bus side. A daemon that forgot only
+// the first would keep the rest of that sender's names in the one table with
+// no bound of its own, for the life of the session, which is the leak the
+// answer exists to stop.
+func TestEveryRecordOfAnEvictedSenderIsForgotten(t *testing.T) {
+	s, jrn, _ := queueTestServer(t, "vshop.DP-1.code")
+	if err := jrn.SetMode("quiet"); err != nil {
+		t.Fatal(err)
+	}
+	forgotten := []uint64{}
+	s.Watching(tellTale{ids: &[]uint64{}, forgotten: &forgotten})
+
+	// One sender with three records, and then every other name newer than it.
+	mine := []uint64{}
+	for i := 0; i < 3; i++ {
+		id, err := s.Arrived(attn.Notification{From: "the quiet one", Text: "one of three"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		mine = append(mine, id)
+	}
+	for n := 2; n <= attn.SendersMax; n++ {
+		if _, err := s.Arrived(attn.Notification{From: "app " + strconv.Itoa(n), Text: "hello"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(forgotten) != 0 {
+		t.Fatalf("forgot %v before anything was evicted", forgotten)
+	}
+	// The name too many.
+	if _, err := s.Arrived(attn.Notification{From: "one name too many", Text: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(forgotten) != len(mine) {
+		t.Fatalf("forgot %v, want every id of the ring that went: %v", forgotten, mine)
+	}
+	for i, id := range mine {
+		if forgotten[i] != id {
+			t.Errorf("forgot %v, want %v - the whole ring, oldest first", forgotten, mine)
+			break
+		}
 	}
 }
 
@@ -394,7 +502,7 @@ func TestSettingTheNotifierWhileThingsArriveIsNotARace(t *testing.T) {
 	}
 	// The history full, because what an arrival reads the notifier for is
 	// telling the bus side that a record has fallen off the end of it.
-	for i := 0; i < attn.HistoryMax; i++ {
+	for i := 0; i < attn.PerSenderMax; i++ {
 		if _, err := s.Arrived(attn.Notification{From: "app", Text: "one of many"}); err != nil {
 			t.Fatal(err)
 		}

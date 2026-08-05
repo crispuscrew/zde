@@ -169,6 +169,42 @@ func TestNotifyReplacesTakesTheOldOneOff(t *testing.T) {
 	}
 }
 
+// The arrival says which item it supersedes, and not the number the sender
+// used for it.
+//
+// That number is the sender's own name for a thing and it could name anybody's;
+// which item it stood for is what this side worked out, after checking whose it
+// was. The history needs the fact rather than the claim, because it is what
+// keeps one download to one row instead of a hundred (history.go, Replace).
+func TestNotifyNamesTheItemItReplaces(t *testing.T) {
+	sink := &fakeSink{}
+	n := notifier(sink)
+	first, derr := n.Notify(peer, "curl", 0, "", "downloading 1%", "", nil, nil, -1)
+	if derr != nil {
+		t.Fatal(derr)
+	}
+	if _, derr := n.Notify(peer, "curl", first, "", "downloading 2%", "", nil, nil, -1); derr != nil {
+		t.Fatal(derr)
+	}
+	// A stranger's replaces_id names nothing of this sender's, so it supersedes
+	// nothing - the same scoping that stops it closing somebody else's.
+	if _, derr := n.Notify(dbus.Sender(":1.99"), "impostor", first, "", "yours now", "", nil, nil, -1); derr != nil {
+		t.Fatal(derr)
+	}
+	if len(sink.got) != 3 {
+		t.Fatalf("sink got %+v", sink.got)
+	}
+	if sink.got[0].Replaces != 0 {
+		t.Errorf("the first arrival says it replaces %d, and there was nothing to replace", sink.got[0].Replaces)
+	}
+	if sink.got[1].Replaces != uint64(first) {
+		t.Errorf("the second says it replaces %d, want the item the first became (%d)", sink.got[1].Replaces, first)
+	}
+	if sink.got[2].Replaces != 0 {
+		t.Errorf("a stranger's replaces_id claimed item %d", sink.got[2].Replaces)
+	}
+}
+
 // Every volume OSD reuses one id of its own choosing - notify-send -r 42, and
 // dunstify's -r before it. Answering with a fresh id each time and matching
 // only on that turns one OSD into a hundred queue items.

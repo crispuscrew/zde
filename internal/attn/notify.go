@@ -78,10 +78,12 @@ const summaryMax = 300
 // history with what was sent" a claim the code did not keep.
 //
 // Still bounded, because the body is attacker-controlled and it is what decides
-// how large the history can get. The arithmetic: HistoryMax is 200 records, so
-// 200 x 4000 characters is about 3 MB if every record is at its limit and
-// written in an alphabet that costs four bytes a character - and a few hundred
-// kilobytes in any session made of real notifications.
+// how large the history can get. The arithmetic: the history holds a ring of
+// PerSenderMax for each of SendersMax senders plus the nameless one, so 390
+// records, and 390 x 4000 characters is about 6 MB if every record is at its
+// limit and written in an alphabet that costs four bytes a character - and a
+// few hundred kilobytes in any session made of real notifications. SendersMax
+// carries the whole of that count, summaries and sender names included.
 const bodyMax = 4000
 
 // Notification is what an app said, narrowed to what the queue keeps.
@@ -116,6 +118,17 @@ type Notification struct {
 	// center can say that some cannot be reached from here, which is the honest
 	// version of a list that quietly ends.
 	Extra int
+	// Replaces is the notification already in the history that this one
+	// supersedes, or zero for an ordinary arrival.
+	//
+	// Not the sender's replaces_id, and that is the point. That number is the
+	// sender's own name for a thing (notify-send -r 42, and dunstify's -r
+	// before it), and only this side knows which item it stood for - and only
+	// after checking that the connection asking is the one that sent it. By
+	// the time it is in here it is a fact rather than a claim, which is what
+	// lets the history put the new record where the old one was instead of
+	// beside it (history.go, Replace).
+	Replaces uint64
 }
 
 // Sink is where a notification goes. attn does not own the queue - the journal
@@ -398,23 +411,31 @@ func (n *notifications) Notify(
 	// updates. Only this sender's own notifications can be replaced, and only
 	// by the name this sender gave them: ids are the journal's and small, so
 	// without that an app could replace a reminder somebody typed.
+	//
+	// Which item it was is carried into the arrival rather than left behind
+	// here. It is the same fact the history needs to keep one download to one
+	// row instead of a hundred (history.go, Replace), and this is the only
+	// place that knows it.
+	var replaced uint64
 	if replaces != 0 {
 		if old, ok := s.lookup(owned{sender, replaces}); ok {
 			if err := s.sink.Closed(old); err != nil {
 				return 0, dbus.MakeFailedError(err)
 			}
 			s.forget(old)
+			replaced = old
 		}
 	}
 
 	kept, extra := takeActions(actions)
 	id, err := s.sink.Arrived(Notification{
-		From:    claim(app, sender),
-		Text:    text,
-		Body:    rest,
-		Urgent:  urgency(hints) == 2,
-		Actions: kept,
-		Extra:   extra,
+		From:     claim(app, sender),
+		Text:     text,
+		Body:     rest,
+		Urgent:   urgency(hints) == 2,
+		Actions:  kept,
+		Extra:    extra,
+		Replaces: replaced,
 	})
 	if err != nil {
 		return 0, dbus.MakeFailedError(err)
