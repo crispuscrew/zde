@@ -1,6 +1,7 @@
 package zded
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -69,6 +70,24 @@ type Power struct {
 	Choices []PowerChoice `json:"choices"`
 }
 
+// noLogindFor is how long a logind that could not be reached is believed
+// absent.
+//
+// The first version of this remembered nothing, on the argument that nothing
+// polls the power key: the bar asks about the link every five seconds, and this
+// is opened when somebody presses a chord. The argument was about the wrong
+// thing. A person leaning on Mod+Shift+x is not a poll, but against a system
+// bus that accepts and then says nothing each press cost the whole two-second
+// bound (internal/bus, Within) - so the key did nothing for two seconds, every
+// time, for the rest of the session, and the surface it draws is the one whose
+// whole job is to still work when the session has gone wrong.
+//
+// A minute rather than the five the network side keeps. Five is bought there by
+// seventeen thousand dials a day; here it buys a handful, and what it costs is
+// a person who has just started logind being told an old answer. A minute
+// collapses any burst of presses, which is what a burst of presses is.
+const noLogindFor = time.Minute
+
 // logins is logind, opened the first time something asks and kept. The same
 // shape as the network side and for the same reasons (net.go, links): lazily,
 // because a machine without it has to be a state rather than a daemon that will
@@ -78,10 +97,14 @@ type Power struct {
 // is the bus connection that is watched and not logind - a logind restart does
 // not close one, and does not need to (internal/power, Alive).
 //
-// What it does not do is remember an absence. The network side has to, because
-// the bar asks about the link every five seconds for the life of the session;
-// nothing polls this - it is opened when somebody presses a key - so the
-// arithmetic that made a memo worth having is not here.
+// Only the absence is remembered, and not any other failure: an absence is a
+// fact about the machine, and a bus that answered badly once is worth asking
+// again. A connect that ran out of time arrives here as an absence too
+// (internal/power, Open), which is the same answer for the same reason.
+//
+// The lock is held across the dial on purpose. Presses two to forty of a burst
+// wait behind the first one's two seconds rather than starting two seconds of
+// their own, and by the time they have it there is an answer here for them.
 func (s *Server) logins() (power.Manager, error) {
 	s.powerMu.Lock()
 	defer s.powerMu.Unlock()
@@ -94,14 +117,23 @@ func (s *Server) logins() (power.Manager, error) {
 		}
 		s.logind = nil
 	}
+	if !s.noLogindAt.IsZero() && time.Since(s.noLogindAt) < noLogindFor {
+		// In the words the last dial used, so that a person reading the row
+		// gets what actually went wrong rather than a summary of it.
+		return nil, s.noLogind
+	}
 	open := s.openPower
 	if open == nil {
 		open = power.Open
 	}
 	m, err := open()
 	if err != nil {
+		if errors.Is(err, power.ErrNoLogind) {
+			s.noLogind, s.noLogindAt = err, time.Now()
+		}
 		return nil, err
 	}
+	s.noLogind, s.noLogindAt = nil, time.Time{}
 	s.logind = m
 	return m, nil
 }

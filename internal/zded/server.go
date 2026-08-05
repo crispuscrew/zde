@@ -239,6 +239,11 @@ type Server struct {
 	powerMu   sync.Mutex
 	logind    power.Manager
 	openPower func() (power.Manager, error)
+	// What the last dial said when there was no logind to reach, and when it
+	// said it. Somebody leaning on the power key is not a poll, but it is
+	// enough dials to be worth not making (power.go, noLogindFor).
+	noLogind   error
+	noLogindAt time.Time
 
 	// The tier runs in flight (ask.go). A run is a subprocess in a process group
 	// of its own, deliberately, so that stopping it stops what it started - and

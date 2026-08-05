@@ -3,9 +3,13 @@ package zded
 import (
 	"encoding/json"
 	"errors"
+	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/crispuscrew/zde/internal/attn"
 	"github.com/crispuscrew/zde/internal/power"
@@ -323,6 +327,133 @@ func TestAPowerActionNobodyHasIsRefusedByName(t *testing.T) {
 			t.Errorf("the menu offers %q and running it says %q", c.Name, resp.Error)
 		}
 	}
+}
+
+// The power key against a system bus that accepts and then says nothing, which
+// is a wedged bus or one whose daemon is stuck on a disk.
+//
+// Two things must not happen, and both were happening. The dial under each
+// press left the socket it opened parked on a read nothing would ever satisfy,
+// so a descriptor and three goroutines went with every press and never came
+// back - forty presses took a session from seven descriptors to forty-seven,
+// and a session out of descriptors has no power menu, no wifi list and no bar.
+// And every press paid the whole two-second bound again, on a key whose entire
+// job is to still work when the session has gone wrong.
+//
+// Driven through the real power.Open rather than a fake, because everything
+// this is about is underneath that seam.
+func TestThePowerKeyAgainstAWedgedBusCostsNothingPermanentAndAsksOnce(t *testing.T) {
+	s, _, _ := powerServer(t)
+	s.openPower = nil // the real one, at the bus the line below names
+	t.Setenv("DBUS_SYSTEM_BUS_ADDRESS", blackhole(t))
+
+	// Before anything has dialled, so that the one dial this makes is inside
+	// what is being counted rather than outside it.
+	files := settledFiles(t)
+
+	// The first press pays the bound and is what the rest are measured against.
+	first := time.Now()
+	menu(t, s)
+	dial := time.Since(first)
+
+	rest := time.Now()
+	for i := 0; i < 20; i++ {
+		p := menu(t, s)
+		if why := choice(t, p, "poweroff").Why; why == "" {
+			t.Fatalf("press %d drew a poweroff row with nothing on it about a bus that never answered", i)
+		}
+	}
+	took := time.Since(rest)
+
+	if after := settledFiles(t); after > files {
+		t.Errorf("the presses left %d descriptors open, from %d: the socket under an "+
+			"abandoned dial is never closed, and a session runs out of them", after-files, files)
+	}
+	// Twenty more dials would be twenty more of whatever the first one cost.
+	// Half of one is far below that and far above what an answer already in
+	// hand takes, which is microseconds.
+	if took > dial/2 {
+		t.Errorf("twenty presses took %s against one dial's %s: every press is dialling a bus "+
+			"that already said it was not there", took, dial)
+	}
+}
+
+// Only an absence is remembered, and not any other failure.
+//
+// A machine with no logind is a fact about the machine, and worth not asking
+// about again for a minute. A bus that answered badly once is not: it is a
+// moment, and a power menu that had written it down would go on saying so for a
+// minute after the thing that caused it had gone - on the surface whose whole
+// job is to be right about why a key did nothing.
+func TestOnlyAnAbsenceIsRememberedAndNotAnyOtherFailure(t *testing.T) {
+	s, l, _ := powerServer(t)
+	tries := 0
+	// Called only under powerMu, which is what makes counting it here safe.
+	s.openPower = func() (power.Manager, error) {
+		tries++
+		if tries == 1 {
+			return nil, errors.New("the bus said something nobody here expected")
+		}
+		return l, nil
+	}
+
+	if why := choice(t, menu(t, s), "poweroff").Why; why == "" {
+		t.Fatal("a press that could not reach logind drew a poweroff row saying nothing about it")
+	}
+	if why := choice(t, menu(t, s), "poweroff").Why; why != "" {
+		t.Errorf("the next press says %q, and what failed once is worth asking again", why)
+	}
+	if tries != 2 {
+		t.Errorf("logind was opened %d times, want the second press to have asked again", tries)
+	}
+}
+
+// settledFiles is how many descriptors this process holds once the last press
+// has finished letting go. A loop rather than one reading, because the
+// goroutines a close unblocks are scheduled whenever the runtime feels like it.
+func settledFiles(t *testing.T) int {
+	t.Helper()
+	open := func() int {
+		names, err := os.ReadDir("/proc/self/fd")
+		if err != nil {
+			t.Skipf("no /proc/self/fd to count descriptors in: %v", err)
+		}
+		return len(names)
+	}
+	n := open()
+	for i := 0; i < 100; i++ {
+		time.Sleep(10 * time.Millisecond)
+		if next := open(); next >= n {
+			return n
+		} else {
+			n = next
+		}
+	}
+	return n
+}
+
+// blackhole is a bus that takes a connection and then says nothing. It listens
+// and never accepts: a unix connect completes as soon as the kernel has queued
+// it, so the client is connected with nothing on the other end, and the queued
+// half costs this process no descriptor of its own to confuse the count with.
+func blackhole(t *testing.T) string {
+	t.Helper()
+	// Not t.TempDir: a unix socket path is capped at about 108 bytes, and a
+	// directory named after a test this long has spent most of that already.
+	dir, err := os.MkdirTemp("", "zde-power-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "s")
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ln.Close()
+		os.RemoveAll(dir)
+	})
+	return "unix:path=" + path
 }
 
 // A logind that answers with an error still gets the whole menu drawn, with the
