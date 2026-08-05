@@ -514,6 +514,70 @@ func TestModeSurvivesCompaction(t *testing.T) {
 	}
 }
 
+// Which desk lent the mode survives a restart, because the mode does. zded
+// restarts on every rebuild that touches it, and the two halves are one fact: a
+// session that came back in focus but had forgotten whose focus it was would
+// carry that focus onto the next desk and never give it back.
+func TestWhichDeskLentTheModeSurvivesAReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "j.jsonl")
+	j := open(t, path)
+	if err := j.SetMode("focus"); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.SetBorrowed(Borrowed{Desk: "vshop", Mode: "work"}); err != nil {
+		t.Fatal(err)
+	}
+	j.Close()
+
+	got := open(t, path).Borrowed()
+	if got.Desk != "vshop" || got.Mode != "work" {
+		t.Errorf("borrowed after a restart = %+v, want vshop holding a work it can give back", got)
+	}
+}
+
+// And through a compaction, for the reason the mode does: a compaction that
+// dropped the lender would leave the borrowed mode in force with nothing to
+// return it to, at whichever moment the journal happened to get long enough.
+func TestWhichDeskLentTheModeSurvivesCompaction(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "j.jsonl")
+	j := open(t, path)
+	if err := j.SetBorrowed(Borrowed{Desk: "vshop", Mode: "quiet"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Compact(); err != nil {
+		t.Fatal(err)
+	}
+	j.Close()
+
+	if got := open(t, path).State().Borrowed; got.Desk != "vshop" || got.Mode != "quiet" {
+		t.Errorf("borrowed after a compaction = %+v, want vshop holding a quiet", got)
+	}
+}
+
+// Nobody holding the mode is a state that gets written down, not one inferred
+// from silence: it is where a mode chosen by hand leaves things, and a replay
+// that skipped the empty entry would have the desk still holding a mode it gave
+// up - which comes back the next time you walk off that desk.
+func TestGivingTheModeBackIsRecordedRatherThanInferred(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "j.jsonl")
+	j := open(t, path)
+	if err := j.SetBorrowed(Borrowed{Desk: "vshop", Mode: "work"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.SetBorrowed(Borrowed{}); err != nil {
+		t.Fatal(err)
+	}
+	j.Close()
+
+	reopened := open(t, path)
+	if got := reopened.Borrowed(); got.Desk != "" {
+		t.Errorf("borrowed after it was given back = %+v, want nobody holding it", got)
+	}
+	if n := reopened.Skipped(); n != 0 {
+		t.Errorf("%d entries were skipped, and giving the mode back is not a torn line", n)
+	}
+}
+
 // An id claimed for something that never reached the queue is spent for good.
 // Handing it out again would let an app that still holds that number close
 // whatever ends up with it - a reminder somebody typed, most likely, since the

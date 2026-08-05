@@ -65,6 +65,7 @@ func TestParseRejects(t *testing.T) {
 		{"app on unknown workspace", "name: vshop\nmonitors: { DP-1: { workspaces: [a] } }\napps: [{ app: nvim, monitor: DP-1, workspace: b }]", "does not have"},
 		{"bad background", "name: vshop\nmonitors: { DP-1: { workspaces: [a] } }\napps: [{ app: nvim, background: freeze }]", "keep or pause"},
 		{"misspelled key", "name: vshop\nmonitorz: { DP-1: { workspaces: [a] } }", "field monitorz"},
+		{"attn that is not a mode", "name: vshop\nmonitors: { DP-1: { workspaces: [a] } }\npolicies: { attn: focussed }", "no such mode"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -76,6 +77,20 @@ func TestParseRejects(t *testing.T) {
 				t.Errorf("error %q does not mention %q", err, c.want)
 			}
 		})
+	}
+}
+
+// A desk with no attn policy is the ordinary desk, and it is not the same as
+// one declaring work: entering it leaves the mode alone, so the field has to
+// survive being absent rather than being read as a default the moment it is
+// checked.
+func TestADeskNeedNotDeclareAnAttnMode(t *testing.T) {
+	d, err := Parse([]byte("name: vshop\nmonitors: { DP-1: { workspaces: [a] } }"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Policies.Attn != "" {
+		t.Errorf("policies.attn = %q for a desk that declares none, want it left empty", d.Policies.Attn)
 	}
 }
 
