@@ -119,8 +119,20 @@ PanelWindow {
             clips.shown(clips.token);
     }
 
+    // Dropped on the way down and not merely hidden. Up to fifty previews come
+    // over with the event, and a surface that only sets visible to false keeps
+    // every one of them in the quickshell process for the rest of the session -
+    // past zded's TTL, which is the one thing this history promises. The rows
+    // are handed over again on the next Mod+v, so there is nothing to keep.
+    //
+    // The filter goes too: it is what somebody typed to find an entry, which is
+    // a piece of that entry.
     function hide() {
         clips.visible = false;
+        clips.rows = [];
+        clips.index = 0;
+        clips.failed = "";
+        query.text = "";
     }
 
     function step(by) {

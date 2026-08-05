@@ -459,8 +459,15 @@ ShellRoot {
     }
 
     // What was copied recently, newest first. The rows carry a preview and not
-    // the entry: the text stays in zded until a row is picked, so this process
-    // never holds the clipboard history and has nothing to expire.
+    // the entry: the text stays in zded until a row is picked, so what crosses
+    // into this process is a couple of hundred characters a row and never the
+    // history itself (internal/clip, PreviewMax).
+    //
+    // And what does cross is dropped when the surface closes (ClipHistory.qml,
+    // hide), which is the honest version of "nothing here to expire". There is
+    // no TTL in this process, so previews kept here would outlive zded's - fifty
+    // of them, for the rest of the session. A surface that only stops drawing
+    // them is a surface that still has them.
     function openClips(ev) {
         root.present(clips, ev);
         clips.show((ev.clips ?? []).map(c => ({

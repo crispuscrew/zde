@@ -1066,9 +1066,18 @@ func connections() error {
 // session whose shell has died - and so that an entry can be put back from a
 // terminal at all.
 //
-// The whole of an entry is never printed, only the preview zded sends. That is
-// not tidiness: the text stays in the daemon until somebody asks for it by id,
-// so a list does not put fifty clipboard entries into a terminal's scrollback.
+// The whole of an entry is never printed, only the preview zded sends (up to
+// clip.PreviewMax characters of it): the text stays in the daemon until somebody
+// asks for it by id, so what a list can put into a terminal's scrollback is
+// bounded by the preview and not by what was copied.
+//
+// Said exactly, because the loop below does print every row. For anything short
+// - a password, a token, a one-line address - the preview is the whole entry, so
+// this is fifty previews on a screen and not fifty whole clipboard entries.
+// Worth knowing before running it in front of somebody: this path is reached
+// whenever the shell does not acknowledge within ackWait, which is a slow shell
+// as well as a dead one, and `zde clip clear` is the answer if it happens where
+// it should not have.
 func clipHistory() error {
 	c, err := zded.Dial()
 	if err != nil {
