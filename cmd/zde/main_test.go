@@ -434,16 +434,116 @@ func TestAskPanelWithNoShellSaysTheQuestionWasNotAsked(t *testing.T) {
 	}
 }
 
+// printed runs one command with os.Stdout pointed at a pipe, and answers with
+// what it wrote. The power menu's whole no-shell bargain is what it prints, and
+// a test that never reads that is a test of nothing but the argument parser.
+func printed(t *testing.T, args []string) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdout
+	os.Stdout = w
+	runErr := run(args)
+	os.Stdout = old
+	w.Close()
+	out, err := io.ReadAll(r)
+	r.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runErr != nil {
+		t.Fatalf("zde %s: %v", strings.Join(args, " "), runErr)
+	}
+	return string(out)
+}
+
+// firstWord is the column something starts in, counted from zero.
+func firstWord(line string) int {
+	for i := 0; i < len(line); i++ {
+		if line[i] != ' ' {
+			return i
+		}
+	}
+	return 0
+}
+
 // The power menu prints its five rows when no shell is up, with the name in
 // column one, so the obvious thing to do with a row is to type what it says.
 // A CLI that only knew the bare verb would answer a name copied off the row
 // with "unknown command", which blames the person - and the row it happens to
 // is the one that ends the session.
+//
+// So the names here are read off the rows rather than written down again: a
+// list spelled twice is a list that can disagree with itself, which is the one
+// way this can break without anybody noticing.
+//
+// Nothing is performed. The daemon it prints from is pointed at a system bus
+// that is not there, so there is no logind to ask and every row carries the
+// reason instead - and the names are then typed at a runtime directory with no
+// daemon in it, which is as far as a name needs to get to prove it was
+// dispatched.
 func TestPowerTakesTheNameOffTheRowItPrinted(t *testing.T) {
 	quiet(t)
+	// Before the daemon: power.Open reads this to find the system bus, and a
+	// path nothing is listening on is a machine with no logind. Without it this
+	// test would open the real one on the machine it is running on.
+	t.Setenv("DBUS_SYSTEM_BUS_ADDRESS", "unix:path="+filepath.Join(t.TempDir(), "no-bus"))
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	socket, err := zded.DefaultSocket()
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := zded.New("test", nil, nil, nil)
+	if err := srv.Listen(socket); err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve() //nolint:errcheck // it ends with the listener below
+	t.Cleanup(func() { srv.Close() })
 
-	for _, name := range []string{"lock", "logout", "suspend", "reboot", "poweroff"} {
+	var names []string
+	// Where the description begins on the last row printed, and where the lines
+	// under it begin. They have to be the same column: a continuation that
+	// starts anywhere else reads as another choice, which on this list is a
+	// choice that ends the session.
+	desc, under := 0, 0
+	for _, line := range strings.Split(printed(t, []string{"system", "power"}), "\n") {
+		if line == "" {
+			continue
+		}
+		// The rows start in column one and everything under them is indented,
+		// which is the shape the whole readout is arranged around.
+		if strings.HasPrefix(line, " ") {
+			under = firstWord(line)
+			continue
+		}
+		name := strings.Fields(line)[0]
+		names = append(names, name)
+		// Past the name, past the padding, past the one-character mark, and
+		// past the space after it: worked out from the shape of the row rather
+		// than from the format string, so that a change to either is caught.
+		i := len(name)
+		for i < len(line) && line[i] == ' ' {
+			i++
+		}
+		i++
+		desc = firstWord(line[i:]) + i
+	}
+	if len(names) != 5 {
+		t.Fatalf("the menu printed %d rows, want the five: %v", len(names), names)
+	}
+	if under == 0 {
+		t.Fatal("nothing was printed under any row, so there is no indent to check")
+	}
+	if under != desc {
+		t.Errorf("what a row costs starts at column %d and the description at column %d", under+1, desc+1)
+	}
+
+	// Somewhere with no daemon, so that typing one of those names goes no
+	// further than the dial.
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	for _, name := range names {
 		err := run([]string{"system", "power", name})
 		if err == nil {
 			t.Fatalf("there is no zded here, so `zde system power %s` cannot have worked", name)
@@ -451,7 +551,7 @@ func TestPowerTakesTheNameOffTheRowItPrinted(t *testing.T) {
 		// It got as far as trying to reach the daemon, which is where every
 		// verb gets to here. Anything else means the form was never dispatched.
 		if strings.Contains(err.Error(), "unknown command") {
-			t.Errorf("`zde system power %s` got as far as %q", name, err)
+			t.Errorf("`zde system power %s` got as far as %q, and that name is on a row it printed", name, err)
 		}
 	}
 }

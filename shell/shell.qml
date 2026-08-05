@@ -452,9 +452,10 @@ ShellRoot {
 
     // The five things that end a session or a machine. What each one is about
     // to cost comes with the event and is not worked out here: how many windows
-    // close, what only exists in the daemon's memory, who else is logged in and
-    // what is holding sleep are all facts this shell has no way to reach
-    // (docs/vision.md, section 2 - a thin adapter with zero logic inside).
+    // close, what the notification center is holding that the queue never got,
+    // who else is logged in and what is holding sleep are all facts this shell
+    // has no way to reach (docs/vision.md, section 2 - a thin adapter with zero
+    // logic inside).
     function openPower(ev) {
         root.present(powerMenu, ev);
         powerMenu.show((ev.choices ?? []).map(c => ({

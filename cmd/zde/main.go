@@ -1180,7 +1180,12 @@ func powerMenu(what string) error {
 // powerIndent lines the continuations up under the description, the way the
 // bluetooth readout does: what a row costs belongs to that row, and a line
 // starting in column one reads as another choice.
-const powerIndent = "            "
+//
+// Thirteen, counted off the format above rather than guessed: `%-9s` is nine,
+// then a space, then the one-character mark, then two more spaces, so the
+// description starts at column fourteen and a continuation has thirteen to
+// fill.
+const powerIndent = "             "
 
 func asksFirst(ch zded.PowerChoice) string {
 	if ch.Confirm {
@@ -1484,9 +1489,9 @@ func usage() {
   zde system power       the power menu (Mod+Shift+x): lock, log out, suspend,
                          reboot, power off. Prints the five when no shell is
                          up, each with what it is about to cost underneath -
-                         the windows that close, what exists only in the
-                         daemon's memory, anybody else logged in here, and
-                         whatever is holding a suspend off
+                         the windows that close, what the notification center
+                         is holding that the queue never got, anybody else
+                         logged in here, and whatever is holding a suspend off
   zde system power NAME  run one of them, by the name in column one. The menu
                          is where the three that end things are asked about;
                          typing the word here is the answer, the same bargain

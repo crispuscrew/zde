@@ -42,8 +42,7 @@ const powerLock = "lock"
 // this desktop that end things nobody can get back, and a confirmation that
 // only asks "are you sure" teaches people to say yes without reading - so each
 // line here is something true about this machine right now: the windows that
-// close, the arrivals that only exist in the daemon's memory, the other person
-// logged in.
+// close, the arrivals the queue never got, the other person logged in.
 type PowerChoice struct {
 	Name  string `json:"name"`
 	Label string `json:"label"`
@@ -73,9 +72,11 @@ type Power struct {
 // logins is logind, opened the first time something asks and kept. The same
 // shape as the network side and for the same reasons (net.go, links): lazily,
 // because a machine without it has to be a state rather than a daemon that will
-// not start, and dropped when the connection dies, because logind is restarted
-// by its own updates and a daemon holding a dead socket would refuse every
-// power action for the rest of the session.
+// not start, and dropped when the connection dies, because a closed bus
+// connection answers every call with the same error for ever and a daemon
+// holding one would refuse every power action for the rest of the session. It
+// is the bus connection that is watched and not logind - a logind restart does
+// not close one, and does not need to (internal/power, Alive).
 //
 // What it does not do is remember an absence. The network side has to, because
 // the bar asks about the link every five seconds for the life of the session;
@@ -159,13 +160,13 @@ func (s *Server) powerChoices() []PowerChoice {
 		why = err.Error()
 	}
 	windows := s.windowsOpen()
-	waiting := len(s.history.Recent())
+	unqueued := s.unqueuedArrivals()
 
 	// The order is the order somebody reaches for them, and it is also the
 	// order of how much they cost: the lock first, because it is the one
 	// pressed daily and the one that loses nothing, and the machine going off
 	// last.
-	ending := append(append([]string{}, closes(windows)...), inMemory(waiting)...)
+	ending := append(append([]string{}, closes(windows)...), inMemory(unqueued)...)
 	return []PowerChoice{{
 		Name:  powerLock,
 		Label: "lock",
@@ -246,19 +247,45 @@ func closes(windows int) []string {
 	return []string{fmt.Sprintf("%d windows close", windows)}
 }
 
-// inMemory is the notification history, which is the thing on this desktop that
-// nothing else writes down: a ring of 200 in the daemon, gone when the daemon
-// is (docs/roadmap.md, 0.1). The queue is not here because the queue survives -
-// it is in the journal, and it is what you still owe.
-func inMemory(waiting int) []string {
-	if waiting <= 0 {
+// unqueuedArrivals is how many things the notification center is holding that
+// the queue never got: the ones a mode kept out of it, still unfinished.
+//
+// Counted rather than taken from the length of the history, which is every
+// record it has. Two of those are not a cost. A queued item is in the journal,
+// which a log out does not touch, so counting one would tell somebody they are
+// about to lose the one thing certain to come back; a dismissed record is
+// something already finished with, by the person or by the app taking it back
+// (server.go, Closed), and it is not waiting for anybody.
+func (s *Server) unqueuedArrivals() int {
+	n := 0
+	for _, r := range s.history.Recent() {
+		if !r.Queued && !r.Dismissed {
+			n++
+		}
+	}
+	return n
+}
+
+// inMemory is what the notification center is holding on its own.
+//
+// Said as where they are rather than as what a log out destroys, which is the
+// only form of this line that stays true. Today the ring is memory and a log
+// out is the end of all two hundred of it (docs/roadmap.md, 0.1); a zded that
+// wrote the newest of the history down on the way out would give some of them
+// back, shortened, and the sentence "they go with the daemon" would then be
+// wrong in the other direction. What does not change either way is the split
+// this line is actually about: the queue is what you still owe and it survives,
+// and these are the ones it never got.
+func inMemory(unqueued int) []string {
+	if unqueued <= 0 {
 		return nil
 	}
-	one := "arrivals are"
-	if waiting == 1 {
-		one = "arrival is"
+	one := "arrivals"
+	if unqueued == 1 {
+		one = "arrival"
 	}
-	return []string{fmt.Sprintf("%d %s only in the daemon's memory, and go with it", waiting, one)}
+	return []string{fmt.Sprintf("the notification center is holding %d %s the queue never got",
+		unqueued, one)}
 }
 
 // others is somebody else's session, said before the key is pressed rather than

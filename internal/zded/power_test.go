@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/crispuscrew/zde/internal/attn"
 	"github.com/crispuscrew/zde/internal/power"
@@ -125,13 +124,22 @@ func TestTheLockRowRunsTheCommandTheLockKeyRuns(t *testing.T) {
 func TestPoweringOffNamesWhatIsAboutToBeLost(t *testing.T) {
 	s, l, _ := powerServer(t)
 	l.state = power.State{Sessions: []power.Session{
-		{ID: "1", User: "me", Mine: true},
-		{ID: "3", User: "ann"},
+		{ID: "1", User: "me", Class: "user", Mine: true},
+		{ID: "3", User: "ann", Class: "user"},
 	}}
-	// Two notifications that are in memory and nowhere else: the history dies
-	// with the daemon, and the daemon dies with the session.
+	// Two the queue never got, because a mode kept them out of it: they are in
+	// the notification center and nowhere else.
 	s.history.Add(attn.Record{ID: 1, Text: "the build finished"})
 	s.history.Add(attn.Record{ID: 2, Text: "ilya replied"})
+	// And three that must not be counted with them. Two are in the queue, which
+	// is in the journal and survives a log out, so telling somebody they are
+	// about to lose them is telling them the opposite of the truth; the third
+	// they have already finished with.
+	s.history.Add(attn.Record{ID: 3, Text: "standup in five", Queued: true})
+	s.history.Add(attn.Record{ID: 4, Text: "the download finished", Queued: true})
+	s.history.Dismiss(4)
+	s.history.Add(attn.Record{ID: 5, Text: "taken back by its app"})
+	s.history.Dismiss(5)
 
 	off := choice(t, menu(t, s), "poweroff")
 	if !off.Confirm {
@@ -141,6 +149,13 @@ func TestPoweringOffNamesWhatIsAboutToBeLost(t *testing.T) {
 	for _, want := range []string{"3 windows close", "2 arrivals", "ann is logged in"} {
 		if !strings.Contains(said, want) {
 			t.Errorf("what powering off costs is %q, and it has to say %q", said, want)
+		}
+	}
+	// The number is the whole of this line's honesty, in both directions.
+	for _, wrong := range []string{"5 arrivals", "4 arrivals", "3 arrivals"} {
+		if strings.Contains(said, wrong) {
+			t.Errorf("what powering off costs is %q, and %q counts what the queue already has",
+				said, wrong)
 		}
 	}
 	// And the row that costs nothing says nothing: a lock that asked twice
@@ -310,24 +325,24 @@ func TestAPowerActionNobodyHasIsRefusedByName(t *testing.T) {
 	}
 }
 
-// The daemon answers keybinds on one socket, so a logind that has stopped
-// answering must not be a power menu that never opens. The menu is drawn from
-// what it could read, and the rows say what could not be.
-func TestALogindThatWillNotAnswerStillDrawsTheMenu(t *testing.T) {
+// A logind that answers with an error still gets the whole menu drawn, with the
+// reason on the rows that needed it. The alternative is a key that draws
+// nothing on the machine where the answer is worth reading.
+//
+// What it is not is a test of the bound on the call. That is a bound on a real
+// bus and it is tested against one, with a logind that accepts the call and
+// then says nothing (internal/power, fakebus_test.go): a fake at this boundary
+// answers instantly whatever it answers, so a deadline round it here could
+// never fire and would pass with the bound deleted.
+func TestALogindThatAnswersWithAnErrorStillDrawsTheMenu(t *testing.T) {
 	s, l, _ := powerServer(t)
 	l.stateErr = errors.New("logind did not finish saying who is logged in")
 
-	done := make(chan Power, 1)
-	go func() { done <- menu(t, s) }()
-	select {
-	case p := <-done:
-		if len(p.Choices) != 5 {
-			t.Errorf("the menu has %d rows when logind would not answer", len(p.Choices))
-		}
-		if why := choice(t, p, "poweroff").Why; why == "" {
-			t.Error("logind would not answer and the poweroff row says nothing about it")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the power menu never came back")
+	p := menu(t, s)
+	if len(p.Choices) != 5 {
+		t.Errorf("the menu has %d rows when logind would not answer", len(p.Choices))
+	}
+	if why := choice(t, p, "poweroff").Why; why == "" {
+		t.Error("logind would not answer and the poweroff row says nothing about it")
 	}
 }
