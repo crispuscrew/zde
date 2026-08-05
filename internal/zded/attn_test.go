@@ -3,6 +3,8 @@ package zded
 import (
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -10,6 +12,9 @@ import (
 	"time"
 
 	"github.com/crispuscrew/zde/internal/attn"
+	"github.com/crispuscrew/zde/internal/desk"
+	"github.com/crispuscrew/zde/internal/journal"
+	"github.com/crispuscrew/zde/internal/manifest"
 )
 
 // arrive sends one notification into a server whose mode has been set, and
@@ -592,6 +597,139 @@ func TestFocusShowsOnlyTheUrgentAndKeepsBoth(t *testing.T) {
 	}
 	if seen := s.history.Recent(); len(seen) != 2 {
 		t.Errorf("history holds %d, want both", len(seen))
+	}
+}
+
+// popupServer is a daemon standing on one desk of a directory of manifests,
+// with a journal under it so that arrivals can be recorded and a listener to
+// see what was drawn.
+//
+// Its own helper rather than queueTestServer, which is handed no manifests at
+// all: a machine that declares no desks cannot tell a private one from an open
+// one, and that is the whole question here.
+func popupServer(t *testing.T, focused string, manifests map[string]string) (*Server, *recorder) {
+	t.Helper()
+	dir := t.TempDir()
+	desks := filepath.Join(dir, "desks")
+	if err := os.MkdirAll(desks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range manifests {
+		if err := os.WriteFile(filepath.Join(desks, name+".yaml"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	jrn, err := journal.Open(filepath.Join(dir, "j.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { jrn.Close() })
+	m := desk.Rebuild([]desk.Workspace{
+		{Name: "work.DP-1.code", Output: "DP-1"},
+		{Name: "clinic.DP-1.mail", Output: "DP-1"},
+	}, []string{"DP-1"})
+	s := New("test", jrn, &fakeCompositor{m: m, focused: focused, output: "DP-1"}, manifest.Dir(desks))
+	t.Cleanup(func() { s.Close() })
+	rec := &recorder{}
+	s.listen(&sink{w: rec})
+	return s, rec
+}
+
+// A desk that declares itself private is popups off, history only
+// (docs/vision.md, section 3). The mode gate alone did not know that, so a
+// notification arriving while somebody stood on their private desk put its
+// sender, its summary and its body on the screen for five seconds - which is
+// the exact thing that desk exists to prevent, and worse than the queue-only
+// behaviour it replaced.
+//
+// Both halves in one test, because either alone would pass on a bug: drawing no
+// card ever keeps every secret, and drawing every card keeps none. And the
+// private one is still in the history, because this is display policy and the
+// mode gate makes the same argument (docs/vision.md, principle 3).
+func TestANotificationFromAPrivateDeskIsNeverPutOnTheScreen(t *testing.T) {
+	s, rec := popupServer(t, "clinic.DP-1.mail", map[string]string{
+		"work":   "name: work\nmonitors: { DP-1: { workspaces: [code] } }\n",
+		"clinic": "name: clinic\nprivate: true\nmonitors: { DP-1: { workspaces: [mail] } }\n",
+	})
+	if _, err := s.Arrived(attn.Notification{From: "clinic", Text: "your results are in", Body: "the clinic wrote back"}); err != nil {
+		t.Fatal(err)
+	}
+	// And one from the ordinary desk, which is what proves the first was
+	// withheld rather than the popup path being broken. The pump writes in the
+	// order things arrived, so a card for the second is a card the first never
+	// got.
+	s.niri.(*fakeCompositor).focused = "work.DP-1.code"
+	if _, err := s.Arrived(attn.Notification{From: "ci", Text: "the build failed"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := waitForEvents(t, rec, EventAttnPopup, 1)
+	if len(got) != 1 {
+		t.Fatalf("%d cards were drawn, want only the one from the open desk", len(got))
+	}
+	if drawn := got[0].Notifications[0]; drawn.Text != "the build failed" {
+		t.Errorf("the card said %q, so a private desk's notification was on the screen", drawn.Text)
+	}
+	// And the private one is kept, whole, with the desk it arrived on.
+	seen := s.history.Recent()
+	if len(seen) != 2 {
+		t.Fatalf("history holds %d, want both: a private desk stops the card and never the record", len(seen))
+	}
+	private := seen[1]
+	if private.Text != "your results are in" || private.Body != "the clinic wrote back" || private.Desk != "clinic" {
+		t.Errorf("record = %+v, want the private arrival kept whole with its desk", private)
+	}
+}
+
+// A machine that declares a private desk and cannot say which desk something
+// arrived on draws nothing, because the answer it cannot give is the one that
+// matters. Fail closed is principle 9, and here the cost of guessing wrong is a
+// private desk's notification on a screen somebody is recording.
+//
+// The ordinary machine declares no private desk at all, and there this refusal
+// must not fire: a compositor that cannot be read would otherwise turn every
+// popup off for the rest of the session.
+func TestAnArrivalWithNoDeskDrawsNothingOnlyWhereADeskIsPrivate(t *testing.T) {
+	guarded, rec := popupServer(t, "", map[string]string{
+		"work":   "name: work\nmonitors: { DP-1: { workspaces: [code] } }\n",
+		"clinic": "name: clinic\nprivate: true\nmonitors: { DP-1: { workspaces: [mail] } }\n",
+	})
+	// A compositor that cannot be read, so nothing can say which desk this
+	// arrived on - a wedged niri, or a session before anything is adopted.
+	guarded.niri.(*fakeCompositor).err = errors.New("no compositor")
+	if _, err := guarded.Arrived(attn.Notification{From: "app", Text: "could be anything"}); err != nil {
+		t.Fatal(err)
+	}
+	// And then one that is placeable, so the first can be shown to have been
+	// withheld rather than merely still in flight: the pump writes in the order
+	// things arrived, so a card for the second is a card the first never got.
+	// Asserted by ordering and not by a sleep, because a sleep would pass on the
+	// day the popup path got slower.
+	guarded.niri.(*fakeCompositor).err = nil
+	guarded.niri.(*fakeCompositor).focused = "work.DP-1.code"
+	if _, err := guarded.Arrived(attn.Notification{From: "ci", Text: "the build failed"}); err != nil {
+		t.Fatal(err)
+	}
+	got := waitForEvents(t, rec, EventAttnPopup, 1)
+	if len(got) != 1 {
+		t.Fatalf("%d cards were drawn, want only the one that could be placed", len(got))
+	}
+	if drawn := got[0].Notifications[0]; drawn.Text != "the build failed" {
+		t.Errorf("the card said %q: a machine with a private desk drew one for an arrival it could not place", drawn.Text)
+	}
+	if seen := guarded.history.Recent(); len(seen) != 2 {
+		t.Errorf("history holds %d, want both kept even though one drew no card", len(seen))
+	}
+
+	open, openRec := popupServer(t, "", map[string]string{
+		"work": "name: work\nmonitors: { DP-1: { workspaces: [code] } }\n",
+	})
+	open.niri.(*fakeCompositor).err = errors.New("no compositor")
+	if _, err := open.Arrived(attn.Notification{From: "app", Text: "could be anything"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitForEvents(t, openRec, EventAttnPopup, 1); len(got) != 1 {
+		t.Errorf("a machine with nothing private drew %d cards: an unreadable compositor turned the popups off", len(got))
 	}
 }
 

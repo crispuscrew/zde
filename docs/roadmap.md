@@ -32,11 +32,13 @@ fix to keep them to one at a time, so a sixth that grabbed on every arrival -
 at the choice of any app on the session bus - would be the worst offender on the
 machine. Its buttons are clickable the whole time it is up, and `Mod+Ctrl+n` is
 the one deliberate key that hands it the keyboard, which it then holds only
-while a finger is on it. The mode decides whether a card appears at all - quiet
-shows nothing, focus shows what the sender called urgent, work shows everything
-- and the history keeps the lot whichever it was, because that is principle 3
-and a mode that changed what is recorded would be a mode that decides what
-happened.
+while a finger is on it. Two things decide whether a card appears at all, and
+they are kept apart because they are different people's decisions: the session's
+mode (quiet shows nothing, focus shows what the sender called urgent, work shows
+everything) and the desk's own `private: true`, which is popups off in every
+mode ([`vision.md`](vision.md), section 3). The history keeps the lot whichever
+way both answer, because that is principle 3 and a mode or a desk that changed
+what is recorded would be deciding what happened.
 
 Where those lines stop short is what is left of the phase, and none of it
 blocks 0.2:

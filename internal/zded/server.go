@@ -1227,29 +1227,11 @@ func (s *Server) Arrived(n attn.Notification) (uint64, error) {
 			w.Forget(gone)
 		}
 	}
-	// And in front of the person, where the mode says so - last, after the
-	// record is kept and the queue has it, and never instead of either. This is
-	// the only place the mode's display half is read, and all it decides is
-	// whether a surface is told: quiet shows nothing, focus shows what the
-	// sender called urgent, work shows everything, and the history above holds
-	// the lot whichever it was (internal/attn, Pops).
-	if mode.Pops(rec.Urgent) {
-		// Which screen, asked here rather than in the pump. The pump runs on its
-		// own goroutine and the compositor client is one request at a time, so
-		// asking there would put it beside every other question the daemon is
-		// answering. Here it is one more round trip on a path that already makes
-		// one (whereWeAre), and the answer is the screen that was being looked
-		// at when the thing arrived, which is the honest one.
-		_, output, err := s.niri.FocusedPlace()
-		if err != nil {
-			output = ""
-		}
-		s.pop(Event{
-			Kind:          EventAttnPopup,
-			Notifications: []attn.Record{rec},
-			Output:        output,
-		})
-	}
+	// And in front of the person, last: after the record is kept and the queue
+	// has it, and never instead of either. What decides whether anything is
+	// drawn is the session's mode and the desk's own privacy, both of them
+	// display and neither of them touching what is above (attn.go, maybePop).
+	s.maybePop(rec, mode)
 	return rec.ID, nil
 }
 

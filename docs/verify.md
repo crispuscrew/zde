@@ -332,6 +332,20 @@ ones are the point of zded holding the bus name.
     the sender called urgent, work shows everything - and after each of the
     three, `Mod+n` has the lot. A mode that changed what is in the centre is the
     bug (docs/vision.md, principle 3).
+  - **A private desk shows no card, in any mode.** Declare one, stand on it, and
+    send something: nothing on the screen, and `Mod+n` has it with the desk it
+    arrived on. This is the check to do before a screencast rather than after
+    one, and it is a different silence from quiet mode - the desk's rather than
+    the session's - so `zde attn work` must not bring the cards back.
+
+    ```sh
+    printf 'name: clinic\nprivate: true\nmonitors: { eDP-1: { workspaces: [mail] } }\n' \
+      > ~/.config/zde/desks/clinic.yaml
+    ```
+
+    Worth breaking on purpose once: a manifest with a typo in it, on a machine
+    that declares a private desk, should also draw nothing, because the broken
+    file could have been the private one. `zde doctor` names the file.
   - **Two screens**: the card appears on the one you are looking at, and moves
     when you do.
 - An app that expects a popup and gets a queue entry: does it misbehave, or

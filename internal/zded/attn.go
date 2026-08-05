@@ -64,6 +64,104 @@ type Reach struct {
 // (shell/AttnPopup.qml, maxUp).
 const popupBacklog = 16
 
+// maybePop puts an arrival in front of the person, if two different silences
+// both allow it. Called at the end of Arrived, after the record is kept and the
+// queue has it, and never instead of either.
+//
+// Two guards and deliberately not one condition, because they are two different
+// reasons for the same quiet and somebody reading this later must not fold them
+// together. The mode is the session's choice, made with a keypress and changed
+// with another one. A private desk is the desk's, declared in a manifest and
+// true whatever mode you are in, which is why quiet mode is not a way to get a
+// private desk and leaving quiet mode is not a way to lose one.
+//
+// Both are display and nothing else. The record is in the history and, where the
+// mode let it, on the queue, whichever way these two answer: that is principle 3
+// (docs/vision.md), and it is the same argument for both gates.
+//
+// The mode is passed in rather than read again: Arrived reads it once so that
+// what was queued and what was shown are one session's answer, and a second
+// reading here could land the other side of `zde attn quiet`.
+func (s *Server) maybePop(rec attn.Record, mode attn.Mode) {
+	// The session's answer: quiet shows nothing, focus shows what the sender
+	// called urgent, work shows everything (internal/attn, Pops).
+	if !mode.Pops(rec.Urgent) {
+		return
+	}
+	// The desk's. A private desk is popups off, history only (docs/vision.md,
+	// section 3), and until now this path read the mode and nothing else - so a
+	// notification arriving while somebody stood on a desk they had declared
+	// private put its sender, its summary and its body on the screen for five
+	// seconds, which is the one thing that desk exists to prevent.
+	if s.privateArrival(rec.Desk) {
+		return
+	}
+	// Which screen, asked here rather than in the pump. The pump runs on its own
+	// goroutine and the compositor client is one request at a time, so asking
+	// there would put it beside every other question the daemon is answering.
+	// Here it is one more round trip on a path that already makes one
+	// (whereWeAre), and the answer is the screen that was being looked at when
+	// the thing arrived, which is the honest one.
+	//
+	// Last of the three, so the two silences cost nothing: a machine in quiet
+	// mode, and a private desk, ask niri nothing at all.
+	_, output, err := s.niri.FocusedPlace()
+	if err != nil {
+		output = ""
+	}
+	s.pop(Event{
+		Kind:          EventAttnPopup,
+		Notifications: []attn.Record{rec},
+		Output:        output,
+	})
+}
+
+// privateArrival says whether something arriving on this desk must stay in
+// memory (docs/vision.md, section 3: private desks are popups off, history
+// only, capture-blocked).
+//
+// A notification on a screen is a different thing from one in a daemon's
+// memory: it is readable by whoever is in the room, and by whatever is
+// recording it, which is the case a private desk is for - a screencast, or
+// guest mode. A desk marked private is somebody saying that what arrives there
+// is not to be left lying around, and here that means no card is drawn.
+//
+// The same helper answers the same question for the history snapshot on
+// feat/attn-persist (#78), where "lying around" means a file that outlives the
+// session. It is deliberately one function and not two, because two ways of
+// asking whether a desk is private is two places for the answer to be wrong;
+// whichever of the two branches lands second should keep one copy of this.
+//
+// Fail closed, which is principle 9, and it decides the three cases that are
+// not a plain yes or no:
+//
+//   - the manifests cannot be read at all: we cannot tell which desk is
+//     private, so nothing leaves the daemon.
+//   - the desk is not declared, or nothing could say which desk it was (niri
+//     unreadable, or a session where nothing is named yet): then it could have
+//     been the private one, so it is refused whenever this machine declares a
+//     private desk at all. On the ordinary machine, which declares none, there
+//     is nothing to protect and it goes ahead.
+//   - one of the manifests would not parse: the broken file could be the
+//     private desk's, and a typo must not be how a private desk stops being
+//     one. `zde status` names the file (see rememberProblems).
+func (s *Server) privateArrival(deskName string) bool {
+	all, problems, err := s.desks.All()
+	if err != nil {
+		return true
+	}
+	s.rememberProblems(problems)
+	if d, declared := all[deskName]; declared && deskName != "" {
+		return d.Private
+	}
+	for _, d := range all {
+		if d.Private {
+			return true
+		}
+	}
+	return len(problems) > 0
+}
+
 // pop offers one arrival to whatever is drawing popups, and never waits for it.
 //
 // A channel and a goroutine rather than a broadcast from here, because this is
