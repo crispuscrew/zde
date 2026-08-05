@@ -309,12 +309,21 @@ ones are the point of zded holding the bus name.
     walk away mid-choice and the next `Mod+j` should navigate rather than
     disappear. With no card on the screen the key prints `no popup to reach`
     rather than doing nothing.
-  - **A flood.** `for i in $(seq 100); do notify-send "build $i"; done` - three
-    cards at most, the rest counted on the last line, and `zde system
-    notif-center` afterwards holding every one of them. A hundred progress
-    updates from one sender should be one card that keeps changing, not three
-    cards of the same download at different percentages: a second arrival from
-    a sender already on the screen replaces that sender's card.
+  - **A flood, which is two different floods.** Many senders at once should be
+    three cards at most, with the rest counted on the last line; one sender
+    over and over should be one card that keeps changing, because a second
+    arrival from a sender already on the screen replaces that sender's card
+    rather than stacking beside it. `-a` is what notify-send calls the sender:
+
+    ```sh
+    for i in $(seq 100); do notify-send -a "bot-$i" "build $i"; done
+    for i in $(seq 100); do notify-send -a curl "downloading $i%"; done
+    ```
+
+    And `zde system notif-center` afterwards holding as many of the two hundred
+    as its ring does, because the screen is the only thing either popup bound is
+    about. Two hundred is the ring's whole length, so this is also the way to
+    watch the oldest fall off the end of it.
   - **The modes as display.** quiet shows no card at all, focus shows only what
     the sender called urgent, work shows everything - and after each of the
     three, `Mod+n` has the lot. A mode that changed what is in the centre is the

@@ -257,20 +257,28 @@ ShellRoot {
                     root.modeKnown = true;
                     return;
                 }
-                // A refusal. Attributed to the center, which is the only
-                // surface here that asks for something that can fail while it
-                // is on the screen - and a refusal it swallowed would be a key
-                // that did nothing (docs/vision.md, principle 4). A refusal
-                // arriving from anything else while the center is up would land
-                // on it too, which is the price of a protocol with no request
-                // ids and is worth less than the silence.
+                // A refusal, attributed to whichever surface is up that could
+                // have earned one - a refusal swallowed is a key that did
+                // nothing (docs/vision.md, principle 4). One arriving from
+                // somewhere else lands on that surface too, which is the price
+                // of a protocol with no request ids and is worth less than the
+                // silence. The center is first because it is the one that holds
+                // the keyboard while it asks.
+                //
+                // The popup is last and is matched on visible rather than on
+                // reached, which is the case a keyboard-shaped guess would
+                // miss: its buttons are clickable without anybody ever asking
+                // for the keys, so a refusal owed to a mouse press had nowhere
+                // to land. Behind the palette, because `running` is the one
+                // precise claim here - a run really is in flight - where the
+                // other two are only "up".
                 if (msg.error !== undefined) {
                     if (center.visible)
                         center.note = msg.error;
-                    else if (attnPopup.reached)
-                        attnPopup.note = msg.error;
                     else if (palette.running)
                         palette.ran(msg.error);
+                    else if (attnPopup.visible)
+                        attnPopup.note = msg.error;
                     return;
                 }
                 // Replies to our own subscribe arrive here too; only the lines
