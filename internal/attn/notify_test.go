@@ -140,11 +140,16 @@ func TestNotifyBoundsTheLength(t *testing.T) {
 	}
 }
 
-// What zde sends itself goes through the same bounds as what an app sends. It
-// is the one arrival nobody on the bus wrote, and it carries a program's own
-// output, so a launch that failed with a screenful of it must not be the one
-// record in the history with no bound on it.
-func TestWhatZdeSendsItselfIsBoundedLikeAnythingElse(t *testing.T) {
+// Local puts what zde sends itself through the same bounds as what an app
+// sends. It is the one arrival nobody on the bus wrote, and it carries a
+// program's own output, so a launch that failed with a screenful of it must not
+// be the one record in the history with no bound on it.
+//
+// This is the door. That zde's own sender walks through it rather than past it
+// is a claim about a caller, and it is asserted where that caller is
+// (internal/zded, TestWhatASwitchSaysAboutItsLaunchesIsBoundedLikeAnythingElse):
+// nothing here can tell whether anybody called this at all.
+func TestLocalClampsWhatZdeHandsIt(t *testing.T) {
 	n := Local("zde", strings.Repeat("s", summaryMax*2), strings.Repeat("b", bodyMax*2))
 	if got := len([]rune(n.Text)); got != summaryMax {
 		t.Errorf("summary kept %d characters, want %d", got, summaryMax)

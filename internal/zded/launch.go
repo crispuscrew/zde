@@ -24,7 +24,9 @@ import (
 // name it holds itself would be a round trip to reach a struct field.
 
 // launchFailure is one app a desk declares that did not start, and the runner's
-// own words about it.
+// own words about it. An app that was already running is not one of these: zinc
+// refuses a second launch, and the desk switch that met that refusal got what
+// it wanted (server.go, startApps).
 type launchFailure struct {
 	Address string
 	Err     error
@@ -55,10 +57,20 @@ const reasonMax = 200
 // launchesFailed says, once for the whole switch, what the desk could not start.
 //
 // Once and not once per app: the count is the thing a person needs first, and
-// the names are underneath it. Never urgent - urgency is what crosses focus and
-// quiet modes (internal/attn, Mode), and a desk that came up missing a window is
-// not worth breaking somebody's concentration for. It lands in the history
-// either way, which is principle 3.
+// the names are underneath it.
+//
+// Never urgent, and the mode is allowed to keep it out of the queue. Urgency is
+// the claim focus mode reads (internal/attn, Mode), and a desk that came up
+// missing a window is not worth crossing a focus mode for - nor would urgency
+// buy anything in a quiet session, which queues nothing, the urgent included.
+// The reason it does not queue itself regardless of the mode is the machine
+// this is for: a desk can put somebody in quiet without their pressing anything
+// (docs/roadmap.md, desk attn policies), and on a machine with no layer 2 every
+// desk fails to start every app it declares (docs/delivery.md) - so a launch
+// failure that ignored the mode would be the one notification quiet cannot
+// silence, exactly where it fires most. What no mode does is lose it: the
+// record lands in the history either way, marked as one the mode kept off the
+// queue, which is principle 3 - display policy, never data policy.
 //
 // Nothing here can fail the switch: it runs on the goroutine behind it, holds no
 // lock the switch waits on, and an arrival that cannot be kept is logged like

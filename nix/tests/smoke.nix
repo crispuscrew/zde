@@ -1016,6 +1016,33 @@ let
           echo "switching to vshop did not try to start the app it declares:"
           cat /tmp/zded-live.log; exit 1
         }
+        # And it said so where somebody would see it, which is the half a log
+        # cannot do: what a switch could not start arrives like anything else
+        # that arrives, so it waits on the queue in the mode this session is in
+        # (docs/verify.md, section 5 - work here, and no manifest on this
+        # machine declares an attn policy).
+        #
+        # The property, not the sentence: the arrival names the desk, names the
+        # app, says it did not start, and comes from the desktop rather than
+        # from an app - the sender column is otherwise a claim an app makes
+        # about itself, and this is the one arrival zde sends itself.
+        launch_said() { zde queue >/tmp/q-launch.txt 2>&1 && grep -q 'did not start' /tmp/q-launch.txt; }
+        waitfor 20 launch_said || {
+          echo "the switch could not start the desk's app and told nobody:"
+          cat /tmp/q-launch.txt /tmp/zded-live.log; exit 1
+        }
+        awk -F'\t' '$4=="zde" && $5 ~ /vshop/ && $5 ~ /absent-app@vshop/ && $5 ~ /did not start/ { found=1 }
+             END { exit !found }' /tmp/q-launch.txt || {
+          echo "the launch failure reached the queue without saying which desk, which app, or who from:"
+          cat /tmp/q-launch.txt; exit 1
+        }
+        # Finished here, because the queue section further down is about the
+        # items it adds itself: it checks their order and that the queue empties
+        # when they are done. Nothing else in this run adds one - the snapshot
+        # below rewrites this manifest without its apps, deliberately
+        # (internal/manifest, FromMap), so every later switch to vshop starts
+        # nothing and has nothing to report.
+        zde queue done "$(grep 'did not start' /tmp/q-launch.txt | cut -f1)" >/dev/null
 
         # And the desk's pin reached niri as a window rule. This is the file the
         # generated config includes and zded is the only thing that writes

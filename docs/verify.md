@@ -329,10 +329,16 @@ ones are the point of zded holding the bus name.
 
   One notification for the whole switch, however many apps failed: it names the
   desk, counts them, and the body under `Mod+n` says which ones and what the
-  runner said about each. `zde queue` has the same line. Two things only use
-  settles: whether one arrival per switch is the right amount of noise when you
-  are switching desks all day, and whether the body says enough to act on
-  without going to the log. The log has them all, whole, either way.
+  runner said about each. In work mode `zde queue` has the same line; in focus
+  or quiet it does not, and that is the mode doing its job rather than the
+  notification going missing - `Mod+n` has it in every mode, marked as one the
+  mode kept off the queue. The other half is the switch back: on a desk whose
+  apps do start, leave it and come back, and the second switch says nothing at
+  all, because zinc refusing to start a second copy of something already up is
+  not a launch that failed. Two things only use settles: whether one arrival per
+  switch is the right amount of noise when you are switching desks all day, and
+  whether the body says enough to act on without going to the log. The log has
+  them all, whole, either way.
 - **A day's worth of arrivals.** History is a ring of 200, in memory: the 201st
   drops the oldest, and restarting zded empties it. The queue is the half that
   survives, because it is what you still owe. Whether 200 is a day or an hour
