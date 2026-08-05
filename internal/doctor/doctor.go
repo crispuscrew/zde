@@ -178,9 +178,16 @@ func notify(s Session) Check {
 
 // layer2 is whether zcr is there at all (docs/delivery.md). It is here because
 // that is precisely the thing somebody will not believe when they read that
-// their editor is unsandboxed - and it is what the desk apps check below turns
-// on, since without zcr the only resolver left answers about a different
-// namespace.
+// their editor is unsandboxed.
+//
+// It is the daemon's answer about the daemon's PATH, which is what decides
+// whether a desk switch can start anything. The desk apps check below asks the
+// same question of this process instead (probeDesks), because it is made off
+// the disk so that it still works on a session where zded is what is wrong -
+// and the two can disagree: a zded started by systemd carries the session's
+// PATH and this command carries the shell's. So this line does not stand for
+// that one, which is why every line of it ends with the resolver that actually
+// answered rather than pointing back here.
 //
 // Named for the layer rather than for the line it prints, because this package
 // asks zinc things now and a function called zinc would shadow the package that
@@ -337,12 +344,23 @@ func (d Desks) askedOf() string {
 // go and stop - and a count would send somebody looking for which.
 func logind(s Session) []Check {
 	l := s.Power
-	if l.Err != nil {
-		// Said as the consequence and not only as the reading. "no system bus"
-		// is a fact; a machine that cannot be told to go is what somebody is
-		// standing in front of.
-		return []Check{{Warn, "logind", l.Err.Error() +
+	switch {
+	case l.Absent:
+		// Said as the consequence and not only as the reading. "nobody owns the
+		// name" is a fact; a machine that cannot be told to go is what somebody
+		// is standing in front of.
+		return []Check{{Warn, "logind", "nothing owns " + logindName +
 			", so nothing can log out, suspend, reboot or power off this machine: a power menu, where there is one, could only lock"}}
+	case l.Err != nil:
+		// The middle state every other check here has. A question that could not
+		// be put has no answer, and the two-second bound above it means the
+		// ordinary way to land here is a machine that is slow rather than one
+		// that is missing something: telling somebody their machine cannot be
+		// powered off, on the evidence of a dial that timed out, is doctor
+		// inventing a fault. So it says what it could not do and hands over the
+		// question by hand, the way the desk apps check does.
+		return []Check{{Warn, "logind", "not known: " + l.Err.Error() +
+			" - so whether this session may log out, suspend, reboot or power off was never asked, and `loginctl show-session` puts the same question by hand"}}
 	}
 	var out []Check
 	for _, c := range l.Can {

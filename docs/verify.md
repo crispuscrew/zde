@@ -420,7 +420,13 @@ show up in use.
   - **A machine with no logind**, which is any container: run `zde doctor` in
     one, or with `DBUS_SYSTEM_BUS_ADDRESS` pointed at nothing. One warning, and
     it must come back at once rather than sit there - this is the command
-    somebody runs when something else has already gone wrong.
+    somebody runs when something else has already gone wrong. Which of the two
+    warnings it is worth reading: a bus that answered and has nobody on
+    logind's name says nothing can log out, suspend, reboot or power off this
+    machine, and a bus that could not be reached or would not answer says `not
+    known:` and the reading it came from. The second must not claim the first -
+    a dial that ran out of its two seconds is a machine that is slow, not one
+    that cannot be shut down.
   - **polkit refusing.** Deny the actions for your user
     (`security.polkit.extraConfig`, returning `polkit.Result.AUTH_ADMIN` for
     `org.freedesktop.login1.reboot`) and the line should say `reboot would be

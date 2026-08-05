@@ -47,10 +47,11 @@ blocks 0.2:
   `zde doctor` names the desk and the app before anybody switches to it (asking
   zcr, which is the resolver a launch uses, and saying on the line which of the
   two answered, since `zde.apps` holds the keys' logical names and not zinc app
-  names at all), and a launch that
-  fails as a desk is entered arrives as a notification - one for the whole
-  switch, naming what did not start and why, rather than a line in a log nobody
-  reads while they are working.
+  names at all), and a launch that fails as a desk is entered arrives as a
+  notification - one for the whole switch, naming what did not start and why,
+  rather than a line in a log nobody reads while they are working. A switch
+  back to a desk that is already up says nothing at all: zinc refusing to start
+  a second copy of something running is not a launch that failed.
 
 ## 0.2 - Daily driver
 

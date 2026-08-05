@@ -102,10 +102,17 @@ const (
 // would allow; that will ask logind to do it. Two questions, and the second one
 // is not a thing doctor may put to a machine somebody is working on.
 type Logind struct {
-	// Err is why nothing could be asked: no system bus, or a bus with nobody on
-	// logind's name. It stands for all four verbs at once, because none of them
-	// has anywhere to go.
+	// Err is why the question could not be put: no system bus, or a bus that
+	// did not answer inside askFor. It is not a verdict about the machine, and
+	// the two are worth keeping apart - a dial that timed out says nothing
+	// about whether this session may reboot, and "nothing can power this
+	// machine off" is a much larger claim than doctor is in a position to make
+	// from a question it never got an answer to.
 	Err error
+	// Absent is the bus answering that nobody holds logind's name. That one is
+	// the verdict: there is no logind here, so none of the four verbs has
+	// anywhere to go, and it stands for all four at once.
+	Absent bool
 	// Session is the logind session a log out would end, and empty when logind
 	// can name none - which is a log out that has to refuse rather than guess at
 	// somebody else's.
@@ -482,7 +489,10 @@ func probeLogind() Logind {
 		return Logind{Err: err}
 	}
 	if !owned {
-		return Logind{Err: errors.New("nothing owns " + logindName)}
+		// A bus that answered, about a machine that has no logind. What that
+		// means for the four verbs is doctor's to say (doctor.go, logind); what
+		// is recorded here is that the question was put and came back.
+		return Logind{Absent: true}
 	}
 
 	l := Logind{}

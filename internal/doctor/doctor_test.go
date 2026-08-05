@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"bufio"
 	"errors"
 	"os"
 	"os/exec"
@@ -694,17 +695,17 @@ func TestNoDesksAtAllIsNothingToReport(t *testing.T) {
 
 // A machine with no logind cannot be told to go, and every one of the four
 // verbs a power menu is made of is logind's. Said once, as the consequence,
-// because "no system bus" is a reading and a machine that will not shut down is
-// what somebody is standing in front of.
+// because "nobody owns the name" is a reading and a machine that will not shut
+// down is what somebody is standing in front of.
 func TestNoLogindIsOneWarningSayingNoneOfTheFourWouldWork(t *testing.T) {
 	s := healthy()
-	s.Power = Logind{Err: errors.New("the bus did not finish connecting within 2s")}
+	s.Power = Logind{Absent: true} // the bus answered: there is no logind here
 	c := only(t, Judge(s), "logind")
 	if c.Level != Warn {
 		t.Fatalf("logind = %s, want a warning: a session with no logind is one somebody can still work in", c)
 	}
-	if !strings.Contains(c.Detail, "did not finish connecting") {
-		t.Errorf("logind = %s, want the reading it came from", c)
+	if !strings.Contains(c.Detail, logindName) {
+		t.Errorf("logind = %s, want the name nobody is on", c)
 	}
 	for _, verb := range []string{"log out", "suspend", "reboot", "power off"} {
 		if !strings.Contains(c.Detail, verb) {
@@ -713,6 +714,41 @@ func TestNoLogindIsOneWarningSayingNoneOfTheFourWouldWork(t *testing.T) {
 	}
 	if Judge(s).Failed() != 0 {
 		t.Errorf("a machine with no logind failed a check:\n%s", Judge(s))
+	}
+}
+
+// And a question that could not be put is not an answer. The probe is bounded
+// at two seconds, so the ordinary way to land here is a machine that is slow or
+// a system bus that is the thing that broke - neither of which is a machine
+// that cannot be powered off, which is what this used to tell somebody on the
+// strength of a dial that timed out. Every other check in this package has this
+// middle state and this one is where it is worth most: it is read by somebody
+// deciding whether the power menu is worth pressing.
+func TestALogindThatCouldNotBeAskedIsNotAMachineThatCannotBeToldToGo(t *testing.T) {
+	s := healthy()
+	s.Power = Logind{Err: errors.New("the bus did not finish connecting within 2s")}
+	c := only(t, Judge(s), "logind")
+	if c.Level != Warn {
+		t.Fatalf("logind = %s, want a warning", c)
+	}
+	if !strings.Contains(c.Detail, "did not finish connecting") {
+		t.Errorf("logind = %s, want the reading it came from", c)
+	}
+	// The line this must not be: a verdict about the machine, off a question
+	// nothing answered.
+	if strings.Contains(c.Detail, "nothing can log out") {
+		t.Errorf("logind = %s, and nobody asked logind anything", c)
+	}
+	if !strings.Contains(c.Detail, "not known") || !strings.Contains(c.Detail, "never asked") {
+		t.Errorf("logind = %s, want it to say the question was not put", c)
+	}
+	// And the way to put it by hand, since somebody reading this is one command
+	// away from the answer doctor could not get.
+	if !strings.Contains(c.Detail, "loginctl") {
+		t.Errorf("logind = %s, want the question by hand", c)
+	}
+	if Judge(s).Failed() != 0 {
+		t.Errorf("a logind that could not be asked failed a check:\n%s", Judge(s))
 	}
 }
 
@@ -823,6 +859,82 @@ func TestNoLogindAnswerIsEverAFailure(t *testing.T) {
 	if c.Level != Warn || !strings.Contains(c.Detail, "Connection reset") {
 		t.Errorf("logind = %s, want a warning carrying why it could not be asked", c)
 	}
+}
+
+// The other half of that, and the half only a real bus can show: a session
+// where the bus answers and has nobody on logind's name is a machine that has
+// no logind, which is the verdict the line above must not be confused with. A
+// Logind built by hand says what Judge does with each state and nothing at all
+// about which state the probe produces, and that is where the two are told
+// apart (gather.go, probeLogind).
+func TestABusThatAnswersWithNoLogindOnItIsTheVerdictAndNotAReading(t *testing.T) {
+	busWithNobodyOnIt(t)
+	l := probeLogind()
+	if l.Err != nil {
+		t.Fatalf("probeLogind against a bus that answered = %v, want its answer", l.Err)
+	}
+	if !l.Absent {
+		t.Fatalf("probeLogind = %+v, want a machine with no logind said as one", l)
+	}
+	c := only(t, Judge(Session{Power: l}), "logind")
+	if c.Level != Warn || !strings.Contains(c.Detail, "nothing can log out") {
+		t.Errorf("logind = %s, want the warning that names what would not work", c)
+	}
+}
+
+// busWithNobodyOnIt is a private message bus with nobody on it at all.
+//
+// A real dbus-daemon rather than a fake at the Go boundary, for the reason
+// internal/link's fake NetworkManager is one (fakebus_test.go): what is being
+// asserted here is what the other end says, and the seam is the same single
+// environment variable, so no production code learns it is being tested.
+func busWithNobodyOnIt(t *testing.T) {
+	t.Helper()
+	const daemon = "dbus-daemon"
+	if _, err := exec.LookPath(daemon); err != nil {
+		t.Skipf("no %s on PATH, so there is no bus that answers to ask about logind: "+
+			"add pkgs.dbus to the devshell (flake.nix) and this runs", daemon)
+	}
+	cfg := filepath.Join(t.TempDir(), "bus.conf")
+	// The socket goes wherever the daemon puts it: a unix socket path is capped
+	// at about 108 bytes and a Go temp directory has spent most of that.
+	if err := os.WriteFile(cfg, []byte(`<!DOCTYPE busconfig PUBLIC
+ "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>session</type>
+  <listen>unix:tmpdir=/tmp</listen>
+  <auth>EXTERNAL</auth>
+  <policy context="default">
+    <allow own="*"/>
+    <allow send_destination="*"/>
+    <allow receive_sender="*"/>
+  </policy>
+</busconfig>
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(daemon, "--config-file="+cfg, "--nofork", "--print-address")
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	line, err := bufio.NewReader(out).ReadString('\n')
+	if err != nil {
+		cmd.Process.Kill() //nolint:errcheck // already failing
+		t.Fatalf("%s never printed an address: %v", daemon, err)
+	}
+	t.Cleanup(func() {
+		// Interrupt rather than kill, so it unlinks its socket on the way out
+		// instead of leaving one in /tmp per test run.
+		cmd.Process.Signal(os.Interrupt) //nolint:errcheck // it is going away either way
+		cmd.Wait()                       //nolint:errcheck // its exit status is not this test's business
+	})
+	t.Setenv("DBUS_SYSTEM_BUS_ADDRESS", strings.TrimSpace(line))
 }
 
 // The probe half. Every check here has to work on a machine where the thing is

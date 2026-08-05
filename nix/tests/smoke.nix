@@ -1126,10 +1126,12 @@ let
         # this script ever gets - a daemon answering, a compositor it can see,
         # the notification name taken, a manifest that parses - so nothing may
         # fail and the exit status has to be zero. The units are inactive here
-        # (this zded was started by hand) and this desk names an app zinc does
-        # not have, which is exactly why those are warnings: neither is a
-        # session somebody cannot work in, and a command that exits non-zero on
-        # every machine is one nobody reads the output of.
+        # (this zded was started by hand) and no shell is listening, which is
+        # exactly why those two are warnings: neither is a session somebody
+        # cannot work in, and a command that exits non-zero on every machine is
+        # one nobody reads the output of. Nothing is warned about the desks yet
+        # - the directory doctor reads is still empty at this point, and the
+        # desk that names an app zinc has not got is written further down.
         if ! zde doctor >/tmp/doctor.txt 2>&1; then
           echo "doctor failed a check on a session that is working:"
           cat /tmp/doctor.txt; exit 1
