@@ -507,6 +507,17 @@ show up in use.
   - **The lock row and `Mod+Ctrl+semicolon` lock the same way**, because both
     run whatever `zde.apps.lock` names. One of them working and the other not is
     the report.
+  - **Log out lands at the greeter**, and this is the item most worth doing
+    first. zded ends the session by asking logind which session it is in, and
+    the obvious answer does not work where zded runs: `user@.service` is outside
+    every session's cgroup, so the id comes from `XDG_SESSION_ID` if the session
+    put one in the user manager's environment, and otherwise from the user's
+    display session, which is the fallback `loginctl` makes. If the row answers
+    "logind cannot say which session this is", that is which of the three failed
+    on real hardware, and `loginctl session-status` beside
+    `systemctl --user show-environment | grep XDG_SESSION_ID` says why. What it
+    must never do is end somebody else's session, which is why it refuses rather
+    than guessing.
   - **A refusal has to read as a refusal.** Hold sleep off in a terminal, then
     suspend from the menu:
 
