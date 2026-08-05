@@ -1,13 +1,19 @@
 package zded
 
 import (
+	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 
+	"github.com/crispuscrew/zde/internal/apps"
+	"github.com/crispuscrew/zde/internal/bus"
+	"github.com/crispuscrew/zde/internal/keymap"
 	"github.com/crispuscrew/zde/internal/link"
 )
 
@@ -108,7 +114,7 @@ func TestTheBarAsksForMethodsThatExist(t *testing.T) {
 			"should follow it", methodInQML, methodHandedOnInQML)
 	}
 
-	srv := wireServer(t)
+	srv, machine := wireServer(t)
 	// Sorted, so that a run that finds something wrong finds it in the same
 	// order twice: a map's order is not one, and the first failure is what
 	// somebody reads.
@@ -123,6 +129,15 @@ func TestTheBarAsksForMethodsThatExist(t *testing.T) {
 		// journal, and there is none here. What it must not do is not exist.
 		if strings.HasPrefix(got.Error, "unknown method") {
 			t.Errorf("the bar asks for %q and zded does not have it: %s", method, got.Error)
+		}
+		// And what it must not do is answer out of the machine this is running
+		// on. Read here rather than at the end, so the method named is the one
+		// that did it (keepOffTheMachine).
+		for _, reached := range machine.reachedFor() {
+			t.Errorf("the bar asks for %q and answering it %s: a method dispatched here has to "+
+				"get that from a fake, the way net.status gets a network side from withLink, "+
+				"because this test runs on somebody's own machine (see keepOffTheMachine)",
+				method, reached)
 		}
 	}
 }
@@ -152,8 +167,13 @@ func TestTheBarAsksForMethodsThatExist(t *testing.T) {
 // sees net.status: the shell asks for it every five seconds through the same
 // helper that hid window.jump-to, and a unit test must not open the system bus
 // of the machine it happens to be running on.
-func wireServer(t *testing.T) *Server {
+//
+// And underneath that one seam, the same rule for every door there is, since a
+// seam only covers the dependency somebody remembered to put one in front of
+// (keepOffTheMachine). The second return is what got reached for anyway.
+func wireServer(t *testing.T) (*Server, *theMachine) {
 	t.Helper()
+	machine := keepOffTheMachine(t)
 	s := New("test", nil, &fakeCompositor{
 		m:       twoDesks(),
 		focused: "vshop.DP-1.code",
@@ -161,7 +181,180 @@ func wireServer(t *testing.T) *Server {
 		windows: []Window{{ID: 1, AppID: "term", Title: "a shell", Workspace: "vshop.DP-1.code"}},
 	}, nil)
 	withLink(s, nil, link.ErrNoManager)
-	return s
+	// The two fields that start a program. Nothing dispatched with no arguments
+	// reaches either today - desk.switch wants a desk name and palette.run wants
+	// an action - so these are here for the method that does: `zcr run` on a zde
+	// machine really does start a container, and the palette really does start a
+	// terminal, and both would happen behind a test that looked like it passed.
+	s.launch = func(address string) error {
+		machine.note("started the app " + address)
+		return errors.New("nothing starts a container from a unit test")
+	}
+	s.spawn = func(argv []string) error {
+		machine.note("ran " + strings.Join(argv, " "))
+		return errors.New("nothing starts a program from a unit test")
+	}
+	return s, machine
+}
+
+// theMachine is what a dispatched method reached for that belongs to the
+// computer running the tests rather than to the test.
+type theMachine struct {
+	// dir is where everything a dispatched method could write was pointed, so
+	// that "is this path the test's own" is a question with an answer.
+	dir string
+
+	mu      sync.Mutex
+	reached []string
+}
+
+// keepOffTheMachine puts a wall between a dispatched method and that computer,
+// and remembers whatever walked into it.
+//
+// The rule withLink keeps for the network side is the rule for everything
+// behind a surface method, and withLink can only keep it where a seam exists.
+// Logind is where that ran out: a branch adding a power menu adds a system.power
+// the scan above finds, and answering it with no argument goes powerMenu,
+// powerChoices, logins, power.Open, bus.System - so `go test ./internal/zded` on
+// somebody's laptop opened a connection to the logind on it and went green
+// having done so. Measured rather than reasoned about: with
+// DBUS_SYSTEM_BUS_ADDRESS pointed at a listener that counted, one connection,
+// and none once that one method was renamed away.
+//
+// One more seam would have closed that one hole and left the next one open, so
+// the wall is at the doors instead:
+//
+//   - Both buses, which is every D-Bus user this repo has. godbus takes each
+//     bus's address out of the environment (internal/bus, System and Session),
+//     so a socket in this test's own temp directory is where an unfaked dial
+//     arrives: it is accepted, noted and closed, and the caller gets an error
+//     instead of logind, NetworkManager or BlueZ.
+//   - The config directory, which XDG_CONFIG_HOME and HOME between them decide
+//     (internal/apps, Path; internal/keymap, TextPath; rules.go, dynamicPath).
+//     desk.reconcile writes niri's dynamic.kdl through the last of those, and
+//     with no desks behind it that write is an empty file - so a scan that
+//     reached it would take somebody's window rules away rather than merely
+//     read something.
+//   - What starts a program, which is s.launch and s.spawn, above.
+//
+// What this deliberately is not is a fake with answers in it. Those belong
+// beside the code that has an interface to fake, and the logind one cannot be
+// written here at all: internal/power and the openPower field it hangs off are
+// the power menu branch's, so anything shaped like them on this branch would be
+// a second idea of logind rather than the one the daemon uses. So this makes the
+// absence loud instead, and when the two branches meet the whole of the fix is
+// `withLogind(s, &fakeLogind{}, nil)` beside the withLink above, out of that
+// branch's own power_test.go. Checked by merging them: red without that line,
+// green with it, and this machine's bus never dialled either way.
+//
+// Which is the shape of it for every surface method after that one. A fake where
+// there is a seam, and this underneath, failing on the one nobody thought about.
+func keepOffTheMachine(t *testing.T) *theMachine {
+	t.Helper()
+	// Made here rather than taken from t.TempDir, and named in two letters,
+	// because a unix socket path is about a hundred bytes all in and t.TempDir
+	// builds one out of the test's name - which in this file is thirty-three
+	// characters before the random part. A listen that failed for that reason
+	// would be this test failing on a tree where nothing is wrong, which is what
+	// the whole file is arranged to avoid.
+	dir, err := os.MkdirTemp("", "zd")
+	if err != nil {
+		t.Fatalf("a directory to point the machine at: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	m := &theMachine{dir: dir}
+
+	// A socket where a bus is not.
+	sock := filepath.Join(dir, "bus")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("listen where a bus is not: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return // the listener closed, which is the end of the test
+			}
+			m.note("opened a D-Bus connection")
+			// Closed rather than answered, because the caller is in godbus's
+			// authentication handshake and an EOF ends it now. A socket left
+			// open would cost every dial the two seconds internal/bus waits
+			// before giving up on a bus that accepts and then says nothing.
+			c.Close()
+		}
+	}()
+	t.Setenv("DBUS_SYSTEM_BUS_ADDRESS", "unix:path="+sock)
+	t.Setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path="+sock)
+
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "config"))
+	t.Setenv("HOME", dir)
+	return m
+}
+
+// note records one thing reached for. Called from the goroutine accepting on
+// that socket and from whichever one a launch happens on, so it is a lock and
+// not a field.
+func (m *theMachine) note(what string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.reached = append(m.reached, what)
+}
+
+// reachedFor is what has been reached for since it was last asked. Drained, so
+// that the method being dispatched at the time is the one named and not every
+// method after it as well.
+func (m *theMachine) reachedFor() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := m.reached
+	m.reached = nil
+	return out
+}
+
+// The wall itself, because everything above depends on it and nothing above
+// would notice it coming down. On a branch where no dispatched method dials
+// anything - which is this one - a wall that had stopped working looks exactly
+// like a wall with nothing to catch, right up until the branch that adds the
+// method.
+func TestTheWireServerKeepsADispatchOffTheMachine(t *testing.T) {
+	machine := keepOffTheMachine(t)
+
+	if conn, err := bus.System(); err == nil {
+		conn.Close()
+		t.Fatal("the system bus answered a unit test, so godbus is not reading the address this sets: " +
+			"logind, NetworkManager and BlueZ are all behind that one")
+	}
+	if reached := machine.reachedFor(); len(reached) != 1 {
+		t.Fatalf("a dial for the system bus went somewhere this cannot see: %v", reached)
+	}
+	// The session bus too, which is where the notification name is taken
+	// (internal/attn, notify.go).
+	if conn, err := bus.Session(); err == nil {
+		conn.Close()
+		t.Fatal("the session bus answered a unit test")
+	}
+	if reached := machine.reachedFor(); len(reached) != 1 {
+		t.Fatalf("a dial for the session bus went somewhere this cannot see: %v", reached)
+	}
+
+	// And the file half, which has no listener to catch it: the check is that
+	// each path a dispatched method would take is inside this test's own
+	// directory. dynamic.kdl is the one that matters most, because
+	// desk.reconcile rewrites it whole from whatever desks the daemon has -
+	// which here is none, so the write is an empty file where somebody's window
+	// rules were. The other two are read rather than written, and are here
+	// because they are the same two environment variables one function along.
+	for _, would := range []struct{ what, path string }{
+		{"desk.reconcile would write", dynamicPath()},
+		{"palette.list would read", keymap.TextPath()},
+		{"ask.run would read", apps.Path(askFile)},
+	} {
+		if !strings.HasPrefix(would.path, machine.dir+string(os.PathSeparator)) {
+			t.Errorf("%s %s, which is not this test's own directory", would.what, would.path)
+		}
+	}
 }
 
 // The same hole, one door along: an event kind is a string in the Go source and
