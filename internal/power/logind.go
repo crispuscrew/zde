@@ -64,9 +64,21 @@ func Open() (Manager, error) {
 }
 
 // Alive is whether the connection is still worth keeping, asked for by the
-// daemon that holds it (internal/zded, logind). systemd-logind is restarted by
-// its own updates and the socket dies with it; without this zded would hold a
-// dead connection and refuse every power action for the rest of the session.
+// daemon that holds it (internal/zded, logins).
+//
+// It is the bus connection it answers about, not logind. godbus reads
+// Connected() off the context it closes when the connection ends
+// (conn.ctx.Err() == nil), and what ends that is the socket to the system bus
+// going: the broker restarted, or the library giving up on a read. A
+// systemd-logind restart is not one of those - zded is connected to the bus
+// broker and not to logind, the name is activatable, and a call made after
+// logind comes back is routed to the new one - so there is nothing here that
+// has to notice it, and this would not.
+//
+// What it does cover is worth the line anyway: a connection that has closed
+// answers every call with the same "connection closed" for ever, and without
+// this zded would hold one and refuse every power action for the rest of the
+// session.
 func (l *Logind) Alive() bool { return l.conn != nil && l.conn.Connected() }
 
 // Close gives the bus connection back: a dropped one leaks the socket and the
@@ -96,12 +108,22 @@ func (l *Logind) call(ctx context.Context, path dbus.ObjectPath, method string, 
 // sessionRow and inhibitorRow are logind's own reply shapes. Named structs
 // rather than []any, because the fields are positional on the wire and a
 // reordering here would read one session's seat as another's name.
+//
+// sessionRow is ListSessionsEx's a(sussussbto) and not ListSessions's
+// a(susso). The extra fields are the point: the sixth is the session class, and
+// without it there is no way to tell a person sitting at this machine from a
+// display manager's greeter or a background job (power.go, Session.counts).
 type sessionRow struct {
-	ID   string
-	UID  uint32
-	User string
-	Seat string
-	Path dbus.ObjectPath
+	ID     string
+	UID    uint32
+	User   string
+	Seat   string
+	Leader uint32
+	Class  string
+	TTY    string
+	Idle   bool
+	IdleAt uint64
+	Path   dbus.ObjectPath
 }
 
 type inhibitorRow struct {
@@ -120,22 +142,37 @@ type inhibitorRow struct {
 // when logind says no. Two round trips on a local system bus is microseconds;
 // two methods would be two chances for the menu and the refusal to describe
 // different moments.
+//
+// ListSessionsEx and not ListSessions, which is the call every example uses.
+// The older one answers a(susso) and carries no session class, so a greeter or
+// a background job belonging to another uid reads exactly like a person sitting
+// at this machine - and logind's own rule for whether a reboot needs the
+// multiple-sessions authorisation filters by class (power.go, Session.counts).
+// Same round trip, wider struct.
+//
+// Nothing falls back to ListSessions if this is missing. ListSessionsEx is
+// systemd v256 and later, zde's own pin is 258 (flake.lock, nixos-26.05), and a
+// fallback would have to count every session of another uid as a person - which
+// is the lie this call was chosen to stop telling, kept alive on the one kind of
+// machine where nobody would be looking for it. A logind too old to answer says
+// so, and the rows carry that as the reason they will not work.
 func (l *Logind) State() (State, error) {
 	ctx, cancel := l.within()
 	defer cancel()
 
 	var rows []sessionRow
-	if err := l.call(ctx, mgrPath, mgrIface+".ListSessions", []any{&rows}); err != nil {
+	if err := l.call(ctx, mgrPath, mgrIface+".ListSessionsEx", []any{&rows}); err != nil {
 		return State{}, err
 	}
 	mine := l.myID(ctx)
 	st := State{}
 	for _, r := range rows {
 		st.Sessions = append(st.Sessions, Session{
-			ID:   r.ID,
-			User: r.User,
-			Seat: r.Seat,
-			Mine: mine != "" && r.ID == mine,
+			ID:    r.ID,
+			User:  r.User,
+			Seat:  r.Seat,
+			Class: r.Class,
+			Mine:  mine != "" && r.ID == mine,
 		})
 	}
 	var held []inhibitorRow
@@ -243,14 +280,21 @@ func (l *Logind) Do(w What) error {
 	return Because(w, st, err)
 }
 
-// shutdownOrSleep is logind's own name for the four, and the false is the whole
-// reason this is one function.
+// shutdownOrSleep is the three of these that are logind Manager methods of one
+// shape - Suspend, Reboot and PowerOff, each taking one boolean - and the false
+// is the whole reason they are one function. A log out is not among them: it is
+// TerminateSession on this session's id, and it goes to terminate below.
 //
 // interactive=false asks polkit to answer now rather than to go looking for an
 // authentication agent. A zde session has no polkit agent, so interactive would
 // buy a wait for a dialog nobody is ever going to see, on the connection a
 // keypress is waiting on - and then the key would be one that did nothing for
 // twenty seconds. A refusal that arrives is a refusal the surface can show.
+//
+// The boolean is also all it is: the legacy Suspend(b) methods map it to
+// SD_LOGIND_INTERACTIVE and nothing else (method_do_shutdown_or_sleep,
+// src/login/logind-dbus.c), so a block inhibitor is never skipped by this call
+// and comes back as its own refusal (power.go, Because).
 func (l *Logind) shutdownOrSleep(ctx context.Context, method string) error {
 	return l.call(ctx, mgrPath, mgrIface+"."+method, nil, false)
 }
