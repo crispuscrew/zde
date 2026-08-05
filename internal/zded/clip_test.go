@@ -3,6 +3,7 @@ package zded
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,12 +19,17 @@ import (
 // list", it is "the bytes were never requested", and only the thing being asked
 // can say whether they were.
 type fakeClipboard struct {
-	mu      sync.Mutex
-	types   []string
-	data    []byte
-	reads   int
-	wrote   [][]byte
-	changes chan struct{}
+	mu    sync.Mutex
+	types []string
+	data  []byte
+	reads int
+	wrote [][]byte
+	// writeErr is what Write answers with when nothing can take the selection:
+	// a session with no wayland display, or no wl-copy on the PATH. It is the
+	// case that used to strand the loop guard, because the guard is announced
+	// before the write and only the write's failure can take it back.
+	writeErr string
+	changes  chan struct{}
 }
 
 func newFakeClipboard() *fakeClipboard {
@@ -69,6 +75,11 @@ func (f *fakeClipboard) Read(_ string, limit int) ([]byte, bool, error) {
 // could not show the loop the loop guard exists to break.
 func (f *fakeClipboard) Write(text []byte) error {
 	f.mu.Lock()
+	if f.writeErr != "" {
+		err := errors.New(f.writeErr)
+		f.mu.Unlock()
+		return err
+	}
 	f.wrote = append(f.wrote, append([]byte(nil), text...))
 	f.types = []string{"text/plain"}
 	f.data = append([]byte(nil), text...)
@@ -106,8 +117,14 @@ func clipRows(t *testing.T, s *Server) []clip.Row {
 
 // The first invariant, where it is actually enforced: an offer that carries the
 // password manager hint is not read at all. Not read and dropped, not recorded
-// and hidden - the request for the bytes is never made, so the secret is not in
-// this process, not in a pipe, and not in anything zde started.
+// and hidden - zded never makes the request, so the secret is never in this
+// process's heap.
+//
+// Not "not in a pipe", which this comment used to say: wl-paste has already
+// received the selection into one by the time these types reach here
+// (internal/clip, Tool.Watch). What this test pins is the reachable half, which
+// is also the whole of what a test can pin - that nothing zde wrote asks for the
+// bytes.
 //
 // The read count is what makes that a real assertion. A history that recorded
 // the password and then declined to list it would pass a test that only looked
@@ -173,6 +190,52 @@ func TestPuttingAnEntryBackDoesNotRecordItAgain(t *testing.T) {
 	}
 	if after[0].Preview != "the second thing" {
 		t.Errorf("the newest row is %q, so the list reordered itself under the person using it", after[0].Preview)
+	}
+}
+
+// A write that failed is not a change that is coming. The history is told what
+// is about to be written before it is written - it has to be, because the echo
+// can beat the write's own return - so the write failing is the only moment
+// anything can take that back (internal/clip, Expect).
+//
+// Without the retraction, one `wl-copy: no wayland display` leaves the history
+// waiting for an echo nothing will send, and the next genuine copy of the text
+// somebody just tried to paste is swallowed as though zde had caused it. That is
+// the entry a person reached for on purpose, which is the worst one to lose.
+func TestAWriteThatFailedDoesNotSwallowTheNextCopy(t *testing.T) {
+	s, f := clipServer(t)
+	f.offer("a token from a terminal", "text/plain")
+	s.take()
+	rows := clipRows(t, s)
+	if len(rows) != 1 {
+		t.Fatalf("%d rows before anything was put back: %+v", len(rows), rows)
+	}
+
+	f.mu.Lock()
+	f.writeErr = "wl-copy: no wayland display"
+	f.mu.Unlock()
+	resp := s.Dispatch(Request{Method: "clip.history", Args: []string{itoa(rows[0].ID)}})
+	if resp.Error == "" {
+		t.Fatal("a clipboard that cannot be written answered as though it had been")
+	}
+
+	// The session comes back, and the person copies that same text again by
+	// hand. Nothing zde did took the selection, so this is an ordinary copy.
+	f.mu.Lock()
+	f.writeErr = ""
+	f.mu.Unlock()
+	f.offer("something else", "text/plain")
+	s.take()
+	f.offer("a token from a terminal", "text/plain")
+	s.take()
+
+	after := clipRows(t, s)
+	if len(after) != 3 {
+		t.Fatalf("%d rows, want three - the copy after a failed write was taken for zde's own echo: %+v",
+			len(after), after)
+	}
+	if after[0].Preview != "a token from a terminal" {
+		t.Errorf("the newest row is %q", after[0].Preview)
 	}
 }
 

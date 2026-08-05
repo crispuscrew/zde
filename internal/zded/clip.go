@@ -202,12 +202,18 @@ func (s *Server) sweepClips(ctx context.Context) {
 //
 // Ask what the offer is made of; refuse it if it says it is a secret; only then
 // ask for the bytes. That order is what makes docs/vision.md, principle 5 true
-// rather than aspirational: a hinted entry is not read, so it is not in this
-// process, not in a pipe, and not in anything zde spawned. A watcher written
-// the ordinary way - `wl-paste --watch <something that reads stdin>` - has the
-// secret in a process it started before it can decide anything, and "never
-// recorded" would be "read and then dropped", which a core file does not agree
-// with.
+// rather than aspirational: a hinted entry is never read by anything zde wrote,
+// so it is not in this process's heap, not in the ring, and not in a core file
+// of zded.
+//
+// Not "not in a pipe", and not "not in anything zde spawned" - both of which
+// this comment used to claim. wl-paste receives the selection into a pipe before
+// it spawns the watcher's child, so the secret has been through a process zded
+// started before this function has seen one mime type (internal/clip,
+// Tool.Watch, which has the citation). Nothing here prevents that short of
+// speaking the Wayland protocol. What the order buys is the half zde owns, and
+// it is the half that outlives the copy: those pipes go when the child exits,
+// and the daemon that runs until logout never held it.
 //
 // Nothing here is logged. It runs on every copy, so a line per failure would be
 // a log that fills at the speed of somebody working; what it does instead is
@@ -302,6 +308,11 @@ func (s *Server) clipHistory() Response {
 // call's return, so a guard set afterwards guards nothing - and what it would
 // have cost is the list reordering itself every time somebody used it
 // (internal/clip, Expect).
+//
+// Announcing before the fact means announcing writes that then do not happen,
+// which is why the failure path takes it back. `wl-copy: no wayland display` is
+// the ordinary way to see it: without the retraction the history would go on
+// expecting an echo that nothing is going to send.
 func (s *Server) clipPut(id string) Response {
 	tool := s.clipTool()
 	if tool == nil {
@@ -312,7 +323,8 @@ func (s *Server) clipPut(id string) Response {
 	if err != nil {
 		return Response{Error: "clip.history wants the id from the list, not " + strconv.Quote(id)}
 	}
-	text, why := s.clips.Text(n, time.Now())
+	now := time.Now()
+	text, why := s.clips.Text(n, now)
 	if why != "" {
 		return Response{Error: why}
 	}
@@ -320,8 +332,13 @@ func (s *Server) clipPut(id string) Response {
 	// still in the ring and still expires on its own; what this stops is a spare
 	// copy of it lying in the heap afterwards, outliving the thing it came from.
 	defer clear(text)
-	s.clips.Expect(text)
+	s.clips.Expect(n, now)
 	if err := tool.Write(text); err != nil {
+		// Nothing took the selection, so no echo is coming. Taken back here, and
+		// bounded by ExpectWindow anyway for the failures that do not come back
+		// as an error at all - a write that succeeded and then lost the selection
+		// to something else.
+		s.clips.Expect(0, now)
 		return Response{Error: err.Error()}
 	}
 	return ok([]string{})

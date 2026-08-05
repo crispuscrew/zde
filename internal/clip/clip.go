@@ -6,10 +6,22 @@
 // owns this (docs/vision.md, principle 5 - the clipboard has history, secrets
 // never enter it):
 //
-//   - The hint. An entry a password manager marks as a secret is never recorded.
-//     Not recorded and hidden, not recorded and wiped early: never read at all
+//   - The hint. An entry a password manager marks as a secret is never recorded,
+//     and nothing zde wrote ever asks for its bytes: the offer is asked what it
+//     is made of first, and one carrying the hint is refused before any read
 //     (see Sensitive, and internal/zded/clip.go for the order the watcher asks
-//     in). The one thing that cannot leak is the thing nothing ever asked for.
+//     in). So it is not in this daemon's heap, not in the ring, and not in a
+//     core file of zded.
+//
+//     What that deliberately does not say, because it is not true: the secret
+//     has already been through a process zde started. `wl-paste --watch` pipes
+//     the selection to itself before it spawns anything, so the password manager
+//     has written it into a pipe held by a child of zded by the time the types
+//     are read (internal/clip/wl.go, Watch, which has the citation). Nothing
+//     short of speaking the Wayland protocol changes that. The promise here is
+//     the narrow one, and it is the one that outlives the copy: the daemon that
+//     runs for the whole session never holds it.
+//
 //   - The TTL. An entry older than TTL is dropped and its bytes are overwritten
 //     where they lie (see Expire). A history that only stops listing an entry is
 //     a history a memory dump still reads, and this is a desktop whose users
@@ -161,15 +173,34 @@ type entry struct {
 	at    time.Time
 }
 
+// ExpectWindow is how long the loop guard waits for the change zde caused.
+//
+// The echo of zde's own write is the next clipboard change, arriving as fast as
+// the compositor can deliver it; ten seconds is far past that on a machine that
+// is working. What the bound is really for is the echo that never comes - a
+// write that took the selection and then lost it, a wl-paste that died between
+// the two - because a guard with no deadline is one that swallows the next real
+// copy of that text whenever it happens, which could be an hour later.
+const ExpectWindow = 10 * time.Second
+
 // History is the ring. Safe for concurrent use: the watcher adds from its own
 // goroutine while a surface reads over the socket.
 type History struct {
 	mu      sync.Mutex
 	entries []entry
 	next    uint64
-	// expect is what zde itself last put on the clipboard, kept until the
-	// change it causes comes back round (see Expect).
-	expect []byte
+	// expect is the id of the entry zde last put back on the clipboard, held
+	// until the change it causes comes back round (see Expect), and expectAt is
+	// when that was.
+	//
+	// An id and not the text. The text is in the ring already, under the ring's
+	// TTL and the ring's wipe, so matching against it costs nothing and leaves
+	// nothing behind: this guard used to be a full copy of an entry, living
+	// outside h.entries where no sweep reached it, which made the one entry
+	// somebody had just chosen to paste - disproportionately the password - the
+	// one entry with no expiry at all.
+	expect   uint64
+	expectAt time.Time
 }
 
 // Add records what was copied and answers with the id of the new entry, or zero
@@ -196,9 +227,8 @@ func (h *History) Add(text []byte, now time.Time) uint64 {
 		clear(text)
 		return 0
 	}
-	if h.expect != nil && bytes.Equal(h.expect, text) {
-		clear(h.expect)
-		h.expect = nil
+	if h.echo(text, now) {
+		h.expect = 0
 		clear(text)
 		return 0
 	}
@@ -256,21 +286,49 @@ func (h *History) push(e entry) uint64 {
 	return e.id
 }
 
-// Expect says zde is about to put this text on the clipboard itself, so the
-// change it causes is not a new entry.
+// Expect says zde is about to put the entry with this id on the clipboard
+// itself, so the change it causes is not a new entry. Zero means nothing is
+// expected, which is what the caller says when the write it announced failed.
 //
 // Said before the write and not after it: the clipboard change arrives on
 // another goroutine and can beat the write's own return, and a loop guard that
-// is set after the loop has already gone round guards nothing.
+// is set after the loop has already gone round guards nothing. Which is also
+// why it has to be retractable - announcing before the fact means announcing
+// writes that then do not happen (internal/zded, clipPut).
+//
+// An id rather than the text, which is the whole of what makes this safe: the
+// bytes it will be compared against are the ring's own, so they expire when that
+// entry expires and are wiped when it is wiped. An entry that goes before its
+// echo arrives simply stops matching, and the echo becomes an ordinary new entry
+// - one spare row in a case that needs the compositor to lose fifteen minutes.
 //
 // One deep, and consumed by the first arrival that matches. A second write
 // before the first came back replaces it, which is the right way round: the
 // newer one is the one whose echo has not happened yet.
-func (h *History) Expect(text []byte) {
+func (h *History) Expect(id uint64, now time.Time) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	clear(h.expect)
-	h.expect = append([]byte(nil), text...)
+	h.expect = id
+	h.expectAt = now
+}
+
+// echo says whether this arrival is the change zde caused. Called with the lock
+// held.
+//
+// Three things have to hold: something is expected, it was expected recently
+// enough (see ExpectWindow), and the entry it names is still in the ring holding
+// exactly these bytes. The last is what the id buys - the comparison is against
+// the copy the ring already governs, so there is no second one to look after.
+func (h *History) echo(text []byte, now time.Time) bool {
+	if h.expect == 0 || now.Sub(h.expectAt) >= ExpectWindow {
+		return false
+	}
+	for _, e := range h.entries {
+		if e.id == h.expect {
+			return e.kind == KindText && bytes.Equal(e.text, text)
+		}
+	}
+	return false
 }
 
 // Text is one entry's content, for putting it back on the clipboard. It answers
@@ -365,6 +423,13 @@ func (h *History) expire(now time.Time) int {
 		h.entries[i] = entry{}
 	}
 	h.entries = kept
+	// And the loop guard, which holds no text of its own and so has nothing to
+	// wipe - what it has is a deadline, and this is the sweep that reaches it.
+	// The bytes it would have been compared against are an entry's, so they went
+	// with the loop above like everything else.
+	if h.expect != 0 && now.Sub(h.expectAt) >= ExpectWindow {
+		h.expect = 0
+	}
 	return gone
 }
 
@@ -379,21 +444,34 @@ func (h *History) Clear() int {
 		h.entries[i] = entry{}
 	}
 	h.entries = h.entries[:0]
-	clear(h.expect)
-	h.expect = nil
+	h.expect = 0
 	return n
 }
+
+// hintLower is HintType folded once, because Contains has no case-insensitive
+// form and this is asked of every type of every copy.
+var hintLower = strings.ToLower(HintType)
 
 // Sensitive reports whether this offer says it is a secret.
 //
 // The whole of the first invariant, and it is deliberately one line: it is
 // asked before anything reads the content, so an entry that answers true is
-// never requested from the application at all (internal/zded, take). Case
-// insensitively, because a mime type is not case sensitive and a manager that
-// spells it differently would otherwise be a password in the history.
+// never requested from the application at all (internal/zded, take).
+//
+// Containment rather than equality, and case folded. A mime type is not case
+// sensitive, and the hint is not always the whole of the name it arrives under:
+// `x-kde-passwordManagerHint;charset=utf-8` carries a parameter, and
+// `application/x-kde-passwordManagerHint` puts it in the subtype, and an
+// equality test catches neither. No reviewer has found a manager that spells it
+// either way, so this is a gap rather than a live break - but the two ways of
+// being wrong here are still not the same size (docs/vision.md, principle 9). A
+// false positive costs one clipboard entry that is not in the history; a false
+// negative is a password in it. And `x-kde-passwordmanagerhint` is
+// twenty-five characters of a spelling nothing else uses, so a type containing
+// it is a type that means it.
 func Sensitive(types []string) bool {
 	for _, t := range types {
-		if strings.EqualFold(strings.TrimSpace(t), HintType) {
+		if strings.Contains(strings.ToLower(t), hintLower) {
 			return true
 		}
 	}

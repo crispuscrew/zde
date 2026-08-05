@@ -47,16 +47,35 @@ import (
 //     home.nix) and a session without it gets one line in the daemon's log and a
 //     history that stays empty, rather than a daemon that fails to start.
 //
-// And what CLIPBOARD_STATE cannot do, which is the reason the sensitive check
-// is not simply asked of wl-paste. `wl-paste --watch` sets that variable for the
-// command it spawns and defines a `sensitive` value for exactly this case - but
-// its own manual says the value is never produced: "the currently existing
-// Wayland clipboard protocols don't let wl-clipboard identify the cases where
-// clear and sensitive should be set, so currently wl-clipboard only ever sets
-// CLIPBOARD_STATE to data or nil" (wl-clipboard 2.2.1, wl-paste(1)). A check
-// written against it would look right, test green against a fake, and never
-// once fire on a real machine. So zde asks the offer what it is made of instead
-// (see Sensitive), which is a question wl-paste does answer.
+// And why the sensitive check is not simply asked of wl-paste, which is a
+// question whose answer moved. `wl-paste --watch` sets CLIPBOARD_STATE for the
+// command it spawns, and one of the values it defines is `sensitive`. Up to
+// wl-clipboard 2.2.1 that value was never produced - "currently wl-clipboard
+// only ever sets CLIPBOARD_STATE to data or nil" - and the first version of this
+// file said so as though it were permanent. It is not: 2.3.0, which is what this
+// flake pins (nixpkgs 26.05), "only sets it to sensitive when it encounters
+// x-kde-passwordManagerHint among the MIME types" (wl-paste(1)). That is the
+// same type and the same rule Sensitive applies.
+//
+// zde still asks the offer, and the reason is no longer that the variable does
+// not work:
+//
+//   - It works on new enough wl-clipboard and silently does not on older, and
+//     zde runs on whatever the machine has rather than only on what this flake
+//     builds. On 2.2.1 a check written against the variable reads `data` for a
+//     password and records it, which is failing open on a difference nothing in
+//     the session announces (docs/vision.md, principle 9).
+//   - It only arrives in the spawned command's environment, so using it means
+//     the watcher's child is a zde program that wl-paste hands the selection to
+//     on stdin. It could decline to read that stdin - but the refusal would then
+//     be one made about bytes already delivered to something zde wrote, rather
+//     than before asking for them.
+//   - The types have to be read anyway: which one to ask for, and what to call a
+//     non-text offer on a row. The hint is one line of a list this already has,
+//     so asking costs nothing that was not already being spent.
+//
+// On 2.3.0 the two agree by construction, because they are the same check made
+// twice. This is the copy zde controls.
 type Tool struct{}
 
 // The two programs. Named rather than spelled at each call site, because
@@ -87,11 +106,21 @@ const within = 3 * time.Second
 // is installed.
 //
 // Deliberately not `--watch <something that reads stdin>`, which is how every
-// other clipboard manager is wired. The content of a change would then be
-// delivered to a process zde started before zde has decided whether it is
-// allowed to look at it, and "never recorded" would mean "read and then thrown
-// away". Here the bytes are requested only after the offer has been asked what
-// it is (internal/zded, take).
+// other clipboard manager is wired - but the difference is narrower than it
+// looks, and being exact about it is the point of this paragraph. wl-paste's
+// selection callback pipes the selection to itself before it forks: the parent
+// calls pipe() and then offer_receive() unconditionally, and only then spawns
+// the command with the read end as its stdin (wl-clipboard 2.3.0,
+// src/wl-paste.c, selection_callback). A password manager has therefore written
+// the secret into a pipe held by a child of zded whatever that command is, and
+// choosing `--list-types` does not change it.
+//
+// What it changes is who reads that pipe. `--list-types` never touches its
+// stdin, so those bytes go nowhere and die with the pipe when the child exits;
+// and nothing zde wrote asks for the content until the offer has been asked what
+// it is and answered something other than the hint (internal/zded, take). So
+// "never recorded" means what internal/clip's own header says it means and no
+// more: zded's heap never holds it.
 func (Tool) Watch(ctx context.Context) (<-chan struct{}, error) {
 	if _, err := exec.LookPath(Paste); err != nil {
 		return nil, fmt.Errorf("%s is not installed, so nothing can watch the clipboard: %w", Paste, err)

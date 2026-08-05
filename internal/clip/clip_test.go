@@ -31,6 +31,19 @@ func TestASourceThatOffersTheHintIsSensitiveWhateverElseItOffers(t *testing.T) {
 	if !Sensitive([]string{"x-kde-passwordmanagerhint"}) {
 		t.Error("the hint in another case reads as ordinary text")
 	}
+	// And the two shapes an equality test misses. Nobody has found a manager
+	// that spells it either way, so this is the gap being closed rather than a
+	// break being fixed - but the cost of being wrong is one entry in one
+	// direction and a password in the other.
+	if !Sensitive([]string{"x-kde-passwordManagerHint;charset=utf-8"}) {
+		t.Error("the hint with a parameter on it reads as ordinary text")
+	}
+	if !Sensitive([]string{"application/x-kde-passwordManagerHint"}) {
+		t.Error("the hint as a subtype reads as ordinary text")
+	}
+	if !Sensitive([]string{"  " + HintType + "\t"}) {
+		t.Error("the hint with whitespace round it reads as ordinary text")
+	}
 	if Sensitive([]string{"text/plain", "text/html"}) {
 		t.Error("ordinary text reads as a secret, so nothing would ever be recorded")
 	}
@@ -101,14 +114,13 @@ func TestExpiryDoesNotWaitForSomebodyToLook(t *testing.T) {
 // only thing that can tell it apart is zde knowing it caused it.
 func TestPuttingAnEntryBackIsNotANewEntry(t *testing.T) {
 	var h History
-	h.Add(text("first"), now)
+	first := h.Add(text("first"), now)
 	h.Add(text("second"), now)
 	h.Add(text("third"), now)
 
-	// Enter on the oldest row: zde says what it is about to write, then the
-	// change comes back round from the compositor.
-	back := text("first")
-	h.Expect(back)
+	// Enter on the oldest row: zde says which entry it is about to write, then
+	// the change comes back round from the compositor.
+	h.Expect(first, now)
 	if id := h.Add(text("first"), now.Add(time.Second)); id != 0 {
 		t.Errorf("the echo of zde's own write was recorded as entry %d", id)
 	}
@@ -124,6 +136,95 @@ func TestPuttingAnEntryBackIsNotANewEntry(t *testing.T) {
 	// time somebody genuinely copies that text it is an entry like any other.
 	if id := h.Add(text("first"), now.Add(2*time.Second)); id == 0 {
 		t.Error("copying the same text again by hand was swallowed too")
+	}
+}
+
+// The loop guard is not a place an entry survives its own expiry. It used to be
+// a full copy of the text, held outside the ring where no sweep and no wipe
+// reached it, so the one entry somebody had just chosen to paste - which is
+// disproportionately the password - was the one entry with no TTL at all.
+//
+// It is an id now, so the bytes it is compared against are the ring's own and
+// expire with them. What that has to look like from outside is this: once the
+// entry is gone, nothing is being held on its behalf, and text that matches it
+// is an ordinary new copy.
+//
+// If this regresses, the TTL has a hole in it shaped like the last thing pasted.
+func TestTheLoopGuardDoesNotOutliveTheEntryItNames(t *testing.T) {
+	var h History
+	secret := text("s3cret-token-from-a-terminal")
+	id := h.Add(secret, now)
+	h.Expect(id, now)
+	if h.expect != id {
+		t.Fatalf("the guard names %d and not the entry that was put back, so this test proves nothing", h.expect)
+	}
+
+	// The echo never arrives - the compositor lost it, the window closed - and
+	// the entry reaches its TTL still expected.
+	if n := h.Expire(now.Add(TTL + time.Second)); n != 1 {
+		t.Fatalf("%d entries expired, want the one that was expected", n)
+	}
+	// The sweep reaches the guard too. It holds no text, so this is not a wipe -
+	// it is the guard's lifetime being decided by the same clock as everything
+	// else's, rather than by whether an echo ever turned up.
+	if h.expect != 0 {
+		t.Errorf("the guard still names entry %d after a sweep that dropped it", h.expect)
+	}
+	for i, b := range secret {
+		if b != 0 {
+			t.Fatalf("the text is still in memory after expiry: byte %d is %q of %q", i, b, secret)
+		}
+	}
+	// And nothing is being kept for it: the same text copied afresh is an entry
+	// like any other. Held anywhere, this arrival would be swallowed as an echo.
+	if got := h.Add(text("s3cret-token-from-a-terminal"), now.Add(TTL+2*time.Second)); got == 0 {
+		t.Error("a copy made after the entry expired was swallowed, so something outlived the wipe")
+	}
+}
+
+// The echo that never comes. Copying something else before zde's own write
+// arrives back leaves the guard unspent, and with no deadline on it the next
+// genuine copy of that text is swallowed - an hour later, silently, and only for
+// the entry that was last put on the clipboard.
+//
+// If this regresses, the history quietly refuses to record one particular thing
+// for the rest of the session.
+func TestAnEchoThatNeverArrivesStopsBeingExpected(t *testing.T) {
+	var h History
+	id := h.Add(text("the address"), now)
+	h.Expect(id, now)
+
+	// Something else is copied first, so the guard is not consumed.
+	if got := h.Add(text("something else entirely"), now.Add(time.Second)); got == 0 {
+		t.Fatal("an ordinary copy was swallowed")
+	}
+	// Past the window, the address is copied by hand and is an entry like any
+	// other.
+	if got := h.Add(text("the address"), now.Add(ExpectWindow+time.Second)); got == 0 {
+		t.Error("a copy made past ExpectWindow was still being taken for zde's own echo")
+	}
+}
+
+// A write that was announced and then failed has to be retractable, because the
+// announcement has to come first: the echo can beat the write's own return, so a
+// guard set afterwards guards nothing (see Expect). Zero is how the caller takes
+// it back (internal/zded, clipPut).
+//
+// If this regresses, `wl-copy: no wayland display` costs the person the next
+// copy of whatever they tried to paste.
+func TestARetractedExpectationSwallowsNothing(t *testing.T) {
+	var h History
+	id := h.Add(text("the thing to paste"), now)
+	h.Expect(id, now)
+	h.Expect(0, now)
+
+	// Something else in between, or the arrival below is refused as a repeat of
+	// the newest entry and this test passes without ever reaching the guard.
+	if got := h.Add(text("something else entirely"), now.Add(time.Second)); got == 0 {
+		t.Fatal("an ordinary copy was swallowed")
+	}
+	if got := h.Add(text("the thing to paste"), now.Add(2*time.Second)); got == 0 {
+		t.Error("the echo of a write that never happened was still being waited for")
 	}
 }
 
