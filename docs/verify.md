@@ -284,6 +284,10 @@ ones are the point of zded holding the bus name.
     "two buttons" "and fifteen seconds to press one"
   ```
 
+  The second one does not return: notify-send with `-A` waits to be told which
+  action was pressed, and prints its name. That is the whole round trip in one
+  terminal, so leave it running and watch what it says.
+
   What to check, in this order, because the first is the one that would make
   this feature worse than not having it:
 
@@ -302,9 +306,9 @@ ones are the point of zded holding the bus name.
     session bus is a way to steal a keystroke.
   - **The buttons work with the mouse, always.** Click one and the sending app
     should see that action.
-  - **`Mod+Ctrl+n` hands it the keyboard**, and only then: the card outlines,
-    `1`-`9` press its buttons, Enter is the sender's default action, `j`/`k`
-    walk the stack, `d` dismisses, Escape gives the keys back. It also gives
+  - **`Mod+Ctrl+n` hands it the keyboard**, and only then: the card you are on
+    takes an outline, `1`-`9` press its buttons, Enter is the sender's default
+    action, `j`/`k` walk the stack, `d` dismisses, Escape gives the keys back. It also gives
     them back ten seconds after the last press, which is the thing to feel for -
     walk away mid-choice and the next `Mod+j` should navigate rather than
     disappear. With no card on the screen the key prints `no popup to reach`
