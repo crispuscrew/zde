@@ -517,38 +517,61 @@ list, and that is the first thing to check if nothing below works.
   before it asks for any of it. Then check the daemon has never seen it either,
   with the memory check below.
 
-  Without a password manager to hand, half of it can be forced. `wl-copy` can
-  only offer one type at a time, so this puts something on the clipboard that
-  says it is a secret and nothing else:
+  Without a password manager to hand, `wl-copy` produces the real shape by
+  itself. `--sensitive` offers `x-kde-passwordManagerHint` *beside* the text
+  types, which is exactly what a manager that still wants pasting to work does:
 
   ```sh
-  wl-copy --type x-kde-passwordManagerHint hunter2
-  zde clip history        # hunter2 must not be in it
+  wl-copy --sensitive hunter2
+  wl-paste --list-types   # text/plain and x-kde-passwordManagerHint together
+  zde clip history        # hunter2 must not be in it, and neither must a blank row
   ```
 
-  That proves the check reads the offered types. What it cannot prove is the
-  real shape, which is the hint offered *beside* `text/plain` by a manager that
-  wants pasting to work - and that is why the paragraph above needs a real one.
+  That is the whole shape and not half of it, so the only thing left for a real
+  manager to prove is that it spells the hint the way everything else does. If
+  the `wl-copy` on the machine is older than 2.3.0 it has no `--sensitive`; then
+  fall back to `wl-copy --type x-kde-passwordManagerHint hunter2`, which offers
+  the hint and nothing else and proves only that the check reads the type list.
 
   Worth knowing while doing it: `wl-paste --watch` sets `CLIPBOARD_STATE`, and
-  one of the values it defines is `sensitive`. It is never produced -
-  wl-clipboard's own manual says the protocols do not let it decide - so a check
-  written against that variable would look right and never fire. zde asks the
-  offer instead.
+  one of the values it defines is `sensitive`. Up to wl-clipboard 2.2.1 that
+  value was never produced, and this document used to say so as a permanent
+  fact. It is not one. 2.3.0, which is what the flake pins, "only sets it to
+  `sensitive` when it encounters `x-kde-passwordManagerHint` among the MIME
+  types" - the same type zde checks. zde still asks the offer rather than the
+  variable, because the variable is silently absent on older wl-clipboard and
+  would fail open there; `internal/clip/wl.go` has the argument in full.
 - **The TTL, on a real clock.** Copy something distinctive, wait out
   `clip.TTL` (fifteen minutes, `internal/clip`), and press `Mod+v`. It is gone.
   Then the half that is the actual promise: it is gone from the daemon's memory
-  and not only from the list. On a machine with `gdb`:
+  and not only from the list.
+
+  Copy the marker below rather than a word, and copy it with the tail past the
+  200-character preview bound (`clip.PreviewMax`). That matters: pressing
+  `Mod+v` hands a preview of every row to the shell and puts one in the JSON
+  zded wrote, and the wipe cannot reach either of those. Grep for a marker no
+  preview can contain and the answer means what it says.
 
   ```sh
+  printf 'x%.0s' $(seq 250) > /tmp/zde-marker; printf 'ZDE-TTL-MARKER\n' >> /tmp/zde-marker
+  wl-copy < /tmp/zde-marker
   pid=$(systemctl --user show -p MainPID --value zded.service)
-  gcore -o /tmp/zded $pid && strings /tmp/zded.$pid | grep -c the-string-you-copied
+  gcore -o /tmp/zded-live $pid && strings /tmp/zded-live.$pid | grep -c ZDE-TTL-MARKER
+  # press Mod+v, look at the row, close it - then wait out the fifteen minutes
+  gcore -o /tmp/zded-gone $pid && strings /tmp/zded-gone.$pid | grep -c ZDE-TTL-MARKER
   ```
 
-  Non-zero while the entry is live, and zero once it has expired. Do both halves
-  in one sitting: a zero that was zero all along proves nothing. Delete the core
-  files afterwards - one of them has your clipboard in it, which is the whole
-  reason this is worth checking.
+  Non-zero for the first, zero for the second. Do both halves in one sitting: a
+  zero that was zero all along proves nothing. Delete the cores and the marker
+  file afterwards - one of those cores has your clipboard in it, which is the
+  whole reason this is worth checking.
+
+  What a stray non-zero on the second core is not, necessarily: a `[]byte` that
+  grew while being read leaves its old copy in the heap until the collector
+  reuses that memory, and zded's wipe reaches the entry rather than every buffer
+  that ever held a prefix of it. 250 bytes fits the read buffer without growing
+  it, so this particular check should be clean - but one that is not is a thing
+  to look at rather than a promise broken.
 - **An image, and a huge paste.** `Mod+Print` takes a screenshot and niri puts
   it on the clipboard; `Mod+v` should then show a row saying `image/png` is not
   text and that the history keeps text only, dimmed, with Enter doing nothing
