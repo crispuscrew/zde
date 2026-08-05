@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -80,6 +82,46 @@ func TestASpawnedToolDoesNotOutliveAKilledDaemon(t *testing.T) {
 	syscall.Kill(pid, syscall.SIGKILL) //nolint:errcheck // never leave the test's own orphan behind
 	t.Fatalf("pid %d outlived the process that started it: a killed zded leaves a clipboard watcher "+
 		"reading the session's clipboard until logout", pid)
+}
+
+// And that the guard is actually reached by the code that runs wl-clipboard,
+// which the test above cannot say: it calls guard itself, so deleting the call
+// from a spawn site would leave it green. This one goes through read, the
+// function Types and Read are both built on, and read takes its argv - so the
+// path under test is the production one and the program is a stand-in.
+//
+// Its own process group is the half of the guard that is visible from outside
+// without killing anything. If the child shares this process's group then
+// nothing was applied to it, and the parent-death signal set beside it is not
+// there either.
+//
+// If this regresses, the fix above is still written down and no longer runs.
+func TestAToolThisPackageRunsIsInItsOwnProcessGroup(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh on this machine to stand in for wl-clipboard")
+	}
+	// Field 5 of /proc/self/stat is the process group. cut is a child of the sh
+	// this package spawned and inherits its group, so what it prints is the
+	// group the guard was supposed to create.
+	out, more, err := read(context.Background(), 64, "sh", "-c", "cut -d' ' -f5 /proc/self/stat")
+	if err != nil {
+		t.Fatalf("running a stand-in through read: %v", err)
+	}
+	if more {
+		t.Fatal("a process group id does not run to 64 bytes")
+	}
+	got, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		t.Fatalf("the stand-in printed %q, which is not a process group", out)
+	}
+	mine, err := syscall.Getpgid(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == mine {
+		t.Errorf("the spawned process is in this process's group (%d), so nothing put it in its own "+
+			"and cancelling one reaches only the pid zde knows about", mine)
+	}
 }
 
 // orphanHelper is the daemon half: it starts a long-lived child through the same

@@ -120,6 +120,19 @@ const (
 // inherit it. They print and exit in milliseconds, and their stdout is the pipe
 // zded held, so a dead daemon closes it under them either way. The group kill is
 // what covers them while zded is alive to do it.
+// spawn builds a guarded wl-clipboard command, and is the only place in this
+// package that builds one at all. One construction site rather than two, so that
+// "every process this package starts dies with the daemon" is a single fact
+// somebody can check, and not a line to remember at each new call.
+//
+// The one deliberate exception is Write, which does not come through here and
+// says why where it is.
+func spawn(ctx context.Context, argv ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	guard(cmd)
+	return cmd
+}
+
 func guard(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
 	cmd.Cancel = func() error {
@@ -172,10 +185,9 @@ func (Tool) Watch(ctx context.Context) (<-chan struct{}, error) {
 	if _, err := exec.LookPath(Paste); err != nil {
 		return nil, fmt.Errorf("%s is not installed, so nothing can watch the clipboard: %w", Paste, err)
 	}
-	cmd := exec.CommandContext(ctx, Paste, "--watch", Paste, "--list-types")
-	// The long-lived one, and the reason guard exists: this process is meant to
+	// The long-lived one, and the reason spawn exists: this process is meant to
 	// last the session, and must not last longer than the daemon does.
-	guard(cmd)
+	cmd := spawn(ctx, Paste, "--watch", Paste, "--list-types")
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
@@ -276,12 +288,11 @@ func (Tool) Read(mime string, limit int) ([]byte, bool, error) {
 // which is the source application being told through a closed pipe that nobody
 // wants the rest.
 func read(ctx context.Context, limit int, argv ...string) ([]byte, bool, error) {
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	// Bounded by `within` while zded is alive, and by guard when it is not. A
+	// Bounded by `within` while zded is alive, and by the guard when it is not. A
 	// read is a request to whichever application owns the selection, so one that
-	// has stopped answering leaves this blocked in a read with no timeout left
-	// to enforce - which is an orphan holding a clipboard read open.
-	guard(cmd)
+	// has stopped answering leaves this blocked in a read with no timeout left to
+	// enforce it - an orphan holding a clipboard read open.
+	cmd := spawn(ctx, argv...)
 	pipe, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, false, err
