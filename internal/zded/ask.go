@@ -110,6 +110,12 @@ const askMax = 256 << 10
 // askContextMax bounds a whole conversation: everything a tier is handed on one
 // run, the turns before the question and the question itself.
 //
+// Measured on the document exactly as the tier receives it (see askDoc), which
+// is the frame line, the turns, and the JSON that separates them. That is the
+// only measurement that means anything to somebody who has to decide what will
+// fit: a budget counted on some other rendering of the same words is a budget
+// the panel cannot advertise, and it offers ctrl+v paste.
+//
 // It exists because a conversation that grows without bound is a bill, then a
 // timeout, then a tier that refuses every question because the last twenty are
 // still in front of it. 64 KiB is about sixteen thousand tokens - twenty or so
@@ -196,6 +202,16 @@ func askDoc(prior []string, question string) string {
 	return b.String()
 }
 
+// overKiB is n in KiB, rounded up. Up rather than down, because the only place
+// this number is printed is beside the bound it has just broken: 65537 bytes
+// truncates to 64, the bound is 64, and "this conversation has reached 64 KiB,
+// and one ask carries 64" is a refusal arguing against itself in the sentence
+// that delivers it. Rounded up, anything past the bound reads as past it - the
+// smallest thing that can be refused is one byte over, and one byte over is 65.
+func overKiB(n int) int {
+	return (n + 1<<10 - 1) >> 10
+}
+
 // framed is whether a question's own first line is the frame marker. Only then,
 // and not merely starting with it, because "zde-ask 1 is what?" is a question
 // and not a document.
@@ -206,16 +222,32 @@ func framed(question string) bool {
 
 // writeTurn is one line of the document.
 //
-// The error is discarded because marshalling two strings has none: bytes that
-// are not a character become a replacement mark rather than a failure, which is
-// what the same text already met on its way out to the surface that has just
-// sent it back, so nothing is lost here that was not lost already. Discarded
-// rather than skipping the turn, too - a turn quietly missing from the middle
-// would move every role after it along by one.
+// Through an encoder with HTML escaping turned off rather than json.Marshal,
+// and that is a decision about what a conversation costs rather than about how
+// it looks. Marshal writes "<", ">" and "&" as six-byte unicode escapes, so
+// that its output is safe to drop inside a script tag - which is nowhere any of
+// this goes: a tier reads it on stdin. Left on, a
+// question with a patch or a page of markup pasted into it is weighed at up to
+// six times what it is against askContextMax, so a panel that offers ctrl+v
+// paste would refuse a fraction of the budget it advertises, and the person
+// pasting has no way to see why.
+//
+// Nothing about the frame relies on it. The encoder still escapes the quote,
+// the backslash and every control character including the newline, so no turn's
+// text can end that turn early or start one of its own, which is the whole of
+// what askDoc rests on.
+//
+// The error is discarded because marshalling two strings into a strings.Builder
+// has none: bytes that are not a character become a replacement mark rather
+// than a failure, which is what the same text already met on its way out to the
+// surface that has just sent it back, so nothing is lost here that was not lost
+// already. Discarded rather than skipping the turn, too - a turn quietly
+// missing from the middle would move every role after it along by one.
 func writeTurn(b *strings.Builder, who, text string) {
-	line, _ := json.Marshal(askTurn{Who: who, Text: text})
-	b.Write(line)
-	b.WriteByte('\n')
+	enc := json.NewEncoder(b)
+	enc.SetEscapeHTML(false)
+	// Encode writes the newline that ends the turn itself.
+	_ = enc.Encode(askTurn{Who: who, Text: text})
 }
 
 // askSurface asks the shell to open the popup or the panel. The picker's
@@ -316,11 +348,11 @@ func (s *Server) askRun(k *sink, args []string) {
 		// is said, and starting again is somebody's decision to make.
 		if len(prior) == 0 {
 			k.reply(Response{Error: fmt.Sprintf("that question is %d KiB, and one ask carries %d: ask it in fewer words",
-				len(doc)>>10, askContextMax>>10)})
+				overKiB(len(doc)), askContextMax>>10)})
 			return
 		}
 		k.reply(Response{Error: fmt.Sprintf("this conversation has reached %d KiB, and one ask carries %d: start a fresh one and ask it there",
-			len(doc)>>10, askContextMax>>10)})
+			overKiB(len(doc)), askContextMax>>10)})
 		return
 	}
 	// One answer at a time down one connection (see sink.asking). Claimed after
