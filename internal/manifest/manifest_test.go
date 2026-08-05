@@ -277,6 +277,99 @@ func TestASavedManifestIsReadableOnlyByYou(t *testing.T) {
 	}
 }
 
+// The machine that took a snapshot before any of this was written.
+//
+// Its ~/.config/zde/desks is already there, at the 0755 the old code asked
+// for, and MkdirAll leaves a directory that exists exactly as it found it - so
+// the 0700 above reaches every machine except the ones that need it. The chmod
+// on every Save is what reaches those, and this is the test that fails if it
+// goes away.
+//
+// The manifest already in the directory keeps its own mode. A manifest is a
+// file a person writes by hand, and rewriting the mode of somebody's file
+// behind their back is not zde's to do; under a 0700 directory a 0644 manifest
+// is unreadable by anybody else anyway.
+func TestADeskDirectoryAnEarlierZdeLeftOpenIsTightenedOnTheNextSave(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	desks := DefaultDir()
+	if err := os.MkdirAll(desks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Past whatever umask the test runs under, so this starts wide enough to
+	// prove something.
+	if err := os.Chmod(desks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	byHand := filepath.Join(desks, "haven.yaml")
+	if err := os.WriteFile(byHand, []byte("name: haven\nmonitors:\n  DP-1: { workspaces: [main] }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(byHand, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := Parse([]byte(vshop))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := Dir(desks).Save(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := perm(t, desks); got != 0o700 {
+		t.Errorf("a desks directory that was already there is still %04o, so every machine that has ever taken a snapshot is exactly as open as it was", got)
+	}
+	if got := perm(t, path); got != 0o600 {
+		t.Errorf("the manifest just written is %04o, want 0600", got)
+	}
+	if got := perm(t, byHand); got != 0o644 {
+		t.Errorf("a manifest zde did not write is now %04o: zde changed the mode of somebody's own file behind their back", got)
+	}
+}
+
+// A directory somebody named is not zde's to take private.
+//
+// `zded -desks /tmp/desks` puts the manifests where the person asked for them,
+// and `-desks /tmp` would make the chmod above take the machine's temp
+// directory private on the way past. The same restraint internal/journal keeps
+// for `-journal`, for the same reason.
+func TestADesksDirectorySomebodyElseNamedIsLeftAlone(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	shared := filepath.Join(t.TempDir(), "shared")
+	if err := os.MkdirAll(shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := Parse([]byte(vshop))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := Dir(shared).Save(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := perm(t, shared); got != 0o755 {
+		t.Errorf("a directory zde was pointed at is now %04o: it took a shared directory private on its way past", got)
+	}
+	if got := perm(t, path); got != 0o600 {
+		t.Errorf("the manifest in it is %04o, want 0600 wherever it was put", got)
+	}
+}
+
+// perm is a path's permission bits and nothing else about it.
+func perm(t *testing.T, path string) os.FileMode {
+	t.Helper()
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fi.Mode().Perm()
+}
+
 // The app and the instance become a directory: zinc keeps per-instance state
 // under one, and these are the two parts of the path a manifest supplies. A
 // manifest is a file somebody edits, so a name that climbs out of that

@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"syscall"
 
 	"github.com/crispuscrew/zde/internal/desk"
 )
@@ -27,13 +28,27 @@ import (
 // The modes this file keeps for itself: readable by the person it belongs to
 // and by nobody else, and the same for the directory zde makes to hold it.
 //
-// It was 0644 until this was written, and a home directory is 0755 on Debian
-// and on Ubuntu, so on those the journal was a file every other account on the
-// machine could read. What is in it is the queue, and the queue carries the
-// summary of every notification that reached it: who wrote to you and what
-// about, kept until you finish the item. Nothing outside zde has any business
-// reading that, and zded runs as the person who owns it, so nothing outside
-// gets it.
+// It was 0644 until this was written, and the reason first written down here
+// was that some distributions leave a home directory open. Do not put that
+// back. It is false on the ones it named, and it is the wrong shape of
+// argument besides: a mode that is only right when the directory above it
+// happens to be right is not a promise this file can make. Three things make
+// 0600 the one to write down, and all three hold on every machine:
+//
+//  1. The directory is not always a private one. DefaultPath honours
+//     XDG_STATE_HOME wherever it points, and falls back to
+//     os.TempDir()/zde/journal.jsonl when os.UserHomeDir() fails. Neither of
+//     those is constrained to a directory belonging to one person, and on /tmp
+//     a 0644 journal is readable by every account on the machine.
+//  2. What is in it is correspondence. The queue carries the summary, the
+//     sender and the urgency of every notification that reached it (see Item):
+//     who wrote to you and what about, kept until you finish the item.
+//  3. A mode travels with the file and a directory's mode does not. 0600
+//     survives a tarball, an `rsync -a` and a restored backup; "the directory
+//     this came out of happened to be 0700" survives none of them.
+//
+// So this is refusing to depend on the directory above being right, rather
+// than closing a hole somebody's distribution left open.
 const (
 	journalMode  = 0o600
 	stateDirMode = 0o700
@@ -208,7 +223,12 @@ func Open(path string) (*Journal, error) {
 	if err := j.replay(); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, journalMode)
+	// O_NOFOLLOW refuses a symlink sitting at journal.jsonl itself, with ELOOP,
+	// rather than opening whatever it points at. It constrains the last
+	// component and nothing above it, so a symlinked ~/.local/state, or an
+	// XDG_STATE_HOME on another disk, still works - which is the only symlink a
+	// real setup puts anywhere near this path.
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY|syscall.O_NOFOLLOW, journalMode)
 	if err != nil {
 		return nil, err
 	}
@@ -220,17 +240,15 @@ func Open(path string) (*Journal, error) {
 	// runs as the person who owns it, and no mode narrower than 0600 could ever
 	// have worked - so there is no setup this takes anything away from.
 	//
-	// On the descriptor rather than on the path, so that what is tightened is
-	// the file that was just opened and not whatever the name has come to point
-	// at by the time the chmod lands.
-	//
-	// Fatal when it fails, which is principle 9: a journal that cannot be made
-	// private is one this must not append notification summaries to. The way it
-	// fails is a journal belonging to somebody else, and that is not a file to
-	// be writing to either.
-	if err := f.Chmod(journalMode); err != nil {
+	// Two mechanisms against two different swaps, and neither covers the
+	// other's. The chmod is on the descriptor rather than on the path, so what
+	// is tightened is the file that was just opened and not whatever the name
+	// has come to point at since. O_NOFOLLOW above refuses a symlink that was
+	// already at the name before the open, which a descriptor chmod would
+	// cheerfully tighten the far end of.
+	if err := tighten(f, path); err != nil {
 		f.Close()
-		return nil, fmt.Errorf("%s cannot be made %04o, and it holds what your notifications said: %w", path, journalMode, err)
+		return nil, err
 	}
 	j.file = f
 	// Compaction, now for either of two reasons. A long replay is the old one.
@@ -246,6 +264,59 @@ func Open(path string) (*Journal, error) {
 		}
 	}
 	return j, nil
+}
+
+// tighten makes an open journal 0600 and decides what a refusal means.
+//
+// Whose file it is, asked rather than guessed from the errno. An EPERM says
+// the kernel refused and not why, and the two ways it happens want opposite
+// answers: a journal belonging to somebody else, and a filesystem with no
+// permission bits to set. The old code read every failure as the first, which
+// made the second cost a person their session.
+func tighten(f *os.File, path string) error {
+	err := f.Chmod(journalMode)
+	if err == nil {
+		return nil
+	}
+	return chmodRefused(path, err, ownerOf(f), os.Getuid())
+}
+
+// ownerOf is the uid an open file belongs to, or -1 when the descriptor cannot
+// say. Off the descriptor, which has the same immunity the chmod has: it names
+// the file that was opened, not whatever the path points at now.
+//
+// -1 never equals a uid, so a file whose owner cannot be read is treated as
+// somebody else's, which is the fail-closed way round.
+func ownerOf(f *os.File) int {
+	fi, err := f.Stat()
+	if err != nil {
+		return -1
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return -1
+	}
+	return int(st.Uid)
+}
+
+// chmodRefused is the choice between the two failures.
+//
+// Somebody else's file: fatal, which is principle 9. A journal that is not
+// yours is not one to be appending your notification summaries to, whether or
+// not its mode could have been fixed.
+//
+// Yours, and the chmod failed anyway: said once and carried on. vfat, exFAT
+// and some 9p and SMB mounts cannot represent a mode at all, and refusing to
+// start there costs a person their whole session to enforce a property the
+// filesystem was never able to have. Once by construction on the path that
+// matters: Open runs once per journal, and the only other caller is a
+// compaction, which a session does not repeat.
+func chmodRefused(path string, err error, owner, us int) error {
+	if owner != us {
+		return fmt.Errorf("%s belongs to another account, and it is where your notification summaries are written down: %w", path, err)
+	}
+	fmt.Fprintf(os.Stderr, "zde: %s is yours but cannot be made %04o (%v); the filesystem under it has no permission bits, so what is written there is as private as the directory holding it and no more\n", path, journalMode, err)
+	return nil
 }
 
 func (j *Journal) replay() error {
@@ -597,14 +668,19 @@ func (j *Journal) compactLocked() error {
 	if err := tmp.Sync(); err != nil {
 		return err
 	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
 	// os.CreateTemp already makes it 0600, and the rename carries the mode over
 	// with it. Said out loud anyway, because the mode is a promise this file
 	// makes (see journalMode) and a reader checking it should not have to know
 	// what os.CreateTemp defaults to.
-	if err := os.Chmod(tmp.Name(), journalMode); err != nil {
+	//
+	// Through tighten, and before the close, for the reasons Open has: on the
+	// descriptor rather than the name, and a filesystem that cannot hold a mode
+	// says so once instead of failing a compaction. This temp file is zde's own
+	// by construction, so tighten's other branch cannot be reached from here.
+	if err := tighten(tmp, j.path); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
 		return err
 	}
 	// Rename over the live file, then reopen: a crash mid-compaction leaves
@@ -615,7 +691,12 @@ func (j *Journal) compactLocked() error {
 	if j.file != nil {
 		j.file.Close()
 	}
-	f, err := os.OpenFile(j.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, journalMode)
+	// O_NOFOLLOW here too, for the reason Open has it. Nothing legitimate can
+	// have put a symlink at the name in the moment since the rename, but a
+	// second way to open the journal that follows one is a second way in, and
+	// an asymmetry a reader would have to work out is not worth the word it
+	// saves.
+	f, err := os.OpenFile(j.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY|syscall.O_NOFOLLOW, journalMode)
 	if err != nil {
 		return err
 	}

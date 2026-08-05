@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -638,12 +639,12 @@ func TestWaitingHandsBackACopy(t *testing.T) {
 
 // The mode is the whole of what keeps this file to the person it belongs to.
 //
-// The queue in here is the summary of every notification that reached it, and a
-// home directory is 0755 on Debian and on Ubuntu, so a 0644 journal is one
-// every other account on the machine can read. Checked after a compaction as
-// well, because compaction writes a new file and renames it over this one: a
-// mode set only at Open would hold until the journal got long enough to be
-// rewritten, and then quietly stop holding.
+// The queue in here is the summary of every notification that reached it, and
+// the directory above it is not always a private one - XDG_STATE_HOME goes
+// wherever it is pointed and DefaultPath falls back to /tmp (see journalMode).
+// Checked after a compaction as well, because compaction writes a new file and
+// renames it over this one: a mode set only at Open would hold until the
+// journal got long enough to be rewritten, and then quietly stop holding.
 func TestTheJournalAndTheDirectoryZdeMakesForItAreReadableByNobodyElse(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "state", "zde")
 	path := filepath.Join(dir, "journal.jsonl")
@@ -757,6 +758,119 @@ func TestAJournalWrittenByAnEarlierZdeLosesTheNotificationBodiesInIt(t *testing.
 	}
 	if !strings.Contains(string(raw), "your results are in") {
 		t.Error("the rewrite dropped the item as well as the body: a message is worth protecting, an empty queue is not")
+	}
+}
+
+// A symlink where the journal should be is refused, not followed.
+//
+// Without O_NOFOLLOW the open lands on whatever the link points at, and then
+// everything downstream is right about the wrong file: the descriptor chmod
+// tightens the target, and a session's worth of notification summaries is
+// appended to a file somebody else chose. ELOOP instead, and the target is
+// left exactly as it was found.
+func TestASymlinkAtTheJournalItselfIsRefusedRatherThanFollowed(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "somebody-elses.jsonl")
+	if err := os.WriteFile(target, []byte("theirs\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Past the umask, so that a chmod landing here would be visible.
+	if err := os.Chmod(target, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "journal.jsonl")
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+
+	j, err := Open(path)
+	if err == nil {
+		j.Close()
+		t.Fatal("opened a journal through a symlink: everything after this is done to a file somebody else named")
+	}
+	if got := mode(t, target); got != 0o644 {
+		t.Errorf("the far end of the link is now %04o: the chmod went through the symlink", got)
+	}
+	raw, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "theirs\n" {
+		t.Errorf("the far end of the link now holds %q: zde wrote through the symlink", raw)
+	}
+}
+
+// And the symlink that is allowed, which is why O_NOFOLLOW and not something
+// that walks the whole path.
+//
+// A state directory on another disk, reached through a link, is an ordinary
+// setup. O_NOFOLLOW constrains the last component only, so it stays ordinary.
+func TestAStateDirectoryThatIsItselfASymlinkStillWorks(t *testing.T) {
+	onTheOtherDisk := filepath.Join(t.TempDir(), "elsewhere")
+	if err := os.MkdirAll(onTheOtherDisk, stateDirMode); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "state")
+	if err := os.Symlink(onTheOtherDisk, link); err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(link, "journal.jsonl")
+	j := open(t, path)
+	if err := j.SetLastDesk("vshop"); err != nil {
+		t.Fatal(err)
+	}
+	if got := mode(t, filepath.Join(onTheOtherDisk, "journal.jsonl")); got != journalMode {
+		t.Errorf("the journal through a linked directory is %04o, want %04o", got, journalMode)
+	}
+}
+
+// What a refused chmod means, which is two opposite things.
+//
+// This is a decision that cannot be arranged on the disk a test runs on: it
+// needs a file belonging to another account, or a filesystem with no
+// permission bits, and a unit test has neither. So the choice itself is the
+// thing under test, and the inputs it is made from are what tighten reads off
+// the open descriptor.
+func TestAJournalThatIsSomebodyElsesIsFatalAndOneThatCannotHoldAModeIsNot(t *testing.T) {
+	refused := errors.New("operation not permitted")
+
+	// Somebody else's. The old code read every refusal this way, which is the
+	// half that was right.
+	err := chmodRefused("/home/them/.local/state/zde/journal.jsonl", refused, 1001, 1000)
+	if err == nil {
+		t.Fatal("a journal belonging to another account started anyway, and zde is now appending your notifications to it")
+	}
+	if !errors.Is(err, refused) {
+		t.Errorf("the refusal lost what the kernel said: %v", err)
+	}
+
+	// Ours, and the filesystem cannot hold a mode. vfat, exFAT and some 9p and
+	// SMB mounts, where refusing to start costs a person the whole session to
+	// enforce something the disk was never able to have.
+	if err := chmodRefused("/mnt/stick/zde/journal.jsonl", refused, 1000, 1000); err != nil {
+		t.Errorf("a journal that is ours on a filesystem with no permission bits stopped the daemon: %v", err)
+	}
+}
+
+// And where those two numbers come from.
+//
+// Off the descriptor, not the path: it names the file that was opened, which
+// is the same reason the chmod is on the descriptor. A descriptor that cannot
+// answer reports -1, which equals no uid, so an unanswerable file is treated
+// as somebody else's - the fail-closed way round.
+func TestTheOwnerOfAJournalIsReadOffTheOpenDescriptor(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "journal.jsonl")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, journalMode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ownerOf(f); got != os.Getuid() {
+		t.Errorf("ownerOf = %d, want %d: a file this process just made is this process's", got, os.Getuid())
+	}
+	f.Close()
+	if got := ownerOf(f); got != -1 {
+		t.Errorf("ownerOf = %d on a descriptor that cannot answer, want -1 so that it counts as somebody else's", got)
 	}
 }
 

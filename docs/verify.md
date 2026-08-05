@@ -310,12 +310,14 @@ ones are the point of zded holding the bus name.
 - **And what the file holds.** `notify-send "your results are in" "the biopsy
   came back clear"`, then `grep biopsy ~/.local/state/zde/journal.jsonl` finds
   nothing, and `grep results` finds the queue item. The summary is on the disk
-  because it is the row you still owe; the message stays in the notification
-  centre and dies with the daemon. That is true of every desk, so a desk
-  declared `private: true` needs no separate check here. On a machine upgrading
-  from an earlier zde, which wrote the whole message down, `grep` for one you
-  remember before you upgrade and again afterwards: the first `zded` start on
-  the new build rewrites the file without them.
+  because it is the row you still owe; the message itself never goes into the
+  journal, on any desk. That settles the journal and only the journal. What the
+  notification centre keeps is a separate record with a separate life, so
+  whether a desk declared `private: true` keeps its arrivals off the disk is a
+  question to put to that record rather than to this file. On a machine
+  upgrading from an earlier zde, which wrote the whole message down, `grep` for
+  one you remember before you upgrade and again afterwards: the first `zded`
+  start on the new build rewrites the file without them.
 - Two terminals, two `notify-send`s: neither can close or replace the other's.
   Closing from the wrong one should leave the item where it is:
 
