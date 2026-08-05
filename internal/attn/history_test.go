@@ -120,22 +120,42 @@ func TestInventedSenderNamesCannotEvictAnEstablishedSender(t *testing.T) {
 
 // The ring that goes is the cheapest to lose, and between two that cost the
 // same it is the one heard from longest ago.
+//
+// The fixture is built so that no other rule reaches the same answer, because
+// three plausible ones would otherwise agree with this one and the test would
+// pass on any of them. The ring holding three is older than everything else by
+// every measure and survives, so this is not least-recently-used. The rings
+// holding two are heard from again in the reverse of the order they were made
+// in, so the one that goes is the one created last, and this is not
+// first-created either.
 func TestTheCheapestRingToLoseIsTheOneThatGoes(t *testing.T) {
 	var h History
-	// One ring worth three records, and the rest worth one each.
+	// One ring worth three records, made before anything else and never
+	// touched again: the oldest ring on the machine, and the most expensive.
 	for i := uint64(1); i <= 3; i++ {
 		h.Add(Record{ID: i, From: "three of these", Text: "one of three"})
 	}
+	// And the rest worth two each, made in order.
 	for s := 2; s <= SendersMax; s++ {
 		h.Add(Record{ID: uint64(100 + s), From: "app " + strconv.Itoa(s), Text: "hello"})
 	}
+	// Heard from again in the opposite order, which is what separates "least
+	// recently heard from" from "made first": app 12 was the last of them to be
+	// made and is now the longest since anybody heard from it.
+	for s := SendersMax; s >= 2; s-- {
+		h.Add(Record{ID: uint64(200 + s), From: "app " + strconv.Itoa(s), Text: "and another"})
+	}
 	gone := h.Add(Record{ID: 999, From: "one name too many", Text: "hello"})
 
-	if len(gone) != 1 || gone[0] != 102 {
-		t.Fatalf("the arrival answered %v, want just 102: the one-record rings are cheaper than the three, and app 2's is the oldest of them", gone)
+	last := uint64(SendersMax)
+	if len(gone) != 2 || gone[0] != 100+last || gone[1] != 200+last {
+		t.Fatalf("the arrival answered %v, want app %d's two records oldest first: the two-record rings are cheaper than the three, and that one is the longest since anybody heard from it", gone, last)
 	}
 	if _, still := h.Find(1); !still {
-		t.Error("the ring holding three went while rings holding one were there to take")
+		t.Error("the ring holding three went while cheaper rings were there to take, so this is picking the oldest and not the cheapest")
+	}
+	if _, still := h.Find(102); !still {
+		t.Error("the first of the two-record rings went, so this is picking the one made first and not the one heard from longest ago")
 	}
 	if _, still := h.Find(999); !still {
 		t.Error("the name that needed the room is not here, so something else was evicted for nothing")

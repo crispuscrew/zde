@@ -282,7 +282,7 @@ func TestASnapshotThatCannotBeReadCostsTheHistoryAndNothingElse(t *testing.T) {
 }
 
 // An enormous file is not read into the daemon's memory to find out what it is.
-// Forty records at their limit is under 200 KB, so anything past a megabyte was
+// Forty records at their limit is under 250 KB, so anything past a megabyte was
 // not written by this zde, and finding that out by allocating it is the failure
 // the bound exists to stop.
 //
