@@ -146,6 +146,13 @@ type sink struct {
 	// running - and this is what makes that a property of the protocol rather
 	// than a habit of the only two callers there happen to be.
 	asking atomic.Bool
+	// putting is whether a clipboard write asked for on this connection is still
+	// happening. One at a time, and for a plainer reason than asking's: the read
+	// loop used to be the thing that serialized these, so answering them off it
+	// without this would let one connection queue as many wl-copy processes as it
+	// can write lines - and two writes racing for the selection is two answers
+	// about which entry is on the clipboard.
+	putting atomic.Bool
 }
 
 func (k *sink) reply(resp Response) {

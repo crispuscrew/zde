@@ -394,6 +394,23 @@ func (s *Server) handle(conn net.Conn) {
 			go s.askRun(k, req.Args)
 			continue
 		}
+		if req.Method == MethodClip && len(req.Args) == 1 {
+			// Putting an entry back spawns wl-copy, which internal/clip bounds
+			// at three seconds and nothing bounds faster. On this loop those are
+			// three seconds in which nothing else on this connection is read -
+			// and the shell acknowledges every surface on the connection it asks
+			// on, within ackWait, which is 200ms. So pressing Enter on a row and
+			// then reaching for another key would let that key's acknowledgement
+			// sit unread, and zde would take the shell-is-dead path and print the
+			// list to a terminal. For Mod+v that means printing the clipboard
+			// history, which is the one place it should not go.
+			//
+			// The same reasoning ask.run is off this loop for, at a smaller size:
+			// the answer takes as long as something outside zde takes, and a
+			// keypress must not be what waits for it.
+			go s.clipPutOn(k, req.Args[0])
+			continue
+		}
 		k.reply(s.Dispatch(req))
 	}
 }
@@ -516,7 +533,7 @@ func (s *Server) Dispatch(req Request) Response {
 			return Response{Error: "net.disconnect takes no arguments"}
 		}
 		return s.netDisconnect()
-	case "clip.history":
+	case MethodClip:
 		// One verb, two arities, the way window.jump-to has them: the list and
 		// the choice are the same question - which entry - and with no surface
 		// to ask it of, the id printed by the first form is what the second one

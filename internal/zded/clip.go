@@ -29,6 +29,16 @@ type Clipboard interface {
 	// stops watching. More than one ring per change is allowed: the history
 	// refuses a repeat of its own newest entry, so the cost of an extra ring is
 	// two short-lived processes and nothing else (internal/clip, Tool.Watch).
+	//
+	// It must return promptly and must not block waiting for a clipboard: the
+	// waiting belongs on the channel, which is what ctx can interrupt. An
+	// implementation that blocks in here instead holds WatchClipboard inside a
+	// call that ctx cannot reach, so the goroutine outlives its own cancellation
+	// by however long the block lasts. Nothing in the daemon joins that goroutine
+	// today, so the cost is a late exit rather than a hang - which is why this is
+	// a contract stated here rather than a timeout wrapped round every call. The
+	// real one does LookPath and Start and nothing else, so the only way to break
+	// it is to write a second implementation.
 	Watch(ctx context.Context) (<-chan struct{}, error)
 	// Types is what the current selection is offered as, without reading any of
 	// it. It is the whole of the sensitive invariant: a selection that says it
@@ -74,6 +84,11 @@ func (s *Server) clipboardTrouble() string {
 	defer s.mu.Unlock()
 	return s.clipWhy
 }
+
+// MethodClip is the clipboard history's verb. One constant because two places
+// name it now: the dispatcher, and the connection loop, which has to recognise
+// the one arity of it that does not belong on that loop (see clipPutOn).
+const MethodClip = "clip.history"
 
 // sweepEvery is how often the history is swept for entries past their TTL.
 //
@@ -342,6 +357,25 @@ func (s *Server) clipPut(id string) Response {
 		return Response{Error: err.Error()}
 	}
 	return ok([]string{})
+}
+
+// clipPutOn is clipPut answered off the connection's read loop, so that the
+// three seconds internal/clip allows a clipboard write are not three seconds in
+// which this connection's other requests go unread (internal/zded, handle).
+//
+// Out of order with anything asked after it, which the two clients this has are
+// built for: the CLI sends one request per connection and waits, and the shell's
+// stream matches replies by shape because the protocol has no request ids
+// (shell/shell.qml). What it must not do is overlap with itself, hence the
+// claim - the read loop used to provide that for free.
+func (s *Server) clipPutOn(k *sink, id string) {
+	if !k.putting.CompareAndSwap(false, true) {
+		k.reply(Response{Error: "this connection is still putting the last entry back on the clipboard: " +
+			"wait for it, or ask on another"})
+		return
+	}
+	defer k.putting.Store(false)
+	k.reply(s.clipPut(id))
 }
 
 // clipClear forgets the history now, wiping it rather than unlisting it

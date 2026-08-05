@@ -1,9 +1,11 @@
 package zded
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,7 +31,10 @@ type fakeClipboard struct {
 	// case that used to strand the loop guard, because the guard is announced
 	// before the write and only the write's failure can take it back.
 	writeErr string
-	changes  chan struct{}
+	// writeBlocks holds Write until it is closed, which is what a wl-copy that
+	// has taken the selection and stopped answering looks like from here.
+	writeBlocks chan struct{}
+	changes     chan struct{}
 }
 
 func newFakeClipboard() *fakeClipboard {
@@ -75,6 +80,11 @@ func (f *fakeClipboard) Read(_ string, limit int) ([]byte, bool, error) {
 // could not show the loop the loop guard exists to break.
 func (f *fakeClipboard) Write(text []byte) error {
 	f.mu.Lock()
+	if hold := f.writeBlocks; hold != nil {
+		f.mu.Unlock()
+		<-hold
+		f.mu.Lock()
+	}
 	if f.writeErr != "" {
 		err := errors.New(f.writeErr)
 		f.mu.Unlock()
@@ -236,6 +246,67 @@ func TestAWriteThatFailedDoesNotSwallowTheNextCopy(t *testing.T) {
 	}
 	if after[0].Preview != "a token from a terminal" {
 		t.Errorf("the newest row is %q", after[0].Preview)
+	}
+}
+
+// A clipboard write is bounded at three seconds (internal/clip, within) and that
+// ceiling is fine. What is not fine is spending it on the connection's read loop:
+// the shell asks for everything on the connection it acknowledges surfaces on,
+// and it has ackWait - 200ms - to do it. So a slow wl-copy used to mean the next
+// key's acknowledgement went unread, zde took the shell-is-dead path, and the
+// clipboard history was printed to a terminal.
+//
+// The write here never returns, which is the ceiling at its worst. The loop has
+// to keep answering anyway.
+//
+// If this regresses, pressing Enter on a row and then pressing another key is
+// how somebody's clipboard ends up in their scrollback.
+func TestAClipboardWriteDoesNotStopTheConnectionAnswering(t *testing.T) {
+	s, f := clipServer(t)
+	f.offer("something worth pasting", "text/plain")
+	s.take()
+	rows := clipRows(t, s)
+	if len(rows) != 1 {
+		t.Fatalf("%d rows: %+v", len(rows), rows)
+	}
+
+	// A write that has taken the selection and is never coming back.
+	held := make(chan struct{})
+	defer close(held)
+	f.mu.Lock()
+	f.writeBlocks = held
+	f.mu.Unlock()
+
+	// A real socket, because this is about the connection loop and not about
+	// Dispatch: the loop is the thing that either keeps reading or does not.
+	conn, err := net.Dial("unix", serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	enc := json.NewEncoder(conn)
+	if err := enc.Encode(Request{Method: MethodClip, Args: []string{itoa(rows[0].ID)}}); err != nil {
+		t.Fatal(err)
+	}
+	// Behind a write that is still going, and standing in for the shell's
+	// acknowledgement of the next surface somebody opens.
+	if err := enc.Encode(Request{Method: "status"}); err != nil {
+		t.Fatal(err)
+	}
+
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second)) //nolint:errcheck // the read below reports it
+	line, err := bufio.NewReader(conn).ReadBytes('\n')
+	if err != nil {
+		t.Fatal("nothing came back while a clipboard write was outstanding, so the loop is " +
+			"blocked on it and every acknowledgement on this connection is waiting behind it")
+	}
+	var resp Response
+	if err := json.Unmarshal(line, &resp); err != nil {
+		t.Fatalf("the answer is not one line of json: %q", line)
+	}
+	if resp.Error != "" {
+		t.Fatalf("status answered %q", resp.Error)
 	}
 }
 
