@@ -23,17 +23,32 @@ wifi TUI in the shape the shell wanted; the palette (`Mod+semicolon`), which is
 a palette is what says which part; and bluetooth, as `zde system bluetooth`
 with nothing on a screen.
 
+The popup has landed since, and it is what turns the "actions" capability from a
+claim about reach into one about immediacy as well. A notification appears where
+you are looking, with the summary, the body and every button its sender
+declared, and takes itself away after a few seconds. It takes no keyboard when
+it arrives: five layer surfaces already share one exclusive grab and it took a
+fix to keep them to one at a time, so a sixth that grabbed on every arrival -
+at the choice of any app on the session bus - would be the worst offender on the
+machine. Its buttons are clickable the whole time it is up, and `Mod+Ctrl+n` is
+the one deliberate key that hands it the keyboard, which it then holds only
+while a finger is on it. The mode decides whether a card appears at all - quiet
+shows nothing, focus shows what the sender called urgent, work shows everything
+- and the history keeps the lot whichever it was, because that is principle 3
+and a mode that changed what is recorded would be a mode that decides what
+happened.
+
 Where those lines stop short is what is left of the phase, and none of it
 blocks 0.2:
 
 - a desk's own attn policy. `policies.attn` in a manifest is read by nobody, so
   the mode is the session's and not the desk's, and the per-desk display
   policies [`vision.md`](vision.md) gives attn are one mode wide.
-- a popup. The "actions" capability is claimed and every action a sender
-  declares is offered in the center, up to the nine a digit can reach, with the
-  rest counted and said rather than dropped quietly - but the offer is behind
-  `Mod+n` rather than in front of you. It is a claim about reach and not about
-  immediacy, and nothing in 0.1 makes it both.
+- the popup is unproven in CI. The smoke test boots a real niri and counts which
+  layer surfaces hold the keyboard, which is exactly the assertion this wants -
+  but it stops the shell before it starts the session bus a notification needs,
+  so proving the card appears without a grab is by hand for now
+  ([`verify.md`](verify.md), section 5).
 - history dies with the daemon: a ring of 200 in memory, because the journal
   fsyncs per line and this is history that is stale by the next login. The queue
   is the half that survives.
@@ -147,11 +162,21 @@ turned "when someone has hardware" into something anyone can do this evening.
   to try is a nav key the instant after each one closes
   ([`verify.md`](verify.md), a day of work). Not settled here: driving a real
   key into a nested compositor did not work well enough to trust the answer.
-- attn actions, with "actions" claimed and every declared one offered in the
-  center: whether a claim about reach is read by real senders as a claim about
-  immediacy. The buttons are behind `Mod+n` because there is no popup, and an
-  app that changes what it sends the moment it sees the capability is the case
-  nobody has met yet.
+  The notification popup is a sixth surface and the one that answers this
+  differently: it takes no keyboard at all until `Mod+Ctrl+n`, and then gives it
+  back after ten seconds without a keypress. So the thing to try on that one is
+  the opposite - notifications arriving while you type, and whether a single
+  keystroke ever goes anywhere but the window you were in.
+- attn actions, with "actions" claimed, every declared one offered in the center,
+  and now a popup that carries them the moment something arrives. What is left is
+  what only real senders answer: whether a mail client's archive and delete are
+  the right two buttons to have on a card that lasts five seconds, and whether
+  anybody reaches for `Mod+Ctrl+n` rather than clicking - it is the one key here
+  that exists because a surface deliberately refuses to grab the keyboard, so if
+  nobody presses it the answer is a different way to hand over the keys, not a
+  popup that grabs. Five seconds and fifteen for the urgent are guesses;
+  three cards, and a second arrival from one sender replacing that sender's card,
+  are the bounds a build bot is the test of.
 - the join verdict: NetworkManager can take longer to refuse a wrong password
   than the IPC deadline allows, so the surface stops waiting and watches the
   link instead. Pushing the verdict as an event is the fix and is not built;

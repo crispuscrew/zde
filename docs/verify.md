@@ -272,10 +272,59 @@ ones are the point of zded holding the bus name.
   client.
 - `notify-send --wait "test"` in one terminal, `zde queue done <id>` in
   another: the first command returns.
+- **The popup, which is the one thing in this section CI cannot touch at all.**
+  Send anything and a card should appear at the top right of the screen you are
+  looking at, under the bar, with the sender, the summary, the body and a button
+  per action the sender declared. Five seconds for an ordinary one, fifteen for
+  a critical one, and then it goes on its own.
+
+  ```sh
+  notify-send "a card" "and the body under it"
+  notify-send --urgency=critical -A archive=Archive -A delete=Delete \
+    "two buttons" "and fifteen seconds to press one"
+  ```
+
+  What to check, in this order, because the first is the one that would make
+  this feature worse than not having it:
+
+  - **It must not take the keyboard.** Type into something and have a
+    notification land on top of it. Every keystroke keeps going where you were
+    typing, and the card is merely there. niri's own answer, which is the one
+    that counts:
+
+    ```sh
+    niri msg --json layers | grep -A2 zde-attn-popup
+    ```
+
+    `"keyboard_interactivity":"None"` is right. Anything else is the report, and
+    it is the most serious one on this page: five surfaces already share one
+    exclusive grab, and a sixth taking it at the choice of any app on the
+    session bus is a way to steal a keystroke.
+  - **The buttons work with the mouse, always.** Click one and the sending app
+    should see that action.
+  - **`Mod+Ctrl+n` hands it the keyboard**, and only then: the card outlines,
+    `1`-`9` press its buttons, Enter is the sender's default action, `j`/`k`
+    walk the stack, `d` dismisses, Escape gives the keys back. It also gives
+    them back ten seconds after the last press, which is the thing to feel for -
+    walk away mid-choice and the next `Mod+j` should navigate rather than
+    disappear. With no card on the screen the key prints `no popup to reach`
+    rather than doing nothing.
+  - **A flood.** `for i in $(seq 100); do notify-send "build $i"; done` - three
+    cards at most, the rest counted on the last line, and `zde system
+    notif-center` afterwards holding every one of them. A hundred progress
+    updates from one sender should be one card that keeps changing, not three
+    cards of the same download at different percentages: a second arrival from
+    a sender already on the screen replaces that sender's card.
+  - **The modes as display.** quiet shows no card at all, focus shows only what
+    the sender called urgent, work shows everything - and after each of the
+    three, `Mod+n` has the lot. A mode that changed what is in the centre is the
+    bug (docs/vision.md, principle 3).
+  - **Two screens**: the card appears on the one you are looking at, and moves
+    when you do.
 - An app that expects a popup and gets a queue entry: does it misbehave, or
-  quietly carry on? Nothing pops up here at all - `Mod+n` is where you look -
-  so a critical notification waits instead of interrupting, and whether that is
-  livable for a whole day is the thing to find out.
+  quietly carry on? Now that there is a card, the interesting half is the
+  reverse - an app that sends a notification a second, or one whose "buttons"
+  assume a popup that waits for a click.
 - **`Mod+n`, the notification centre**, on the same apps. Newest first, `j`/`k`
   and the arrows walk it, `d` dismisses through `queue.done` so the sender is
   told, Escape closes. The rows worth hunting for are the ones from an app that
@@ -284,12 +333,13 @@ ones are the point of zded holding the bus name.
   is marked and is what Enter does. Nine is the bound, and where a sender
   declared more, that same line says how many it cannot reach rather than
   quietly showing fewer.
-- **What an app does once it sees "actions" claimed.** zded claims it, because
-  every action a sender declares is offered and not only the default. What it
-  does not claim is immediacy: there is no popup, so the buttons are behind
-  `Mod+n`, and an app reading the capability as "there will be a button on the
-  screen when I send" is the case nobody has met. A mail client offering archive
-  and delete, or a download offering to open the file, is what to try it with.
+- **What an app does once it sees "actions" claimed.** zded claims it because
+  every action a sender declares is offered and not only the default, and since
+  the popup that is true the moment something arrives as well as behind `Mod+n`.
+  A mail client offering archive and delete, or a download offering to open the
+  file, is what to try it with, and the question is no longer whether the buttons
+  exist but whether five seconds is long enough to notice one and fifteen long
+  enough to decide.
 - **The three modes, over a working day.** `zde attn work|focus|quiet`, and
   `Mod+q` for quiet when you need silence now. work queues everything, focus
   queues only what the sender called urgent, quiet queues none of it, and all
@@ -342,6 +392,9 @@ show up in use.
   immediately: if the first press goes nowhere, that is the thing, and it wants
   `keyboardFocus` on demand rather than exclusive. One surface behaving
   differently from the rest is worth as much as all of them behaving badly.
+  The notification popup is the sixth surface and the deliberate exception: it
+  never takes the keyboard until `Mod+Ctrl+n`, so what to try on that one is a
+  notification arriving in the middle of a sentence you are typing (section 5).
 - **Whether the picker is what you want from `Mod+Tab`.** It has no text field
   on purpose - arrows, `j`/`k`, or a digit - and the palette next to it does
   have one, but it filters actions and not desks. If you find yourself typing a
@@ -494,12 +547,13 @@ actually gets.
 
 Not bugs, do not report them:
 
-- **The rest of the shell**: the bar and five surfaces over it - the picker
+- **The rest of the shell**: the bar and six surfaces over it - the picker
   (desks on `Mod+Tab`, windows on `Mod+w`, one surface for both), the
-  notification centre, the connections list, the palette and the ask window.
-  There is no mixer, no media panel, no clipboard, no calendar, no power menu,
-  and no popup for anything: what arrives waits on `Mod+n`. The launcher on
-  `Mod+g` is zinc's, not zde's.
+  notification centre, the connections list, the palette, the ask window, and
+  the notification popup, which is the only one that is not opened by a key.
+  There is no mixer, no media panel, no clipboard, no calendar and no power
+  menu; a notification is the one thing that puts itself in front of you. The
+  launcher on `Mod+g` is zinc's, not zde's.
 - **Part of the cheatsheet.** A bind whose command is not written yet prints
   usage to a stderr nobody reads, so the key is silent and so is the machine.
   `Mod+semicolon` says which ones those are on the machine in front of you,
@@ -514,6 +568,7 @@ Not bugs, do not report them:
   | `Mod+r` (regulars), `Mod+u` (queue jump) | `Mod+p`, `Mod+Shift+p`, `Mod+Ctrl+p` (media) |
   | `Mod+t` (terminal) | `Mod+m` (modes), `Mod+Shift+n` (net observer) |
   | `Mod+n` (the notification centre), `Mod+q` (quiet) | `Mod+c` (calendar), `Mod+Shift+w` (wallpapers) |
+  | `Mod+Ctrl+n` (the keyboard onto the newest popup) | |
   | `Mod+semicolon` (the palette) | `Mod+Shift+x` (power) |
   | `Mod+a`, `Mod+Shift+a` (ask, once a tier is set) | `XF86AudioPlay`/`Next`/`Prev` (the media target) |
   | `Mod+Shift+c` (wifi, and the link you are on) | `Mod+e`, until `zde.apps.editor` names one (below) |
@@ -526,7 +581,7 @@ Not bugs, do not report them:
   | `zde status`, `doctor`, `keys`, `palette`, `ask`, `attn`, `queue`/`add`/`done` | `zde net observe\|app-cut\|kill` |
   | `zde app list\|launch`, `window jump-to`, `workspace next\|prev`, `nav down\|up` | `zde desk panic\|zen\|block`, which are not verbs at all |
   | `zde net status\|connect\|disconnect\|forget` | `zde clip`, `pass`, `media`, `mode` |
-  | `zde system lock\|quiet\|notif-center\|connections\|bluetooth` | `zde system power\|calendar\|wallpapers` |
+  | `zde system lock\|quiet\|notif-center\|notif-reach\|connections\|bluetooth` | `zde system power\|calendar\|wallpapers` |
   | every other `zde desk` verb: `list`, `switch`, `switcher`, `next`/`prev`/`last`, `apps`, `snapshot`, `reconcile`, `queue-jump`, `regulars`, `move-window`, `move-window-to`, `move-workspace-to` | |
   | the niri natives: columns, monitors, fullscreen, float, close, overview, consume/expel, layout switch | |
 

@@ -69,3 +69,37 @@ func TestAnUnknownModeStillQueues(t *testing.T) {
 		t.Error("a mode nothing has heard of swallowed an arrival")
 	}
 }
+
+// Quiet shows no popup at all, focus shows only what the sender called urgent,
+// and work shows everything. This is the mode as a display policy, which is the
+// half of principle 3 the popup is: a quiet that put a card on the screen would
+// be no use during a screencast, and a focus that put every one there would be
+// work with a different word on the bar.
+func TestQuietPopsNothingFocusOnlyTheUrgentAndWorkEverything(t *testing.T) {
+	for _, tc := range []struct {
+		mode   Mode
+		urgent bool
+		want   bool
+	}{
+		{Work, false, true},
+		{Work, true, true},
+		{Focus, false, false},
+		{Focus, true, true},
+		{Quiet, false, false},
+		{Quiet, true, false},
+	} {
+		if got := tc.mode.Pops(tc.urgent); got != tc.want {
+			t.Errorf("%s pops an arrival (urgent %v) = %v, want %v", tc.mode, tc.urgent, got, tc.want)
+		}
+	}
+}
+
+// A mode from a newer zde still shows what arrives, for the same reason it still
+// queues it: the two halves of one unknown mode must not disagree, or a session
+// would be told about something it was never shown, or shown something it was
+// never told about.
+func TestAnUnknownModeStillPops(t *testing.T) {
+	if !Mode("holiday").Pops(false) {
+		t.Error("a mode nothing has heard of showed nothing at all")
+	}
+}

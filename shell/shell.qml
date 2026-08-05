@@ -267,6 +267,8 @@ ShellRoot {
                 if (msg.error !== undefined) {
                     if (center.visible)
                         center.note = msg.error;
+                    else if (attnPopup.reached)
+                        attnPopup.note = msg.error;
                     else if (palette.running)
                         palette.ran(msg.error);
                     return;
@@ -295,6 +297,10 @@ ShellRoot {
                     root.openAsk(msg.event, true);
                 else if (msg.event.kind === "palette")
                     root.openPalette(msg.event);
+                else if (msg.event.kind === "attn.popup")
+                    root.showPopup(msg.event);
+                else if (msg.event.kind === "attn.reach")
+                    root.reachPopup(msg.event);
             }
         }
     }
@@ -420,6 +426,39 @@ ShellRoot {
         center.show(ev.notifications ?? [], ev.token ?? "");
     }
 
+    // A notification, the moment it arrives. Deliberately not through present():
+    // that helper takes down whatever surface is up, and an arrival is not
+    // somebody asking for one - a chat message must not close the picker you
+    // were choosing from. It is allowed to sit over another surface precisely
+    // because it holds no keyboard, so there is no grab to fight over (see
+    // AttnPopup.qml).
+    function showPopup(ev) {
+        const list = ev.notifications ?? [];
+        if (list.length === 0)
+            return;
+        // The screen the person is on, the way every other surface does it - but
+        // never while the popup has the keyboard: moving a focused layer surface
+        // to another output is a remap, and the grab somebody deliberately asked
+        // for would go with it.
+        if (!attnPopup.reached)
+            attnPopup.screen = root.screenFor(ev);
+        attnPopup.arrived(list[0]);
+    }
+
+    // Mod+Ctrl+n: the one deliberate act that puts the keyboard on a popup, and
+    // the only path in this shell that ever does. Through present(), because
+    // from here on it is a surface holding an exclusive grab like any other and
+    // the one-at-a-time rule is what keeps the keys where they can be seen.
+    //
+    // Nothing on the screen means nothing acknowledged, so the key falls through
+    // to saying so rather than grabbing an empty surface (internal/zded, reach).
+    function reachPopup(ev) {
+        if (!attnPopup.visible)
+            return;
+        root.present(attnPopup, ev);
+        attnPopup.reach(ev.token ?? "");
+    }
+
     // One instance and not one per screen: it appears on the screen zded says
     // is being looked at, because a picker on every monitor is not a picker. An
     // unknown output falls back to the first screen, which on one monitor is
@@ -474,6 +513,13 @@ ShellRoot {
     // dismissed one leaves its name here, and hiding what is already hidden is
     // a no-op. Keeping it honest would mean a line in every place a surface
     // closes, which is the several places to forget that this exists to avoid.
+    //
+    // The notification popup is the one surface that is not always here, and
+    // that is the point of it: it appears without a grab, so while it holds none
+    // there is nothing for this to arbitrate and an arrival cannot close what
+    // you are working in. It joins the list at the moment somebody presses
+    // Mod+Ctrl+n and takes the keyboard, and leaves it when it lets go (see
+    // reachPopup, and AttnPopup.qml).
     function present(surface, ev) {
         if (root.up && root.up !== surface)
             root.up.hide();
@@ -563,6 +609,27 @@ ShellRoot {
         })
         onDismissed: center.hide()
 
+        onShown: token => root.send({
+            method: "shown",
+            args: [token]
+        })
+    }
+
+    // The popup. The same two verbs the center has, over the same socket and to
+    // the same methods, because pressing a sender's button and finishing a
+    // notification are the same acts wherever they are done from - and a second
+    // pair of methods would be a second place for the id check to be wrong.
+    AttnPopup {
+        id: attnPopup
+
+        onInvoke: (which, key) => root.send({
+            method: "attn.invoke",
+            args: [which, key]
+        })
+        onDrop: which => root.send({
+            method: "queue.done",
+            args: [which]
+        })
         onShown: token => root.send({
             method: "shown",
             args: [token]

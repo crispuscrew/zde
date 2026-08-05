@@ -188,6 +188,14 @@ type Server struct {
 	// history is what has arrived, whatever the mode did about it. Bounded, and
 	// in memory rather than in the journal: see attn.HistoryMax.
 	history attn.History
+	// The popup path (attn.go). A buffered channel and one goroutine, because
+	// an arrival comes off the bus with an app blocked on the reply and must
+	// never wait for a shell to draw: see pop. popupStop is what ends the pump,
+	// closed once by Close.
+	popups    chan Event
+	startPump sync.Once
+	popupStop chan struct{}
+	stopPump  sync.Once
 
 	// The network side (net.go). openLink is a field for the same reason launch
 	// is: the tests need a manager without a system bus under them, and the
@@ -233,13 +241,17 @@ func New(version string, jrn *journal.Journal, compositor Compositor, desks Desk
 		desks = noDesks{}
 	}
 	return &Server{
-		version:  version,
-		jrn:      jrn,
-		niri:     compositor,
-		desks:    desks,
-		launch:   zinc.Run,
-		spawn:    spawnDetached,
-		openLink: link.Open,
+		version: version,
+		jrn:     jrn,
+		niri:    compositor,
+		desks:   desks,
+		launch:  zinc.Run,
+		spawn:   spawnDetached,
+		// Made here rather than beside the pump it stops, because Close may run
+		// on a daemon that never received a notification and closing a nil
+		// channel is a panic on the way out of a session.
+		popupStop: make(chan struct{}),
+		openLink:  link.Open,
 		// Neither radio is dialled here: opening a system bus connection at
 		// startup would be zded doing that work on every machine, including the
 		// ones that have no radio and never asked for one (bluetooth.go, radio;
@@ -318,6 +330,11 @@ func (s *Server) Serve() error {
 // into a refusal nobody was asked for.
 func (s *Server) Close() error {
 	s.closeRadio()
+	// And the popup pump, once and never twice: Close is reached from a signal
+	// handler and from the ordinary way out, and closing a closed channel is a
+	// panic on the last line of a session. It is not under s.mu either, because
+	// the pump broadcasts and broadcast takes that lock.
+	s.stopPump.Do(func() { close(s.popupStop) })
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.ln == nil {
@@ -598,6 +615,11 @@ func (s *Server) Dispatch(req Request) Response {
 			return Response{Error: "attn.center takes no arguments"}
 		}
 		return s.center()
+	case "attn.reach":
+		if len(req.Args) != 0 {
+			return Response{Error: "attn.reach takes no arguments: it puts the keyboard on the newest popup"}
+		}
+		return s.reach()
 	case "attn.invoke":
 		if len(req.Args) != 2 {
 			return Response{Error: "attn.invoke takes a notification id and the key of the action to press"}
@@ -1170,7 +1192,12 @@ func (s *Server) Arrived(n attn.Notification) (uint64, error) {
 		At:      time.Now(),
 		Desk:    s.whereWeAre(),
 	}
-	if s.mode().Queues(n.Urgent) {
+	// One reading of the mode for both decisions. Asked twice it could answer
+	// twice - `zde attn quiet` lands between them - and a notification that was
+	// queued but not shown, or shown but not queued, would be a session in two
+	// modes at once for one arrival.
+	mode := s.mode()
+	if mode.Queues(n.Urgent) {
 		it, err := s.jrn.Queue(journal.Item{
 			Text:   rec.Text,
 			Body:   rec.Body,
@@ -1199,6 +1226,29 @@ func (s *Server) Arrived(n attn.Notification) (uint64, error) {
 		if w := s.watcher(); w != nil {
 			w.Forget(gone)
 		}
+	}
+	// And in front of the person, where the mode says so - last, after the
+	// record is kept and the queue has it, and never instead of either. This is
+	// the only place the mode's display half is read, and all it decides is
+	// whether a surface is told: quiet shows nothing, focus shows what the
+	// sender called urgent, work shows everything, and the history above holds
+	// the lot whichever it was (internal/attn, Pops).
+	if mode.Pops(rec.Urgent) {
+		// Which screen, asked here rather than in the pump. The pump runs on its
+		// own goroutine and the compositor client is one request at a time, so
+		// asking there would put it beside every other question the daemon is
+		// answering. Here it is one more round trip on a path that already makes
+		// one (whereWeAre), and the answer is the screen that was being looked
+		// at when the thing arrived, which is the honest one.
+		_, output, err := s.niri.FocusedPlace()
+		if err != nil {
+			output = ""
+		}
+		s.pop(Event{
+			Kind:          EventAttnPopup,
+			Notifications: []attn.Record{rec},
+			Output:        output,
+		})
 	}
 	return rec.ID, nil
 }

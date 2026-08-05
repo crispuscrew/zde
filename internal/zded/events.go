@@ -87,6 +87,31 @@ const EventWindows = "windows"
 // the mode let it through, and what became of it.
 const EventCenter = "notif-center"
 
+// EventAttnPopup is one arrival, the moment it happens: the transient overlay
+// that says what came in without being asked (attn.go). The record travels in
+// Notifications, one long, because the shell already knows how to read one and a
+// field of its own would be a second shape for the same thing.
+//
+// The one event here that carries no token and waits for no acknowledgement.
+// Everything else is a key asking for a surface and wanting to know whether it
+// appeared; this is an app calling Notify on the session bus, and a notification
+// path that waited on a shell would be a Notify that blocks on a compositor.
+const EventAttnPopup = "attn.popup"
+
+// EventAttnReach asks the shell to put the keyboard on the newest popup, and it
+// is the only thing that ever does.
+//
+// A popup appears without asking for the keyboard, which is the whole design.
+// Five layer surfaces already take an exclusive grab while they are up, niri
+// hands that grab to the oldest of them, and it took a fix to keep them to one
+// at a time (shell/shell.qml, present). A surface that grabbed on every arrival
+// would be taking the keyboard out of whatever you were typing into, several
+// times an hour, unasked - the worst offender on the machine. So a popup's
+// buttons are clickable whenever it is up, and reachable from the keyboard only
+// after somebody has said so: one deliberate key, this event, and then the same
+// one-at-a-time rule everything else obeys.
+const EventAttnReach = "attn.reach"
+
 // EventAsk asks the shell to open the ask popup, and EventAskPanel the panel
 // that stays open. Two kinds and not one with a flag, for the reason the window
 // picker has a kind of its own: a shell that has never heard of the second

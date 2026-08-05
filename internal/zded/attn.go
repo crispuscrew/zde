@@ -38,6 +38,102 @@ type Center struct {
 	Notifications []attn.Record `json:"notifications"`
 }
 
+// Reach is what `attn.reach` answers: whether a surface took the keyboard onto
+// the newest popup. The same bargain as Switcher.Shown and Center.Shown - false
+// means nothing drew it, or nothing was up to reach, and the caller says so
+// rather than leaving a key looking broken.
+type Reach struct {
+	Reached bool `json:"reached"`
+}
+
+// popupBacklog is how many arrivals may be waiting to be drawn before the popup
+// path starts leaving them out.
+//
+// The bound exists because notifications arrive at machine speed: a build bot
+// can send a hundred in a minute, and the shell draws at human speed. It is the
+// arrival path that must never wait, so the hand-off is a buffered channel and a
+// full one drops the popup - never the record, which is already in the history
+// and on the queue by the time this is reached (see Arrived). A popup nobody saw
+// is a glance missed; a notification nobody kept is the thing zded exists to
+// prevent (docs/vision.md, principle 3).
+//
+// Sixteen because an ordinary burst - a build finishing and three things
+// reacting to it - must never be the thing that gets dropped, and because
+// sixteen stale lines is all a wedged shell can make the daemon hold. What
+// bounds the screen is a different number and lives where the screen is
+// (shell/AttnPopup.qml, maxUp).
+const popupBacklog = 16
+
+// pop offers one arrival to whatever is drawing popups, and never waits for it.
+//
+// A channel and a goroutine rather than a broadcast from here, because this is
+// called from the bus: an app calls Notify and blocks until it gets an id back,
+// and broadcast waits up to sendWait on a listener that has stopped reading.
+// Two hundred milliseconds of a shell's bad afternoon must not become two
+// hundred milliseconds of every notify-send on the machine.
+//
+// The pump is started on the first popup and not in New, so a daemon that never
+// receives a notification never starts one, and Close is what ends it.
+func (s *Server) pop(ev Event) {
+	s.startPump.Do(func() {
+		s.popups = make(chan Event, popupBacklog)
+		go s.pumpPopups(s.popups)
+	})
+	select {
+	case s.popups <- ev:
+	default:
+		// Full: the shell is not keeping up, or is not reading at all. Not
+		// logged - a flood that fills this is a flood that would fill the log
+		// with one line each - and not waited on, which is the whole point.
+	}
+}
+
+// pumpPopups writes what pop handed over, one at a time and in the order it
+// arrived. One goroutine, so a hundred arrivals are a hundred lines on the
+// socket in the order the person's day happened, rather than a hundred
+// goroutines racing to write into the same connection.
+func (s *Server) pumpPopups(in <-chan Event) {
+	for {
+		select {
+		case <-s.popupStop:
+			return
+		case ev := <-in:
+			s.broadcast(ev)
+		}
+	}
+}
+
+// reach puts the keyboard on the newest popup: the deliberate key, and the only
+// way a popup ever holds it (events.go, EventAttnReach).
+//
+// The same shape as the switcher and the center, deliberately: a key asks, zded
+// tells whoever is listening, and the answer says whether anything came of it.
+// Nothing was up to reach and no shell is running are the same answer here -
+// both mean the keys stayed where they were - and the caller has one sentence
+// for both, because from a person's side they are one fact.
+func (s *Server) reach() Response {
+	_, output, err := s.niri.FocusedPlace()
+	if err != nil {
+		// Which screen is a detail, and not knowing it is not worth refusing
+		// over: the shell falls back to the screen it can see.
+		output = ""
+	}
+	token := s.nextToken()
+	acked := s.await(token)
+	defer s.stopAwaiting(token)
+
+	sent := s.broadcast(Event{Kind: EventAttnReach, Output: output, Token: token})
+	if sent == 0 {
+		return ok(Reach{Reached: false})
+	}
+	select {
+	case <-acked:
+		return ok(Reach{Reached: true})
+	case <-time.After(ackWait):
+		return ok(Reach{Reached: false})
+	}
+}
+
 // mode is the mode the session is in. Never an error: an unreadable or unknown
 // mode is a session in the default, and refusing to answer would take the queue
 // down with the answer (see Arrived).

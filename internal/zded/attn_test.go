@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/crispuscrew/zde/internal/attn"
 )
@@ -416,6 +419,287 @@ func TestSettingTheNotifierWhileThingsArriveIsNotARace(t *testing.T) {
 	s.Watching(tellTale{ids: &[]uint64{}, forgotten: &[]uint64{}})
 	if err := <-arriving; err != nil {
 		t.Fatal(err)
+	}
+}
+
+// eventsOf reads the events of one kind a listener has been sent. The popup
+// path writes from a goroutine of its own, so a test that walked the buffer once
+// straight after Arrived would be racing the whole point of it.
+func eventsOf(rec *recorder, kind string) []Event {
+	var out []Event
+	for _, line := range strings.Split(rec.String(), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var got struct{ Event Event }
+		if json.Unmarshal([]byte(line), &got) != nil {
+			continue
+		}
+		if got.Event.Kind == kind {
+			out = append(out, got.Event)
+		}
+	}
+	return out
+}
+
+// waitForEvents waits until a listener has been sent at least this many of one
+// kind, and answers with what it has either way, so the assertion is about what
+// arrived rather than about a timeout.
+func waitForEvents(t *testing.T, rec *recorder, kind string, want int) []Event {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		got := eventsOf(rec, kind)
+		if len(got) >= want || time.Now().After(deadline) {
+			return got
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// A notification arriving is a card on the screen with the sender's own buttons
+// on it, and not only a row waiting behind Mod+n. That is the difference between
+// the "actions" capability being a claim about reach and one about immediacy: an
+// app that sends archive and delete has, until now, been offering them to
+// somebody who had to go and look (internal/attn, GetCapabilities).
+func TestAnArrivalIsPutInFrontOfYouWithTheSendersButtonsOnIt(t *testing.T) {
+	s, _, _ := queueTestServer(t, "vshop.DP-1.code")
+	defer s.Close()
+	rec := &recorder{}
+	s.listen(&sink{w: rec})
+
+	id, err := s.Arrived(attn.Notification{
+		From: "Fractal", Text: "Ilya: about the invoice", Body: "the one from March",
+		Actions: []attn.Action{{Key: attn.DefaultAction, Label: "Open"}, {Key: "reply", Label: "Reply"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := waitForEvents(t, rec, EventAttnPopup, 1)
+	if len(got) != 1 {
+		t.Fatalf("the shell was sent %d popups, want the one that arrived", len(got))
+	}
+	ev := got[0]
+	if len(ev.Notifications) != 1 {
+		t.Fatalf("the popup carries %d records, want the one it is about", len(ev.Notifications))
+	}
+	r := ev.Notifications[0]
+	if r.ID != id || r.Text != "Ilya: about the invoice" || r.Body != "the one from March" {
+		t.Errorf("popup record = %+v, want the arrival whole", r)
+	}
+	if len(r.Actions) != 2 || r.Actions[1].Key != "reply" || r.Actions[1].Label != "Reply" {
+		t.Errorf("popup actions = %+v, want every one the sender declared, with its label", r.Actions)
+	}
+	// And on the screen the person is looking at, the way every other surface
+	// zded asks for is: a popup on the monitor you are not using is a popup you
+	// find out about afterwards (docs/model.md, invariant 1).
+	if ev.Output != "DP-1" {
+		t.Errorf("popup output = %q, want the screen being looked at", ev.Output)
+	}
+}
+
+// A popup asks for no acknowledgement, and that is the one thing about it worth
+// pinning in the daemon: the token is how a surface is told to take the keyboard
+// and report back, and an arrival must never be able to ask for that. Only
+// attn.reach does, which is a person pressing a key.
+//
+// The other half of the same fact: nothing on the arrival path waits. Give it a
+// listener that will not finish taking a line and the notification still lands,
+// because the hand-off is a buffered channel and a goroutine (see pop).
+func TestAPopupAsksForNoKeyboardAndTheArrivalWaitsForNoShell(t *testing.T) {
+	s, _, _ := queueTestServer(t, "vshop.DP-1.code")
+	defer s.Close()
+	rec := &recorder{}
+	s.listen(&sink{w: rec})
+	if _, err := s.Arrived(attn.Notification{From: "ci", Text: "the build failed"}); err != nil {
+		t.Fatal(err)
+	}
+	got := waitForEvents(t, rec, EventAttnPopup, 1)
+	if len(got) != 1 {
+		t.Fatalf("the shell was sent %d popups, want one", len(got))
+	}
+	if got[0].Token != "" {
+		t.Errorf("the popup carries token %q: an arriving notification can ask for the keyboard", got[0].Token)
+	}
+}
+
+// Quiet shows nothing at all, and keeps everything. It is the mode for a
+// screencast: a card sliding onto the screen is exactly what somebody in it has
+// decided is worse than being late. What it must not do is forget, because a
+// mode that changed what is recorded would be a mode that decides what happened
+// (docs/vision.md, principle 3).
+//
+// Ordered rather than timed: the pump writes in the order things arrived, so a
+// popup for the second one proves the first was never sent.
+func TestQuietShowsNoPopupAndStillKeepsWhatArrived(t *testing.T) {
+	s, jrn, _ := queueTestServer(t, "vshop.DP-1.code")
+	defer s.Close()
+	rec := &recorder{}
+	s.listen(&sink{w: rec})
+
+	if err := jrn.SetMode("quiet"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Arrived(attn.Notification{From: "ci", Text: "production is down", Urgent: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := jrn.SetMode("work"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Arrived(attn.Notification{From: "chat", Text: "lunch?"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := waitForEvents(t, rec, EventAttnPopup, 1)
+	if len(got) != 1 {
+		t.Fatalf("%d popups reached the shell, want only the one that arrived in work", len(got))
+	}
+	if got[0].Notifications[0].Text != "lunch?" {
+		t.Errorf("the popup was %q: quiet put a card on the screen", got[0].Notifications[0].Text)
+	}
+	if seen := s.history.Recent(); len(seen) != 2 {
+		t.Errorf("history holds %d, want both: quiet stops the popup and never the record", len(seen))
+	}
+}
+
+// Focus shows the emergency and keeps the rest. It is the mode somebody leaves
+// on all afternoon, so a focus that showed every arrival would be work with a
+// different word on the bar, and one that showed none would be quiet.
+func TestFocusShowsOnlyTheUrgentAndKeepsBoth(t *testing.T) {
+	s, jrn, _ := queueTestServer(t, "vshop.DP-1.code")
+	defer s.Close()
+	rec := &recorder{}
+	s.listen(&sink{w: rec})
+
+	if err := jrn.SetMode("focus"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Arrived(attn.Notification{From: "chat", Text: "lunch?"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Arrived(attn.Notification{From: "ci", Text: "production is down", Urgent: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := waitForEvents(t, rec, EventAttnPopup, 1)
+	if len(got) != 1 {
+		t.Fatalf("%d popups reached the shell in focus, want only the urgent one", len(got))
+	}
+	if got[0].Notifications[0].Text != "production is down" {
+		t.Errorf("the popup was %q, want the one the sender called urgent", got[0].Notifications[0].Text)
+	}
+	if seen := s.history.Recent(); len(seen) != 2 {
+		t.Errorf("history holds %d, want both", len(seen))
+	}
+}
+
+// held is a listener that takes the first line and does not finish taking it
+// until the test says so. A shell mid-frame, or one that has stopped drawing and
+// not closed its socket.
+type held struct {
+	mu      sync.Mutex
+	lines   int
+	release chan struct{}
+}
+
+func (h *held) Write(p []byte) (int, error) {
+	h.mu.Lock()
+	first := h.lines == 0
+	h.lines++
+	h.mu.Unlock()
+	if first {
+		<-h.release
+	}
+	return len(p), nil
+}
+
+func (h *held) count() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.lines
+}
+
+// A build bot can send a hundred in a minute, and the shell draws at human
+// speed. What must not happen is either half of the obvious failure: the arrival
+// path waiting on a surface, or the daemon growing a queue of undrawn cards.
+//
+// So the hand-off is bounded and non-blocking. This sends a flood at a listener
+// that is stuck on its first line and asserts both ends of that: every one of
+// them is in the history, and what the shell was ever offered stops at the
+// backlog. A synchronous popup path fails this by hanging on the first arrival,
+// which is the failure worth being unable to miss.
+func TestAFloodOfArrivalsNeverWaitsForTheShellAndLosesNoRecord(t *testing.T) {
+	s, _, _ := queueTestServer(t, "vshop.DP-1.code")
+	defer s.Close()
+	h := &held{release: make(chan struct{})}
+	s.listen(&sink{w: h})
+
+	const flood = popupBacklog * 4
+	for i := 0; i < flood; i++ {
+		if _, err := s.Arrived(attn.Notification{From: "ci", Text: "build " + strconv.Itoa(i)}); err != nil {
+			t.Fatalf("arrival %d was lost: %v", i, err)
+		}
+	}
+	if seen := s.history.Recent(); len(seen) != flood {
+		t.Errorf("history holds %d of %d arrivals: the popup path cost a record", len(seen), flood)
+	}
+
+	// And now let it go, so what the backlog held can be counted.
+	close(h.release)
+	settled, last := 0, -1
+	for i := 0; i < 200 && settled < 3; i++ {
+		if n := h.count(); n == last {
+			settled++
+		} else {
+			settled, last = 0, n
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := h.count(); n < 1 || n > popupBacklog+1 {
+		t.Errorf("the shell was offered %d popups out of %d arrivals, want between 1 and %d: the backlog is the bound",
+			n, flood, popupBacklog+1)
+	}
+}
+
+// Reaching a popup is the deliberate key, and the answer says whether the
+// keyboard actually went anywhere. With no shell, or with nothing on the screen,
+// it did not - and the caller has a sentence for that, because a key that
+// silently does nothing is the failure this whole surface is arranged around.
+func TestReachingAPopupSaysWhetherAnythingTookTheKeyboard(t *testing.T) {
+	s, _, _ := queueTestServer(t, "vshop.DP-1.code")
+	defer s.Close()
+
+	var r Reach
+	call(t, s, Request{Method: "attn.reach"}, &r)
+	if r.Reached {
+		t.Error("nothing was listening and the key says the keyboard moved")
+	}
+
+	rec := &recorder{}
+	s.listen(&sink{w: rec})
+	// The shell's side: read the token out of the event and send it back, which
+	// is what AttnPopup.qml does once it has the keyboard.
+	go func() {
+		for i := 0; i < 2000; i++ {
+			if got := eventsOf(rec, EventAttnReach); len(got) > 0 && got[0].Token != "" {
+				s.acknowledge(got[0].Token)
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+	call(t, s, Request{Method: "attn.reach"}, &r)
+	if !r.Reached {
+		t.Fatal("a surface took the keyboard and the key says nothing happened")
+	}
+	got := eventsOf(rec, EventAttnReach)
+	if len(got) == 0 || got[0].Token == "" {
+		t.Fatalf("reach = %+v, want an event carrying a token to acknowledge", got)
+	}
+	if got[0].Output != "DP-1" {
+		t.Errorf("reach output = %q, want the screen being looked at", got[0].Output)
 	}
 }
 
