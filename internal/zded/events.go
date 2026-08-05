@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/crispuscrew/zde/internal/attn"
+	"github.com/crispuscrew/zde/internal/clip"
 	"github.com/crispuscrew/zde/internal/link"
 )
 
@@ -50,6 +51,10 @@ type Event struct {
 	Notifications []attn.Record `json:"notifications,omitempty"`
 	// Actions is the palette's rows, sent the same way and for the same reason.
 	Actions []Action `json:"actions,omitempty"`
+	// Clips is the clipboard history's rows: a preview of each entry and never
+	// the entry itself, so what was copied stays in the daemon until somebody
+	// picks a row (internal/clip, PreviewMax).
+	Clips []clip.Row `json:"clips,omitempty"`
 	// The connections surface's two: the wifi networks it lists, and the link
 	// as it stands, so it can say what you are on without asking a second
 	// question (net.go).
@@ -104,6 +109,12 @@ const (
 // nothing, where one that read a picker event with no desks in it would draw an
 // empty surface holding the keyboard.
 const EventPalette = "palette"
+
+// EventClip asks it to show the clipboard history: what was copied, newest
+// first, with a preview of each. A kind of its own for the reason EventWindows
+// is one - a shell that has never heard of it draws nothing, where one reading
+// another surface's event would draw an empty thing holding the keyboard.
+const EventClip = "clip"
 
 // MethodShown is how a listener says it did the thing: the token from the
 // event it acted on. Unsolicited ones are ignored, so this cannot be used to

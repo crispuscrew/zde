@@ -38,7 +38,12 @@ func TestKeybindsAreAnsweredWhileTheSessionBusIsStuck(t *testing.T) {
 				close(taking)
 				<-stuck
 				return nil, errors.New("session bus: no answer")
-			})
+			},
+			// No clipboard. The real one spawns wl-paste against whatever
+			// Wayland session is running, so a test of the startup order would
+			// otherwise put whatever the person running it had copied into a
+			// daemon - and leave a watcher behind holding this process's stderr.
+			nil)
 	}()
 	<-taking // inside the bus, and staying there
 

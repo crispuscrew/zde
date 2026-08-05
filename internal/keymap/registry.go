@@ -173,8 +173,12 @@ var registry = map[string]Entry{
 	// it). This is clip's secure sibling.
 	"pass.open": {Group: "pass", Desc: "open zde-pass (types a secret into the focused field, never via the clipboard)", Spawn: []string{"zde", "pass"}},
 
-	// clip.
-	"clip.history": {Group: "clip", Desc: "clipboard history", Spawn: []string{"zde", "clip", "history"}},
+	// clip. Text only, in memory only, expiring, and nothing a password manager
+	// marks as a secret is ever in it (internal/clip). `clip.clear` is in the
+	// action map (docs/model.md, section 6) and is a CLI verb rather than a row
+	// here: no key is free for it, and a palette row for "forget the clipboard"
+	// beside the one that opens it is a row somebody presses by mistake once.
+	"clip.history": {Group: "clip", Desc: "what was copied recently, and Enter puts one back", Spawn: []string{"zde", "clip", "history"}, written: true},
 
 	// capture: screenshots and the replay clip.
 	//

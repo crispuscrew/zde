@@ -29,6 +29,7 @@ import (
 
 	"github.com/crispuscrew/zde/internal/attn"
 	"github.com/crispuscrew/zde/internal/bt"
+	"github.com/crispuscrew/zde/internal/clip"
 	"github.com/crispuscrew/zde/internal/desk"
 	"github.com/crispuscrew/zde/internal/journal"
 	"github.com/crispuscrew/zde/internal/link"
@@ -188,6 +189,24 @@ type Server struct {
 	// history is what has arrived, whatever the mode did about it. Bounded, and
 	// in memory rather than in the journal: see attn.HistoryMax.
 	history attn.History
+
+	// The clipboard side (clip.go). clips is what was copied - bounded, in
+	// memory, and expiring on its own, for the reasons internal/clip gives at
+	// length.
+	//
+	// clipboard is how the session's clipboard is reached, and it is nil until
+	// somebody says otherwise (see UseClipboard). Deliberately not defaulted to
+	// the real thing: this one spawns processes against whatever Wayland session
+	// the machine happens to have, and the 129 servers the tests build would
+	// then be 129 daemons reading the developer's own clipboard. The compositor
+	// is a constructor argument for the same reason; this is a setter only
+	// because New already has four.
+	clips     clip.History
+	clipboard Clipboard
+	// clipWhy is why nothing is watching, when nothing is - a machine with no
+	// wl-clipboard, or a compositor that will not have it. Kept because an empty
+	// history looks the same either way from a keyboard (see Clips.Why).
+	clipWhy string
 
 	// The network side (net.go). openLink is a field for the same reason launch
 	// is: the tests need a manager without a system bus under them, and the
@@ -497,6 +516,24 @@ func (s *Server) Dispatch(req Request) Response {
 			return Response{Error: "net.disconnect takes no arguments"}
 		}
 		return s.netDisconnect()
+	case "clip.history":
+		// One verb, two arities, the way window.jump-to has them: the list and
+		// the choice are the same question - which entry - and with no surface
+		// to ask it of, the id printed by the first form is what the second one
+		// takes.
+		switch len(req.Args) {
+		case 0:
+			return s.clipHistory()
+		case 1:
+			return s.clipPut(req.Args[0])
+		default:
+			return Response{Error: "clip.history takes one entry id, or none to open the history"}
+		}
+	case "clip.clear":
+		if len(req.Args) != 0 {
+			return Response{Error: "clip.clear takes no arguments: it forgets the lot"}
+		}
+		return s.clipClear()
 	case "palette.list":
 		if len(req.Args) != 0 {
 			return Response{Error: "palette.list takes no arguments"}

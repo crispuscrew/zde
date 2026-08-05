@@ -269,6 +269,8 @@ ShellRoot {
                         center.note = msg.error;
                     else if (palette.running)
                         palette.ran(msg.error);
+                    else if (clips.running)
+                        clips.ran(msg.error);
                     return;
                 }
                 // Replies to our own subscribe arrive here too; only the lines
@@ -279,6 +281,8 @@ ShellRoot {
                     // surface to appear on rather than a parser that drops it.
                     if (palette.running)
                         palette.ran("");
+                    else if (clips.running)
+                        clips.ran("");
                     return;
                 }
                 if (msg.event.kind === "picker")
@@ -295,6 +299,8 @@ ShellRoot {
                     root.openAsk(msg.event, true);
                 else if (msg.event.kind === "palette")
                     root.openPalette(msg.event);
+                else if (msg.event.kind === "clip")
+                    root.openClips(msg.event);
             }
         }
     }
@@ -449,6 +455,21 @@ ShellRoot {
                     key: a.key ?? "",
                     live: a.live === true,
                     why: a.why ?? ""
+                })), ev.token ?? "");
+    }
+
+    // What was copied recently, newest first. The rows carry a preview and not
+    // the entry: the text stays in zded until a row is picked, so this process
+    // never holds the clipboard history and has nothing to expire.
+    function openClips(ev) {
+        root.present(clips, ev);
+        clips.show((ev.clips ?? []).map(c => ({
+                    id: c.id,
+                    preview: c.preview ?? "",
+                    cut: c.cut === true,
+                    kind: c.kind ?? "text",
+                    why: c.why ?? "",
+                    at: c.at
                 })), ev.token ?? "");
     }
 
@@ -817,6 +838,32 @@ ShellRoot {
             });
         }
         onDismissed: palette.hide()
+        onShown: token => root.send({
+            method: "shown",
+            args: [token]
+        })
+    }
+
+    ClipHistory {
+        id: clips
+
+        // The id of the entry, and nothing else: which entry that is and what
+        // putting it back means are zded's (docs/vision.md, section 2). The
+        // surface is left up until the answer comes, the way the palette is -
+        // an entry can expire between this list being drawn and Enter being
+        // pressed, and that refusal is the one thing only this surface can
+        // explain.
+        onChosen: entry => {
+            if (!stream.connected) {
+                clips.ran("no connection to zded");
+                return;
+            }
+            root.send({
+                method: "clip.history",
+                args: [entry]
+            });
+        }
+        onDismissed: clips.hide()
         onShown: token => root.send({
             method: "shown",
             args: [token]

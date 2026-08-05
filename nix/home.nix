@@ -340,6 +340,12 @@ in
       pkgs.swaylock # the default screen lock (Mod+Ctrl+semicolon)
       pkgs.brightnessctl # system.brightness-up/dn
       pkgs.less # the pager Mod+slash reads the keymap in
+      # wl-paste and wl-copy, which are how zded watches the clipboard and puts
+      # an entry back on it (Mod+v, internal/clip/wl.go - which says why zde
+      # spawns these rather than speaking the data-control protocol itself).
+      # Without them the daemon says so once in its log and the history stays
+      # empty, and `zde clip history` says which of the two empty it is.
+      pkgs.wl-clipboard
       pkgs.wireplumber # wpctl, for audio.*
       # The bar runs from the store path in its unit, so this is not what
       # starts it. It is `qs log` and `qs list`, which are the only way to find
