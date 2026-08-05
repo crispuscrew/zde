@@ -16,9 +16,17 @@ package zded
 //
 // Never an agent: a question goes in and text comes out. No tools, no files, and
 // nothing written down (see askRun).
+//
+// The panel asks more than once, so what went before has to reach the tier
+// somehow, and the only thing that reliably crosses `zcr run <app> --exec` into
+// a container is the three standard streams. So it goes on stdin, in front of
+// the question, framed (see askDoc). zded still keeps none of it: the turns
+// arrive with each request from the surface that is showing them, which is what
+// keeps "closing the window is forgetting" true.
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -99,6 +107,117 @@ const complaintMax = 64 << 10
 // being answered any more.
 const askMax = 256 << 10
 
+// askContextMax bounds a whole conversation: everything a tier is handed on one
+// run, the turns before the question and the question itself.
+//
+// It exists because a conversation that grows without bound is a bill, then a
+// timeout, then a tier that refuses every question because the last twenty are
+// still in front of it. 64 KiB is about sixteen thousand tokens - twenty or so
+// ordinary exchanges - and it is chosen together with askTimeout rather than
+// separately: a tier is asked to read the conversation and answer within the
+// same two minutes as a bare question, so the conversation may not grow to a
+// length that makes that deadline a lie. A local model reprocessing this much
+// has time to answer; four times this and two minutes would be a number that
+// only ever fires.
+//
+// It is not askMax, and the two bound different things. askMax is what one
+// answer may be, because the window holds it in one text item. This is what one
+// run may read. One answer that reached askMax is by itself four times this,
+// which ends the conversation loudly at the next question rather than quietly
+// dropping the turns that no longer fit.
+const askContextMax = 64 << 10
+
+// askFrame is the first line of stdin when there is more than a question on it.
+// A tier that has never heard of it reads one and knows this is not the bare
+// question it was written for; a tier that has reads the rest as turns. Versioned
+// so that a second shape later is a different line rather than a guess.
+const askFrame = "zde-ask 1"
+
+// Who said a turn. "tier" and not "model", because that is all zde knows: what
+// came back last time from the command this machine names, which may be a model
+// or may be a shell script.
+const (
+	askWhoPerson = "person"
+	askWhoTier   = "tier"
+)
+
+// askTurn is one turn of the conversation, as the tier reads it.
+type askTurn struct {
+	Who  string `json:"who"`
+	Text string `json:"text"`
+}
+
+// askDoc is what goes on the tier's stdin: the question on its own where there
+// is nothing before it, and the whole conversation where there is.
+//
+// The encoding is the decision here, and it is made about a program somebody
+// else wrote. A tier is handed this and has to say which words were typed by a
+// person and which it produced itself last time, because that is the difference
+// between context and instructions. A plain transcript - "person:" and "tier:"
+// down the left margin - cannot support that claim: an answer containing a line
+// that begins "person:" is indistinguishable from a person's turn, and getting a
+// model to emit one is a sentence of somebody's pasted text away. The frame has
+// to be one the payload cannot forge.
+//
+// So: one JSON object per line, one line per turn, with the role a field rather
+// than a prefix. Escaping is the encoder's, not a quoting rule written here, so
+// no newline, brace or "who" inside a turn's text can end that turn early. Line
+// delimited because that is the shape zded already speaks everywhere else, so a
+// tier author meets one format in this project rather than two - and because
+// the question is the last line, a tier that wants only the question can take
+// the last line and ignore the rest.
+//
+// Roles come from position and never from the wire: the caller sends the turns
+// before the question alternating, asked then answered, so nothing an answer
+// contains can arrive claiming to be a question.
+//
+// Unframed where there is nothing before the question, which is every oneshot,
+// every `zde ask` in a terminal, and the panel's first question: those are
+// byte-for-byte what a tier has always been handed. The exception is a question
+// whose own first line is the frame, which is framed as one turn so that a tier
+// never has to guess what it is reading.
+func askDoc(prior []string, question string) string {
+	if len(prior) == 0 && !framed(question) {
+		return question
+	}
+	var b strings.Builder
+	b.WriteString(askFrame)
+	b.WriteByte('\n')
+	for i, text := range prior {
+		// Asked, answered, asked, answered. The caller's arity check is what
+		// makes the last one before the question an answer.
+		who := askWhoPerson
+		if i%2 == 1 {
+			who = askWhoTier
+		}
+		writeTurn(&b, who, text)
+	}
+	writeTurn(&b, askWhoPerson, question)
+	return b.String()
+}
+
+// framed is whether a question's own first line is the frame marker. Only then,
+// and not merely starting with it, because "zde-ask 1 is what?" is a question
+// and not a document.
+func framed(question string) bool {
+	line, _, _ := strings.Cut(question, "\n")
+	return line == askFrame
+}
+
+// writeTurn is one line of the document.
+//
+// The error is discarded because marshalling two strings has none: bytes that
+// are not a character become a replacement mark rather than a failure, which is
+// what the same text already met on its way out to the surface that has just
+// sent it back, so nothing is lost here that was not lost already. Discarded
+// rather than skipping the turn, too - a turn quietly missing from the middle
+// would move every role after it along by one.
+func writeTurn(b *strings.Builder, who, text string) {
+	line, _ := json.Marshal(askTurn{Who: who, Text: text})
+	b.Write(line)
+	b.WriteByte('\n')
+}
+
 // askSurface asks the shell to open the popup or the panel. The picker's
 // bargain exactly (see switcher): zded tells whoever is listening, and waits to
 // hear that something actually drew it.
@@ -152,10 +271,17 @@ func (s *Server) askSurface(kind string) Response {
 // Nothing is written down anywhere. There is no history by default
 // (docs/vision.md, section 2), and the way to have none is to write none: no
 // journal entry, no cache, no transcript. What the surface shows is in the
-// surface, and closing it is what forgetting is.
+// surface, and closing it is what forgetting is. The turns before a question
+// arrive with it, from the surface that is showing them, so that stays true
+// once a panel is a conversation: the daemon reads them, hands them to one
+// process, and has forgotten them by the time the answer ends.
 func (s *Server) askRun(k *sink, args []string) {
-	if len(args) != 2 {
-		k.reply(Response{Error: MethodAskRun + " takes a tier and a question"})
+	// A tier, a question, and then the conversation before it in pairs: what
+	// was asked, what came back, oldest first. Pairs rather than a role on each
+	// one, because a role that travels as data is a role something in an answer
+	// can claim (see askDoc).
+	if len(args) < 2 || len(args)%2 != 0 {
+		k.reply(Response{Error: MethodAskRun + " takes a tier, a question, and the turns before it in pairs: what was asked, what came back"})
 		return
 	}
 	tier, question := args[0], strings.TrimSpace(args[1])
@@ -163,12 +289,38 @@ func (s *Server) askRun(k *sink, args []string) {
 		k.reply(Response{Error: "nothing to ask: say what the question is"})
 		return
 	}
+	prior := args[2:]
+	for _, turn := range prior {
+		if strings.TrimSpace(turn) == "" {
+			// An empty turn would tell a tier that somebody said nothing, or
+			// that it answered with nothing, and both are things it would be
+			// entitled to act on. A conversation with a hole in it is not one.
+			k.reply(Response{Error: "one of the turns before that question is empty: a question nothing answered is not a turn to carry"})
+			return
+		}
+	}
 	argv, err := askTier(tier)
 	if err != nil {
 		// Before anything runs, and as the reply rather than as a chunk: a
 		// machine with no tier configured has to hear which option to set, and
 		// hear it from the CLI and the surface alike.
 		k.reply(Response{Error: err.Error()})
+		return
+	}
+	doc := askDoc(prior, question)
+	if len(doc) > askContextMax {
+		// Before anything runs and before anything is spent, and as a refusal
+		// rather than a truncation: dropping the oldest turns to fit would
+		// leave a panel showing a conversation the tier can no longer see, and
+		// a person reading a screen that is a lie about what was asked. So it
+		// is said, and starting again is somebody's decision to make.
+		if len(prior) == 0 {
+			k.reply(Response{Error: fmt.Sprintf("that question is %d KiB, and one ask carries %d: ask it in fewer words",
+				len(doc)>>10, askContextMax>>10)})
+			return
+		}
+		k.reply(Response{Error: fmt.Sprintf("this conversation has reached %d KiB, and one ask carries %d: start a fresh one and ask it there",
+			len(doc)>>10, askContextMax>>10)})
 		return
 	}
 	// One answer at a time down one connection (see sink.asking). Claimed after
@@ -187,10 +339,13 @@ func (s *Server) askRun(k *sink, args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), askTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	// The question, and only the question. A tier is a program that reads one
-	// and answers it: no arguments to quote, and nothing about it on a command
-	// line that `ps` prints for the whole machine to read.
-	cmd.Stdin = strings.NewReader(question)
+	// The question, and what came before it, and nothing else. A tier is a
+	// program that reads on stdin and answers on stdout: no arguments to quote,
+	// and nothing about any of it on a command line that `ps` prints for the
+	// whole machine to read. Bounded by askContextMax above, which is also
+	// about a pipe's worth, so an ordinary run hands this over in one write
+	// rather than waiting on a tier that reads late.
+	cmd.Stdin = strings.NewReader(doc)
 
 	// Both pipes are zde's own rather than exec's, because EOF on one needs
 	// every holder of the write end to let go - and a tier that forks leaves one

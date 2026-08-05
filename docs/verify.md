@@ -593,14 +593,33 @@ actually gets.
   only eyes decide.
 - **Two minutes** caps a tier that has stopped answering without exiting.
   Whether that is the right number with a real local model behind `local`, which
-  can take a while to say anything at all, is the open half of it.
+  can take a while to say anything at all, is the open half of it - and more so
+  now that the panel puts a conversation in front of the question, since a model
+  that reprocesses its whole context each turn gets slower as the conversation
+  grows. The 64 KiB cap on a conversation is set with that deadline in mind;
+  whether the pair is right is a thing only a real tier says.
+- **`Mod+Shift+a`, then two questions where the second only makes sense after the
+  first.** "what is the capital of peru", then "and of chile". A panel that
+  answers the second one properly is carrying the first; one that asks what you
+  mean is not. The prompt line says `carrying 1` before the second question goes
+  out, which is what that costs on a provider tier.
+- **`ctrl+n`** in the panel clears the transcript and the count beside the tier
+  name, and the next question goes out with nothing in front of it. Ask
+  something that depends on what was said before and check it has been
+  forgotten. `Mod+a` never carries anything - a oneshot is one question - and its
+  hint line does not offer `ctrl+n`.
+- **What a tier is handed.** Point a tier at `cat` (or
+  `[ "sh" "-c" "cat" ]`) and ask twice in the panel: the second question comes
+  back as `zde-ask 1` and then a line of JSON per turn, oldest first, question
+  last. That is the seam, and it is what somebody writing a tier reads.
 - **A tier whose binary is missing**, one that exits non-zero, and one that
   exits happily having said nothing all end in words on the screen. Worth
   breaking on purpose once, since this is the whole design.
 - **Escape** stops the answer being shown, not the tier running. Nothing is
-  written down anywhere - no journal line, no cache, no transcript - and the
-  panel does not send the previous turns as context, so each question is its own
-  run and calling it a conversation would outrun the code.
+  written down anywhere - no journal line, no cache, no transcript. The panel's
+  turns live in the window that is showing them and go back down the socket with
+  each question, so closing it is still the whole of forgetting: reopen the panel
+  and the conversation is gone.
 - `zde ask oneshot <question>` answers in the terminal it was typed in and never
   in a popup. `zde ask local` and `zde ask escalate` are the other tiers, and a
   question read from stdin (`zde ask local < note`) is how one stays out of the
@@ -631,7 +650,7 @@ Not bugs, do not report them:
   | `Mod+t` (terminal) | `Mod+m` (modes), `Mod+Shift+n` (net observer) |
   | `Mod+n` (the notification centre), `Mod+q` (quiet) | `Mod+c` (calendar), `Mod+Shift+w` (wallpapers) |
   | `Mod+semicolon` (the palette) | `Mod+Shift+x` (power) |
-  | `Mod+a`, `Mod+Shift+a` (ask, once a tier is set) | `XF86AudioPlay`/`Next`/`Prev` (the media target) |
+  | `Mod+a` (one question), `Mod+Shift+a` (a conversation), once a tier is set | `XF86AudioPlay`/`Next`/`Prev` (the media target) |
   | `Mod+Shift+c` (wifi, and the link you are on) | `Mod+e`, until `zde.apps.editor` names one (below) |
   | `Mod+g` (zinc's launcher), `Mod+Ctrl+semicolon` (lock) | |
   | `Mod+slash` (the keymap, in a pager) | |

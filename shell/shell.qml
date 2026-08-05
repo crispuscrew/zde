@@ -753,11 +753,18 @@ ShellRoot {
         // for "local" is zded's answer, out of the same kind of table Mod+t
         // resolves through, and a shell that knew the command would be a second
         // place to configure one.
-        onAsked: (tier, question) => {
+        //
+        // The turns before the question go after it, in the order the window
+        // holds them, and this shell neither reads nor bounds them: what a tier
+        // is handed and how much of it there may be are zded's (docs/vision.md,
+        // section 2 - the shell is a thin adapter with zero logic inside), so a
+        // conversation that has grown too long is refused in one place and not
+        // two.
+        onAsked: (tier, question, prior) => {
             if (askLink.connected)
                 askLink.write(JSON.stringify({
                     method: "ask.run",
-                    args: [tier, question]
+                    args: [tier, question].concat(prior)
                 }) + "\n");
             else
                 askWindow.finished("no connection to zded, so there is nothing to ask");
