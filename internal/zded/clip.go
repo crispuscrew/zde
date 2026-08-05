@@ -122,7 +122,19 @@ func (s *Server) WatchClipboard(ctx context.Context) {
 		s.watchingClipboard("this zded was started without a clipboard to watch")
 		return
 	}
-	go s.sweepClips(ctx)
+	// Started here and waited for on the way out, so that this function ending
+	// means everything it started has ended. A daemon does not care; a test
+	// does, because a goroutine still winding down is one allocating inside
+	// somebody else's measurement. Every path out of the loop below is a
+	// finished ctx, which is also what ends the sweep, so this cannot wait for
+	// something that is not coming.
+	swept := make(chan struct{})
+	go func() {
+		defer close(swept)
+		s.sweepClips(ctx)
+	}()
+	defer func() { <-swept }()
+
 	said := false
 	for ctx.Err() == nil {
 		changes, err := tool.Watch(ctx)
