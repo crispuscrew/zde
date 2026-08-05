@@ -138,29 +138,38 @@ PanelWindow {
     // machine. None of that is undoable except by ctrl+n, which ends the
     // conversation anyway.
     //
+    // "Always" is the whole of it, and it is why forget() is the first
+    // statement here rather than a step on the path that ends in submit(). The
+    // branch below cannot ask anything yet, and an early return that left the
+    // turns standing would be the leak with an extra second in front of it: the
+    // answer still arriving lands in turns when it ends (see finished), and the
+    // Enter that finally sends this question would send that with it. A test
+    // reads this function and fails if anything comes before the forget
+    // (internal/zded, wire_test.go).
+    //
     // The cost is real and is not hidden: a panel with a conversation in it
-    // loses it, which is the same forgetting ctrl+n and Escape already do. It
-    // is visible in the two places that say what a question is being asked
-    // with - an empty transcript, and no "carrying" beside the tier name.
+    // loses it, which is the same forgetting ctrl+n and Escape already do, and
+    // an answer still on its way is dropped rather than shown under a
+    // conversation that has ended - which is what forget() means everywhere
+    // else too. It is visible in the two places that say what a question is
+    // being asked with: an empty transcript, and no "carrying" beside the tier
+    // name.
     function askFromOutside(question) {
+        ask.forget();
+        // It does replace anything half-typed in the field. That needs two
+        // hands - a terminal and this window - and the alternative is a
+        // question that arrived and is nowhere.
+        field.text = question;
         if (ask.running) {
             // One answer at a time down one connection (internal/zded,
-            // events.go - sink.asking), so this one cannot go now. Into the
-            // field with a line saying why, rather than dropped: a question
-            // that vanished silently is the failure this whole component is
-            // arranged against, and Enter asks it once the last answer ends.
-            // Nothing is forgotten in this branch either - the conversation on
-            // screen is what the answer still arriving belongs to.
-            //
-            // It does replace anything half-typed in the field. That needs two
-            // hands - a terminal and this window, while an answer is streaming
-            // - and the alternative is a question that arrived and is nowhere.
-            field.text = question;
+            // events.go - sink.asking), so this one cannot go now. It waits in
+            // the field with a line saying why, rather than being dropped: a
+            // question that vanished silently is the failure this whole
+            // component is arranged against, and Enter asks it once the last
+            // answer ends. Set after the forget, which clears this line.
             ask.failure = "still answering the last question: press enter to ask this one";
             return;
         }
-        ask.forget();
-        field.text = question;
         // The provider tier, which is what Enter in this window does. ctrl+l
         // and ctrl+e are still there for the same question, since it is on the
         // screen the moment this returns.

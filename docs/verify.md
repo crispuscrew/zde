@@ -641,17 +641,30 @@ actually gets.
   question already asked, and the answer arrives in the window rather than on
   the terminal. That is the whole difference between the two verbs, and
   `oneshot` is the one to script against when what is wanted is text on stdout.
-  It used to ignore the word `panel` and run a provider oneshot.
-- **The same command with the panel already open on a conversation.** It starts
-  a fresh one: the transcript goes, `carrying N` goes with it, and the question
-  is asked with nothing in front of it. The thing to check is that a question
-  typed at a terminal never lands in the middle of an exchange that was on
-  screen - one from a shell script would then travel with every turn after it,
-  and go to the tier along with whatever that exchange contained. Losing the
-  transcript is the cost, and it is the same forgetting `ctrl+n` does.
-  Asked while an answer is still streaming, it does not interrupt: the question
+  It used to ignore the word `panel` and run a provider oneshot. Note where the
+  keyboard goes: the panel takes an exclusive grab while it is up, so the
+  terminal you typed at is unreachable until Escape closes it.
+- **The same command with the panel already open on a conversation.** That grab
+  is why this one has to be scheduled rather than typed: run
+  `(sleep 30; zde ask panel "and what is the capital of chile") &` at a
+  terminal, then `Mod+Shift+a` and ask two questions, and wait for it to fire
+  with the exchange on screen. It starts a fresh conversation: the transcript
+  goes, `carrying N` goes with it, and the question is asked with nothing in
+  front of it. That is the invariant worth trying to break - a question typed at
+  a terminal, or by a cron job, must never land in the middle of an exchange
+  that was on screen, because it would then travel with every turn after it and
+  go to the tier along with whatever that exchange contained. On a provider tier
+  that is off the machine. Losing the transcript is the cost, and it is the same
+  forgetting `ctrl+n` does.
+- **The same again while an answer is still streaming.** Schedule it the same
+  way, with a tier slow enough to still be answering when it fires -
+  `[ "sh" "-c" "sleep 25; cat" ]` will do. It does not interrupt: the question
   lands in the field with a line saying the panel is still answering the last
-  one, and Enter asks it.
+  one, and Enter asks it. The conversation is gone by then all the same, and the
+  answer still arriving is dropped rather than drawn under an exchange that has
+  ended - so what Enter finally sends carries nothing either. A version that
+  kept the transcript here would be the leak above with a keystroke in front of
+  it, since an answer that finishes joins the turns.
 - **`zde ask panel <question>` with the bar stopped** (`systemctl --user stop
   zde-bar`) asks nothing and says so, naming `oneshot` as the verb that answers
   on a terminal. A version that quietly answered there instead would be one verb
