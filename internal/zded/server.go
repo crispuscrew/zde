@@ -241,22 +241,22 @@ func New(version string, jrn *journal.Journal, compositor Compositor, desks Desk
 		desks = noDesks{}
 	}
 	return &Server{
-		version: version,
-		jrn:     jrn,
-		niri:    compositor,
-		desks:   desks,
-		launch:  zinc.Run,
-		spawn:   spawnDetached,
-		// Made here rather than beside the pump it stops, because Close may run
-		// on a daemon that never received a notification and closing a nil
-		// channel is a panic on the way out of a session.
-		popupStop: make(chan struct{}),
-		openLink:  link.Open,
+		version:  version,
+		jrn:      jrn,
+		niri:     compositor,
+		desks:    desks,
+		launch:   zinc.Run,
+		spawn:    spawnDetached,
+		openLink: link.Open,
 		// Neither radio is dialled here: opening a system bus connection at
 		// startup would be zded doing that work on every machine, including the
 		// ones that have no radio and never asked for one (bluetooth.go, radio;
 		// net.go, links).
 		openBluetooth: func() (Bluetooth, error) { return bt.Dial() },
+		// Made here rather than beside the pump it stops, because Close may run
+		// on a daemon that never received a notification and closing a nil
+		// channel is a panic on the way out of a session (attn.go, pop).
+		popupStop: make(chan struct{}),
 	}
 }
 
