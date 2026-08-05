@@ -443,12 +443,14 @@ PanelWindow {
             font.family: "monospace"
         }
 
-        // A view and not a column, because the history holds two hundred records
-        // and a screen holds about thirty. A column inside a clipped panel drew
-        // the first thirty and hid the rest, and j walked the highlight into the
-        // hidden part - where d dismissed a notification nobody could see, and
-        // told the app that sent it. So the row you are on is always on the
-        // screen: the view scrolls to it, rather than the list ending.
+        // A view and not a column, because the history holds up to 390 records -
+        // thirty from each of twelve senders and the nameless ring
+        // (internal/attn, PerSenderMax) - and a screen holds 31 of them. A
+        // column inside a clipped panel drew the ones that fit and hid the rest,
+        // and j walked the highlight into the hidden part - where d dismissed a
+        // notification nobody could see, and told the app that sent it. So the
+        // row you are on is always on the screen: the view scrolls to it, rather
+        // than the list ending.
         ListView {
             id: list
 
