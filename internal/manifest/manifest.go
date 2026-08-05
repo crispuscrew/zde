@@ -222,12 +222,20 @@ func (d *Desk) Workspaces() []desk.Name {
 // what niri reports is an application id; writing one where the other belongs
 // would produce a manifest that reads fine and launches nothing. Capturing
 // them needs zcr, which is not in this repo.
-func FromMap(m *desk.Map, name string) (*Desk, error) {
+//
+// Private is carried rather than read off the screen, because nothing on the
+// screen says it: it is a declaration, and the only place it exists is the
+// manifest this desk already has. The caller supplies it (internal/zded, the
+// snapshot verb). Written down again rather than dropped, because a snapshot
+// that quietly left it out would be zde writing a second manifest for a
+// private desk that does not say the desk is private - which is exactly the
+// file that un-declares one.
+func FromMap(m *desk.Map, name string, private bool) (*Desk, error) {
 	workspaces := m.Workspaces(name)
 	if len(workspaces) == 0 {
 		return nil, fmt.Errorf("desk %q has no workspaces to write down", name)
 	}
-	d := &Desk{Name: name, Monitors: map[string]Monitor{}}
+	d := &Desk{Name: name, Private: private, Monitors: map[string]Monitor{}}
 	for _, n := range workspaces {
 		mon := d.Monitors[n.Monitor]
 		mon.Workspaces = append(mon.Workspaces, n.Slot)

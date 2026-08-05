@@ -43,7 +43,9 @@ blocks 0.2:
   the rest of the ring, the rest of every long body, and the actions: nothing
   can be pressed on a row whose app was on the last session's bus, and the
   center says so rather than offering buttons that go nowhere. What arrived on a
-  desk declared `private: true` is never written at all.
+  desk declared `private: true` never reaches that file - which is a claim about
+  that file and not about the disk, because the journal still records the body
+  of anything the mode queued.
 - ask has no tier until a machine names one, and the panel does not carry the
   previous turns as context.
 - nothing is sandboxed until somebody defines an app. Layer 2 is provisioned by

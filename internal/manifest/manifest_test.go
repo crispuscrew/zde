@@ -183,7 +183,7 @@ func TestFromMapRoundTrips(t *testing.T) {
 		{ID: 4, Name: "haven.DP-1.db", Output: "DP-1"},
 	}, []string{"DP-1", "HDMI-A-1"})
 
-	d, err := FromMap(m, "vshop")
+	d, err := FromMap(m, "vshop", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ func TestFromMapRoundTrips(t *testing.T) {
 // A desk with nothing in it is not a desk to write down.
 func TestFromMapEmptyDesk(t *testing.T) {
 	m := desk.Rebuild(nil, []string{"DP-1"})
-	if _, err := FromMap(m, "vshop"); err == nil {
+	if _, err := FromMap(m, "vshop", false); err == nil {
 		t.Error("wrote down a desk with no workspaces")
 	}
 }
@@ -225,7 +225,7 @@ func TestFromMapRefusesOrdinals(t *testing.T) {
 	m := desk.Rebuild([]desk.Workspace{
 		{ID: 1, Name: "vshop.DP-1.1", Output: "DP-1"},
 	}, []string{"DP-1"})
-	if _, err := FromMap(m, "vshop"); err == nil {
+	if _, err := FromMap(m, "vshop", false); err == nil {
 		t.Error("wrote an ordinal into a manifest")
 	}
 }

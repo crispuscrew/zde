@@ -22,14 +22,26 @@ import (
 // bodies, and what it keeps is enough to answer "what did I miss" across a
 // reboot instead of starting every session blank.
 //
-// The journal is still not where that lives, and the reasoning has not changed.
-// Every arrival writes a journal line either way, a queued one to record the
-// item and a silenced one to spend its id (internal/journal, ClaimID); what the
-// journal must not carry is the bodies. It fsyncs per line and only ever grows
-// between compactions, so a body on every line would grow it without bound for
-// the sake of history that is stale by the next login. The snapshot is a
-// separate file, bounded, and rewritten whole - which is the shape that can
-// hold bodies without either of those costs.
+// The journal is still not where that lives, and the argument is about the
+// shape of the two files rather than about what is in them today. Every arrival
+// writes a journal line either way, a queued one to record the item and a
+// silenced one to spend its id (internal/journal, ClaimID). A journal line is
+// appended and then replayed, and it is rewritten only when a daemon starts and
+// finds a long one - `Compact` has no other caller in the tree - so everything
+// written per arrival is carried until the next login, fsynced, whether or not
+// anybody will ever read it. The snapshot is the other shape: bounded at
+// snapshotMax records with their bodies cut to snapshotBodyMax, written whole
+// and renamed over the old one, so it costs the same whether it is written once
+// or every two minutes, and a hundred arrivals a minute do not make it larger.
+//
+// What this comment used to claim, and what is not true, is that the journal
+// does not carry bodies. It carries the whole body of everything the mode
+// queues, fsynced, and has since long before this branch (internal/journal,
+// Queue) - and the queue it replays into is not bounded the way this ring is.
+// So the shape argument above is the reason the history goes in a file of its
+// own; it is not a reason to believe a notification body is only ever in one
+// place on the disk. It is not, the queue's copy is a separate change, and
+// stating it the other way here was the comment flattering the code.
 const HistoryMax = 200
 
 // Record is one arrival, as the notification center reads it back. It is what
@@ -86,9 +98,16 @@ type Record struct {
 	// without admitting it (docs/vision.md, principle 3).
 	Clipped bool `json:"bodyClipped,omitempty"`
 	// Private says this arrived on a desk whose manifest declares private, and
-	// it is the one thing that keeps a record out of the snapshot altogether
-	// (docs/vision.md, section 3 - private desks are history only, and history
-	// on disk is a body somebody can read afterwards).
+	// it is what every path that would put a notification anywhere but this
+	// session's own memory has to check first (docs/vision.md, section 3 -
+	// private desks are history only).
+	//
+	// Decided once, where the desk it arrived on is known (internal/zded,
+	// Arrived), and carried rather than asked again. The manifests are a
+	// directory of files: asking them again on every path that writes or shows
+	// a record is a directory read and a YAML parse per notification, on the
+	// far end of a D-Bus call the sending app is blocked on - and two paths
+	// that asked separately could get two answers about one arrival.
 	//
 	// Never serialised, in either direction. A surface has no use for it, and a
 	// file that could carry it would be a file that could clear it.

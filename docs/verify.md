@@ -317,13 +317,43 @@ ones are the point of zded holding the bus name.
   `systemctl --user start zded`, `Mod+n`. What it costs should be the last
   couple of minutes of arrivals, not the day. This is the number to report if it
   feels wrong on a machine that receives a lot.
-- **A private desk keeps its arrivals off the disk.** The invariant worth trying
-  to break. Add `private: true` to one of the manifests above, stand on that
-  desk, send yourself a notification, and restart zded: it is in `Mod+n` before
-  the restart and gone after it, and `grep` for its text in `history.json` finds
-  nothing. Then break the same manifest with a typo and try again - a desk whose
-  manifest will not parse is treated as private too, because a typo must not be
-  how a desk stops being one, and `zde status` names the file.
+- **A private desk keeps its arrivals out of the snapshot.** The invariant worth
+  trying to break. Add `private: true` to one of the manifests above, stand on
+  that desk, send yourself a notification, and restart zded: it is in `Mod+n`
+  before the restart and gone after it, and `grep` for its text in
+  `history.json` finds nothing.
+
+  Out of the snapshot, and not off the disk, which would be a wider claim than
+  anything here earns: a notification the mode queues writes its body to the
+  journal as well, so the same `grep` finds it in `j.jsonl`. That file is the
+  queue's and getting the bodies out of it is its own change. What this section
+  is about is `history.json`, and about that the claim is exact.
+
+  Three ways to try to break it, all of which should end with nothing written.
+  Break the same manifest with a typo - a desk whose manifest will not parse is
+  treated as private too, because a typo must not be how a desk stops being one,
+  and `zde status` names the file. Copy the manifest to a second filename and
+  leave `private:` out of the copy: two files naming one desk would otherwise
+  settle the flag by which filename sorts first, so both are refused while the
+  pair is there. And `zde desk snapshot` of a private desk should write a
+  manifest that still says `private: true`, because that file is the one zde
+  itself could have used to un-declare the desk.
+- **What the doubt costs, said out loud.** On a machine that declares a private
+  desk, an arrival zde cannot place on any desk is kept in memory and nothing
+  else - it could have come in on the private one, and there is no finding out
+  afterwards. That is a session before any desk has been named, or a niri
+  nothing can read. `zde status` grows an `unplaced` line counting them and the
+  daemon says so once in `journalctl --user -u zded`, which is the difference
+  between a rule and a history that quietly will not fill up. On the ordinary
+  machine, which declares no private desk, the line never appears and nothing is
+  refused.
+- **What marking a desk private does not do.** It is a statement about what
+  happens from now on, and it does not retract what is already in the file: a
+  record carries the answer that was true when it arrived. Removing what is
+  there is removing it - `systemctl --user stop zded`, delete
+  `~/.local/state/zde/history.json`, start it again. In that order, because
+  until the daemon goes those records are still in its memory and the next write
+  puts them back.
 - Two terminals, two `notify-send`s: neither can close or replace the other's.
   Closing from the wrong one should leave the item where it is:
 

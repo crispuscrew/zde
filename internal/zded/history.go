@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/crispuscrew/zde/internal/attn"
+	"github.com/crispuscrew/zde/internal/desk"
 )
 
 // The daemon's half of the notification snapshot (internal/attn, snapshot.go).
@@ -132,32 +133,77 @@ func (s *Server) KeepHistory(ctx context.Context, path string) {
 // private is somebody saying that what arrives there is not to be left lying
 // around, and this is the one place that promise is kept.
 //
-// Fail closed, which is principle 9, and it decides the three cases that are
-// not a plain yes or no:
+// Fail closed, which is principle 9, and it decides the cases that are not a
+// plain yes or no:
 //
+//   - the regulars are the one band no manifest can declare (internal/manifest,
+//     check), so they are the one name that cannot be a private desk, and they
+//     are answered before any of the doubt below. Without that they counted as
+//     an undeclared desk - and they are reachable from every desk, so one
+//     private desk anywhere on the machine kept everything that arrived on
+//     them in memory, for a band somebody can spend the day in.
 //   - the manifests cannot be read at all: we cannot tell which desk is
 //     private, so nothing is written down.
+//   - one of them would not parse, or two of them name the same desk: the file
+//     that lost could be the private declaration of any desk here, this one
+//     included, so nothing is written down while either is true. Asked before
+//     the desk is looked up and not after, which is the difference between a
+//     rule and a comment: LoadDir keeps the first of two manifests naming one
+//     desk and calls the second a problem, so a copied manifest that leaves
+//     `private:` out was otherwise all it took to un-declare a private desk.
+//     `zde status` names the file (see rememberProblems).
 //   - the desk is not declared, or nothing could say which desk it was (niri
 //     unreadable, or a session where nothing is named yet): then it could have
 //     been the private one, so it is refused whenever this machine declares a
 //     private desk at all. On the ordinary machine, which declares none, there
-//     is nothing to protect and the record is kept.
-//   - one of the manifests would not parse: the broken file could be the
-//     private desk's, and a typo must not be how a private desk stops being
-//     one. `zde status` names the file (see rememberProblems).
+//     is nothing to protect and the record is kept. That last doubt is counted
+//     and said, because it is otherwise a history that empties itself and
+//     gives no reason (see couldNotPlace).
 func (s *Server) privateArrival(deskName string) bool {
+	if deskName == desk.Regulars {
+		return false
+	}
 	all, problems, err := s.desks.All()
 	if err != nil {
 		return true
 	}
 	s.rememberProblems(problems)
+	if len(problems) > 0 {
+		return true
+	}
 	if d, declared := all[deskName]; declared && deskName != "" {
 		return d.Private
 	}
 	for _, d := range all {
 		if d.Private {
+			s.couldNotPlace()
 			return true
 		}
 	}
-	return len(problems) > 0
+	return false
+}
+
+// couldNotPlace records one arrival that was refused only because nothing could
+// say which desk it was on, and says so the first time it happens.
+//
+// The refusal above is right and it is also invisible. On a machine that
+// declares a private desk, a session where nothing has been named yet - or a
+// compositor that cannot be read - answers every arrival the same way, and what
+// a person sees is a feature that does not work, with no reason given anywhere.
+// One line in `journalctl --user -u zded` at the moment it first happens, and a
+// running count in `zde status`, are what make that a thing somebody can find
+// rather than a thing they have to guess.
+//
+// Counted rather than logged every time: notifications arrive at machine speed,
+// and a hundred a minute would be a hundred lines a minute. The first line says
+// what is happening; the count says how much of the session it has cost.
+func (s *Server) couldNotPlace() {
+	s.mu.Lock()
+	first := s.unplaced == 0
+	s.unplaced++
+	s.mu.Unlock()
+	if first {
+		log.Print("zded: nothing can say which desk these are arriving on and a desk here is declared private, " +
+			"so they are being kept in memory only - `zde status` counts them")
+	}
 }
