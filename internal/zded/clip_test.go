@@ -34,7 +34,10 @@ type fakeClipboard struct {
 	// writeBlocks holds Write until it is closed, which is what a wl-copy that
 	// has taken the selection and stopped answering looks like from here.
 	writeBlocks chan struct{}
-	changes     chan struct{}
+	// writeCalls is how many writes were started, which is not len(wrote): a
+	// write that is still going has not been recorded there yet.
+	writeCalls int
+	changes    chan struct{}
 }
 
 func newFakeClipboard() *fakeClipboard {
@@ -80,6 +83,10 @@ func (f *fakeClipboard) Read(_ string, limit int) ([]byte, bool, error) {
 // could not show the loop the loop guard exists to break.
 func (f *fakeClipboard) Write(text []byte) error {
 	f.mu.Lock()
+	// Counted on the way in rather than on the way out, because the question a
+	// test asks of this is how many writes were started and not how many
+	// finished.
+	f.writeCalls++
 	if hold := f.writeBlocks; hold != nil {
 		f.mu.Unlock()
 		<-hold
@@ -307,6 +314,68 @@ func TestAClipboardWriteDoesNotStopTheConnectionAnswering(t *testing.T) {
 	}
 	if resp.Error != "" {
 		t.Fatalf("status answered %q", resp.Error)
+	}
+}
+
+// Answering clipboard writes off the read loop took away the serialization the
+// read loop was providing for free, so the connection claims one instead. Two
+// writes racing for the selection are two answers about which entry is on the
+// clipboard, and one connection could otherwise queue as many wl-copy processes
+// as it can write lines.
+//
+// Which of the two wins the claim is not the point and is not asserted: exactly
+// one proceeds and exactly one is told why it did not.
+//
+// If this regresses, a client that repeats a request is a client that can start
+// an unbounded number of processes in a daemon that answers every keybind.
+func TestOneClipboardWriteAtATimePerConnection(t *testing.T) {
+	s, f := clipServer(t)
+	f.offer("something worth pasting", "text/plain")
+	s.take()
+	rows := clipRows(t, s)
+	if len(rows) != 1 {
+		t.Fatalf("%d rows: %+v", len(rows), rows)
+	}
+
+	held := make(chan struct{})
+	defer close(held)
+	f.mu.Lock()
+	f.writeBlocks = held
+	f.mu.Unlock()
+
+	conn, err := net.Dial("unix", serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	enc := json.NewEncoder(conn)
+	for range 2 {
+		if err := enc.Encode(Request{Method: MethodClip, Args: []string{itoa(rows[0].ID)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The first write is still going, so the only answer that can come back is
+	// the refusal of the second.
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second)) //nolint:errcheck // the read below reports it
+	line, err := bufio.NewReader(conn).ReadBytes('\n')
+	if err != nil {
+		t.Fatal("neither request was answered, so the second one is somewhere behind the first " +
+			"rather than being refused")
+	}
+	var resp Response
+	if err := json.Unmarshal(line, &resp); err != nil {
+		t.Fatalf("the answer is not one line of json: %q", line)
+	}
+	if !strings.Contains(resp.Error, "still putting") {
+		t.Errorf("the second request answered %q, want a refusal naming what it is waiting for", resp.Error)
+	}
+	f.mu.Lock()
+	started := f.writeCalls
+	f.mu.Unlock()
+	if started != 1 {
+		t.Errorf("%d clipboard writes were started at once", started)
 	}
 }
 
