@@ -149,8 +149,12 @@ PanelWindow {
             // field with a line saying why, rather than dropped: a question
             // that vanished silently is the failure this whole component is
             // arranged against, and Enter asks it once the last answer ends.
-            // Nothing is forgotten in this branch - the conversation on screen
-            // is what that answer belongs to.
+            // Nothing is forgotten in this branch either - the conversation on
+            // screen is what the answer still arriving belongs to.
+            //
+            // It does replace anything half-typed in the field. That needs two
+            // hands - a terminal and this window, while an answer is streaming
+            // - and the alternative is a question that arrived and is nowhere.
             field.text = question;
             ask.failure = "still answering the last question: press enter to ask this one";
             return;

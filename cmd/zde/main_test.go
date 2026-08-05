@@ -287,6 +287,23 @@ func (f *fakeZded) asked() []zded.Request {
 	return append([]zded.Request(nil), f.got...)
 }
 
+// tierAnswers is a whole answer to an ask.run: the reply, a piece of it, and
+// the end. Every fake here gives one, including in the tests where an ask.run
+// is the bug being looked for - the CLI waits for an event with no deadline of
+// its own, so a regression that was left unanswered would time this file out
+// rather than fail it, and a test that hangs says nothing about what broke.
+func tierAnswers(text string) []string {
+	said, err := json.Marshal(text)
+	if err != nil {
+		panic(err)
+	}
+	return []string{
+		`{"ok":"asking"}`,
+		`{"event":{"kind":"ask.text","text":` + string(said) + `}}`,
+		`{"event":{"kind":"ask.text","done":true}}`,
+	}
+}
+
 // onStdout runs it with stdout pointed at a file, and answers what landed
 // there. fmt.Print reads os.Stdout when it prints, so swapping it is enough -
 // and these are tests about where an answer arrives, which means where it
@@ -317,9 +334,13 @@ func onStdout(t *testing.T, run func() error) (string, error) {
 // is answered once, on a terminal, with nowhere to ask the next one - and the
 // only sign is that the panel never opened.
 func TestAskPanelWithAQuestionOpensThePanelAndRunsNoTier(t *testing.T) {
-	f := fakeDaemon(t, func(zded.Request) []string {
-		// A shell drew it. What happens when nothing does is the test below.
-		return []string{`{"ok":true}`}
+	f := fakeDaemon(t, func(req zded.Request) []string {
+		if req.Method == "ask.panel" {
+			// A shell drew it. What happens when nothing does is the test
+			// below.
+			return []string{`{"ok":true}`}
+		}
+		return tierAnswers("Lima\n")
 	})
 
 	said, err := onStdout(t, func() error {
@@ -351,11 +372,7 @@ func TestAskOneshotWithAQuestionStillAnswersOnTheTerminal(t *testing.T) {
 		if req.Method != zded.MethodAskRun {
 			return []string{`{"error":"` + req.Method + ` is not how a oneshot asks"}`}
 		}
-		return []string{
-			`{"ok":"asking"}`,
-			`{"event":{"kind":"ask.text","text":"Lima\n"}}`,
-			`{"event":{"kind":"ask.text","done":true}}`,
-		}
+		return tierAnswers("Lima\n")
 	})
 
 	said, err := onStdout(t, func() error {
@@ -386,10 +403,13 @@ func TestAskOneshotWithAQuestionStillAnswersOnTheTerminal(t *testing.T) {
 // with the difference that there is no list to fall back to printing - so what
 // is left to say is what did not happen and which verb does work here.
 func TestAskPanelWithNoShellSaysTheQuestionWasNotAsked(t *testing.T) {
-	f := fakeDaemon(t, func(zded.Request) []string {
-		// Nothing acknowledged the event, which is the answer a session with no
-		// shell gets (internal/zded, askSurface).
-		return []string{`{"ok":false}`}
+	f := fakeDaemon(t, func(req zded.Request) []string {
+		if req.Method == "ask.panel" {
+			// Nothing acknowledged the event, which is the answer a session
+			// with no shell gets (internal/zded, askSurface).
+			return []string{`{"ok":false}`}
+		}
+		return tierAnswers("Lima\n")
 	})
 
 	said, err := onStdout(t, func() error {
