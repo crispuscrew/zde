@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -86,6 +87,52 @@ const (
 	Copy  = "wl-copy"
 )
 
+// guard ties a spawned wl-clipboard process to the daemon that spawned it. For a
+// command built with exec.CommandContext, which is the only kind here: it sets
+// Cancel, and exec refuses a Cancel with no context to fire it.
+//
+// Two mechanisms, because zded stops in two ways and only one of them was
+// covered. Its own process group, so cancelling reaches what the child started
+// rather than only the pid zde knows about - the same reasoning a tier's kill
+// has (internal/zded, killGroup). And PR_SET_PDEATHSIG, which is the one this
+// was written for: cmd.Cancel only runs while there is a process left to run it,
+// so an orderly stop was already fine and SIGKILL, an OOM kill, or the session
+// going down underneath the daemon was not. What that left behind was
+// `wl-paste --watch` reparented to pid 1, still connected to the compositor and
+// still watching the clipboard until logout. One was found alive on a
+// developer's machine two hours after the test run that started it.
+//
+// That is not untidiness, it is the feature contradicting itself: the whole
+// argument for keeping a clipboard history in memory is that it dies with the
+// daemon, and a watcher nobody can see outliving the daemon is the sharpest
+// available way to be wrong about that.
+//
+// The Go caveat, written down because it decides how this fails rather than
+// whether it works: the kernel sends the parent-death signal when the thread
+// that forked exits, not when the process does (golang/go#27505). Go does not
+// retire ordinary Ms, so in practice that thread lives as long as the daemon -
+// and if one ever did go early, the child is killed, the watch ends, and
+// WatchClipboard dials another one (internal/zded). A spurious death costs a
+// restart, which is the safe direction to be wrong in.
+//
+// What this does not reach is a grandchild: PR_SET_PDEATHSIG is cleared on fork,
+// so the `wl-paste --list-types` children that `wl-paste --watch` spawns do not
+// inherit it. They print and exit in milliseconds, and their stdout is the pipe
+// zded held, so a dead daemon closes it under them either way. The group kill is
+// what covers them while zded is alive to do it.
+func guard(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			// The group and not the pid, so that stopping a wl-paste stops what
+			// the wl-paste started. ESRCH means there was nothing left, which is
+			// the outcome this exists for.
+			syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) //nolint:errcheck // ESRCH is the good case
+		}
+		return nil
+	}
+}
+
 // within bounds one wl-clipboard run.
 //
 // A read is a request to whichever application owns the selection, and an
@@ -126,6 +173,9 @@ func (Tool) Watch(ctx context.Context) (<-chan struct{}, error) {
 		return nil, fmt.Errorf("%s is not installed, so nothing can watch the clipboard: %w", Paste, err)
 	}
 	cmd := exec.CommandContext(ctx, Paste, "--watch", Paste, "--list-types")
+	// The long-lived one, and the reason guard exists: this process is meant to
+	// last the session, and must not last longer than the daemon does.
+	guard(cmd)
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
@@ -227,6 +277,11 @@ func (Tool) Read(mime string, limit int) ([]byte, bool, error) {
 // wants the rest.
 func read(ctx context.Context, limit int, argv ...string) ([]byte, bool, error) {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	// Bounded by `within` while zded is alive, and by guard when it is not. A
+	// read is a request to whichever application owns the selection, so one that
+	// has stopped answering leaves this blocked in a read with no timeout left
+	// to enforce - which is an orphan holding a clipboard read open.
+	guard(cmd)
 	pipe, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, false, err
@@ -269,6 +324,13 @@ func (Tool) Write(text []byte) error {
 	ctx, stop := context.WithTimeout(context.Background(), within)
 	defer stop()
 	cmd := exec.CommandContext(ctx, Copy, "--type", "text/plain")
+	// Deliberately not guarded, which is the one exception here and is worth the
+	// sentence. wl-copy forks a process that serves the selection and then
+	// returns, so what is left to orphan exits by itself in milliseconds - and
+	// the process that does outlive it has to, or the entry the person just chose
+	// disappears off their clipboard the moment zded stops. A group kill would
+	// take that server with it, and a parent-death signal on this one would risk
+	// killing the write in the window before it has forked.
 	cmd.Stdin = bytes.NewReader(text)
 	// wl-copy forks and serves the selection from the background, so this
 	// returns as soon as the clipboard is taken rather than holding a goroutine
