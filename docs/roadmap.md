@@ -41,9 +41,14 @@ blocks 0.2:
   is the half that survives.
 - ask has no tier until a machine names one, and the panel does not carry the
   previous turns as context.
-- nothing is sandboxed until somebody defines an app. Layer 2 is provisioned by
-  hand ([`delivery.md`](delivery.md)), so a manifest can name an app that does
-  not exist and the launch is a line in zded's log.
+- nothing is sandboxed until somebody defines an app. Layer 2 is still
+  provisioned by hand ([`delivery.md`](delivery.md)), so a manifest can still
+  name an app this machine has no way to start. What has gone is the silence:
+  `zde doctor` names the desk and the app before anybody switches to it, with
+  the resolver's own answer about what this machine does have, and a launch that
+  fails as a desk is entered arrives as a notification - one for the whole
+  switch, naming what did not start and why, rather than a line in a log nobody
+  reads while they are working.
 
 ## 0.2 - Daily driver
 

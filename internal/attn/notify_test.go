@@ -140,6 +140,28 @@ func TestNotifyBoundsTheLength(t *testing.T) {
 	}
 }
 
+// What zde sends itself goes through the same bounds as what an app sends. It
+// is the one arrival nobody on the bus wrote, and it carries a program's own
+// output, so a launch that failed with a screenful of it must not be the one
+// record in the history with no bound on it.
+func TestWhatZdeSendsItselfIsBoundedLikeAnythingElse(t *testing.T) {
+	n := Local("zde", strings.Repeat("s", summaryMax*2), strings.Repeat("b", bodyMax*2))
+	if got := len([]rune(n.Text)); got != summaryMax {
+		t.Errorf("summary kept %d characters, want %d", got, summaryMax)
+	}
+	if got := len([]rune(n.Body)); got != bodyMax {
+		t.Errorf("body kept %d characters, want %d", got, bodyMax)
+	}
+	if n.From != "zde" {
+		t.Errorf("from = %q, want the desktop saying it is the sender", n.From)
+	}
+	// And the body keeps its lines, because it is a list of what went wrong
+	// and one line per thing is the shape of it.
+	if body := Local("zde", "two", "one\ntwo").Body; body != "one\ntwo" {
+		t.Errorf("body = %q, want its lines as they were written", body)
+	}
+}
+
 // Neither summary nor body is a notification that says nothing, and a queue
 // item that says nothing cannot be acted on or recognised.
 func TestNotifyWithNothingToSay(t *testing.T) {

@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strings"
 
 	"github.com/crispuscrew/zde/internal/attn"
@@ -101,6 +102,7 @@ func Judge(s Session) Report {
 	}
 	r = append(r, units(s)...)
 	r = append(r, manifests(s)...)
+	r = append(r, deskApps(s)...)
 	r = append(r, locker(s), journal(s))
 	return r
 }
@@ -235,6 +237,61 @@ func manifests(s Session) []Check {
 	for _, bad := range s.Status.BadManifests {
 		out = append(out, Check{Fail, "manifests", bad})
 	}
+	return out
+}
+
+// deskApps is one line per app a desk declares that this machine has nothing to
+// run under that name. It is the failure that used to be silent: entering a
+// desk starts what its manifest declares, behind the switch, and a name nothing
+// could resolve cost one line in zded's log and nothing anybody saw
+// (docs/roadmap.md, 0.1).
+//
+// One line per desk and app, because that is the shape of the fix: the desk to
+// open and the name in it to correct or define. A count would send somebody
+// through the directory looking for which one, which is the same reason the
+// manifests above get a line each.
+//
+// Warnings, never failures. Layer 2 is provisioned by hand on every machine
+// there is (docs/delivery.md), so a machine whose desks name apps nobody has
+// defined yet is the ordinary young machine and not a broken one - and a
+// command that exits non-zero everywhere is one nobody reads the output of.
+func deskApps(s Session) []Check {
+	d := s.Desks
+	switch {
+	case d.Err != nil:
+		return []Check{{Warn, "desk apps", "not known: " + d.Err.Error()}}
+	case len(d.Unrunnable) == 0:
+		// The directory is named on this line alone, and that is deliberate: it
+		// is the reading that can quietly be about the wrong place, since zded
+		// can be started with another one (cmd/zded, -desks).
+		return []Check{{OK, "desk apps", "no desk in " + d.Dir + " names an app this machine cannot start"}}
+	case !d.Configured:
+		// A machine with nothing configured at all gets one line and not one per
+		// name. The reason is the same sentence every time and the fix is a
+		// single edit, so a line each would bury the rest of the report under one
+		// fact - which is the wall of noise this check exists to replace.
+		return []Check{{Warn, "desk apps", d.Unrunnable[0].Err.Error() + ", and the desks name " + strings.Join(wanted(d.Unrunnable), ", ")}}
+	}
+	out := make([]Check, 0, len(d.Unrunnable))
+	for _, a := range d.Unrunnable {
+		out = append(out, Check{Warn, "desk apps", a.Desk + " names " + a.App + ": " + a.Err.Error()})
+	}
+	return out
+}
+
+// wanted is every name the desks asked for, once each and in order: what a
+// machine with nothing configured would have to define.
+func wanted(unrunnable []DeskApp) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, a := range unrunnable {
+		if seen[a.App] {
+			continue
+		}
+		seen[a.App] = true
+		out = append(out, a.App)
+	}
+	sort.Strings(out)
 	return out
 }
 

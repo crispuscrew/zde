@@ -1685,17 +1685,22 @@ func (s *Server) startApps(target string) {
 	}
 	apps := d.Apps
 	go func() {
+		var failed []launchFailure
 		for _, app := range apps {
 			address := zinc.Address(app.App, app.Instance)
 			if err := s.launch(address); err != nil {
-				// The daemon's log is where this belongs: it is one app on one
-				// desk, and taking the switch down over it would make an
+				// Every one of them in the daemon's log, whole: it is one app on
+				// one desk, and taking the switch down over it would make an
 				// unbuildable image cost somebody their whole desk. "Already
 				// running" arrives here too, which is worth reading rather than
 				// filtering - it is how you find out a desk started twice.
 				log.Printf("zded: starting %s: %v", address, err)
+				failed = append(failed, launchFailure{Address: address, Err: err})
 			}
 		}
+		// And once, in front of the person, because a log is not somewhere
+		// anybody looks while they are working (launch.go).
+		s.launchesFailed(target, failed)
 	}()
 }
 

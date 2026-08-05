@@ -318,6 +318,21 @@ ones are the point of zded holding the bus name.
   with until the next switch. A typo in the mode name is refused when the
   manifest is read, so that desk is undeclared until it is fixed and
   `zde status` names the file.
+- **A desk that names an app this machine cannot start**, which on a fresh
+  install is every desk that names anything at all. Write a manifest declaring
+  two or three apps nobody has defined, then:
+
+  ```sh
+  zde doctor | grep 'desk apps'   # the desk and the name, one line each
+  zde desk switch <that desk>     # and the switch says it out loud
+  ```
+
+  One notification for the whole switch, however many apps failed: it names the
+  desk, counts them, and the body under `Mod+n` says which ones and what the
+  runner said about each. `zde queue` has the same line. Two things only use
+  settles: whether one arrival per switch is the right amount of noise when you
+  are switching desks all day, and whether the body says enough to act on
+  without going to the log. The log has them all, whole, either way.
 - **A day's worth of arrivals.** History is a ring of 200, in memory: the 201st
   drops the oldest, and restarting zded empties it. The queue is the half that
   survives, because it is what you still owe. Whether 200 is a day or an hour
@@ -572,7 +587,9 @@ Not bugs, do not report them:
   from a keybind that is indistinguishable from a key that did nothing.
   `Mod+Shift+Escape` is worth singling out for the same reason: panic is the key
   you reach for first when something goes wrong, and it is one of the silent
-  ones.
+  ones. The one failure that has come off this table is a desk's own launches:
+  what a switch could not start now arrives as a notification, and `zde doctor`
+  names it before you press anything (section 5).
 - **Modes** (`Mod+m`) and the leader sequences for panic and block. They wait
   on the input layer landing.
 - **Brightness** (`Mod+b`, `Mod+Shift+b`) needs your user in the `video` group,
@@ -593,8 +610,11 @@ Not bugs, do not report them:
   running under them, so the machinery is there - but no app is defined, so
   `zlg` lists nothing and no key starts anything sandboxed. Defining one is
   zinc's `zc`. A desk does start what its manifest declares, which means a
-  manifest naming apps nobody has defined starts nothing and says why in
-  `journalctl --user -u zded`.
+  manifest naming apps nobody has defined starts nothing - and that part is no
+  longer quiet: `zde doctor` names the desk and the app before you go there, and
+  the switch itself sends one notification saying what did not start and why
+  (section 5). The log still has every failure whole, in `journalctl --user -u
+  zded`.
 - **An editor**, and this is the one distinction in `zde.apps` worth reading
   once rather than meeting three times. That option is the seam between the
   keymap's names and this machine's programs, and three of its names have
