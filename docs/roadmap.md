@@ -45,7 +45,9 @@ blocks 0.2:
   the rest of the ring, the rest of every long body, and the actions: nothing
   can be pressed on a row whose app was on the last session's bus, and the
   center says so rather than offering buttons that go nowhere. What arrived on a
-  desk declared `private: true` is never written at all.
+  desk declared `private: true` never reaches that file - which is a claim about
+  that file and not about the whole disk, because the journal still records the
+  summary and the sender of anything the mode queued, though no longer the body.
 - ask has no tier until a machine names one. The panel carries the previous
   turns now - stdin holds the conversation, a JSON object a line, and the role
   is a field rather than a prefix so that nothing in an answer can arrive as

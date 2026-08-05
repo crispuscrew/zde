@@ -327,30 +327,58 @@ PanelWindow {
         // the rest of it is. On one line here, which is the surface's doing and
         // not the record's - what was kept has its line breaks, and a paragraph
         // drawn into a one-line slot would push the hint off the panel.
-        Text {
-            id: body
+        // Two elements and not one string, because the marker beside the body
+        // is the half that has to survive. A body is up to 400 characters and
+        // this slot shows eighty-odd of them before it elides, so a marker
+        // appended to the text began at character 401 of something nobody could
+        // read past 85 - which is a warning that is never on the screen. Here
+        // the marker holds the right-hand end and the body elides into it.
+        Item {
+            id: bodyLine
 
             anchors.bottom: actions.top
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.margins: 12
             anchors.bottomMargin: 6
-            text: {
-                const r = center.rowAt(center.index);
-                if (center.note !== "")
-                    return center.note;
-                const shown = r && r.body ? r.body.replace(/\s+/g, " ") : "";
-                // A body the snapshot cut short says so. Without it the front
-                // of a message and the whole of one look identical, and a row
-                // that ends mid-sentence reads as the app having sent that -
-                // which is the one thing zde promises it does not do
-                // (docs/vision.md, principle 3).
-                return r && r.bodyClipped ? shown + "  … only the front of this was kept" : shown;
+            height: body.implicitHeight
+
+            // A body the snapshot cut short says so. Without it the front of a
+            // message and the whole of one look identical, and a row that ends
+            // mid-sentence reads as the app having sent that - which is the one
+            // thing zde promises it does not do (docs/vision.md, principle 3).
+            Text {
+                id: bodyCut
+
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                visible: {
+                    const r = center.rowAt(center.index);
+                    return center.note === "" && !!(r && r.bodyClipped);
+                }
+                text: "  · only the front of this was kept"
+                color: "#7a7f8a"
+                font.pixelSize: 12
+                font.family: "monospace"
             }
-            color: center.note !== "" ? "#e5a23d" : "#9aa0ac"
-            elide: Text.ElideRight
-            font.pixelSize: 12
-            font.family: "monospace"
+
+            Text {
+                id: body
+
+                anchors.left: parent.left
+                anchors.right: bodyCut.visible ? bodyCut.left : parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                text: {
+                    const r = center.rowAt(center.index);
+                    if (center.note !== "")
+                        return center.note;
+                    return r && r.body ? r.body.replace(/\s+/g, " ") : "";
+                }
+                color: center.note !== "" ? "#e5a23d" : "#9aa0ac"
+                elide: Text.ElideRight
+                font.pixelSize: 12
+                font.family: "monospace"
+            }
         }
 
         // What can be done to the row you are on, with the key that does it.
@@ -427,7 +455,7 @@ PanelWindow {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: parent.top
-            anchors.bottom: body.top
+            anchors.bottom: bodyLine.top
             anchors.margins: 12
             anchors.bottomMargin: 6
             spacing: center.rowGap

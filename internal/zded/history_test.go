@@ -159,6 +159,117 @@ func TestABrokenManifestIsNotHowADeskStopsBeingPrivate(t *testing.T) {
 	}
 }
 
+// A second manifest naming a desk that is already declared is not how the
+// first one's `private: true` disappears.
+//
+// The manifests are keyed on the name inside the file and the first in
+// directory order wins, with the loser reported as a problem
+// (internal/manifest, LoadDir). So a copy of a private desk's manifest that
+// leaves the flag out decides the question by alphabetical order - and the
+// copy is a file zde itself used to write, since `zde desk snapshot` did not
+// carry the flag through. Both files are refused instead: the one that lost
+// could have been the private declaration, and nothing here can tell which.
+func TestASecondManifestForADeskIsNotHowItStopsBeingPrivate(t *testing.T) {
+	s, path := historyServer(t, "clinic.DP-1.mail", map[string]string{
+		// Sorts first, so it is the one LoadDir keeps: this is the copy
+		// winning, which is the case that has to be refused.
+		"aa-clinic": "name: clinic\nmonitors: { DP-1: { workspaces: [mail] } }\n",
+		"clinic":    privateDesk,
+	})
+	if _, err := s.Arrived(attn.Notification{From: "mail", Text: "your results are in"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveHistory(path); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "your results are in") {
+		t.Error("a duplicate manifest that says nothing about privacy was enough to write a private desk's arrivals to disk")
+	}
+}
+
+// And the file zde writes itself says so, which is the other half of the same
+// defect: a snapshot that dropped the flag is how the duplicate above gets on
+// to a machine in the first place.
+//
+// The existing manifest is under a filename of its own here because that is the
+// only shape this can happen in - Save refuses to overwrite the file it would
+// write, so a desk declared in `clinic.yaml` cannot be snapshotted over at all.
+func TestASnapshotOfAPrivateDeskWritesItDownAsPrivate(t *testing.T) {
+	s, _ := historyServer(t, "clinic.DP-1.mail", map[string]string{"aa-clinic": privateDesk})
+	resp := s.Dispatch(Request{Method: "desk.snapshot", Args: []string{"clinic"}})
+	if resp.Error != "" {
+		t.Fatal(resp.Error)
+	}
+	var path string
+	if err := json.Unmarshal(resp.Ok, &path); err != nil {
+		t.Fatal(err)
+	}
+	written, err := manifest.Load(path)
+	if err != nil {
+		t.Fatalf("what snapshot wrote does not load: %v", err)
+	}
+	if !written.Private {
+		t.Errorf("%s does not say the desk is private, so taking a snapshot of a private desk is how it stops being one", path)
+	}
+}
+
+// The regulars are reachable from every desk and cannot be declared by any
+// manifest (internal/manifest, check), so they are the one name that is
+// certainly not the private desk. Answering them with the doubt owed to an
+// undeclared desk cost every arrival on them - most of a day, for somebody who
+// works out of the regulars - on any machine that declares one private desk
+// anywhere.
+func TestTheRegularsAreNotTreatedAsAPrivateDesk(t *testing.T) {
+	s, path := historyServer(t, "regulars.DP-1.2", map[string]string{"work": openDesk, "clinic": privateDesk})
+	if _, err := s.Arrived(attn.Notification{From: "ci", Text: "the build failed"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveHistory(path); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "the build failed") {
+		t.Error("an arrival on the regulars was kept off the disk, and no manifest can declare the regulars private")
+	}
+	if st := s.status(); st.Unplaced != 0 {
+		t.Errorf("status counts %d unplaced arrivals, and the regulars are a desk zde named itself", st.Unplaced)
+	}
+}
+
+// What the fail-closed answer costs is counted and said. Otherwise it is a
+// notification history that will not fill up, on a machine where nothing is
+// wrong with the manifests and nothing appears in any log: the daemon refusing
+// to write things down looks exactly like the feature not working.
+func TestAnArrivalNobodyCanPlaceIsCountedWhereADeskIsPrivate(t *testing.T) {
+	guarded, _ := historyServer(t, "", map[string]string{"work": openDesk, "clinic": privateDesk})
+	guarded.niri.(*fakeCompositor).err = errors.New("niri is not answering")
+	if _, err := guarded.Arrived(attn.Notification{From: "app", Text: "arrived from nowhere"}); err != nil {
+		t.Fatal(err)
+	}
+	if st := guarded.status(); st.Unplaced != 1 {
+		t.Errorf("status counts %d unplaced arrivals, want the one it would not write down", st.Unplaced)
+	}
+
+	// And on the ordinary machine there is nothing to count: the same arrival
+	// is kept, so nothing was refused and saying otherwise would send somebody
+	// looking for a problem they do not have.
+	plain, _ := historyServer(t, "", map[string]string{"work": openDesk})
+	plain.niri.(*fakeCompositor).err = errors.New("niri is not answering")
+	if _, err := plain.Arrived(attn.Notification{From: "app", Text: "arrived from nowhere"}); err != nil {
+		t.Fatal(err)
+	}
+	if st := plain.status(); st.Unplaced != 0 {
+		t.Errorf("status counts %d unplaced arrivals on a machine where no desk is private", st.Unplaced)
+	}
+}
+
 // unreadableDesks is a manifest directory that cannot be read at all: no
 // permission, a mount that went away, a home directory that is not there yet.
 // It answers an error, which is the one thing internal/manifest reserves for

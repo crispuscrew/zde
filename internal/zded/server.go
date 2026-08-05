@@ -154,6 +154,12 @@ type Status struct {
 	// carries on with the manifests that do work, and says here which ones it
 	// gave up on.
 	BadManifests []string `json:"badManifests,omitempty"`
+	// Unplaced is how many arrivals were kept in memory only because nothing
+	// could say which desk they came in on while a desk here is declared
+	// private. It is the fail-closed answer being loud about what it costs: on
+	// that machine the alternative is a notification history that empties
+	// itself and never says why (internal/zded, privateArrival).
+	Unplaced int `json:"unplaced,omitempty"`
 }
 
 // DeskApp is one app a desk declares (docs/model.md, section 5), as the two
@@ -243,6 +249,10 @@ type Server struct {
 	mu       sync.Mutex
 	ln       net.Listener
 	problems []string
+	// unplaced counts the arrivals this session refused to write down only
+	// because nothing could say which desk they were on, on a machine that
+	// declares a private desk (history.go, couldNotPlace).
+	unplaced uint64
 	subs     map[*sink]struct{}
 	waiting  map[string]chan struct{}
 	tokens   uint64
@@ -963,7 +973,19 @@ func (s *Server) snapshot(args []string) Response {
 		return Response{Error: "the regulars are not a desk, so there is no manifest to write: they are named into, never declared"}
 	}
 
-	d, err := manifest.FromMap(m, target)
+	// A desk that is already declared private stays private. The screen cannot
+	// say so - the flag is a declaration and lives only in the manifest this
+	// desk already has - and a snapshot that dropped it would write a second
+	// manifest for that desk which says it is ordinary. That file is how a
+	// private desk stops being one: the manifests are keyed on the name inside
+	// them, so the two would collide, and until this fix whichever the
+	// directory listed first decided whether anything arriving there could be
+	// written to disk (history.go, privateArrival).
+	private := false
+	if prev := s.manifestFor(target); prev != nil {
+		private = prev.Private
+	}
+	d, err := manifest.FromMap(m, target, private)
 	if err != nil {
 		return Response{Error: err.Error()}
 	}
@@ -1298,6 +1320,19 @@ func (s *Server) Arrived(n attn.Notification) (uint64, error) {
 		// file that can have changed since - and a desk that stopped being
 		// private in the meantime would take the bodies that arrived while it
 		// was private to disk with it (history.go, privateArrival).
+		//
+		// The other direction is what that costs, and it is chosen rather than
+		// overlooked: declaring a desk private now does not retract what is
+		// already in the file. The flag records what was true when the record
+		// arrived, and marking a desk private is a statement about what happens
+		// from here. A retraction would also be a promise this cannot keep - it
+		// cannot reach a snapshot a backup has already copied, and on this
+		// branch the body of anything the mode queued is in the journal as well
+		// - so it would clean one file and read as a promise about the disk.
+		// What removes what is already there is removing it: stop zded, delete
+		// ~/.local/state/zde/history.json, start it again. In that order,
+		// because the records are still in the daemon's memory until it goes,
+		// and the next write would put them back (docs/verify.md, section 5).
 		Private: s.privateArrival(on),
 	}
 	if s.mode().Queues(n.Urgent) {
@@ -1884,6 +1919,7 @@ func (s *Server) status() Status {
 	st.Zinc = err == nil
 	s.mu.Lock()
 	st.BadManifests = append([]string(nil), s.problems...)
+	st.Unplaced = int(s.unplaced)
 	s.mu.Unlock()
 	return st
 }

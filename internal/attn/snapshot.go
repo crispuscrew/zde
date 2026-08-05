@@ -118,7 +118,10 @@ func DefaultSnapshotPath() string {
 // Two things do not come with them. A record that arrived on a private desk is
 // left out entirely, which is the invariant this whole file is written around:
 // private desks are history only, and a history on disk is a body somebody can
-// read afterwards. And the actions go, every time - they are the largest
+// read afterwards. The flag is the record's own, decided when it arrived
+// (internal/zded, Arrived), so nothing here re-reads the manifests - and a desk
+// declared private afterwards does not retract what is already in the file,
+// which is argued where the flag is set. And the actions go, every time - they are the largest
 // attacker-controlled part of a record (nine of them, each key and label
 // bounded only by summaryMax), and none of them can be pressed after a restart
 // because the connection that offered them is not on the bus any more. A file
