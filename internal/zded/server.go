@@ -187,8 +187,11 @@ type Server struct {
 
 	notifier Notifier
 	// history is what has arrived, whatever the mode did about it. Bounded, and
-	// in memory rather than in the journal: see attn.HistoryMax.
+	// in memory rather than in the journal: see attn.HistoryMax. The short end
+	// of it is written to a file of its own, which written keeps track of
+	// (history.go).
 	history attn.History
+	written written
 
 	// The network side (net.go). openLink is a field for the same reason launch
 	// is: the tests need a manager without a system bus under them, and the
@@ -1280,6 +1283,7 @@ func (s *Server) Arrived(n attn.Notification) (uint64, error) {
 	if s.jrn == nil {
 		return 0, errors.New("no journal, so nothing can be kept")
 	}
+	on := s.whereWeAre()
 	rec := attn.Record{
 		From:    n.From,
 		Text:    n.Text,
@@ -1288,7 +1292,13 @@ func (s *Server) Arrived(n attn.Notification) (uint64, error) {
 		Actions: n.Actions,
 		Extra:   n.Extra,
 		At:      time.Now(),
-		Desk:    s.whereWeAre(),
+		Desk:    on,
+		// Decided here, while the desk it arrived on is known. Asking the
+		// manifests again when the snapshot is written would be asking about a
+		// file that can have changed since - and a desk that stopped being
+		// private in the meantime would take the bodies that arrived while it
+		// was private to disk with it (history.go, privateArrival).
+		Private: s.privateArrival(on),
 	}
 	if s.mode().Queues(n.Urgent) {
 		it, err := s.jrn.Queue(journal.Item{

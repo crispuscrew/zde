@@ -36,9 +36,16 @@ blocks 0.2:
   rest counted and said rather than dropped quietly - but the offer is behind
   `Mod+n` rather than in front of you. It is a claim about reach and not about
   immediacy, and nothing in 0.1 makes it both.
-- history dies with the daemon: a ring of 200 in memory, because the journal
-  fsyncs per line and this is history that is stale by the next login. The queue
-  is the half that survives.
+- history survives the daemon in part. The ring of 200 is memory, and the newest
+  40 of it are written to a file of their own beside the journal - bodies cut to
+  400 characters, 0600, rewritten every two minutes and on the way out - so
+  "what did I miss" answers across a reboot instead of starting every login
+  blank. Not the journal, which fsyncs per line and would grow without bound for
+  the sake of bodies (internal/attn, HistoryMax). What a restart still costs is
+  the rest of the ring, the rest of every long body, and the actions: nothing
+  can be pressed on a row whose app was on the last session's bus, and the
+  center says so rather than offering buttons that go nowhere. What arrived on a
+  desk declared `private: true` is never written at all.
 - ask has no tier until a machine names one. The panel carries the previous
   turns now - stdin holds the conversation, a JSON object a line, and the role
   is a field rather than a prefix so that nothing in an answer can arrive as
