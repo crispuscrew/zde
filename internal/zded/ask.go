@@ -368,7 +368,12 @@ func (s *Server) askRun(k *sink, args []string) {
 	// meets a piece of an answer before it has been told there is one coming.
 	k.reply(ok("asking"))
 
-	ctx, cancel := context.WithTimeout(context.Background(), askTimeout)
+	// Under the daemon's own context rather than Background, so that a session
+	// ending is one of the things that ends a run. The tier is in a process
+	// group of its own (below), which is what makes it survivable in the first
+	// place: the group signal that stops everything else in the session does not
+	// reach it, so the only thing that can is this cancel, through cmd.Cancel.
+	ctx, cancel := context.WithTimeout(s.runCtx, askTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	// The question, and what came before it, and nothing else. A tier is a

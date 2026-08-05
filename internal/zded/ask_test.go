@@ -578,6 +578,80 @@ func TestATierThatForksDoesNotWedgeTheRun(t *testing.T) {
 	}
 }
 
+// A tier does not outlive the daemon that started it.
+//
+// The process group is the reason it could. A tier is started with Setpgid so
+// that stopping it stops what it forked, and the same choice takes it out of the
+// session's group - so `systemctl --user stop zded` reaches the daemon and
+// nothing the daemon started. Measured before this: the daemon exited 105ms
+// after SIGTERM, and the tier and its `sleep 600` were still there under pid 1
+// eighteen seconds later. A local tier is a model, and a model can be holding a
+// GPU for a session that has ended.
+func TestATierDoesNotOutliveTheDaemonThatStartedIt(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "tier")
+	writeTiers(t, map[string][]string{TierProvider: fakeTier("linger", pidFile)})
+	s := New("test", nil, &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code"}, nil)
+	path := serve(t, s)
+
+	c, err := DialPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.Call(MethodAskRun, nil, TierProvider, "something that takes a while"); err != nil {
+		t.Fatalf("ask.run: %v", err)
+	}
+	// The tier writes down where it is as its first act, so this is the test
+	// knowing there is something to outlive rather than racing exec.
+	pid := tierPid(t, pidFile)
+	if syscall.Kill(pid, 0) != nil {
+		t.Fatal("the tier was not running before the daemon was stopped")
+	}
+
+	start := time.Now()
+	s.Close()
+	took := time.Since(start)
+	// The other half of this: a logout that waits on a model is its own bug, so
+	// whatever is added here has a ceiling.
+	if took > askStopWait {
+		t.Errorf("stopping the daemon took %v, above its own ceiling of %v", took, askStopWait)
+	}
+	// Directly, and not after a poll: Close waits for the run to end, and the run
+	// ends after the tier has been waited for. A test that polled would pass on a
+	// daemon that merely started the killing on its way out.
+	if err := syscall.Kill(pid, 0); err == nil {
+		syscall.Kill(pid, syscall.SIGKILL)
+		t.Errorf("the daemon stopped and its tier (pid %d) is still running", pid)
+	}
+
+	// And nothing new begins after that, which is what keeps a run from being
+	// counted while the count is being waited on.
+	rec := &recorder{}
+	s.startRun(&sink{w: rec}, []string{TierProvider, "one more"})
+	if !strings.Contains(rec.String(), "stopping") {
+		t.Errorf("an ask that arrived after the daemon stopped was answered with %q", rec.String())
+	}
+}
+
+// tierPid is where the tier said it was, once it has said it.
+func tierPid(t *testing.T, path string) int {
+	t.Helper()
+	for i := 0; i < 500; i++ {
+		raw, err := os.ReadFile(path)
+		if err == nil && len(raw) > 0 {
+			pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+			if err != nil {
+				t.Fatalf("the tier wrote %q where a pid was expected", raw)
+			}
+			return pid
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("the tier never said where it was (%s)", path)
+	return 0
+}
+
 // An answer with no end to it is stopped, and said to have been. zded streams
 // and forgets, so the reason is the window: it holds the whole answer in one
 // text item on the thread that draws the bar.

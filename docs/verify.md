@@ -620,6 +620,19 @@ actually gets.
   turns live in the window that is showing them and go back down the socket with
   each question, so closing it is still the whole of forgetting: reopen the panel
   and the conversation is gone.
+- **Stopping the daemon stops the tier.** Ask something on a tier that takes a
+  while, and with the answer still arriving run `systemctl --user stop zded` from
+  another tty (`Ctrl+Alt+F2`), then `ps -ef | grep <your tier>`. Nothing of it is
+  left. A tier runs in a process group of its own so that stopping it stops what
+  it forked, and that same choice puts it out of reach of the signal that ends
+  the session - so this used to leave a model running for a login that had ended.
+  The same on log out, which is the case that matters on a machine with a GPU in
+  it.
+- **A long answer does not slow the keys.** With one arriving, press `Mod+Tab`,
+  `Mod+n`, `Mod+semicolon`. Each surface appears at once. Every one of them is a
+  broadcast, and a broadcast used to queue behind whatever was being written to
+  the same connection: measured at 2.85 seconds for one keypress against a
+  client that had stopped reading its answer.
 - `zde ask oneshot <question>` answers in the terminal it was typed in and never
   in a popup. `zde ask local` and `zde ask escalate` are the other tiers, and a
   question read from stdin (`zde ask local < note`) is how one stays out of the
