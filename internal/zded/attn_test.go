@@ -372,6 +372,70 @@ func TestARecordLeavingTheHistoryForgetsItsSender(t *testing.T) {
 	}
 }
 
+// A notification arriving while the session is switching desks is filed against
+// a desk, and the two of them writing at once is not a race.
+//
+// Filing one is a read that writes. Arrived asks where we are, and whereWeAre
+// goes through deskOf, which records the desk when the journal is behind the
+// compositor - so a notification is a journal writer, on whatever goroutine the
+// bus handed it to, at the same time as a switch is writing where it went. That
+// is worth a test rather than a claim: anything that posts a notification from a
+// background goroutine is betting on this, and the bet is invisible from the
+// code that makes it.
+//
+// The fake compositor stays focused where it was while the switch records the
+// desk it went to, which is the interleaving on purpose: it is niri lagging a
+// keypress, and it makes the two writers disagree on every pass rather than on
+// the rare one. What must hold either way is that the journal is still readable
+// afterwards, that every arrival is filed against a desk that exists, and that
+// nothing was lost.
+//
+// Break the journal's lock - drop the mutex out of record or State - and
+// `go test -race` says so from here.
+func TestANotificationArrivingWhileTheDeskChangesIsNotARace(t *testing.T) {
+	s, jrn, _ := queueTestServer(t, "vshop.DP-1.code")
+
+	arriving := make(chan error, 1)
+	start := make(chan struct{})
+	go func() {
+		<-start
+		for i := 0; i < 50; i++ {
+			if _, err := s.Arrived(attn.Notification{From: "ci", Text: "the build failed"}); err != nil {
+				arriving <- err
+				return
+			}
+		}
+		arriving <- nil
+	}()
+	close(start)
+	for i := 0; i < 10; i++ {
+		for _, target := range []string{"haven", "vshop"} {
+			if resp := s.Dispatch(Request{Method: "desk.switch", Args: []string{target}}); resp.Error != "" {
+				t.Fatalf("desk.switch %s: %s", target, resp.Error)
+			}
+		}
+	}
+	if err := <-arriving; err != nil {
+		t.Fatalf("a notification was lost while the desk changed: %v", err)
+	}
+
+	state := jrn.State()
+	// A desk that exists. The failure this rules out is a torn read handing the
+	// arrival a name that was never a desk, which would file it somewhere
+	// nothing can look for it.
+	if state.OnDesk != "vshop" && state.OnDesk != "haven" {
+		t.Errorf("the journal says we are on %q, and there are two desks", state.OnDesk)
+	}
+	if len(state.Queue) != 50 {
+		t.Fatalf("%d notifications on the queue, and 50 arrived", len(state.Queue))
+	}
+	for _, it := range state.Queue {
+		if it.Desk != "vshop" && it.Desk != "haven" {
+			t.Errorf("a notification is filed against %q, which is not a desk", it.Desk)
+		}
+	}
+}
+
 // Nothing is quiet about the moment zded becomes the notification server.
 //
 // attn.Serve exports the interface and takes org.freedesktop.Notifications

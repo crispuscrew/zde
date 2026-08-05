@@ -228,6 +228,16 @@ type Server struct {
 	tokens   uint64
 }
 
+// New builds the daemon.
+//
+// The compositor is required, and deliberately not guarded for at the dispatch
+// boundary. cmd/zded makes one and hands it over, so the only way a nil reaches
+// a method is code that was wired up wrong, and a Dispatch that turned that into
+// "the compositor is not connected" would report a wiring mistake as a session
+// problem - on every surface, for the rest of the run, with the real cause a
+// stack frame nobody ever sees. The panic names the line instead. A daemon that
+// cannot reach a niri that is really there is a different thing and already has
+// an answer: `zde status` says so on the compositor line.
 func New(version string, jrn *journal.Journal, compositor Compositor, desks Desks) *Server {
 	if desks == nil {
 		desks = noDesks{}
@@ -1265,6 +1275,11 @@ func (s *Server) watcher() Notifier {
 // whereWeAre is the desk to file something arriving against, and never an
 // error: a notification with no desk still waits, and one refused because niri
 // was unreadable is gone for good.
+//
+// This is a read that writes: it goes through deskOf, which records the desk
+// when the journal is behind the compositor. Anything calling this from a
+// goroutine of its own should read the note there first - it says why that is
+// safe, and what it costs.
 func (s *Server) whereWeAre() string {
 	if m, err := s.niri.DeskMap(); err == nil {
 		return s.activeDesk(m)
@@ -1510,6 +1525,30 @@ func (s *Server) activeDesk(m *desk.Map) string {
 // deskOf is activeDesk with the focused workspace already read. A caller that
 // needs the name for something else too asks once and passes it here, rather
 // than asking again and getting an answer from a different moment.
+//
+// It writes, and a reader can be on any goroutine. Where you are is what
+// adoption spends on a workspace that has no name yet, and the compositor is
+// the authority on it - so a read that finds the journal disagreeing corrects
+// it, which is also how a jump records the desk it landed on (see focusWindow).
+// That means a notification arriving on the bus - Arrived, whereWeAre, here -
+// writes a line to the journal, on whatever goroutine the bus handed it to. It
+// is safe, and this is the whole of why:
+//
+//   - The journal is one mutex over the file and the state (internal/journal),
+//     so two writers cannot tear an entry or lose a queue id.
+//   - The value is not this caller's opinion. It is the desk the focused
+//     workspace names, read from niri a moment earlier, so two goroutines that
+//     race here write the same answer rather than fighting over two.
+//   - It converges. The read and the write are not one atomic step, so a switch
+//     that lands between them can be followed by a write of the desk that was
+//     focused just before it - and the watcher reconciles after every burst of
+//     compositor events (watch.go), which reads the compositor again and puts
+//     the truth back. The window is one niri round trip wide and it costs a
+//     stale OnDesk until the next event, never a wrong desk on the screen.
+//
+// The cost that is worth knowing about is the other one: this path asks niri
+// before it writes anything, so posting a notification from a goroutine that
+// cannot afford to block is posting it behind a compositor round trip.
 func (s *Server) deskOf(m *desk.Map, focused string) string {
 	if focused != "" {
 		n, err := desk.ParseName(focused)
