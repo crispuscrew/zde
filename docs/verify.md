@@ -637,6 +637,25 @@ actually gets.
   in a popup. `zde ask local` and `zde ask escalate` are the other tiers, and a
   question read from stdin (`zde ask local < note`) is how one stays out of the
   process list.
+- **`zde ask panel <question>` from a terminal** opens the panel with that
+  question already asked, and the answer arrives in the window rather than on
+  the terminal. That is the whole difference between the two verbs, and
+  `oneshot` is the one to script against when what is wanted is text on stdout.
+  It used to ignore the word `panel` and run a provider oneshot.
+- **The same command with the panel already open on a conversation.** It starts
+  a fresh one: the transcript goes, `carrying N` goes with it, and the question
+  is asked with nothing in front of it. The thing to check is that a question
+  typed at a terminal never lands in the middle of an exchange that was on
+  screen - one from a shell script would then travel with every turn after it,
+  and go to the tier along with whatever that exchange contained. Losing the
+  transcript is the cost, and it is the same forgetting `ctrl+n` does.
+  Asked while an answer is still streaming, it does not interrupt: the question
+  lands in the field with a line saying the panel is still answering the last
+  one, and Enter asks it.
+- **`zde ask panel <question>` with the bar stopped** (`systemctl --user stop
+  zde-bar`) asks nothing and says so, naming `oneshot` as the verb that answers
+  on a terminal. A version that quietly answered there instead would be one verb
+  doing two different things depending on what happens to be running.
 
 ## Expected to be missing
 

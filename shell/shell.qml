@@ -415,11 +415,14 @@ ShellRoot {
     }
 
     // The ask popup and the ask panel, on the screen being looked at for the
-    // same reason the picker is. Nothing else is handed over: the question is
-    // typed into the window, and the window knows nothing about sockets.
+    // same reason the picker is. The question comes with the event only when
+    // the panel was asked for from a terminal (`zde ask panel <question>`);
+    // otherwise it is typed into the window, and the window still knows nothing
+    // about sockets - what it does with one that arrived this way is its own
+    // decision (AskWindow.qml, askFromOutside).
     function openAsk(ev, isPanel) {
         root.present(askWindow, ev);
-        askWindow.show(isPanel, ev.token ?? "");
+        askWindow.show(isPanel, ev.token ?? "", ev.question ?? "");
     }
 
     // Every action zde has, by name. The key goes on the row because half of

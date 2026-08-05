@@ -258,7 +258,14 @@ func writeTurn(b *strings.Builder, who, text string) {
 // printing - the question has not been asked yet - so the caller says how to ask
 // from a terminal instead, and that is the CLI's business rather than the
 // daemon's.
-func (s *Server) askSurface(kind string) Response {
+//
+// question is what the panel opens with already asked, and empty for a surface
+// somebody opens to type into. It travels in the event and never in an argument
+// to anything: a tier is handed it on stdin (see askRun), and this is the one
+// other place a question moves, over a socket only this user can open. Nothing
+// puts it on a command line, which is the property `ps` would otherwise take
+// away from whoever typed it.
+func (s *Server) askSurface(kind, question string) Response {
 	_, output, err := s.niri.FocusedPlace()
 	if err != nil {
 		// Which screen is a detail; not knowing it is not worth refusing over,
@@ -269,7 +276,7 @@ func (s *Server) askSurface(kind string) Response {
 	acked := s.await(token)
 	defer s.stopAwaiting(token)
 
-	if sent := s.broadcast(Event{Kind: kind, Output: output, Token: token}); sent == 0 {
+	if sent := s.broadcast(Event{Kind: kind, Output: output, Token: token, Question: question}); sent == 0 {
 		return ok(false)
 	}
 	select {
