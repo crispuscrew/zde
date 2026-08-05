@@ -247,6 +247,36 @@ func TestSaveRefusesToOverwrite(t *testing.T) {
 	}
 }
 
+// A manifest is config and not a secret, but it is the file that says which
+// desk is the private one and where the work on each desk is mounted from - and
+// a private desk that is kept out of the picker should not be announced in a
+// file every account on the machine can read (docs/vision.md, section 3).
+func TestASavedManifestIsReadableOnlyByYou(t *testing.T) {
+	dir := t.TempDir()
+	d, err := Parse([]byte(vshop))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := Dir(filepath.Join(dir, "desks")).Save(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fi.Mode().Perm(); got != 0o600 {
+		t.Errorf("a saved manifest is %04o, want 0600", got)
+	}
+	made, err := os.Stat(filepath.Join(dir, "desks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := made.Mode().Perm(); got != 0o700 {
+		t.Errorf("the directory zde made for them is %04o, want 0700", got)
+	}
+}
+
 // The app and the instance become a directory: zinc keeps per-instance state
 // under one, and these are the two parts of the path a manifest supplies. A
 // manifest is a file somebody edits, so a name that climbs out of that

@@ -265,7 +265,12 @@ func (dir Dir) Save(d *Desk) (string, error) {
 	if err := d.check(); err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(string(dir), 0o755); err != nil {
+	// 0700, and 0600 on the file below. A manifest is config a person edits and
+	// not a secret, but it is the file that says which desk is the private one
+	// and which directories the work on each desk is mounted from - and the
+	// point of a private desk is that it is not advertised (docs/vision.md,
+	// section 3). Nothing but zded reads these, and zded is the session.
+	if err := os.MkdirAll(string(dir), 0o700); err != nil {
 		return "", err
 	}
 	path := filepath.Join(string(dir), d.Name+".yaml")
@@ -278,7 +283,7 @@ func (dir Dir) Save(d *Desk) (string, error) {
 	}
 	header := "# Written by zde desk snapshot. Apps are not captured yet - add\n" +
 		"# them by hand (docs/model.md, section 5).\n"
-	if err := os.WriteFile(path, append([]byte(header), out...), 0o644); err != nil {
+	if err := os.WriteFile(path, append([]byte(header), out...), 0o600); err != nil {
 		return "", err
 	}
 	return path, nil

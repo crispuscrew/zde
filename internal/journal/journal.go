@@ -14,6 +14,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -21,6 +22,21 @@ import (
 	"sync"
 
 	"github.com/crispuscrew/zde/internal/desk"
+)
+
+// The modes this file keeps for itself: readable by the person it belongs to
+// and by nobody else, and the same for the directory zde makes to hold it.
+//
+// It was 0644 until this was written, and a home directory is 0755 on Debian
+// and on Ubuntu, so on those the journal was a file every other account on the
+// machine could read. What is in it is the queue, and the queue carries the
+// summary of every notification that reached it: who wrote to you and what
+// about, kept until you finish the item. Nothing outside zde has any business
+// reading that, and zded runs as the person who owns it, so nothing outside
+// gets it.
+const (
+	journalMode  = 0o600
+	stateDirMode = 0o700
 )
 
 // compactAt is when a replay is long enough to be worth rewriting.
@@ -47,9 +63,12 @@ type entry struct {
 	To      string `json:"to,omitempty"`
 	ID      uint64 `json:"id,omitempty"`
 	Text    string `json:"text,omitempty"`
-	Body    string `json:"body,omitempty"`
-	From    string `json:"from,omitempty"`
-	Urgent  bool   `json:"urgent,omitempty"`
+	// Body was the whole of a notification, and nothing writes it any more (see
+	// Item). It is still read, because a journal an earlier zde wrote is full of
+	// them: noticing one is what makes Open rewrite the file without it.
+	Body   string `json:"body,omitempty"`
+	From   string `json:"from,omitempty"`
+	Urgent bool   `json:"urgent,omitempty"`
 	// Mode is the attn mode a "mode" entry sets. Its own field rather than
 	// borrowed from To: a mode is not a workspace name, and a reader looking at
 	// the file should not have to know which kinds put what where.
@@ -97,6 +116,29 @@ type State struct {
 // Item is one thing waiting. The desk is where it belongs, which is what
 // separates a queue from a list: attn can show a desk only its own, and
 // queue-jump has somewhere to go.
+//
+// What it does not carry is the body of the notification it came from. An item
+// used to keep the whole message, and the message is the part of a notification
+// that is thousands of attacker-controlled characters (docs/vision.md,
+// principle 3): the journal fsyncs a line per arrival and is compacted only at
+// Open, so every message anybody sent went to the disk and stayed there for the
+// session and past it. Nothing was reading it back - the queue is one line an
+// item in `zde queue`, on the bar and in queue-jump, and the message under a
+// row is the notification center's, which reads the history record and not this
+// (internal/attn, Record).
+//
+// A desk declared private is what makes that decisive rather than tidy
+// (docs/vision.md, section 3: private desks are history only). A body from one
+// of those desks sitting in a file is the exact thing that flag exists to
+// prevent, and a rule that dropped it only for those desks would still be a
+// rule that has to ask a manifest, at arrival time, what a desk was. Keeping no
+// body at all needs nothing asked, and it is checkable by reading the file.
+//
+// What stays is the least a queue can be and still be one: the id, the desk,
+// the sender, the urgency, and the summary that is the row. The queue is the
+// half of attn that survives a restart because it is what you still owe, and a
+// private desk is where the things you owe are personal, so dropping the item
+// instead would be the flag deciding what is kept - which principle 3 forbids.
 type Item struct {
 	ID   uint64 `json:"id"`
 	Text string `json:"text"`
@@ -104,11 +146,6 @@ type Item struct {
 	// From is what sent it, as it described itself. Empty when a person typed
 	// it. Nothing verifies it - see internal/attn.
 	From string `json:"from,omitempty"`
-	// Body is the rest of what was sent, kept but not shown here: `zde queue`
-	// is one line an item, and the rest of the message is the notification
-	// center's to show (internal/attn, Record). Bounded where it arrives, at a
-	// few thousand characters rather than the summary's few hundred.
-	Body string `json:"body,omitempty"`
 	// Urgent is the sender's claim that this should interrupt rather than
 	// wait. It is a claim too, and attn's modes are what will act on it.
 	Urgent bool `json:"urgent,omitempty"`
@@ -128,6 +165,10 @@ type Journal struct {
 	lastID  uint64
 	entries int
 	skipped int
+	// bodies is how many replayed lines carried a notification body. Only a
+	// journal written by an earlier zde can have any, and one is enough to make
+	// Open rewrite the file (see Item).
+	bodies int
 }
 
 // DefaultPath is where the journal lives: state, not config and not cache -
@@ -149,19 +190,56 @@ func DefaultPath() string {
 // Skipped. Refusing to start because the tail of a log is torn would trade a
 // forgotten desk position for no session at all.
 func Open(path string) (*Journal, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), stateDirMode); err != nil {
 		return nil, err
+	}
+	// A directory that was already there keeps whatever mode it had, which on a
+	// machine that has run an earlier zde is 0755. Tightened here - but only
+	// when it is the directory zde picked for itself, because `zded -journal
+	// /tmp/live.jsonl` puts the journal somewhere belonging to the whole
+	// machine, and taking /tmp private would do far more harm than the listing
+	// it stops. Best effort either way: the file's own mode is what keeps the
+	// lines unreadable, and this only decides whether another account can see
+	// that zde keeps a journal at all.
+	if dir := filepath.Dir(path); dir == filepath.Dir(DefaultPath()) {
+		_ = os.Chmod(dir, stateDirMode)
 	}
 	j := &Journal{path: path, state: newState()}
 	if err := j.replay(); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, journalMode)
 	if err != nil {
 		return nil, err
 	}
+	// And the mode of a journal that was already there, which O_CREATE does not
+	// touch. An earlier zde made this file 0644 and every notification since has
+	// gone into it, so a fix that reached only new files would leave every
+	// machine that has been running zde as exposed as it was and call it done.
+	// Safe to do to a file somebody already has: this is zde's own journal, zded
+	// runs as the person who owns it, and no mode narrower than 0600 could ever
+	// have worked - so there is no setup this takes anything away from.
+	//
+	// On the descriptor rather than on the path, so that what is tightened is
+	// the file that was just opened and not whatever the name has come to point
+	// at by the time the chmod lands.
+	//
+	// Fatal when it fails, which is principle 9: a journal that cannot be made
+	// private is one this must not append notification summaries to. The way it
+	// fails is a journal belonging to somebody else, and that is not a file to
+	// be writing to either.
+	if err := f.Chmod(journalMode); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("%s cannot be made %04o, and it holds what your notifications said: %w", path, journalMode, err)
+	}
 	j.file = f
-	if j.entries > compactAt {
+	// Compaction, now for either of two reasons. A long replay is the old one.
+	// The other is a journal an earlier zde wrote, which put the whole of every
+	// notification in here: rewriting it is what takes those bodies off the
+	// disk, rather than leaving them until the entry count happens to pass
+	// compactAt on some later day. It is this or nothing - compaction runs at
+	// Open and nowhere else.
+	if j.entries > compactAt || j.bodies > 0 {
 		if err := j.compactLocked(); err != nil {
 			j.file.Close()
 			return nil, err
@@ -191,6 +269,12 @@ func (j *Journal) replay() error {
 		if err := json.Unmarshal(line, &e); err != nil {
 			j.skipped++
 			continue
+		}
+		// Counted here rather than in apply, which also runs on what this
+		// process writes: nothing this zde writes has a body, so a body is
+		// always a line off the disk (see Item).
+		if e.Body != "" {
+			j.bodies++
 		}
 		j.entries++
 		j.apply(e)
@@ -226,7 +310,10 @@ func (j *Journal) apply(e entry) {
 			j.skipped++
 			return
 		}
-		j.state.Queue = append(j.state.Queue, Item{ID: e.ID, Text: e.Text, Body: e.Body, Desk: e.Desk, From: e.From, Urgent: e.Urgent})
+		// e.Body is dropped rather than carried into the item: a queue built out
+		// of an older journal is the same queue, and the body it used to hold is
+		// on its way off the disk (see Open).
+		j.state.Queue = append(j.state.Queue, Item{ID: e.ID, Text: e.Text, Desk: e.Desk, From: e.From, Urgent: e.Urgent})
 		if e.ID > j.lastID {
 			j.lastID = e.ID
 		}
@@ -362,7 +449,7 @@ func (j *Journal) Queue(it Item) (Item, error) {
 	defer j.mu.Unlock()
 	it.ID = j.lastID + 1
 	if err := j.recordLocked(entry{
-		Kind: kindQueued, ID: it.ID, Text: it.Text, Body: it.Body, Desk: it.Desk, From: it.From, Urgent: it.Urgent,
+		Kind: kindQueued, ID: it.ID, Text: it.Text, Desk: it.Desk, From: it.From, Urgent: it.Urgent,
 	}); err != nil {
 		return Item{}, err
 	}
@@ -490,7 +577,7 @@ func (j *Journal) compactLocked() error {
 	// what queue-jump goes to.
 	for _, it := range j.state.Queue {
 		if err := write(entry{
-			Kind: kindQueued, ID: it.ID, Text: it.Text, Body: it.Body, Desk: it.Desk, From: it.From, Urgent: it.Urgent,
+			Kind: kindQueued, ID: it.ID, Text: it.Text, Desk: it.Desk, From: it.From, Urgent: it.Urgent,
 		}); err != nil {
 			return err
 		}
@@ -513,7 +600,11 @@ func (j *Journal) compactLocked() error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
+	// os.CreateTemp already makes it 0600, and the rename carries the mode over
+	// with it. Said out loud anyway, because the mode is a promise this file
+	// makes (see journalMode) and a reader checking it should not have to know
+	// what os.CreateTemp defaults to.
+	if err := os.Chmod(tmp.Name(), journalMode); err != nil {
 		return err
 	}
 	// Rename over the live file, then reopen: a crash mid-compaction leaves
@@ -524,12 +615,15 @@ func (j *Journal) compactLocked() error {
 	if j.file != nil {
 		j.file.Close()
 	}
-	f, err := os.OpenFile(j.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(j.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, journalMode)
 	if err != nil {
 		return err
 	}
 	j.file = f
 	j.entries = n
+	// The bodies an older journal held are gone with the file they were in, so
+	// a second compaction is not owed for them.
+	j.bodies = 0
 	return nil
 }
 

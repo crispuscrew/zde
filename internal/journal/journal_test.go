@@ -635,3 +635,137 @@ func TestWaitingHandsBackACopy(t *testing.T) {
 		t.Errorf("the queue now says %q, edited through what a reader was handed", again[0].Text)
 	}
 }
+
+// The mode is the whole of what keeps this file to the person it belongs to.
+//
+// The queue in here is the summary of every notification that reached it, and a
+// home directory is 0755 on Debian and on Ubuntu, so a 0644 journal is one
+// every other account on the machine can read. Checked after a compaction as
+// well, because compaction writes a new file and renames it over this one: a
+// mode set only at Open would hold until the journal got long enough to be
+// rewritten, and then quietly stop holding.
+func TestTheJournalAndTheDirectoryZdeMakesForItAreReadableByNobodyElse(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "state", "zde")
+	path := filepath.Join(dir, "journal.jsonl")
+	j := open(t, path)
+	if err := j.SetLastDesk("vshop"); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := mode(t, path); got != journalMode {
+		t.Errorf("a new journal is %04o, and anything wider than %04o is somebody else's read of your notifications", got, journalMode)
+	}
+	if got := mode(t, dir); got != stateDirMode {
+		t.Errorf("the directory zde made for it is %04o, want %04o", got, stateDirMode)
+	}
+
+	if err := j.Compact(); err != nil {
+		t.Fatal(err)
+	}
+	if got := mode(t, path); got != journalMode {
+		t.Errorf("a compacted journal is %04o: the rewrite widened it back to what anybody can read", got)
+	}
+}
+
+// The machine that has been running zde since before this was fixed.
+//
+// Its journal is 0644 and full of what it has been told since login, and a fix
+// that reached only the files it creates would leave that one exactly as it was
+// and call the problem solved. The directory goes with it, but only because it
+// is the one zde chose for itself - see the test below.
+func TestAJournalAnEarlierZdeLeftReadableIsTightenedWhenItIsOpened(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	path := DefaultPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(
+		`{"kind":"queued","id":7,"text":"ilya: about the invoice","desk":"vshop"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Said again rather than left to WriteFile, whose mode is masked by whatever
+	// umask the test is running under: this has to start wide to prove anything.
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	j := open(t, path)
+	if got := mode(t, path); got != journalMode {
+		t.Errorf("a journal that was already there is still %04o, so every notification an earlier zde wrote down is still readable by anybody with an account here", got)
+	}
+	if got := mode(t, filepath.Dir(path)); got != stateDirMode {
+		t.Errorf("zde's own state directory is still %04o, want %04o", got, stateDirMode)
+	}
+	// And it is still the journal it was. Tightening a file is not a reason to
+	// forget what somebody owes.
+	if q := j.State().Queue; len(q) != 1 || q[0].Text != "ilya: about the invoice" {
+		t.Errorf("queue = %+v, want what the older journal had on it", q)
+	}
+}
+
+// A directory somebody named is not zde's to take private.
+//
+// `zded -journal /tmp/live.jsonl` is what the smoke test runs, and it puts the
+// journal in a directory belonging to the whole machine. Chmodding that would
+// do far more harm than the listing it prevents, and it would do it to a
+// directory zde does not own. The file's own mode is what keeps the lines
+// unreadable, and that one is set wherever the journal was put.
+func TestADirectorySomebodyElseNamedIsLeftAlone(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	shared := filepath.Join(t.TempDir(), "shared")
+	if err := os.MkdirAll(shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(shared, "live.jsonl")
+	open(t, path)
+
+	if got := mode(t, shared); got != 0o755 {
+		t.Errorf("a directory zde was pointed at is now %04o: it took a shared directory private on its way past", got)
+	}
+	if got := mode(t, path); got != journalMode {
+		t.Errorf("the journal in it is %04o, want %04o wherever it was put", got, journalMode)
+	}
+}
+
+// The other half of the same upgrade: what the earlier zde already wrote.
+//
+// It put the whole of every notification in here, so tightening the mode alone
+// leaves a file that is private and still full of somebody's mail. Compaction
+// runs at Open and nowhere else, so this is the one chance to rewrite it, and a
+// journal that carried a body is rewritten whatever its length.
+func TestAJournalWrittenByAnEarlierZdeLosesTheNotificationBodiesInIt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "journal.jsonl")
+	if err := os.WriteFile(path, []byte(
+		`{"kind":"queued","id":1,"text":"your results are in","body":"the biopsy came back clear","from":"clinic"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	j := open(t, path)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "the biopsy came back clear") {
+		t.Error("the journal still holds a body an older zde wrote, so this protects the next notification and none of the ones already on the disk")
+	}
+	// The item itself stays. What is owed is not the part being taken away.
+	if q := j.State().Queue; len(q) != 1 || q[0].Text != "your results are in" || q[0].From != "clinic" {
+		t.Errorf("queue = %+v, want the item that was waiting, minus the message", q)
+	}
+	if !strings.Contains(string(raw), "your results are in") {
+		t.Error("the rewrite dropped the item as well as the body: a message is worth protecting, an empty queue is not")
+	}
+}
+
+// mode is a path's permission bits and nothing else about it.
+func mode(t *testing.T, path string) os.FileMode {
+	t.Helper()
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fi.Mode().Perm()
+}

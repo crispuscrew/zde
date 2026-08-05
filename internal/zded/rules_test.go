@@ -93,6 +93,16 @@ func TestWriteRulesMakesTheDirectoryItWritesInto(t *testing.T) {
 	if string(got) != "one\n" {
 		t.Errorf("file holds %q", got)
 	}
+	// Only niri reads this, and niri is the person's own compositor. It names a
+	// desk per pinned app, and one of those desks can be one zde keeps out of
+	// the picker (docs/vision.md, section 3).
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := fi.Mode().Perm(); mode != 0o600 {
+		t.Errorf("the placement rules are %04o, want 0600: they name the desks, private ones included", mode)
+	}
 }
 
 func TestWriteRulesOnlyWhenChanged(t *testing.T) {

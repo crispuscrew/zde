@@ -94,7 +94,9 @@ func writeRules(path, content string) error {
 	// config into the store and includes this path from it, so the first startup
 	// on a fresh account found no ~/.config/niri to write into, said so once on
 	// stderr, and every pinned app then opened wherever niri felt like putting
-	// it. 0755 like the journal's: it is config, and nothing secret is in it.
+	// it. 0755 because this is niri's own config directory and not zde's to
+	// narrow - a config directory is 0755 on every machine, and what it holds
+	// is decided by the mode of the file below.
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -113,7 +115,12 @@ func writeRules(path, content string) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
+	// 0600, which os.CreateTemp already gives it: only niri reads this, and niri
+	// is the person's own compositor. What is in it is a line per pinned app
+	// naming the desk it opens on, and one of those desks can be a private one -
+	// which zde keeps out of the picker, so it should not be publishing the name
+	// in a file next door either (docs/vision.md, section 3).
+	if err := os.Chmod(tmp.Name(), 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp.Name(), path)
