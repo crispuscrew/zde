@@ -55,11 +55,22 @@ blocks 0.2:
   a download posting a hundred progress updates spends its own thirty and
   nobody else's, and a notification carrying `replaces_id` is written over the
   record it supersedes instead of landing beside it, so that download is one
-  row. What is not fixed is a sender that varies the name it claims: names are
-  bounded too, at 12, with the least recently used ring dropped whole, but an
-  app that mints twelve names can still push every real sender out. Only
-  attribution by channel closes that ([`vision.md`](vision.md), principle 6 and
-  ask 4), and nothing in zde reads `zcr bus` yet.
+  row. Names are bounded too, at 12, and the ring that goes when a thirteenth
+  turns up is the cheapest to lose rather than the least recently used - so an
+  app that varies what it calls itself evicts its own one-record rings instead
+  of your real senders, and what it costs to displace a sender is what it costs
+  to out-hold it. What none of that does is say who sent anything: the name is
+  still the sender's own claim, and only attribution by channel changes that
+  ([`vision.md`](vision.md), principle 6 and ask 4), which waits on something in
+  zde reading `zcr bus`.
+- a replacement spends a revision of the history it did not need to. The bus
+  side closes the old notification before the new one arrives, so the record is
+  marked dismissed and the revision counter moves, and then the arrival removes
+  that record anyway (internal/attn, Replace). It costs one revision per
+  replace, which at worst has the snapshot writer write the file once more than
+  it had to on its two-minute clock. Written down rather than fixed: the fix is
+  a second path through the sink for a close that is only half of a replace, and
+  that is not obviously smaller than the problem.
 - ask has no tier until a machine names one, and the panel does not carry the
   previous turns as context.
 - nothing is sandboxed until somebody defines an app. Layer 2 is provisioned by

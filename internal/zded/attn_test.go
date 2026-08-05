@@ -512,18 +512,21 @@ func TestEveryRecordOfAnEvictedSenderIsForgotten(t *testing.T) {
 	forgotten := []uint64{}
 	s.Watching(tellTale{ids: &[]uint64{}, forgotten: &forgotten})
 
-	// One sender with three records, and then every other name newer than it.
+	// One sender with three records, and every other name holding more, so the
+	// ring of three is the cheapest one to lose.
 	mine := []uint64{}
 	for i := 0; i < 3; i++ {
-		id, err := s.Arrived(attn.Notification{From: "the quiet one", Text: "one of three"})
+		id, err := s.Arrived(attn.Notification{From: "the cheapest", Text: "one of three"})
 		if err != nil {
 			t.Fatal(err)
 		}
 		mine = append(mine, id)
 	}
 	for n := 2; n <= attn.SendersMax; n++ {
-		if _, err := s.Arrived(attn.Notification{From: "app " + strconv.Itoa(n), Text: "hello"}); err != nil {
-			t.Fatal(err)
+		for k := 0; k < 5; k++ {
+			if _, err := s.Arrived(attn.Notification{From: "app " + strconv.Itoa(n), Text: "hello"}); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	if len(forgotten) != 0 {
