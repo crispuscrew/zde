@@ -434,6 +434,28 @@ func TestAskPanelWithNoShellSaysTheQuestionWasNotAsked(t *testing.T) {
 	}
 }
 
+// The power menu prints its five rows when no shell is up, with the name in
+// column one, so the obvious thing to do with a row is to type what it says.
+// A CLI that only knew the bare verb would answer a name copied off the row
+// with "unknown command", which blames the person - and the row it happens to
+// is the one that ends the session.
+func TestPowerTakesTheNameOffTheRowItPrinted(t *testing.T) {
+	quiet(t)
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+
+	for _, name := range []string{"lock", "logout", "suspend", "reboot", "poweroff"} {
+		err := run([]string{"system", "power", name})
+		if err == nil {
+			t.Fatalf("there is no zded here, so `zde system power %s` cannot have worked", name)
+		}
+		// It got as far as trying to reach the daemon, which is where every
+		// verb gets to here. Anything else means the form was never dispatched.
+		if strings.Contains(err.Error(), "unknown command") {
+			t.Errorf("`zde system power %s` got as far as %q", name, err)
+		}
+	}
+}
+
 // openPty is a terminal to type a password into, since that is the only place
 // echo means anything: a pipe echoes nothing whatever the code does, which is
 // why the test above cannot see this and this one exists.

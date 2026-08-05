@@ -17,12 +17,19 @@ attribution; asks 5-6 land with their consumers.
 
 Every line of that has landed, and a desk now starts what its manifest declares,
 pins each app to the workspace it named, and puts the session in the attn mode
-it asks for. Three things arrived beside the
+it asks for. Four things arrived beside the
 list rather than in it: the connections surface (`Mod+Shift+c`), which is 0.4's
 wifi TUI in the shape the shell wanted; the palette (`Mod+semicolon`), which is
 0.2's and came early because a good part of the cheatsheet is still silent and
-a palette is what says which part; and bluetooth, as `zde system bluetooth`
-with nothing on a screen.
+a palette is what says which part; bluetooth, as `zde system bluetooth`
+with nothing on a screen; and the power menu (`Mod+Shift+x`), which belongs
+here rather than in the laptop profile it was filed under - logging out of this
+desktop meant opening a terminal, which is not a thing to ship a phase on. It
+is lock, log out, suspend, reboot and power off, the three that end something
+asking first and saying what is about to be lost; the lock is the same locker
+`zde system lock` runs, and the rest is logind's, so a refusal - an inhibitor
+holding sleep, a second person logged in - comes back as a refusal rather than
+as a key that did nothing.
 
 Where those lines stop short is what is left of the phase, and none of it
 blocks 0.2:
@@ -112,12 +119,14 @@ blocks 0.2:
 - film desk: PipeWire limiter, luma-clamp shader, end-of-film sleep, ambient
   side monitors.
 - gaming desk: gamescope, auto-Passthrough + never-release set, replay.
-- laptop profile: battery/brightness/power, single-monitor degradation,
-  workspace placement re-applied on dock/undock. The wifi and bluetooth halves
-  came early and in different shapes - wifi as a shell surface on
-  `Mod+Shift+c`, bluetooth as `zde system bluetooth` with no surface at all -
-  so what is left here is folding bluetooth into that surface and the rest of
-  what a laptop is.
+- laptop profile: battery/brightness, single-monitor degradation, workspace
+  placement re-applied on dock/undock. Three halves of this came early and in
+  different shapes - wifi as a shell surface on `Mod+Shift+c`, bluetooth as
+  `zde system bluetooth` with no surface at all, and the power menu on
+  `Mod+Shift+x`, which moved into 0.1 because a desktop you cannot log out of
+  is not one you can use - so what is left here is folding bluetooth into that
+  surface, the lid and the battery thresholds, and the rest of what a laptop
+  is.
 
 Delivery ([`delivery.md`](delivery.md)): the flake skeleton exists; the home
 module grows with each 0.1 component; ISO and `install.sh` after 0.1 is
@@ -165,10 +174,10 @@ turned "when someone has hardware" into something anyone can do this evening.
   rest of the desks are declared.
 - nav with a layer-shell surface up: one holding keyboard focus reads as
   nothing focused at all, so a press spends itself putting focus back on a
-  window instead of going anywhere. There are five such surfaces now - the
-  picker, the notification center, the connections list, the palette and the
-  ask window - each taking the keyboard only while it is visible, so the thing
-  to try is a nav key the instant after each one closes
+  window instead of going anywhere. There are six such surfaces now - the
+  picker, the notification center, the connections list, the palette, the ask
+  window and the power menu - each taking the keyboard only while it is visible,
+  so the thing to try is a nav key the instant after each one closes
   ([`verify.md`](verify.md), a day of work). Not settled here: driving a real
   key into a nested compositor did not work well enough to trust the answer.
 - a desk's attn policy, in use. The desk borrows the mode and gives it back

@@ -59,6 +59,10 @@ type Event struct {
 	Notifications []attn.Record `json:"notifications,omitempty"`
 	// Actions is the palette's rows, sent the same way and for the same reason.
 	Actions []Action `json:"actions,omitempty"`
+	// Choices is the power menu's rows, with what each one is about to cost
+	// already worked out (power.go): a confirmation that had to ask before it
+	// could say what is being lost would fill in under somebody's finger.
+	Choices []PowerChoice `json:"choices,omitempty"`
 	// The connections surface's two: the wifi networks it lists, and the link
 	// as it stands, so it can say what you are on without asking a second
 	// question (net.go).

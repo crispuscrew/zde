@@ -495,6 +495,49 @@ show up in use.
 
   Whether these four are worth a line each, or whether the whole thing wants to
   be one, is a question for a broken machine rather than for an argument here.
+- **The power menu**: `Mod+Shift+x`. Five rows - lock, log out, suspend, reboot,
+  power off - with `j`/`k`, the arrows or a digit to move, Enter to choose and
+  Escape to close. The three that end something ask a second time and put what
+  is about to be lost under the question: the windows that close, the arrivals
+  that exist only in the daemon's memory, anybody else logged in. **`y` confirms
+  and every other key backs out**; Enter deliberately does not, because Enter is
+  the key that got you there and a second press in the rhythm of choosing would
+  power the machine off. Whether that is the right key is a thing for fingers
+  rather than for an argument.
+  - **The lock row and `Mod+Ctrl+semicolon` lock the same way**, because both
+    run whatever `zde.apps.lock` names. One of them working and the other not is
+    the report.
+  - **A refusal has to read as a refusal.** Hold sleep off in a terminal, then
+    suspend from the menu:
+
+    ```sh
+    systemd-inhibit --what=sleep --why="testing zde" sleep 300 &
+    ```
+
+    The suspend row should start asking first, naming that inhibitor and the
+    reason it gave, and `y` should bring logind's refusal back onto the surface.
+    A machine that suspends anyway is fine and worth noting, since it means
+    polkit let it past. A surface that closes with nothing happening is the
+    exact failure this menu is arranged around, and it is the thing to report.
+  - **Somebody else logged in.** Log in as a second user on Ctrl+Alt+F3 and open
+    the menu: reboot and power off should say so before anything is pressed.
+    Confirm one and read what comes back - logind wants an administrator's
+    password to end a second person's session, nothing here can ask for one, so
+    it should refuse in words.
+  - **With no shell**, which is a session somebody very much wants to log out
+    of: `systemctl --user stop zde-bar`, then `zde system power` prints the five
+    rows with what each costs underneath, and `zde system power suspend` runs
+    one from there. That form does not ask again - the word is the answer.
+  - **On a machine with no input devices** the surface is drivable over
+    Quickshell's IPC, which is the only way to reach the second question without
+    a keyboard:
+
+    ```sh
+    bar=$(pgrep -f 'shell/shell.qml')
+    quickshell ipc --pid "$bar" call power state           # open 5 -
+    quickshell ipc --pid "$bar" call power choose reboot   # asks
+    quickshell ipc --pid "$bar" call power confirm         # ran
+    ```
 - **`Mod+Tab` when the shell is unwell.** Kill the bar (`systemctl --user stop
   zde-bar`) and press it: you should get the desk list printed to wherever the
   key's output goes, rather than nothing at all. The daemon waits 200ms for the
@@ -505,8 +548,9 @@ show up in use.
   the worry that a layer surface holding focus reads to niri as nothing focused
   at all - so a nav key pressed just after one closes would spend itself putting
   focus back on a window. Every key that draws one: `Mod+Tab` and `Mod+w` for
-  the picker, `Mod+n`, `Mod+Shift+c`, `Mod+semicolon`, and `Mod+a` or
-  `Mod+Shift+a` for ask. Open each, close it with Escape, and press `Mod+j`
+  the picker, `Mod+n`, `Mod+Shift+c`, `Mod+semicolon`, `Mod+Shift+x` for the
+  power menu, and `Mod+a` or `Mod+Shift+a` for ask. Open each, close it with
+  Escape, and press `Mod+j`
   immediately: if the first press goes nowhere, that is the thing, and it wants
   `keyboardFocus` on demand rather than exclusive. One surface behaving
   differently from the rest is worth as much as all of them behaving badly.
@@ -726,11 +770,11 @@ actually gets.
 
 Not bugs, do not report them:
 
-- **The rest of the shell**: the bar and five surfaces over it - the picker
+- **The rest of the shell**: the bar and six surfaces over it - the picker
   (desks on `Mod+Tab`, windows on `Mod+w`, one surface for both), the
-  notification centre, the connections list, the palette and the ask window.
-  There is no mixer, no media panel, no clipboard, no calendar, no power menu,
-  and no popup for anything: what arrives waits on `Mod+n`. The launcher on
+  notification centre, the connections list, the palette, the ask window and the
+  power menu. There is no mixer, no media panel, no clipboard, no calendar, and
+  no popup for anything: what arrives waits on `Mod+n`. The launcher on
   `Mod+g` is zinc's, not zde's.
 - **Part of the cheatsheet.** A bind whose command is not written yet prints
   usage to a stderr nobody reads, so the key is silent and so is the machine.
@@ -746,7 +790,7 @@ Not bugs, do not report them:
   | `Mod+r` (regulars), `Mod+u` (queue jump) | `Mod+p`, `Mod+Shift+p`, `Mod+Ctrl+p` (media) |
   | `Mod+t` (terminal) | `Mod+m` (modes), `Mod+Shift+n` (net observer) |
   | `Mod+n` (the notification centre, with the newest of it kept across a zded restart), `Mod+q` (quiet) | `Mod+c` (calendar), `Mod+Shift+w` (wallpapers) |
-  | `Mod+semicolon` (the palette) | `Mod+Shift+x` (power) |
+  | `Mod+semicolon` (the palette), `Mod+Shift+x` (the power menu) | |
   | `Mod+a` (one question), `Mod+Shift+a` (a conversation), once a tier is set | `XF86AudioPlay`/`Next`/`Prev` (the media target) |
   | `Mod+Shift+c` (wifi, and the link you are on) | `Mod+e`, until `zde.apps.editor` names one (below) |
   | `Mod+g` (zinc's launcher), `Mod+Ctrl+semicolon` (lock) | |
@@ -758,7 +802,7 @@ Not bugs, do not report them:
   | `zde status`, `doctor`, `keys`, `palette`, `ask`, `attn`, `queue`/`add`/`done` | `zde net observe\|app-cut\|kill` |
   | `zde app list\|launch`, `window jump-to`, `workspace next\|prev`, `nav down\|up` | `zde desk panic\|zen\|block`, which are not verbs at all |
   | `zde net status\|connect\|disconnect\|forget` | `zde clip`, `pass`, `media`, `mode` |
-  | `zde system lock\|quiet\|notif-center\|connections\|bluetooth` | `zde system power\|calendar\|wallpapers` |
+  | `zde system lock\|quiet\|notif-center\|connections\|bluetooth\|power` | `zde system calendar\|wallpapers` |
   | every other `zde desk` verb: `list`, `switch`, `switcher`, `next`/`prev`/`last`, `apps`, `snapshot`, `reconcile`, `queue-jump`, `regulars`, `move-window`, `move-window-to`, `move-workspace-to` | a manifest's `policies.zen`, `background: pause`, `on_enter`/`on_exit`, all parsed and read by nobody |
   | a manifest's `policies.attn`: entering the desk puts the session in the mode it declares | |
   | the niri natives: columns, monitors, fullscreen, float, close, overview, consume/expel, layout switch | |

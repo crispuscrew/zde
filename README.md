@@ -33,7 +33,8 @@ popup nobody was looking at. The shell is a bar - the queue, the mode, the mic,
 the link, the battery, the clock - and the surfaces over it: the desk picker
 and the window jump, the notification centre, the wifi list you join a network
 from, the palette that runs any action by name and marks the ones that do
-nothing yet, and ask, which puts a question to the tier a machine names and
+nothing yet, the power menu that says what a log out is about to close before
+it asks, and ask, which puts a question to the tier a machine names and
 streams the answer back. One keymap file generates the niri binds and the
 cheatsheet together, so the two cannot drift. The sandbox is installed rather
 than described: zinc is a pinned input, so a zde machine has `zcr`, `zc` and
@@ -42,7 +43,7 @@ than described: zinc is a pinned input, so a zde machine has `zcr`, `zc` and
 **Missing.** The apps: the sandbox is installed and nothing here defines
 anything to put in it, so what `Mod+t` starts is an ordinary host program until
 you write one. pass, the clipboard history, media, the modes beyond Normal,
-panic and zen, launch-at, the calendar, the wallpapers and the power menu are
+panic and zen, launch-at, the calendar and the wallpapers are
 keys that do nothing, silently - a bind whose command is not written yet prints
 usage to a stderr nobody reads, which is why the palette marks them rather than
 hiding them. Bluetooth is `zde system bluetooth` and nothing on a screen; ask
