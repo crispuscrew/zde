@@ -459,6 +459,32 @@ func printed(t *testing.T, args []string) string {
 	return string(out)
 }
 
+// shortDir is a temporary directory whose path is short enough to put a unix
+// socket in.
+//
+// t.TempDir spells the test's own name into the path, and a unix address is
+// capped at 108 bytes including the terminator, so a test whose name is long
+// enough will not bind on a machine whose temp root is long enough. That is not
+// hypothetical: this test's name is thirty-nine characters, a CI runner's temp
+// root was forty-one, and the socket under it came to exactly 108 - one over
+// what fits. It passed on a developer machine, where the temp root is /tmp.
+//
+// So a socket path must never be built from t.TempDir, and the fix is not a
+// shorter test name: a name chosen to fit a filesystem limit is a name that
+// stops saying what the test proves. This is the fourth copy of this helper -
+// cmd/zded, internal/zded (socketPath) and internal/niri have the same one, in
+// their own packages because a test helper cannot cross one. A fifth is cheaper
+// than a package that exists to hold six lines.
+func shortDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "zde")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
+}
+
 // firstWord is the column something starts in, counted from zero.
 func firstWord(line string) int {
 	for i := 0; i < len(line); i++ {
@@ -489,8 +515,8 @@ func TestPowerTakesTheNameOffTheRowItPrinted(t *testing.T) {
 	// Before the daemon: power.Open reads this to find the system bus, and a
 	// path nothing is listening on is a machine with no logind. Without it this
 	// test would open the real one on the machine it is running on.
-	t.Setenv("DBUS_SYSTEM_BUS_ADDRESS", "unix:path="+filepath.Join(t.TempDir(), "no-bus"))
-	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("DBUS_SYSTEM_BUS_ADDRESS", "unix:path="+filepath.Join(shortDir(t), "no-bus"))
+	t.Setenv("XDG_RUNTIME_DIR", shortDir(t))
 	socket, err := zded.DefaultSocket()
 	if err != nil {
 		t.Fatal(err)
