@@ -313,11 +313,22 @@ ones are the point of zded holding the bus name.
   machine and not about the number.
 - **A thirteenth app that sends you something.** The names are bounded too,
   because an app's name for itself is its own claim and nothing checks it. When
-  a thirteenth arrives, the sender nothing has been heard from for longest
-  loses its ring whole - every record it ever sent, in one step. On a real
-  machine, count the distinct senders in `Mod+n` over a week: if twelve is
-  routinely too few, that is the number to report, and it is one constant
-  (`internal/attn`, `SendersMax`).
+  a thirteenth arrives, the ring that is cheapest to lose goes whole - fewest
+  records first, and between two that cost the same, the one heard from longest
+  ago. So what it takes is the sender that has told you least, and never the one
+  that just arrived. The bias is deliberate and it is the thing to feel for: this
+  prefers volume to recency, so an app you hear from once a week is the one that
+  churns. On a real machine, count the distinct senders in `Mod+n` over a week:
+  if twelve is routinely too few, that is the number to report, and it is one
+  constant (`internal/attn`, `SendersMax`).
+- **An app that varies the name it puts on its notifications.** Nothing verifies
+  that name, so this is the case the bound above is really shaped for. Twelve
+  notifications under twelve invented names must not cost you twelve real
+  senders: each invented name arrives holding one record, so it is the next
+  one's cheapest candidate and they evict each other. What it should cost is one
+  ring, the cheapest on the machine at the moment the first invented name turned
+  up, and nothing after that. Fake it with `notify-send -a "name-$i"` in a loop
+  and read `Mod+n` before and after.
 - **What a restart keeps.** `systemctl --user restart zded`, then `Mod+n`. The
   newest 40 records are still there and each says so on its own row - `waiting ·
   earlier`, because the time column is a clock with no date on it. The newest 40

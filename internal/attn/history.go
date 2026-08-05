@@ -54,8 +54,8 @@ import (
 const PerSenderMax = 30
 
 // SendersMax is how many senders hold a ring of their own at once. When a
-// thirteenth name arrives, the sender nothing has been heard from for longest
-// loses its ring.
+// thirteenth name arrives, the ring that is cheapest to lose goes whole (see
+// dropExtraSenders, which is where the choice is argued).
 //
 // Bounded because From is the sender's own claim and nothing verifies it
 // (notify.go, Notification.From). An app that varies its name mints a ring per
@@ -66,17 +66,24 @@ const PerSenderMax = 30
 // mail, the browser, a download, a build, the calendar, battery, bluetooth and
 // updates is nine.
 //
-// The arithmetic, done the way the ring's above is. Twelve rings plus the
-// nameless one (see nobody) is thirteen, at thirty records each: 390 records.
-// A record at its limit is a summary of summaryMax, a body of bodyMax, and a
-// sender name bounded at summaryMax too - 4600 characters, which in an
-// alphabet that costs four bytes a character is about 18 KB. So the ceiling is
-// near 7 MB, against the 3 MB the flat ring of two hundred counted, and it is
-// still a few hundred kilobytes in any session made of real notifications:
-// a ceiling only binds when something is trying to reach it. The actions are
-// outside this count as they were outside the old one - nine of them, each key
-// and label bounded only by summaryMax, is another 21 KB a record in a worst
-// case nothing has ever sent.
+// The arithmetic, done the way the ring's above is, and it is the whole of it:
+// every other count in this package (bodyMax, snapshotBodyMax) points here.
+// Twelve rings plus the nameless one (see nobody) is thirteen, at thirty
+// records each: 390 records. A record at its limit is a summary of summaryMax
+// (300), a body of bodyMax (4000), a sender name bounded at summaryMax too
+// (300), and actionsMax action pairs of actionTextMax each (9 x 160 = 1440):
+// 6040 characters, which in an alphabet that costs four bytes a character is
+// about 24 KB. So the ceiling is about 9 MB.
+//
+// Against 8 MB, which is what the flat ring of two hundred actually held once
+// its own action lists are counted - they were bounded only by summaryMax then,
+// so 9 x 600 characters was 24 KB of buttons on top of 16 KB of message, and
+// every stated figure in this package was describing a number smaller than the
+// real one. Bounding the action text (notify.go, actionTextMax) gave back most
+// of what the extra records cost, which is why nearly doubling the record count
+// moved the ceiling by an eighth. It is still a few hundred kilobytes in any
+// session made of real notifications: a ceiling only binds when something is
+// trying to reach it.
 //
 // What goes when a sender is evicted is the whole of its ring, in one step:
 // every record that name ever sent. Add answers with every id in it, so the
@@ -84,12 +91,11 @@ const PerSenderMax = 30
 // because what is bounded here is the number of names and not the number of
 // records under them.
 //
-// It is a bound on memory and not a defence. Until a sender is known by the
-// socket it arrived on rather than by what it says about itself
-// (docs/vision.md, principle 6), an app that mints twelve names can push every
-// real sender out - as an app that sent two hundred notifications could push
-// everything out before this change. What the rings fix is the ordinary case,
-// which is an honest app that is merely loud.
+// It is a bound on memory first, but the rule that picks the ring decides
+// whether it is also leverage for an app that renames itself, and it is chosen
+// so that it is not: see dropExtraSenders. What none of it does is tell you who
+// sent anything. That waits on a sender being known by the socket it arrived on
+// rather than by what it says about itself (docs/vision.md, principle 6).
 const SendersMax = 12
 
 // nobody is the ring for a record whose sender named itself nothing. It is
@@ -174,6 +180,24 @@ type Record struct {
 	// Never serialised, in either direction. A surface has no use for it, and a
 	// file that could carry it would be a file that could clear it.
 	Private bool `json:"-"`
+}
+
+// clone is this record as something a caller may keep.
+//
+// The struct copies on assignment, but Actions is a slice: a plain copy hands
+// out a window into the history's own memory, and the daemon marshals what it
+// gives out on another goroutine while arrivals are still coming in. A caller
+// that wrote through it - the socket layer, a surface adapter, a test - would
+// be editing what the notification center reads back, and the aliasing would
+// not show up as a race the tools catch, because both sides are under different
+// locks or none.
+//
+// Only the slice, not the strings in it: a string cannot be written through.
+func (r Record) clone() Record {
+	if r.Actions != nil {
+		r.Actions = append([]Action(nil), r.Actions...)
+	}
+	return r
 }
 
 // Allows reports whether this notification declared that action.
@@ -332,7 +356,9 @@ func (h *History) add(r Record) []uint64 {
 		copy(ring.at, ring.at[1:])
 		ring.at = ring.at[:PerSenderMax]
 	}
-	return append(gone, h.dropExtraSenders()...)
+	// Exempt from the eviction below, or a sender's first notification is the
+	// one its own arrival throws away (see dropExtraSenders).
+	return append(gone, h.dropExtraSenders(r.From)...)
 }
 
 // remove takes one record out of whichever ring holds it, and says whether it
@@ -380,13 +406,45 @@ func (h *History) ringFor(from string) *ring {
 // dropExtraSenders drops whole rings until SendersMax names are left, and
 // answers with every id that went with them.
 //
-// The ring that goes is the one nothing has been heard from for longest,
-// measured by its newest record. Used means sent: the center reads the whole
-// history in one call, so a read says nothing about any one sender and must
-// not be what keeps a name alive.
+// The ring that goes is the cheapest one to lose: fewest records first, and
+// between two holding the same number, the one heard from longest ago.
+//
+// Not the least recently used, which is what this was, and which had the bound
+// working for the attacker instead of against him. A name costs nothing to mint
+// (notify.go, Notification.From), so under least-recently-used, twelve
+// notifications under twelve invented names evicted the twelve senders you
+// actually hear from - a bound keyed on a free claim, handing out leverage in
+// proportion to that claim. It also picked exactly the wrong ring: an
+// established app that told you something an hour ago lost everything to
+// one-record rings that appeared a second ago.
+//
+// Cheapest-first turns that round. An invented name arrives holding one record,
+// so the next invented name evicts that one rather than anybody real, and the
+// invented names churn among themselves for as long as they keep coming. What
+// it costs to displace a sender is then what it costs to out-hold it: a ring of
+// thirty goes only once every other ring holds thirty, which is notifications
+// sent and not names invented. That is the leverage the flat ring of two
+// hundred charged, and getting back to it is the whole point of the change.
+//
+// Never the ring this arrival just landed in, and that is not a detail. Without
+// the exemption a new sender's first record is the cheapest thing on the
+// machine the instant it exists, so it is dropped by its own arrival, and an
+// app you have just installed can never appear in the history at all while
+// twelve others hold a record each. The exemption spends the cheapest existing
+// ring once instead - after that the arriving sender holds the cheap ring and
+// the next new name takes it.
+//
+// What it costs in ordinary use is the sender that has told you least: an app
+// you hear from once a week loses its one record when a thirteenth name turns
+// up, which is one row of the center and the smallest loss the machine can
+// take. Worth saying plainly, because it is a real bias and it is the opposite
+// of the order the history is read in: this prefers volume to recency, so the
+// occasional sender is the one that churns. It is chosen that way because a
+// session of nine ordinary senders never reaches this bound at all - so the
+// case it has to be good at is the case that does reach it.
 //
 // nobody's ring is neither counted nor a candidate (see nobody).
-func (h *History) dropExtraSenders() []uint64 {
+func (h *History) dropExtraSenders(arrived string) []uint64 {
 	var gone []uint64
 	for {
 		named := len(h.rings)
@@ -396,21 +454,22 @@ func (h *History) dropExtraSenders() []uint64 {
 		if named <= SendersMax {
 			return gone
 		}
-		quietest, since, found := "", int64(0), false
+		cheapest, held, since, found := "", 0, int64(0), false
 		for from, r := range h.rings {
-			if from == nobody {
+			if from == nobody || from == arrived {
 				continue
 			}
-			// No two records share a seq, so there is no tie for the map's
-			// random order to break differently on two runs.
-			if last := r.last(); !found || last < since {
-				quietest, since, found = from, last, true
+			// No two records share a seq, so the tie-break is total and the
+			// map's random order cannot decide this differently on two runs.
+			n, last := len(r.at), r.last()
+			if !found || n < held || (n == held && last < since) {
+				cheapest, held, since, found = from, n, last, true
 			}
 		}
-		for _, e := range h.rings[quietest].at {
+		for _, e := range h.rings[cheapest].at {
 			gone = append(gone, e.rec.ID)
 		}
-		delete(h.rings, quietest)
+		delete(h.rings, cheapest)
 	}
 }
 
@@ -447,20 +506,21 @@ func (h *History) Recent() []Record {
 	all := h.newestFirst()
 	out := make([]Record, len(all))
 	for i, e := range all {
-		out[i] = e.rec
+		out[i] = e.rec.clone()
 	}
 	return out
 }
 
 // Find is one record by id, for a caller that has to know what it is acting on
-// before it acts.
+// before it acts. A copy, for the reason Recent's are: the actions are the one
+// part of a record that is a slice (see clone).
 func (h *History) Find(id uint64) (Record, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, r := range h.rings {
 		for _, e := range r.at {
 			if e.rec.ID == id {
-				return e.rec, true
+				return e.rec.clone(), true
 			}
 		}
 	}
@@ -507,16 +567,20 @@ func (h *History) Rev() uint64 {
 // front, which is the restored end, for the reason the bound exists at all:
 // the newest are what the question is about, and what this session actually
 // received is worth more than what it was told about the last one. A name that
-// pushes the sender count over its bound loses its ring whole - and the ring
-// that goes is always one holding nothing but restored records, because a
-// restored record sorts below every live one and this is the least recently
-// used that comes out.
+// pushes the sender count over its bound loses its ring whole, by the same rule
+// an arrival evicts under (see dropExtraSenders): a file naming twenty senders
+// a record each keeps the twelve it heard from last.
 //
-// What that eviction pushed out is not answered, unlike Add's. Nothing on the
-// bus is holding a restored id: the connection that sent it ended with the
-// last session, which is the same reason a restored row refuses to invoke
-// anything (internal/zded, invoke). This also runs before anything can arrive
-// (cmd/zded, LoadHistory).
+// What that eviction pushed out is not answered, unlike Add's, and what makes
+// that safe is when this runs: before the daemon takes the bus name and before
+// anything is Watching, so no id here is one the bus side is holding (cmd/zded,
+// the order in run). Nothing on the bus could be holding a restored id in any
+// case - the connection that sent it ended with the last session, which is the
+// same reason a restored row refuses to invoke anything (internal/zded,
+// invoke). The day this is called with live records already in the rings, it
+// has to answer with ids the way Add does: the eviction rule is about what a
+// ring costs to lose and not about where its records came from, so a live ring
+// can be the cheapest one on the machine.
 func (h *History) Restore(records []Record) {
 	if len(records) == 0 {
 		return
@@ -539,6 +603,8 @@ func (h *History) Restore(records []Record) {
 	for _, from := range order {
 		h.ringFor(from).prepend(byFrom[from])
 	}
-	h.dropExtraSenders()
+	// Nothing to exempt: every ring here was just filled from the file, so
+	// there is no arriving sender to protect from its own arrival.
+	h.dropExtraSenders(nobody)
 	h.rev++
 }

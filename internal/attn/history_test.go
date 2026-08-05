@@ -2,6 +2,7 @@ package attn
 
 import (
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -66,22 +67,117 @@ func TestALoudSenderPushesOutNothingButItsOwn(t *testing.T) {
 	}
 }
 
-// From is the sender's own claim and nothing verifies it, so the names are
-// bounded as well as the records under them - otherwise an app that varies
-// what it calls itself mints a ring per variation and the map is the leak the
-// rings were meant to stop.
+// The adversarial case, and the reason the eviction is keyed on what a ring is
+// worth rather than on when it was last heard from.
 //
-// The ring that goes is the one nothing has been heard from for longest, and
-// it goes whole: there is no half-evicted sender. Every id in it comes back,
-// because each is a notification nothing can address any more.
-func TestTheSenderHeardFromLongestAgoIsTheOneWhoseRingGoes(t *testing.T) {
+// A name costs nothing to mint. Under least-recently-used, twelve notifications
+// under twelve invented names evicted the twelve senders you actually hear
+// from, which is a bound handing an attacker leverage in proportion to a value
+// he gets for free. Cheapest-first makes the invented names evict each other:
+// each arrives holding one record, so it is the next one's cheapest candidate.
+func TestInventedSenderNamesCannotEvictAnEstablishedSender(t *testing.T) {
 	var h History
-	for i := uint64(1); i <= 3; i++ {
-		h.Add(Record{ID: i, From: "the quiet one", Text: "one of three"})
+	// The sender you actually hear from, with a ring worth keeping.
+	for i := uint64(1); i <= PerSenderMax; i++ {
+		h.Add(Record{ID: i, From: "mail", Text: "one of many"})
 	}
-	// The rest of the bound, every one of them newer than those three.
+	// The rest of the bound, a few records each: a session in ordinary use.
+	for s := 2; s <= SendersMax; s++ {
+		for k := 0; k < 3; k++ {
+			h.Add(Record{ID: uint64(1000 + s*10 + k), From: "app " + strconv.Itoa(s), Text: "hello"})
+		}
+	}
+	// And now an app that varies what it calls itself, one notification each.
+	for n := 1; n <= SendersMax*4; n++ {
+		h.Add(Record{ID: uint64(90000 + n), From: "impostor " + strconv.Itoa(n), Text: "hello"})
+	}
+
+	kept, impostors, ordinary := 0, 0, 0
+	for _, r := range h.Recent() {
+		switch {
+		case r.From == "mail":
+			kept++
+		case strings.HasPrefix(r.From, "impostor "):
+			impostors++
+		case strings.HasPrefix(r.From, "app "):
+			ordinary++
+		}
+	}
+	if kept != PerSenderMax {
+		t.Errorf("the established sender kept %d of its %d records after %d invented names", kept, PerSenderMax, SendersMax*4)
+	}
+	if impostors > 1 {
+		t.Errorf("%d invented names hold records at once, want them evicting each other", impostors)
+	}
+	// One ordinary ring went and only one: the cheapest on the machine when the
+	// first invented name turned up. After that the invented ones are the cheap
+	// ones. That single ring is what this bound costs, and it is the price of
+	// having one at all.
+	if want := (SendersMax - 2) * 3; ordinary != want {
+		t.Errorf("%d ordinary records survived, want %d: one ring of three, and no more, is what the invented names should have cost", ordinary, want)
+	}
+}
+
+// The ring that goes is the cheapest to lose, and between two that cost the
+// same it is the one heard from longest ago.
+func TestTheCheapestRingToLoseIsTheOneThatGoes(t *testing.T) {
+	var h History
+	// One ring worth three records, and the rest worth one each.
+	for i := uint64(1); i <= 3; i++ {
+		h.Add(Record{ID: i, From: "three of these", Text: "one of three"})
+	}
 	for s := 2; s <= SendersMax; s++ {
 		h.Add(Record{ID: uint64(100 + s), From: "app " + strconv.Itoa(s), Text: "hello"})
+	}
+	gone := h.Add(Record{ID: 999, From: "one name too many", Text: "hello"})
+
+	if len(gone) != 1 || gone[0] != 102 {
+		t.Fatalf("the arrival answered %v, want just 102: the one-record rings are cheaper than the three, and app 2's is the oldest of them", gone)
+	}
+	if _, still := h.Find(1); !still {
+		t.Error("the ring holding three went while rings holding one were there to take")
+	}
+	if _, still := h.Find(999); !still {
+		t.Error("the name that needed the room is not here, so something else was evicted for nothing")
+	}
+}
+
+// A sender you have just installed has to be able to appear at all.
+//
+// Cheapest-first would otherwise evict the arriving ring itself: it holds one
+// record, so it is the cheapest thing on the machine the instant it is made,
+// and an app that has just sent you its first notification would never reach
+// the center while twelve others hold a record each. Silently, and for ever.
+func TestAFirstNotificationFromANewSenderIsNotTheOneEvicted(t *testing.T) {
+	var h History
+	for s := 1; s <= SendersMax; s++ {
+		for k := 0; k < 2; k++ {
+			h.Add(Record{ID: uint64(s*10 + k), From: "app " + strconv.Itoa(s), Text: "hello"})
+		}
+	}
+	h.Add(Record{ID: 999, From: "just installed", Text: "hello"})
+	if _, found := h.Find(999); !found {
+		t.Fatal("a new sender's first notification was the record its own arrival threw away")
+	}
+	// And it establishes itself: a second one costs nobody anything, because
+	// the name is already in the table.
+	if gone := h.Add(Record{ID: 1000, From: "just installed", Text: "and another"}); len(gone) != 0 {
+		t.Errorf("a second notification from a sender already here evicted %v", gone)
+	}
+}
+
+// A sender goes whole: there is no half-evicted one, and every id in its ring
+// comes back, because each is a notification nothing can address any more.
+func TestAnEvictedSenderLosesItsWholeRingAndEveryIdComesBack(t *testing.T) {
+	var h History
+	for i := uint64(1); i <= 3; i++ {
+		h.Add(Record{ID: i, From: "the cheapest", Text: "one of three"})
+	}
+	// Everything else holds more, so the ring of three is the one to go.
+	for s := 2; s <= SendersMax; s++ {
+		for k := 0; k < 5; k++ {
+			h.Add(Record{ID: uint64(1000 + s*10 + k), From: "app " + strconv.Itoa(s), Text: "hello"})
+		}
 	}
 	gone := h.Add(Record{ID: 999, From: "one name too many", Text: "hello"})
 
@@ -89,12 +185,9 @@ func TestTheSenderHeardFromLongestAgoIsTheOneWhoseRingGoes(t *testing.T) {
 		t.Fatalf("the arrival answered %v, want every id of the ring that went with it, oldest first", gone)
 	}
 	for _, r := range h.Recent() {
-		if r.From == "the quiet one" {
+		if r.From == "the cheapest" {
 			t.Fatalf("%+v is still here, and its sender's was the ring to go", r)
 		}
-	}
-	if _, still := h.Find(999); !still {
-		t.Error("the name that needed the room is not here, so something else was evicted for nothing")
 	}
 }
 
@@ -263,12 +356,38 @@ func TestARestoreCannotBringBackMoreSendersThanTheBound(t *testing.T) {
 // Recent hands out a copy. A caller that could reach back into the history
 // through it - the socket layer marshals whatever it is given, on another
 // goroutine - would be writing into the daemon's state by accident.
+//
+// The whole record, and the actions with it. Every scalar copies on assignment
+// and the actions do not: they are a slice, so a plain struct copy hands out a
+// window into the ring itself, and a caller writing through it edits what the
+// notification center reads back. Find hands out a record too, and by the same
+// rule.
 func TestRecentIsACopy(t *testing.T) {
 	var h History
-	h.Add(Record{ID: 1, From: "mail", Text: "mine"})
+	h.Add(Record{
+		ID:      1,
+		From:    "mail",
+		Text:    "mine",
+		Actions: []Action{{Key: "reply", Label: "Reply"}},
+	})
+
 	got := h.Recent()
 	got[0].Text = "yours"
-	if again := h.Recent(); again[0].Text != "mine" {
+	got[0].Actions[0].Label = "Delete everything"
+	again := h.Recent()
+	if again[0].Text != "mine" {
 		t.Errorf("the history says %q after a caller edited its copy", again[0].Text)
+	}
+	if again[0].Actions[0].Label != "Reply" {
+		t.Errorf("the history offers %q after a caller edited the copy it was handed: the actions share the ring's own memory", again[0].Actions[0].Label)
+	}
+
+	found, ok := h.Find(1)
+	if !ok {
+		t.Fatal("the record is not there")
+	}
+	found.Actions[0].Key = "delete"
+	if after, _ := h.Find(1); after.Actions[0].Key != "reply" {
+		t.Errorf("the history's key is %q after a caller edited what Find gave it", after.Actions[0].Key)
 	}
 }

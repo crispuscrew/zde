@@ -42,14 +42,17 @@ const snapshotMax = 40
 
 // snapshotBodyMax is how much of a body reaches the file.
 //
-// The arithmetic, done the way PerSenderMax's is. A record at its limit is
+// The arithmetic, done the way SendersMax's is. A record at its limit is
 // summaryMax (300 characters) plus this (400) plus a sender name, itself
 // bounded at 300 by oneLine: a thousand characters, which in an alphabet that
 // costs four bytes a character is 4 KB, plus about 150 bytes of field names, a
-// timestamp and a desk. Forty of those is under 200 KB written whole, and a few
-// kilobytes in a session made of real notifications. The same forty records
-// with the rings' 4000-character body would be 700 KB, and every ring full at
-// its limit is the 7 MB SendersMax counts.
+// timestamp and a desk. No term for the actions, and that is not an omission
+// this time - Snapshot drops them, for its own reasons, so the file is the one
+// count in this package that never had to carry them. Forty of those is under
+// 200 KB written whole, and a few kilobytes in a session made of real
+// notifications. The same forty records with the rings' 4000-character body
+// would be 700 KB, and every ring full at its limit is the 9 MB SendersMax
+// counts.
 //
 // 400 rather than the rings' 4000 because the bodies are what make a history
 // large, so the bodies are the part that mostly stays in RAM. What 400
