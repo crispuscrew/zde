@@ -253,8 +253,13 @@ func TestWhatADeskCouldNotStartWaitsOnTheQueue(t *testing.T) {
 	if waiting[0].From != launchFrom {
 		t.Errorf("queued from %q, want the desktop saying it is the sender", waiting[0].From)
 	}
-	if !strings.Contains(waiting[0].Body, "no app") {
-		t.Errorf("the queued item carries %q, want what the runner said about it", waiting[0].Body)
+	// The reason is asked of the record and not of the queue item, because the
+	// journal stopped carrying bodies (internal/journal, Item): a queued line is
+	// fsynced and kept for ever, and what the runner said is thousands of
+	// characters nothing ever read back out of it. So the queue holds the
+	// summary and the sender, and the message under Mod+n is the record's.
+	if !strings.Contains(rec.Body, "no app") {
+		t.Errorf("the record carries %q, want what the runner said about it", rec.Body)
 	}
 }
 
