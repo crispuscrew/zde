@@ -118,6 +118,19 @@ type Notification struct {
 	Extra int
 }
 
+// Local is a notification zde sends itself, through the same door as anything
+// on the bus: zded is the session's notification server, so what it has to tell
+// somebody it can hand to its own sink rather than dial out and back.
+//
+// It exists for the bounds. Notify clamps everything a client sends and nothing
+// else did, so a caller filling in a Notification by hand was the one way into
+// the history with no bound on it - and what zde has to say is usually a
+// program's own complaint, which is one line until the day it is a screen of
+// them (internal/zded, launchesFailed).
+func Local(from, text, body string) Notification {
+	return Notification{From: from, Text: oneLine(text), Body: bodyText(body)}
+}
+
 // Sink is where a notification goes. attn does not own the queue - the journal
 // does, through zded - so this is the little of it that arriving needs.
 type Sink interface {

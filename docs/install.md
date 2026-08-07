@@ -206,9 +206,14 @@ nothing happening. An instance goes in the same argv - `zcr run browser@work
 
 A desk manifest starts its own apps: entering the desk runs each one it
 declares, and zinc refuses a second launch of something already up, so
-switching back and forth does not pile up browsers. The launches happen behind
-the switch, so the desk is in front of you before they arrive, and a failure
-goes to `journalctl --user -u zded` rather than taking the switch down with it.
+switching back and forth does not pile up browsers - and does not complain
+about it either, because an app that is already running is the state the switch
+was asking for. The launches happen behind the switch, so the desk is in front
+of you before they arrive, and a failure never takes the switch down with it:
+it arrives as a notification instead, one for the whole switch, saying which
+apps did not start and what the runner said about them. `journalctl --user -u
+zded` has every one of them whole, and `zde doctor` says which of your desks
+name an app this machine cannot start before you go there at all.
 Where a window lands is the pin, if the manifest also says what the window
 calls itself:
 

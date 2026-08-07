@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/crispuscrew/zde/internal/manifest"
 	"github.com/crispuscrew/zde/internal/zded"
 )
 
@@ -38,6 +39,7 @@ func healthy() Session {
 			Service:    "swaylock",
 			PAM:        PAMPresent,
 		},
+		Desks: Desks{Dir: "/home/u/.config/zde/desks", Configured: true},
 	}
 }
 
@@ -86,7 +88,7 @@ func TestHealthySessionSaysSoOnEveryLine(t *testing.T) {
 func TestTheReportIsTheSameShapeEveryTime(t *testing.T) {
 	want := []string{
 		"zded", "compositor", "shell", "notify", "zinc", "podman",
-		"unit", "unit", "manifests", "locker", "journal",
+		"unit", "unit", "manifests", "desk apps", "locker", "journal",
 	}
 	var got []string
 	for _, c := range Judge(healthy()) {
@@ -299,6 +301,90 @@ func TestEveryUnreadableManifestGetsItsOwnLine(t *testing.T) {
 	}
 }
 
+// The line this is all for: a desk that names an app nothing here can start
+// used to cost one line in zded's log, at the moment somebody was looking at
+// the desk rather than at a log. The report says which desk and which name,
+// because that is the edit - open that manifest, or define that app.
+func TestEveryAppADeskNamesAndCannotStartGetsItsOwnLine(t *testing.T) {
+	s := healthy()
+	s.Desks.Unrunnable = []DeskApp{
+		{Desk: "film", App: "player", Err: errors.New(`no app called "player"; there is [help lock terminal]`)},
+		{Desk: "vshop", App: "nvim", Err: errors.New(`no app called "nvim"; there is [help lock terminal]`)},
+	}
+	r := Judge(s)
+	lines := named(r, "desk apps")
+	if len(lines) != 2 {
+		t.Fatalf("want a line per app a desk cannot start, got %d:\n%s", len(lines), r)
+	}
+	for _, want := range []string{"film names player", "vshop names nvim"} {
+		if !strings.Contains(r.String(), want) {
+			t.Errorf("no line says %q:\n%s", want, r)
+		}
+	}
+	// apps.Argv's own words, not a second opinion: what this machine does have
+	// is the other half of the fix, and it is already in that error.
+	if !strings.Contains(lines[0].Detail, "there is [help lock terminal]") {
+		t.Errorf("desk apps = %s, want the resolver's own answer", lines[0])
+	}
+}
+
+// Never a failure. Layer 2 is provisioned by hand on every machine there is, so
+// a desk naming an app nobody has defined yet is a young machine and not a
+// broken one - and doctor's exit status has to keep meaning something.
+func TestADeskNamingAnAppNobodyDefinedIsNotAFailure(t *testing.T) {
+	s := healthy()
+	s.Desks.Unrunnable = []DeskApp{{Desk: "vshop", App: "nvim", Err: errors.New("no app called \"nvim\"")}}
+	r := Judge(s)
+	if only(t, r, "desk apps").Level != Warn {
+		t.Errorf("desk apps = %s, want a warning", only(t, r, "desk apps"))
+	}
+	if r.Failed() != 0 {
+		t.Errorf("a desk naming an undefined app failed %d checks:\n%s", r.Failed(), r)
+	}
+}
+
+// A machine with nothing configured at all is one fact and one edit, so it is
+// said once however many desks mention however many names. Eight lines carrying
+// the same sentence would bury every other line of the report.
+func TestAMachineWithNothingConfiguredSaysSoOnceAndNamesWhatTheDesksWanted(t *testing.T) {
+	s := healthy()
+	s.Desks.Configured = false
+	nothing := errors.New("nothing is configured to run: set zde.apps in your home-manager config, " +
+		"which is what writes /home/u/.config/zde/apps.json")
+	for _, app := range []string{"nvim", "browser", "nvim"} {
+		s.Desks.Unrunnable = append(s.Desks.Unrunnable, DeskApp{Desk: "vshop", App: app, Err: nothing})
+	}
+	c := only(t, Judge(s), "desk apps")
+	if c.Level != Warn || !strings.Contains(c.Detail, "set zde.apps") {
+		t.Errorf("desk apps = %s, want one warning saying what to set", c)
+	}
+	// And the names are still there, because they are what goes in that edit.
+	if !strings.Contains(c.Detail, "browser, nvim") {
+		t.Errorf("desk apps = %s, want the names the desks asked for, once each", c)
+	}
+}
+
+// A check that could not be made must not read as an all-clear: an empty list
+// of problems and no way to have found one look identical on the screen.
+func TestDeskAppsSaysWhenItCouldNotAsk(t *testing.T) {
+	s := healthy()
+	s.Desks.Err = errors.New("/home/u/.config/zde/apps.json: unexpected end of JSON input")
+	c := only(t, Judge(s), "desk apps")
+	if c.Level != Warn || !strings.Contains(c.Detail, "unexpected end of JSON input") {
+		t.Errorf("desk apps = %s, want a warning carrying why nothing could be judged", c)
+	}
+}
+
+// The healthy line names the directory it read, and it is the only line that
+// does: zded can be started with another one (-desks), so a report that never
+// said which desks it looked at could be an all-clear about the wrong place.
+func TestTheHealthyDeskAppsLineNamesTheDirectoryItRead(t *testing.T) {
+	c := only(t, Judge(healthy()), "desk apps")
+	if c.Level != OK || !strings.Contains(c.Detail, "/home/u/.config/zde/desks") {
+		t.Errorf("desk apps = %s, want the directory the manifests were read from", c)
+	}
+}
+
 // A unit that is not active is context and not a verdict: a daemon started by
 // hand answers exactly as well, which is what anybody debugging this does.
 func TestUnitsAreNeverAFailure(t *testing.T) {
@@ -358,6 +444,59 @@ func TestPodmanSaysWhichKindOfMissingItIs(t *testing.T) {
 	s.Podman = Podman{Rootless: false}
 	if c := only(t, Judge(s), "podman"); c.Level != Warn || !strings.Contains(c.Detail, "root") {
 		t.Errorf("podman = %s, want it to say the sandbox would run as root", c)
+	}
+}
+
+// The gathering half, against files rather than a struct: what a desk declares
+// is asked of the same resolver a launch would ask, so the report and the key
+// cannot end up disagreeing about whether a name resolves.
+func TestTheDesksAreJudgedByTheResolverALaunchWouldUse(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", home)
+	zde := filepath.Join(home, "zde")
+	if err := os.MkdirAll(filepath.Join(zde, "desks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(zde, "apps.json"), []byte(`{"terminal":["foot"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Two instances of the same undefined app, on purpose: it is one thing to
+	// define, so it is one line.
+	if err := os.WriteFile(filepath.Join(zde, "desks", "vshop.yaml"), []byte(
+		"name: vshop\nmonitors: { DP-1: { workspaces: [code] } }\napps:\n"+
+			"  - { app: terminal }\n"+
+			"  - { app: nvim, instance: vshop }\n"+
+			"  - { app: nvim, instance: haven }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	d := probeDesks(manifest.DefaultDir())
+	if d.Err != nil {
+		t.Fatalf("probeDesks: %v", d.Err)
+	}
+	if !d.Configured {
+		t.Error("a machine with a terminal reads as having nothing configured")
+	}
+	if len(d.Unrunnable) != 1 {
+		t.Fatalf("unrunnable = %+v, want the one app this machine has no answer for", d.Unrunnable)
+	}
+	got := d.Unrunnable[0]
+	if got.Desk != "vshop" || got.App != "nvim" || !strings.Contains(got.Err.Error(), "terminal") {
+		t.Errorf("unrunnable = %+v, want vshop's nvim and what this machine does have", got)
+	}
+}
+
+// A machine with no desks declared is where everyone starts, and it has nothing
+// to say here. A directory that is not there must not read as a broken one.
+func TestNoDesksAtAllIsNothingToReport(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", home)
+	d := probeDesks(manifest.DefaultDir())
+	if d.Err != nil || len(d.Unrunnable) != 0 {
+		t.Errorf("a machine with no desks = %+v, want nothing to say", d)
+	}
+	if c := only(t, Judge(Session{Desks: d}), "desk apps"); c.Level != OK {
+		t.Errorf("desk apps = %s, want an all-clear", c)
 	}
 }
 

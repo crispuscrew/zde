@@ -1685,17 +1685,34 @@ func (s *Server) startApps(target string) {
 	}
 	apps := d.Apps
 	go func() {
+		var failed []launchFailure
 		for _, app := range apps {
 			address := zinc.Address(app.App, app.Instance)
-			if err := s.launch(address); err != nil {
-				// The daemon's log is where this belongs: it is one app on one
-				// desk, and taking the switch down over it would make an
-				// unbuildable image cost somebody their whole desk. "Already
-				// running" arrives here too, which is worth reading rather than
-				// filtering - it is how you find out a desk started twice.
-				log.Printf("zded: starting %s: %v", address, err)
+			err := s.launch(address)
+			if err == nil {
+				continue
 			}
+			if errors.Is(err, zinc.ErrAlreadyRunning) {
+				// The ordinary case, and the reason this is a check rather than
+				// a line in the log: zinc refuses a second launch of an app that
+				// is up, so every switch back to a desk you were on this session
+				// refuses once per app it declares. Counting that as a failure
+				// made a healthy machine say "3 apps did not start" for pressing
+				// a key twice, and the notification people learn to ignore is the
+				// one that cries wolf. Nothing to say about it either: the desk
+				// declares the app and the app is running, which is the state the
+				// switch was asking for.
+				continue
+			}
+			// Every real one in the daemon's log, whole: it is one app on one
+			// desk, and taking the switch down over it would make an unbuildable
+			// image cost somebody their whole desk.
+			log.Printf("zded: starting %s: %v", address, err)
+			failed = append(failed, launchFailure{Address: address, Err: err})
 		}
+		// And once, in front of the person, because a log is not somewhere
+		// anybody looks while they are working (launch.go).
+		s.launchesFailed(target, failed)
 	}()
 }
 

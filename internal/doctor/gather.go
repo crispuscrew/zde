@@ -8,11 +8,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/crispuscrew/zde/internal/apps"
 	"github.com/crispuscrew/zde/internal/attn"
+	"github.com/crispuscrew/zde/internal/manifest"
 	"github.com/crispuscrew/zde/internal/zded"
 )
 
@@ -38,6 +40,39 @@ type Session struct {
 	Units  []Unit
 	Podman Podman
 	Lock   Locker
+	Desks  Desks
+}
+
+// Desks is what the manifests name, judged against what this machine can
+// actually start. It is the ahead-of-time half of a desk switch: entering a
+// desk launches what it declares, and until now the only record of a name
+// nothing could run was a line in zded's log.
+type Desks struct {
+	// Dir is where the manifests were read from, said on the healthy line
+	// because it is the one reading that can be about the wrong directory: zded
+	// takes -desks and this is the default both of them use (cmd/zded).
+	Dir string
+	// Err is why this check could not be made at all - the apps file, or the
+	// directory itself. Said rather than left out, because an empty list of
+	// problems reads as an all-clear.
+	Err error
+	// Configured is whether this machine has any app at all. It is one fact
+	// about the machine and one edit to fix, so the report says it once instead
+	// of once per name a desk happens to mention.
+	Configured bool
+	// Unrunnable is one entry per app a desk names that nothing here can start.
+	Unrunnable []DeskApp
+}
+
+// DeskApp is one manifest's reference to an app, and what resolving it said.
+//
+// The desk names the manifest rather than a path: manifests are keyed by the
+// desk they declare and not by their filename (internal/manifest, LoadDir), so
+// this is the handle that is true whatever the file is called.
+type DeskApp struct {
+	Desk string
+	App  string
+	Err  error
 }
 
 // Unit is one systemd user unit as systemctl reports it.
@@ -116,7 +151,61 @@ func Gather() Session {
 	}
 	s.Podman = probePodman()
 	s.Lock = probeLocker()
+	// Off the disk rather than out of the daemon, for the reason the locker
+	// check reads the apps file itself: the session this is run on is often one
+	// where zded is the thing that is wrong, and a check that could only be made
+	// through it would go blank exactly when it is wanted.
+	s.Desks = probeDesks(manifest.DefaultDir())
 	return s
+}
+
+// probeDesks asks, of every app every desk declares, the question a launch
+// asks: is there anything on this machine to run under that name.
+//
+// The answer is apps.Argv's, error and all. It already knows what is configured
+// and says so with the alternatives (internal/apps), and doctor putting the
+// question a second way is how a report comes to disagree with the key the
+// person presses next.
+func probeDesks(dir string) Desks {
+	d := Desks{Dir: dir}
+	all, err := apps.Load(apps.DefaultPath())
+	if err != nil {
+		d.Err = err
+		return d
+	}
+	d.Configured = len(all.Names()) > 0
+	desks, _, err := manifest.LoadDir(dir)
+	if err != nil {
+		d.Err = err
+		return d
+	}
+	// The problems LoadDir also returns are deliberately dropped here: a
+	// manifest that will not parse is already a line of its own in this report
+	// (see manifests), and one file being wrong is not a thing to say twice.
+	//
+	// Sorted, because this is printed: a report whose lines change places between
+	// two runs reads as a machine that changed.
+	names := make([]string, 0, len(desks))
+	for name := range desks {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		seen := map[string]bool{}
+		for _, app := range desks[name].Apps {
+			// Once per name, not once per instance. Two desks' worth of the same
+			// browser is one app to define, and a line each would be the same
+			// edit listed twice.
+			if seen[app.App] {
+				continue
+			}
+			seen[app.App] = true
+			if _, err := all.Argv(app.App); err != nil {
+				d.Unrunnable = append(d.Unrunnable, DeskApp{Desk: name, App: app.App, Err: err})
+			}
+		}
+	}
+	return d
 }
 
 // ask is the one question doctor puts to the daemon: `zde status`'s own
