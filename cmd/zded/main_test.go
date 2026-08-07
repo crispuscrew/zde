@@ -136,6 +136,7 @@ func TestATierIsStoppedBeforeTheDaemonProcessGoes(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- run(ctx, socket, filepath.Join(dir, "j.jsonl"), filepath.Join(dir, "desks"),
+			filepath.Join(dir, "history.json"),
 			func(attn.Sink, string) (*attn.Server, error) {
 				return nil, errors.New("no bus in a test")
 			})
