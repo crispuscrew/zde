@@ -15,8 +15,9 @@ attribution; asks 5-6 land with their consumers.
 - shell MVP: bar (mode, queue, mic, clock), picker, notification center.
 - ask MVP: popup + panel, provider/local tiers, escalate.
 
-Every line of that has landed, and a desk now starts what its manifest declares
-and pins each app to the workspace it named. Three things arrived beside the
+Every line of that has landed, and a desk now starts what its manifest declares,
+pins each app to the workspace it named, and puts the session in the attn mode
+it asks for. Three things arrived beside the
 list rather than in it: the connections surface (`Mod+Shift+c`), which is 0.4's
 wifi TUI in the shape the shell wanted; the palette (`Mod+semicolon`), which is
 0.2's and came early because a good part of the cheatsheet is still silent and
@@ -26,9 +27,10 @@ with nothing on a screen.
 Where those lines stop short is what is left of the phase, and none of it
 blocks 0.2:
 
-- a desk's own attn policy. `policies.attn` in a manifest is read by nobody, so
-  the mode is the session's and not the desk's, and the per-desk display
-  policies [`vision.md`](vision.md) gives attn are one mode wide.
+- the rest of what a manifest declares. `policies.attn` is read now, and beside
+  it `policies.zen`, `background: pause` and `on_enter`/`on_exit` are still
+  parsed and consulted by nobody. Zen belongs to 0.2's security set and pausing
+  to 0.3's resources, so what is left here is the two hooks.
 - a popup. The "actions" capability is claimed and every action a sender
   declares is offered in the center, up to the nine a digit can reach, with the
   rest counted and said rather than dropped quietly - but the offer is behind
@@ -147,6 +149,15 @@ turned "when someone has hardware" into something anyone can do this evening.
   to try is a nav key the instant after each one closes
   ([`verify.md`](verify.md), a day of work). Not settled here: driving a real
   key into a nested compositor did not work well enough to trust the answer.
+- a desk's attn policy, in use. The desk borrows the mode and gives it back
+  when you leave, and a mode set by hand ends the loan: it follows you off the
+  desk, and the desk takes the mode again the next time you enter it. The other
+  order - the hand-set mode ending when you walk away - was rejected because it
+  makes `Mod+q` mean two things depending on which desk you pressed it on, but
+  which one a person expects is a question for a week of use. The other half to
+  feel for: the policy rides on a desk switch, so a desk reached without one
+  (niri's own workspace keys, the overview, `desk.move-workspace-to`) keeps the
+  mode you arrived with until the next switch settles it.
 - attn actions, with "actions" claimed and every declared one offered in the
   center: whether a claim about reach is read by real senders as a claim about
   immediacy. The buttons are behind `Mod+n` because there is no popup, and an

@@ -3,10 +3,14 @@ package zded
 import (
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 
 	"github.com/crispuscrew/zde/internal/attn"
+	"github.com/crispuscrew/zde/internal/journal"
+	"github.com/crispuscrew/zde/internal/manifest"
 )
 
 // arrive sends one notification into a server whose mode has been set, and
@@ -499,5 +503,260 @@ func TestSettingTheEmptyModeIsRefused(t *testing.T) {
 	}
 	if got := jrn.State().Mode; got != "quiet" {
 		t.Errorf("the mode is %q: an empty argument changed it", got)
+	}
+}
+
+// The desk's own attn policy (docs/model.md, section 5). Below here, a desk is
+// something that can lend the session a mode.
+
+// openJournal is a journal of its own, closed when the test ends. The desk
+// policy needs one: the mode and the desk that lent it are both written down,
+// and a server without a journal has nowhere to put either.
+func openJournal(t *testing.T, path string) *journal.Journal {
+	t.Helper()
+	jrn, err := journal.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { jrn.Close() })
+	return jrn
+}
+
+// deskPolicyServer is a session whose desks are declared by manifests. The
+// desks are the two the compositor fake has workspaces for, so a switch to
+// either has somewhere to land, and the session starts standing on haven.
+func deskPolicyServer(t *testing.T, jrn *journal.Journal, manifests map[string]string) (*Server, *fakeCompositor) {
+	t.Helper()
+	dir := t.TempDir()
+	for name, body := range manifests {
+		if err := os.WriteFile(filepath.Join(dir, name+".yaml"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f := &fakeCompositor{m: twoDesks(), focused: "haven.DP-1.db", output: "DP-1"}
+	return New("test", jrn, f, manifest.Dir(dir)), f
+}
+
+// switchOnto enters a desk and keeps the fake compositor honest: it moves
+// nothing by itself, and where the session is standing is read back off it on
+// the next switch.
+func switchOnto(t *testing.T, s *Server, f *fakeCompositor, name string) {
+	t.Helper()
+	resp := s.Dispatch(Request{Method: "desk.switch", Args: []string{name}})
+	if resp.Error != "" {
+		t.Fatalf("desk.switch %s: %s", name, resp.Error)
+	}
+	var focused []string
+	if err := json.Unmarshal(resp.Ok, &focused); err != nil {
+		t.Fatal(err)
+	}
+	f.focused = focused[0]
+}
+
+// modeNow is the mode as the bar reads it: through the daemon, not out of the
+// journal, because what the session is in is what zded answers.
+func modeNow(t *testing.T, s *Server) string {
+	t.Helper()
+	resp := s.Dispatch(Request{Method: "attn.mode"})
+	if resp.Error != "" {
+		t.Fatal(resp.Error)
+	}
+	var a Attn
+	if err := json.Unmarshal(resp.Ok, &a); err != nil {
+		t.Fatal(err)
+	}
+	return a.Mode
+}
+
+// chooseMode is a person setting the mode, through the verb `zde attn` calls -
+// which is where Mod+q lands too, one toggle further along (see toggleQuiet).
+func chooseMode(t *testing.T, s *Server, mode string) {
+	t.Helper()
+	if resp := s.Dispatch(Request{Method: "attn.mode", Args: []string{mode}}); resp.Error != "" {
+		t.Fatal(resp.Error)
+	}
+}
+
+const (
+	vshopInFocus = "name: vshop\nmonitors: { DP-1: { workspaces: [code] } }\npolicies: { attn: focus }\n"
+	havenPlain   = "name: haven\nmonitors: { DP-1: { workspaces: [db] } }\n"
+)
+
+// A desk that declares a mode puts the session in it. This is the whole of
+// `policies.attn`, and until now the field was read by nobody: a desk for
+// concentrating declared focus and the session stayed in work.
+func TestEnteringADeskAppliesTheModeItDeclares(t *testing.T) {
+	jrn := openJournal(t, filepath.Join(t.TempDir(), "j.jsonl"))
+	s, f := deskPolicyServer(t, jrn, map[string]string{"vshop": vshopInFocus, "haven": havenPlain})
+
+	switchOnto(t, s, f, "vshop")
+	if got := modeNow(t, s); got != "focus" {
+		t.Errorf("mode on a desk declaring focus = %q, want focus", got)
+	}
+}
+
+// And leaving gives back the mode that desk displaced, rather than the default:
+// the desk borrowed it. A restore that always landed on work would be a desk
+// policy that turns the notifications on for you, hours after you silenced them
+// for a call, on the way to a terminal.
+func TestLeavingADeskGivesBackTheModeItBorrowed(t *testing.T) {
+	jrn := openJournal(t, filepath.Join(t.TempDir(), "j.jsonl"))
+	s, f := deskPolicyServer(t, jrn, map[string]string{"vshop": vshopInFocus, "haven": havenPlain})
+
+	chooseMode(t, s, "quiet") // silence, chosen on a desk that declares nothing
+	switchOnto(t, s, f, "vshop")
+	if got := modeNow(t, s); got != "focus" {
+		t.Fatalf("mode on vshop = %q, want the focus it declares", got)
+	}
+	switchOnto(t, s, f, "haven")
+	if got := modeNow(t, s); got != "quiet" {
+		t.Errorf("mode after leaving vshop = %q, want the quiet that was in force before it", got)
+	}
+}
+
+// The loop this feature exists for, in one test: a desk lends a mode, a person
+// overrides it while standing there, and entering the desk again is what takes
+// it back. The override outliving the switch away is the deliberate half - a
+// mode chosen by hand is the session's, so it follows you off the desk, and the
+// desk claims the mode at the one moment somebody can see it happen.
+func TestAModeSetByHandStandsUntilYouEnterThatDeskAgain(t *testing.T) {
+	jrn := openJournal(t, filepath.Join(t.TempDir(), "j.jsonl"))
+	s, f := deskPolicyServer(t, jrn, map[string]string{"vshop": vshopInFocus, "haven": havenPlain})
+
+	switchOnto(t, s, f, "vshop")
+	if got := modeNow(t, s); got != "focus" {
+		t.Fatalf("mode on vshop = %q, want the focus it declares", got)
+	}
+	chooseMode(t, s, "quiet")
+	if got := modeNow(t, s); got != "quiet" {
+		t.Fatalf("mode after asking for quiet = %q: the desk overrode a person", got)
+	}
+	switchOnto(t, s, f, "haven")
+	if got := modeNow(t, s); got != "quiet" {
+		t.Errorf("mode after leaving = %q, want the quiet the person chose to come with them", got)
+	}
+	switchOnto(t, s, f, "vshop")
+	if got := modeNow(t, s); got != "focus" {
+		t.Errorf("mode back on vshop = %q, want the focus it declares", got)
+	}
+}
+
+// A desk that declares nothing leaves the mode where it is. Empty is not work:
+// most desks say nothing about attn, and a switch that quietly reset the mode
+// would make every one of them a way to lose a silence you asked for.
+func TestEnteringADeskThatDeclaresNoModeLeavesTheModeAlone(t *testing.T) {
+	jrn := openJournal(t, filepath.Join(t.TempDir(), "j.jsonl"))
+	// vshop has no manifest at all, which is the other way to declare nothing:
+	// a desk that only ever got named into existence by adoption.
+	s, f := deskPolicyServer(t, jrn, map[string]string{"haven": havenPlain})
+
+	chooseMode(t, s, "quiet")
+	switchOnto(t, s, f, "vshop")
+	if got := modeNow(t, s); got != "quiet" {
+		t.Errorf("mode on a desk with no manifest = %q, want the quiet that was in force", got)
+	}
+	switchOnto(t, s, f, "haven")
+	if got := modeNow(t, s); got != "quiet" {
+		t.Errorf("mode on a desk whose manifest declares no policy = %q, want the quiet still", got)
+	}
+}
+
+// Standing still is not entering. Half the nav keys re-enter the desk you are
+// on, so a policy applied on every switch would undo a mode set by hand a
+// keypress after it was set - and the person would watch the bar change back
+// with nothing to blame it on.
+func TestReEnteringTheDeskYouAreStandingOnKeepsTheModeYouChose(t *testing.T) {
+	jrn := openJournal(t, filepath.Join(t.TempDir(), "j.jsonl"))
+	s, f := deskPolicyServer(t, jrn, map[string]string{"vshop": vshopInFocus, "haven": havenPlain})
+
+	switchOnto(t, s, f, "vshop")
+	chooseMode(t, s, "work")
+	switchOnto(t, s, f, "vshop")
+	if got := modeNow(t, s); got != "work" {
+		t.Errorf("mode after re-entering the desk under you = %q, want the work you asked for", got)
+	}
+}
+
+// A switch that failed partway is not a desk you are on, so it is not a desk
+// whose mode you are in either. The mode belongs to the desk still on the
+// screens, and the retry that fixes them is what applies it.
+func TestASwitchThatFailsHalfwayLeavesTheModeAlone(t *testing.T) {
+	jrn := openJournal(t, filepath.Join(t.TempDir(), "j.jsonl"))
+	s, f := deskPolicyServer(t, jrn, map[string]string{"vshop": vshopInFocus, "haven": havenPlain})
+
+	f.failOn = "vshop.DP-1.code"
+	if resp := s.Dispatch(Request{Method: "desk.switch", Args: []string{"vshop"}}); resp.Error == "" {
+		t.Fatal("the compositor refused to focus the workspace and the switch reported success")
+	}
+	if got := modeNow(t, s); got != "work" {
+		t.Errorf("mode after a switch that never landed = %q, want the one belonging to the desk you can see", got)
+	}
+
+	f.failOn = ""
+	switchOnto(t, s, f, "vshop")
+	if got := modeNow(t, s); got != "focus" {
+		t.Errorf("mode after the retry = %q, want the focus vshop declares", got)
+	}
+}
+
+// A desk you left without switching still holds the mode it borrowed, and
+// coming back to it must not write down its own mode as the thing to give back.
+// You get here without doing anything strange: niri's own keys and a window
+// jump both land you on another desk's workspace, and the next thing that asks
+// records it - so the switch back is an entry to a desk that never let go.
+func TestComingBackToADeskThatStillHoldsTheModeKeepsWhatItDisplaced(t *testing.T) {
+	jrn := openJournal(t, filepath.Join(t.TempDir(), "j.jsonl"))
+	s, f := deskPolicyServer(t, jrn, map[string]string{"vshop": vshopInFocus, "haven": havenPlain})
+
+	switchOnto(t, s, f, "vshop")
+	// Off the desk without a desk action: the focused workspace is haven's, and
+	// anything that asks where we are writes that down (see deskOf).
+	f.focused = "haven.DP-1.db"
+	if resp := s.Dispatch(Request{Method: "queue.add", Args: []string{"reply to ilya"}}); resp.Error != "" {
+		t.Fatal(resp.Error)
+	}
+	if got := jrn.State().OnDesk; got != "haven" {
+		t.Fatalf("OnDesk = %q, want the haven the compositor is showing", got)
+	}
+
+	switchOnto(t, s, f, "vshop")
+	if got := modeNow(t, s); got != "focus" {
+		t.Fatalf("mode back on vshop = %q, want the focus it declares", got)
+	}
+	switchOnto(t, s, f, "haven")
+	if got := modeNow(t, s); got != "work" {
+		t.Errorf("mode after leaving = %q, want the work vshop displaced: it kept lending its own mode to itself", got)
+	}
+}
+
+// The first desk after login is the one you logged out on, and coming back to
+// it is not entering it. The session returns in the mode it ended in - which is
+// what the journal keeps a mode for - and the record of which desk lent that
+// mode returns with it, so walking off that desk still gives it back. Nothing
+// special-cases login, and this is the test that says so.
+func TestTheFirstDeskAfterLoginKeepsTheModeTheSessionEndedIn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "j.jsonl")
+	last := openJournal(t, path)
+	// Last night: on vshop, in the focus vshop lent, over the quiet chosen
+	// before that.
+	s, f := deskPolicyServer(t, last, map[string]string{"vshop": vshopInFocus, "haven": havenPlain})
+	chooseMode(t, s, "quiet")
+	switchOnto(t, s, f, "vshop")
+	if err := last.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// This morning: a new daemon over the same journal, and niri with nothing
+	// named yet, so the first switch is onto the desk the journal remembers.
+	today := openJournal(t, path)
+	s, f = deskPolicyServer(t, today, map[string]string{"vshop": vshopInFocus, "haven": havenPlain})
+	f.focused = ""
+	switchOnto(t, s, f, "vshop")
+	if got := modeNow(t, s); got != "focus" {
+		t.Errorf("mode on the first desk after login = %q, want the focus the session ended in", got)
+	}
+	switchOnto(t, s, f, "haven")
+	if got := modeNow(t, s); got != "quiet" {
+		t.Errorf("mode after leaving that desk = %q, want the quiet from before it, remembered across the login", got)
 	}
 }

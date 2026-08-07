@@ -65,6 +65,7 @@ const (
 	kindDone     = "done"     // it is not waiting any more
 	kindLastID   = "lastid"   // the highest queue id handed out, so none repeats
 	kindMode     = "mode"     // what arrivals are allowed to do (internal/attn)
+	kindBorrowed = "borrowed" // the desk whose declared mode is in force, and the mode it displaced
 )
 
 // State is what the journal remembers. It is a value: callers get a copy and
@@ -91,6 +92,28 @@ type State struct {
 	// Kept as the string it was given. The journal has no opinion about which
 	// modes exist; whoever reads it parses, and an entry from a newer zde
 	// replays into a name this one does not know rather than into a refusal.
+	Mode string
+	// Borrowed is the desk whose manifest is deciding the mode above, and what
+	// the mode was before it did (docs/model.md, section 5: policies.attn).
+	Borrowed Borrowed
+}
+
+// Borrowed is a desk's attn policy in force. The zero value is nobody having
+// borrowed anything, which is a session whose mode is its own.
+//
+// It is written down beside the mode rather than kept in the daemon for the
+// reason the mode is: zded restarts on every rebuild that touches it, and a
+// restart that forgot which desk had lent a mode would leave that mode behind
+// on the next desk you walked to, with nothing anywhere saying why. The pair
+// has to survive together or it disagrees with itself.
+type Borrowed struct {
+	// Desk is the borrower. It is the desk being left that has to be
+	// recognised, so the name is kept rather than derived from OnDesk: OnDesk
+	// is where you are now, and by the time the mode is given back that is the
+	// desk you arrived on.
+	Desk string
+	// Mode is what was in force before the desk took it, and what goes back
+	// when you leave. Kept as a string for the reason Mode is.
 	Mode string
 }
 
@@ -236,6 +259,12 @@ func (j *Journal) apply(e entry) {
 		}
 	case kindMode:
 		j.state.Mode = e.Mode
+	case kindBorrowed:
+		// An empty desk is the real state "nobody has it" rather than a torn
+		// line: it is how a mode chosen by hand ends the loan (internal/zded,
+		// setMode), and skipping it would leave the file claiming a desk still
+		// holds a mode it gave up.
+		j.state.Borrowed = Borrowed{Desk: e.Desk, Mode: e.Mode}
 	case kindDone:
 		for i, it := range j.state.Queue {
 			if it.ID == e.ID {
@@ -283,6 +312,7 @@ func (j *Journal) State() State {
 		LastDesk:   j.state.LastDesk,
 		OnDesk:     j.state.OnDesk,
 		Mode:       j.state.Mode,
+		Borrowed:   j.state.Borrowed,
 		Queue:      append([]Item(nil), j.state.Queue...),
 	}
 	for d, byMonitor := range j.state.LastActive {
@@ -319,6 +349,24 @@ func (j *Journal) Mode() string {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	return j.state.Mode
+}
+
+// Borrowed is which desk's declared mode is in force, and the mode it
+// displaced. Its own method for the reason Mode is: it is read on every desk
+// switch, beside the mode, and one pair of strings is not a reason to copy a
+// session's worth of desk positions.
+func (j *Journal) Borrowed() Borrowed {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.state.Borrowed
+}
+
+// SetBorrowed records that a desk's declared mode is in force, or with the zero
+// value that none is. Both directions are written: "nobody has it" is a state
+// somebody arrived at, and leaving it to be inferred from silence would make a
+// mode chosen by hand indistinguishable from one a desk is still holding.
+func (j *Journal) SetBorrowed(b Borrowed) error {
+	return j.record(entry{Kind: kindBorrowed, Desk: b.Desk, Mode: b.Mode})
 }
 
 // Skipped is how many lines the replay could not use: a torn tail, or entries
@@ -483,6 +531,16 @@ func (j *Journal) compactLocked() error {
 	// arriving at whatever moment the journal happened to get long enough.
 	if j.state.Mode != "" {
 		if err := write(entry{Kind: kindMode, Mode: j.state.Mode}); err != nil {
+			return err
+		}
+	}
+	// And who lent it, or the mode above would come back with nothing to give
+	// it back to: the session would keep a desk's mode after walking off that
+	// desk, because a compaction happened to fall between the two.
+	if j.state.Borrowed.Desk != "" {
+		if err := write(entry{
+			Kind: kindBorrowed, Desk: j.state.Borrowed.Desk, Mode: j.state.Borrowed.Mode,
+		}); err != nil {
 			return err
 		}
 	}

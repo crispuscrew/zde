@@ -20,6 +20,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/crispuscrew/zde/internal/attn"
 	"github.com/crispuscrew/zde/internal/desk"
 )
 
@@ -63,6 +64,10 @@ type App struct {
 
 // Policies is the desk's own settings.
 type Policies struct {
+	// Attn is the attn mode entering this desk puts the session in, and empty
+	// is a desk with no opinion - which is not the same as `work`. A desk that
+	// says nothing leaves the mode as it is, so writing `attn: work` here is an
+	// instruction to turn the notifications back on and leaving it out is not.
 	Attn string `yaml:"attn"`
 	Zen  bool   `yaml:"zen"`
 }
@@ -128,6 +133,22 @@ func (d *Desk) check() error {
 				return fmt.Errorf("manifest %q: monitor %q declares workspace %q twice", d.Name, output, label)
 			}
 			seen[label] = true
+		}
+	}
+	// The mode is checked by the package that owns what a mode is, rather than
+	// against a list kept here that would drift from it the day a fourth mode
+	// exists. Empty is skipped before parsing: ParseMode reads it as work so
+	// that a journal which has never been told replays into the default, and a
+	// manifest that declares nothing means the opposite of that.
+	//
+	// It is a refusal rather than a shrug because this is now read. A desk that
+	// declared `focus` and got no policy at all was a manifest field nobody
+	// consulted; one that declares `focussed` and gets no policy at all is a
+	// desk that goes quiet for a reason the person cannot see - and every other
+	// thing a manifest can get wrong is caught here.
+	if d.Policies.Attn != "" {
+		if _, err := attn.ParseMode(d.Policies.Attn); err != nil {
+			return fmt.Errorf("manifest %q: policies.attn: %w", d.Name, err)
 		}
 	}
 	for i, app := range d.Apps {

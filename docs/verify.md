@@ -298,6 +298,26 @@ ones are the point of zded holding the bus name.
   back in the mode you left rather than quietly reverting to work. What to feel
   for is whether focus lets through what you actually wanted: urgency is the
   sender's own claim, and a sender that never sets it is invisible in focus.
+- **A desk that declares a mode.** Put `policies: { attn: focus }` in one desk's
+  manifest (`~/.config/zde/desks/<name>.yaml`) and switch onto it: the bar says
+  focus by the time the screens have moved, and `zde status` agrees. Switch away
+  and it says whatever it said before you arrived - not work, unless work is
+  what you were in. A desk that declares nothing changes nothing, which is the
+  case to check second, because it is every other desk you own.
+
+  Then the half worth arguing with: `Mod+q` while standing on the declaring desk
+  wins, and goes on winning when you leave, because a mode you chose is yours.
+  Entering that desk again is what takes it back to focus. If that reads wrong
+  after a week - if the desk should have its mode back the moment you walk off
+  it - that is the decision to reopen, not a bug.
+
+  Two edges to know rather than to test: a switch that fails partway leaves the
+  mode alone (the mode belongs to the desk you can still see, and the retry
+  applies it), and the policy rides on a desk switch, so arriving on a desk by
+  niri's own workspace keys or through the overview keeps the mode you came
+  with until the next switch. A typo in the mode name is refused when the
+  manifest is read, so that desk is undeclared until it is fixed and
+  `zde status` names the file.
 - **A day's worth of arrivals.** History is a ring of 200, in memory: the 201st
   drops the oldest, and restarting zded empties it. The queue is the half that
   survives, because it is what you still owe. Whether 200 is a day or an hour
@@ -527,7 +547,8 @@ Not bugs, do not report them:
   | `zde app list\|launch`, `window jump-to`, `workspace next\|prev`, `nav down\|up` | `zde desk panic\|zen\|block`, which are not verbs at all |
   | `zde net status\|connect\|disconnect\|forget` | `zde clip`, `pass`, `media`, `mode` |
   | `zde system lock\|quiet\|notif-center\|connections\|bluetooth` | `zde system power\|calendar\|wallpapers` |
-  | every other `zde desk` verb: `list`, `switch`, `switcher`, `next`/`prev`/`last`, `apps`, `snapshot`, `reconcile`, `queue-jump`, `regulars`, `move-window`, `move-window-to`, `move-workspace-to` | |
+  | every other `zde desk` verb: `list`, `switch`, `switcher`, `next`/`prev`/`last`, `apps`, `snapshot`, `reconcile`, `queue-jump`, `regulars`, `move-window`, `move-window-to`, `move-workspace-to` | a manifest's `policies.zen`, `background: pause`, `on_enter`/`on_exit`, all parsed and read by nobody |
+  | a manifest's `policies.attn`: entering the desk puts the session in the mode it declares | |
   | the niri natives: columns, monitors, fullscreen, float, close, overview, consume/expel, layout switch | |
 
   The `zde` rows are the ones worth reading twice: the CLI is one binary with

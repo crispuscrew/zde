@@ -1646,9 +1646,11 @@ func (s *Server) switchFrom(target, from string) Response {
 	}
 	if was != target {
 		// A desk is what its manifest declares, so entering one brings it up
-		// (docs/model.md, section 5). Only on a change of desk: re-entering the
-		// desk you are standing on is what half the nav keys do, and each pass
-		// would be a launch attempt per declared app.
+		// and puts the session in the mode it asks for (docs/model.md, section
+		// 5). Only on a change of desk: re-entering the desk you are standing
+		// on is what half the nav keys do, and each pass would be a launch
+		// attempt per declared app and a mode set by hand overwritten.
+		s.enterDesk(target)
 		s.startApps(target)
 	}
 	// Names as strings, not as their parts. A workspace name is one thing

@@ -2210,7 +2210,19 @@ func TestTheBarsPollDoesNotCopyTheWholeJournal(t *testing.T) {
 		}
 	}
 	big := testing.AllocsPerRun(50, poll)
-	if big > small {
+	// With a few allocations of slack, because this counts everything the
+	// process allocated while the poll ran and not only the poll's own:
+	// goroutines other tests left behind land in the same number, and so does a
+	// json encoder pool a GC emptied between the two measurements. Without the
+	// slack it fails once in a handful of runs on a loaded machine, over a drift
+	// of exactly one allocation - and it fails on whichever branch happened to
+	// add a test above it.
+	//
+	// What is being caught is the shape of the cost and not its size: a hundred
+	// desks copied per poll is a hundred allocations and more, so the slack sits
+	// two orders of magnitude below the regression.
+	const noise = 5
+	if big > small+noise {
 		t.Errorf("one poll costs %v allocations after a hundred desks and %v before it: the bar is paying for the whole journal to read two fields",
 			big, small)
 	}
