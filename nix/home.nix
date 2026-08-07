@@ -139,6 +139,37 @@ in
         it says back to the window or to the terminal that asked
         (`zde ask oneshot ...`).
 
+        **Where a question has turns before it** - the panel on `Mod+Shift+a`,
+        which keeps asking - stdin carries the conversation instead, and says
+        so on its first line:
+
+        ```
+        zde-ask 1
+        {"who":"person","text":"what is the capital of peru"}
+        {"who":"tier","text":"Lima."}
+        {"who":"person","text":"and of chile"}
+        ```
+
+        One JSON object per line, oldest first, the question last. A tier that
+        does not read the first line still works for everything with nothing in
+        front of it: `Mod+a`, every `zde ask` in a terminal, and the panel's
+        first question are the bare question and nothing else, exactly as
+        before.
+
+        `who` is a field and not a prefix on the text deliberately. A tier has
+        to be able to say which words a person typed and which it produced
+        itself last time, because that is the difference between context and
+        instructions - and with the role written down the left margin of a
+        transcript, an answer containing a line that begins `person:` would
+        arrive as something a person said. JSON escaping is what makes that
+        impossible, so nothing inside a turn can end it early.
+
+        A conversation is capped at 64 KiB, everything the tier is handed on one
+        run. Past that the question is refused, saying so, rather than the
+        oldest turns being dropped to fit: a panel showing an exchange the tier
+        can no longer see is a screen that lies about what was asked.
+        `ctrl+n` in the panel starts a fresh conversation.
+
         Three names have keys on them: `provider` is the default and the fast
         one, `local` is the private tier, and `escalate` is for a question the
         first two got wrong. Any other name works and nothing presses it.
@@ -158,7 +189,10 @@ in
         ```
 
         No history is kept anywhere, by zded or by the window: the answer is on
-        the screen until the window closes, and nothing writes it down.
+        the screen until the window closes, and nothing writes it down. The
+        panel's turns are held by the window that is showing them and sent again
+        with each question, so zded has forgotten a conversation by the time the
+        answer ends and closing the window is still the whole of forgetting.
 
         A run is over when the tier exits, and what the tier started is stopped
         with it: the command runs in its own process group, and the group is

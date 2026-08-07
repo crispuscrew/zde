@@ -131,7 +131,21 @@ func run(ctx context.Context, socket, jrnPath, desksDir string, notify notifier)
 		fmt.Fprintln(os.Stderr, "zded: notifications: listening")
 	}
 
-	return <-serving
+	err = <-serving
+	// And the tiers, before this process goes.
+	//
+	// Close is already called from the goroutine above, but that one races the
+	// exit: closing the listener is what makes Serve return, so run could be
+	// back in main with the tiers still being stopped. Called again here, on the
+	// goroutine that is actually leaving, so the wait inside it is a wait this
+	// process does. Close is idempotent and bounded (internal/zded, stopRuns).
+	//
+	// On every way out and not only the signal: a Serve that returned an error
+	// ends the daemon just as thoroughly, and a tier is a subprocess in a
+	// process group the session's own signal cannot reach - so nothing else
+	// would ever stop it.
+	srv.Close()
+	return err
 }
 
 // subscribe opens an event stream. The connection is not shared with the

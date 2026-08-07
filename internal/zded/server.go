@@ -10,6 +10,7 @@ package zded
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -220,6 +221,22 @@ type Server struct {
 	bluetoothGone uint64
 	openBluetooth func() (Bluetooth, error)
 
+	// The tier runs in flight (ask.go). A run is a subprocess in a process group
+	// of its own, deliberately, so that stopping it stops what it started - and
+	// that same choice is why the session's own signal never reaches it. Without
+	// something here, `systemctl --user stop zded` left the tier and everything
+	// it forked running under pid 1: measured, a shell tier and its `sleep 600`
+	// still there eighteen seconds after the daemon exited, and a local tier is
+	// a model that can be holding a GPU.
+	//
+	// runCtx is the parent of every run's context, so cancelling it runs each
+	// cmd.Cancel and kills each group. runs is how Close knows when they have
+	// gone. Both are touched under mu, which is what keeps a run being added
+	// from racing the wait for them.
+	runCtx  context.Context
+	runStop context.CancelFunc
+	runs    sync.WaitGroup
+
 	mu       sync.Mutex
 	ln       net.Listener
 	problems []string
@@ -227,6 +244,14 @@ type Server struct {
 	waiting  map[string]chan struct{}
 	tokens   uint64
 }
+
+// askStopWait is how long Close waits for the tiers to go. They are sent a kill
+// to the whole process group rather than asked politely, so this is the time it
+// takes a dead process to be reaped and a goroutine to unwind, which is
+// milliseconds - and it is a ceiling rather than a delay. Bounded at all
+// because the alternative is a logout that waits on a model: whatever a tier
+// does with a signal, the session ends.
+const askStopWait = 2 * time.Second
 
 // New builds the daemon.
 //
@@ -242,6 +267,7 @@ func New(version string, jrn *journal.Journal, compositor Compositor, desks Desk
 	if desks == nil {
 		desks = noDesks{}
 	}
+	runCtx, runStop := context.WithCancel(context.Background())
 	return &Server{
 		version:  version,
 		jrn:      jrn,
@@ -250,6 +276,8 @@ func New(version string, jrn *journal.Journal, compositor Compositor, desks Desk
 		launch:   zinc.Run,
 		spawn:    spawnDetached,
 		openLink: link.Open,
+		runCtx:   runCtx,
+		runStop:  runStop,
 		// Neither radio is dialled here: opening a system bus connection at
 		// startup would be zded doing that work on every machine, including the
 		// ones that have no radio and never asked for one (bluetooth.go, radio;
@@ -320,22 +348,81 @@ func (s *Server) Serve() error {
 	}
 }
 
-// Close stops listening, and gives up the radio with it.
+// Close stops listening, gives up the radio, and stops the tiers.
 //
 // The radio first, and outside s.mu: it is a bus connection with a pairing
 // agent exported on it, and one left behind is an agent for a session that has
 // ended - bluetoothd would keep calling it and every question would time out
 // into a refusal nobody was asked for.
+//
+// The tiers last, and after the listener rather than before it, so that nothing
+// new can be asked while this waits for what is already running. Bounded (see
+// askStopWait), and safe to call twice: the whole of what this daemon can leave
+// behind is a subprocess, and the caller that ends the process has to be able to
+// end them too whichever way it got here.
 func (s *Server) Close() error {
 	s.closeRadio()
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.ln == nil {
-		return nil
-	}
-	err := s.ln.Close()
+	ln := s.ln
 	s.ln = nil
+	s.mu.Unlock()
+	var err error
+	if ln != nil {
+		err = ln.Close()
+	}
+	s.stopRuns()
 	return err
+}
+
+// startRun runs a tier in its own goroutine and counts it as in flight, or
+// refuses because this daemon is stopping.
+//
+// Counted under mu, and refused once runCtx is cancelled, which together are
+// what keep the count from being raised while stopRuns is waiting on it: after
+// the cancel there is no path that adds another.
+func (s *Server) startRun(k *sink, args []string) {
+	s.mu.Lock()
+	if s.runCtx.Err() != nil {
+		s.mu.Unlock()
+		k.reply(Response{Error: "zded is stopping, so there is nothing to ask it"})
+		return
+	}
+	s.runs.Add(1)
+	s.mu.Unlock()
+	go func() {
+		defer s.runs.Done()
+		s.askRun(k, args)
+	}()
+}
+
+// stopRuns ends every tier this daemon started and waits, briefly, to see them
+// go.
+//
+// The cancel is what does it: each run's context has runCtx as its parent, and
+// cancelling reaches cmd.Cancel, which kills the process group rather than the
+// one pid - which is the whole reason the group exists (see askRun). The wait is
+// only so that the process does not exit out from under the kill it has just
+// sent; a group that has been killed is gone, so the ceiling is there for the
+// case that is not true rather than for the ordinary one.
+func (s *Server) stopRuns() {
+	s.mu.Lock()
+	s.runStop()
+	s.mu.Unlock()
+
+	gone := make(chan struct{})
+	go func() {
+		s.runs.Wait()
+		close(gone)
+	}()
+	t := time.NewTimer(askStopWait)
+	defer t.Stop()
+	select {
+	case <-gone:
+	case <-t.C:
+		// Said rather than swallowed: what is left is a tier that did not die
+		// when its group was killed, which is a thing worth finding in a log.
+		fmt.Fprintf(os.Stderr, "zded: a tier was still running %v after being stopped\n", askStopWait)
+	}
 }
 
 func (s *Server) handle(conn net.Conn) {
@@ -382,7 +469,11 @@ func (s *Server) handle(conn net.Conn) {
 			// read loop keeps answering meanwhile - the shell acknowledges a
 			// picker on the connection it asks on, and a twenty second answer
 			// must not be what Mod+Tab waits for.
-			go s.askRun(k, req.Args)
+			//
+			// Through startRun rather than a bare go, so that the daemon knows
+			// what it has started: a tier is a subprocess in a process group of
+			// its own, and nothing else would stop it when the session ends.
+			s.startRun(k, req.Args)
 			continue
 		}
 		k.reply(s.Dispatch(req))

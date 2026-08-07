@@ -2,6 +2,7 @@ package zded
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"strconv"
 	"sync"
@@ -19,6 +20,14 @@ import (
 // pressing Mod+Tab would cost five seconds and a leaked goroutine each time
 // until the session ended. Measured before this existed: 276 events filled the
 // buffer and the 277th never returned.
+//
+// It bounds the whole send and not the write alone (see sendWithin). For a
+// while it did not, and the sentence above was false in a second way that had
+// nothing to do with a frozen client: a connection is one line at a time, so a
+// broadcast waited for whatever was already being written to it, and an answer
+// is written with five seconds of patience. One keypress, measured at 2.85
+// seconds against a client that was subscribed, had asked, and had stopped
+// reading.
 const sendWait = 200 * time.Millisecond
 
 // Events are how zded stops being a thing that only answers questions.
@@ -122,11 +131,37 @@ const ackWait = 200 * time.Millisecond
 // checking the protocol from outside does not read it as a method zded lacks.
 const MethodEvents = "events"
 
+// errSinkBusy is a line that could not be written because another one was being
+// written to the same connection and had not finished inside the caller's
+// deadline. Distinct from a write that failed, because the connection is fine:
+// it is carrying an answer, and the caller gave up rather than waiting behind
+// it. A listener that returns this keeps its place (see broadcast).
+var errSinkBusy = errors.New("zded: the connection is busy with another line")
+
 // sink is one connection, with the lock that keeps a reply and an event from
 // interleaving halfway through a line.
 type sink struct {
-	mu sync.Mutex
-	w  io.Writer
+	// gate is that lock, as a one-place channel rather than a sync.Mutex,
+	// because a caller has to be able to give up on it.
+	//
+	// The lock is held across the write, and the write's deadline is as long as
+	// the caller can afford: 200ms for a broadcast (sendWait), five seconds for
+	// a piece of an answer (askSendWait). A mutex has no deadline, so a
+	// broadcast allowed to wait 200ms for a listener in fact waited for
+	// whatever answer was being pushed down the same connection - and the
+	// keypress behind that broadcast waited with it. Measured on a client that
+	// subscribed, asked, and then stopped reading: one attn.center took 2.85
+	// seconds against 216µs with nothing streaming. sendWait's own comment
+	// says a wedged shell must not be what a keypress waits for, and that is
+	// the sentence this makes true.
+	//
+	// Made where it is first wanted rather than in a constructor: a sink is
+	// built as a literal in a dozen places, and a zero value that deadlocks
+	// would be a worse bug than the one this fixes. sync.Once is the part of
+	// the standard library whose zero value is already the answer to that.
+	made sync.Once
+	gate chan struct{}
+	w    io.Writer
 	// asking is whether an answer is already on its way down this connection.
 	// One at a time, because an ask.text line carries no id of its own: two
 	// answers interleaved on one connection would be indistinguishable, and the
@@ -137,9 +172,42 @@ type sink struct {
 	asking atomic.Bool
 }
 
+// gateOf is the lock, made once. Every path to it goes through here, so no
+// caller can meet a nil channel and wait for ever on it.
+func (k *sink) gateOf() chan struct{} {
+	k.made.Do(func() { k.gate = make(chan struct{}, 1) })
+	return k.gate
+}
+
+// lockBefore takes the connection for one line, or gives up at the deadline and
+// says so. Waiting for ever is what a reply does; an event has a caller with
+// somewhere else to be.
+func (k *sink) lockBefore(deadline time.Time) bool {
+	gate := k.gateOf()
+	// The ordinary case, which is nobody else writing: no timer, no allocation.
+	select {
+	case gate <- struct{}{}:
+		return true
+	default:
+	}
+	t := time.NewTimer(time.Until(deadline))
+	defer t.Stop()
+	select {
+	case gate <- struct{}{}:
+		return true
+	case <-t.C:
+		return false
+	}
+}
+
+func (k *sink) unlock() { <-k.gateOf() }
+
+// reply waits for the connection however long it takes. It is the read loop's
+// own answer to the request it has just read, on the connection that asked, and
+// there is nothing useful to do with it except send it.
 func (k *sink) reply(resp Response) {
-	k.mu.Lock()
-	defer k.mu.Unlock()
+	k.gateOf() <- struct{}{}
+	defer k.unlock()
 	writeResponse(k.w, resp)
 }
 
@@ -151,11 +219,22 @@ func (k *sink) send(ev Event) error { return k.sendWithin(ev, sendWait) }
 // being pushed at a client that is also drawing the last one - and 200ms of not
 // reading is not a client worth giving up on.
 //
+// wait bounds the whole call and not only the write. Both halves can block, and
+// for the same reason: the connection is one line at a time, so a caller can
+// wait for the lock as long as somebody else's write may take. That was how the
+// promise above failed - 200ms of write deadline behind five seconds of
+// somebody else's answer - so the deadline is taken once here and both halves
+// are held to it.
+//
 // A write that fails or falls short closes the connection, and doing that here
 // rather than at each caller is the point: a deadline can trip halfway through a
 // line, and the next bytes on that connection would be read as the tail of a
 // message nobody can parse. Closing is also how the other end finds out - an EOF
 // it can act on, rather than a stream that stopped and an end that never came.
+//
+// Running out of patience waiting for the lock is not that, and does not close
+// anything: nothing was written, the connection is whole, and what is wrong with
+// it is that it is busy. errSinkBusy says which of the two happened.
 func (k *sink) sendWithin(ev Event, wait time.Duration) error {
 	line, err := json.Marshal(struct {
 		Event Event `json:"event"`
@@ -164,12 +243,15 @@ func (k *sink) sendWithin(ev Event, wait time.Duration) error {
 		return err
 	}
 	line = append(line, '\n')
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	// Bounded, and cleared afterwards so the reply path is not left with a
-	// deadline it never asked for.
+	deadline := time.Now().Add(wait)
+	if !k.lockBefore(deadline) {
+		return errSinkBusy
+	}
+	defer k.unlock()
+	// Cleared afterwards so the reply path is not left with a deadline it never
+	// asked for.
 	if d, ok := k.w.(interface{ SetWriteDeadline(time.Time) error }); ok {
-		d.SetWriteDeadline(time.Now().Add(wait))
+		d.SetWriteDeadline(deadline)
 		defer d.SetWriteDeadline(time.Time{})
 	}
 	n, err := k.w.Write(line)
@@ -214,6 +296,14 @@ func (s *Server) unlisten(k *sink) {
 // Dropping a stalled one is also what keeps the answer useful - a shell that has
 // stopped reading is a shell that will not draw, and the caller needs to hear
 // that nothing was shown so it can print the list itself.
+//
+// One that was merely busy is not dropped. A connection may subscribe and ask on
+// the same socket, and while an answer streams down it there are moments when
+// the next line has to queue behind the last (see sink.gate). Waiting is what
+// this must not do, so it does not - but a client that is reading perfectly well
+// and happens to be receiving an answer is not a client to stop sending events
+// to for the rest of the session. It misses this one, and is not counted as
+// having taken it, which is the honest answer to "did anything draw it".
 func (s *Server) broadcast(ev Event) int {
 	s.mu.Lock()
 	subs := make([]*sink, 0, len(s.subs))
@@ -224,11 +314,13 @@ func (s *Server) broadcast(ev Event) int {
 
 	sent := 0
 	for _, k := range subs {
-		if err := k.send(ev); err != nil {
+		switch err := k.send(ev); {
+		case err == nil:
+			sent++
+		case errors.Is(err, errSinkBusy):
+		default:
 			s.unlisten(k)
-			continue
 		}
-		sent++
 	}
 	return sent
 }

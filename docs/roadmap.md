@@ -39,8 +39,13 @@ blocks 0.2:
 - history dies with the daemon: a ring of 200 in memory, because the journal
   fsyncs per line and this is history that is stale by the next login. The queue
   is the half that survives.
-- ask has no tier until a machine names one, and the panel does not carry the
-  previous turns as context.
+- ask has no tier until a machine names one. The panel carries the previous
+  turns now - stdin holds the conversation, a JSON object a line, and the role
+  is a field rather than a prefix so that nothing in an answer can arrive as
+  something a person said - but a conversation is capped at 64 KiB and the cap
+  is a refusal: past it the panel says to start a fresh one (`ctrl+n`) rather
+  than dropping the oldest turns to fit. Whether 64 KiB and the two minute
+  deadline are the right pair is for a real tier to say.
 - nothing is sandboxed until somebody defines an app. Layer 2 is still
   provisioned by hand ([`delivery.md`](delivery.md)), so a manifest can still
   name an app this machine has no way to start. What has gone is the silence:
@@ -177,7 +182,12 @@ turned "when someone has hardware" into something anyone can do this evening.
   whether it is needed is a wrong password on real hardware.
 - ask against a real tier: whether an answer arriving piece by piece reads
   well, and whether two minutes is the right cap once a local model that thinks
-  before it speaks sits behind `local`.
+  before it speaks sits behind `local`. The panel now puts the conversation in
+  front of the question, which makes both halves of that sharper: a model that
+  reprocesses its context each turn gets slower as the panel fills, so the two
+  minutes and the 64 KiB a conversation may reach are one decision and want
+  measuring together. The other half is whether a tier somebody writes reads the
+  frame at all, or answers only the last line and calls it a conversation.
 - nav latency, by hand on real hardware rather than by arithmetic: one Mod+j
   spawns a `zde`, and behind it zded asks niri for the focused window, moves
   it, asks again, and on a rotation re-reads the map and the focused name a
