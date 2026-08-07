@@ -136,13 +136,20 @@ ShellRoot {
     // XDG_RUNTIME_DIR with no fallback on purpose: zded refuses to start
     // without it (internal/zded, DefaultSocket), so a guessed path could only
     // ever point at a directory belonging to nobody, or to somebody else.
-    Socket {
+    //
+    // Every connection here is a Dialer and not a Socket, which is the same
+    // thing with the redial done by throwing the socket away rather than by
+    // writing `connected = true` on it. Why that is necessary is in
+    // Dialer.qml, and it is a defect in quickshell 0.3.0 rather than anything
+    // this shell did: written the obvious way, one dial landing in the moment
+    // zded is restarting leaves the connection dead for the rest of the
+    // session.
+    Dialer {
         id: zded
 
         path: Quickshell.env("XDG_RUNTIME_DIR") + "/zde/zded.sock"
-        connected: true
 
-        onConnectionStateChanged: {
+        onConnectedChanged: {
             root.linked = zded.connected;
             root.waiting = 0;
             if (zded.connected) {
@@ -152,28 +159,26 @@ ShellRoot {
             }
         }
 
-        parser: SplitParser {
-            onRead: line => {
-                root.waiting = 0;
-                let res = null;
-                try {
-                    res = JSON.parse(line);
-                } catch (e) {
-                    root.known = false;
-                    return;
-                }
-                if (!res || res.error !== undefined) {
-                    root.known = false;
-                    return;
-                }
-                // ok is the queue, oldest first, or null when it is empty - Go
-                // marshals an empty slice as null, and `null.length` is the
-                // kind of thing that takes a bar down.
-                const items = res.ok || [];
-                root.queued = items.length;
-                root.urgent = items.filter(i => i.urgent === true).length;
-                root.known = true;
+        onHeard: line => {
+            root.waiting = 0;
+            let res = null;
+            try {
+                res = JSON.parse(line);
+            } catch (e) {
+                root.known = false;
+                return;
             }
+            if (!res || res.error !== undefined) {
+                root.known = false;
+                return;
+            }
+            // ok is the queue, oldest first, or null when it is empty - Go
+            // marshals an empty slice as null, and `null.length` is the
+            // kind of thing that takes a bar down.
+            const items = res.ok || [];
+            root.queued = items.length;
+            root.urgent = items.filter(i => i.urgent === true).length;
+            root.known = true;
         }
     }
 
@@ -182,12 +187,10 @@ ShellRoot {
     // admitting it. An event stream is the fix, and it is worth having for the
     // notification center rather than for this.
     //
-    // This is also the reconnect. `connected: true` is written once and stays
-    // written: a socket that fails to connect, or that loses its daemon, does
-    // not redial itself - so without this the bar goes blind for the rest of
-    // the session the first time zded restarts, which is every time anything
-    // in the daemon is rebuilt. Asking again is the cheapest possible retry
-    // and it costs nothing while the socket is up.
+    // Only the asking. The redial is the Dialer's, on its own backoff, because
+    // a redial that is a line in a poll loop is a redial that has to be
+    // written into every poll loop - and it was, in three of them, each with
+    // its own idea of how often.
     Timer {
         id: ask
 
@@ -196,10 +199,8 @@ ShellRoot {
         repeat: true
         triggeredOnStart: true
         onTriggered: {
-            if (!zded.connected) {
-                zded.connected = true;
+            if (!zded.connected)
                 return;
-            }
             if (root.waiting >= 2) {
                 root.known = false;
             }
@@ -212,13 +213,12 @@ ShellRoot {
     // socket, second connection: a stream and a poll on one connection would
     // work, and keeping them apart means a broken parser on either side cannot
     // take the other with it.
-    Socket {
+    Dialer {
         id: stream
 
         path: Quickshell.env("XDG_RUNTIME_DIR") + "/zde/zded.sock"
-        connected: true
 
-        onConnectionStateChanged: {
+        onConnectedChanged: {
             root.streamWaiting = 0;
             if (stream.connected)
                 stream.write('{"method":"events"}\n');
@@ -226,76 +226,74 @@ ShellRoot {
                 root.modeKnown = false;
         }
 
-        parser: SplitParser {
-            onRead: line => {
-                let msg = null;
-                try {
-                    msg = JSON.parse(line);
-                } catch (e) {
-                    // A line that is not zded's is a protocol nobody here
-                    // understands, so the mode this shell is holding is no
-                    // longer something to claim.
-                    root.modeKnown = false;
-                    return;
-                }
-                if (!msg) {
-                    root.modeKnown = false;
-                    return;
-                }
-                // The mode, which is asked on this connection rather than the
-                // bar's: the bar's parser reads every reply as a queue listing.
-                // Recognised by its shape, because the protocol has no request
-                // ids and this connection carries the replies to everything the
-                // surfaces ask for.
-                if (msg.ok && msg.ok.mode !== undefined) {
-                    // The answer to the question the watchdog counts, and only
-                    // this one: an event or an acknowledgement proves the
-                    // daemon is alive without proving it is still answering
-                    // about the mode, and the mode is what this line claims.
-                    root.streamWaiting = 0;
-                    root.mode = msg.ok.mode;
-                    root.modeKnown = true;
-                    return;
-                }
-                // A refusal. Attributed to the center, which is the only
-                // surface here that asks for something that can fail while it
-                // is on the screen - and a refusal it swallowed would be a key
-                // that did nothing (docs/vision.md, principle 4). A refusal
-                // arriving from anything else while the center is up would land
-                // on it too, which is the price of a protocol with no request
-                // ids and is worth less than the silence.
-                if (msg.error !== undefined) {
-                    if (center.visible)
-                        center.note = msg.error;
-                    else if (palette.running)
-                        palette.ran(msg.error);
-                    return;
-                }
-                // Replies to our own subscribe arrive here too; only the lines
-                // carrying an event are events.
-                if (!msg.event) {
-                    // A run that worked, which is what closes the palette: it
-                    // stays up until the answer comes, so that a refusal has a
-                    // surface to appear on rather than a parser that drops it.
-                    if (palette.running)
-                        palette.ran("");
-                    return;
-                }
-                if (msg.event.kind === "picker")
-                    root.openPicker(msg.event);
-                else if (msg.event.kind === "windows")
-                    root.openWindows(msg.event);
-                else if (msg.event.kind === "notif-center")
-                    root.openCenter(msg.event);
-                else if (msg.event.kind === "connections")
-                    root.openConnections(msg.event);
-                else if (msg.event.kind === "ask")
-                    root.openAsk(msg.event, false);
-                else if (msg.event.kind === "ask.panel")
-                    root.openAsk(msg.event, true);
-                else if (msg.event.kind === "palette")
-                    root.openPalette(msg.event);
+        onHeard: line => {
+            let msg = null;
+            try {
+                msg = JSON.parse(line);
+            } catch (e) {
+                // A line that is not zded's is a protocol nobody here
+                // understands, so the mode this shell is holding is no
+                // longer something to claim.
+                root.modeKnown = false;
+                return;
             }
+            if (!msg) {
+                root.modeKnown = false;
+                return;
+            }
+            // The mode, which is asked on this connection rather than the
+            // bar's: the bar's parser reads every reply as a queue listing.
+            // Recognised by its shape, because the protocol has no request
+            // ids and this connection carries the replies to everything the
+            // surfaces ask for.
+            if (msg.ok && msg.ok.mode !== undefined) {
+                // The answer to the question the watchdog counts, and only
+                // this one: an event or an acknowledgement proves the
+                // daemon is alive without proving it is still answering
+                // about the mode, and the mode is what this line claims.
+                root.streamWaiting = 0;
+                root.mode = msg.ok.mode;
+                root.modeKnown = true;
+                return;
+            }
+            // A refusal. Attributed to the center, which is the only
+            // surface here that asks for something that can fail while it
+            // is on the screen - and a refusal it swallowed would be a key
+            // that did nothing (docs/vision.md, principle 4). A refusal
+            // arriving from anything else while the center is up would land
+            // on it too, which is the price of a protocol with no request
+            // ids and is worth less than the silence.
+            if (msg.error !== undefined) {
+                if (center.visible)
+                    center.note = msg.error;
+                else if (palette.running)
+                    palette.ran(msg.error);
+                return;
+            }
+            // Replies to our own subscribe arrive here too; only the lines
+            // carrying an event are events.
+            if (!msg.event) {
+                // A run that worked, which is what closes the palette: it
+                // stays up until the answer comes, so that a refusal has a
+                // surface to appear on rather than a parser that drops it.
+                if (palette.running)
+                    palette.ran("");
+                return;
+            }
+            if (msg.event.kind === "picker")
+                root.openPicker(msg.event);
+            else if (msg.event.kind === "windows")
+                root.openWindows(msg.event);
+            else if (msg.event.kind === "notif-center")
+                root.openCenter(msg.event);
+            else if (msg.event.kind === "connections")
+                root.openConnections(msg.event);
+            else if (msg.event.kind === "ask")
+                root.openAsk(msg.event, false);
+            else if (msg.event.kind === "ask.panel")
+                root.openAsk(msg.event, true);
+            else if (msg.event.kind === "palette")
+                root.openPalette(msg.event);
         }
     }
 
@@ -304,71 +302,58 @@ ShellRoot {
     // pieces, over as long as a model takes. On the stream's connection those
     // pieces would sit in front of the acknowledgement a picker is waiting for,
     // and on the bar's they would be read as a queue listing.
-    Socket {
+    Dialer {
         id: askLink
 
         path: Quickshell.env("XDG_RUNTIME_DIR") + "/zde/zded.sock"
-        connected: true
 
         // A connection that goes away takes any answer on it with it, and the
         // window has to be told: it will not take another question while one is
         // on its way, so without this it sits with "..." in the prompt and
         // refuses everything for the rest of the session. Two ways in, both
-        // ordinary: zded is restarted by any switch that changes it (the timer
-        // below exists for that), and a client that stops reading has its
-        // connection closed rather than being left waiting for an end that
-        // could not be delivered either.
-        onConnectionStateChanged: {
+        // ordinary: zded is restarted by any switch that changes it, and a
+        // client that stops reading has its connection closed rather than being
+        // left waiting for an end that could not be delivered either.
+        onConnectedChanged: {
             if (!askLink.connected)
                 askWindow.finished("lost the connection to zded, so the answer stops there");
         }
 
-        parser: SplitParser {
-            onRead: line => {
-                let msg = null;
-                try {
-                    msg = JSON.parse(line);
-                } catch (e) {
-                    return;
-                }
-                if (!msg)
-                    return;
-                // A refusal to run at all - no tier configured, no such tier -
-                // arrives as the reply rather than as a piece of an answer.
-                if (msg.error !== undefined) {
-                    askWindow.finished(msg.error);
-                    return;
-                }
-                if (!msg.event || msg.event.kind !== "ask.text")
-                    return;
-                if (msg.event.text)
-                    askWindow.chunk(msg.event.text);
-                if (msg.event.done)
-                    askWindow.finished(msg.event.error ?? "");
+        onHeard: line => {
+            let msg = null;
+            try {
+                msg = JSON.parse(line);
+            } catch (e) {
+                return;
             }
+            if (!msg)
+                return;
+            // A refusal to run at all - no tier configured, no such tier -
+            // arrives as the reply rather than as a piece of an answer.
+            if (msg.error !== undefined) {
+                askWindow.finished(msg.error);
+                return;
+            }
+            if (!msg.event || msg.event.kind !== "ask.text")
+                return;
+            if (msg.event.text)
+                askWindow.chunk(msg.event.text);
+            if (msg.event.done)
+                askWindow.finished(msg.event.error ?? "");
         }
     }
 
-    // Redialling the stream, on the same tick as the bar's poll. zded is
-    // restarted by any switch that changes it, and a shell that stopped
-    // listening then would keep working and stop appearing, which is the worst
-    // of both.
+    // Asking the stream for the mode, on the same tick as the bar's poll. Not
+    // the redial any more: each connection redials itself now (Dialer.qml),
+    // including the ask connection, which this loop used to have a line of its
+    // own for because zded can close one connection without closing the rest.
     Timer {
         interval: 2000
         running: true
         repeat: true
         onTriggered: {
-            // The ask connection redials first, and outside the stream's early
-            // return: the two usually drop together, since they are the same
-            // daemon, but zded can close one alone - and then Mod+a would
-            // answer "no connection to zded" for the rest of the session while
-            // everything else on the bar looked fine.
-            if (!askLink.connected)
-                askLink.connected = true;
-            if (!stream.connected) {
-                stream.connected = true;
+            if (!stream.connected)
                 return;
-            }
             // Two questions out with nothing back: whatever mode is on the bar
             // is the last one zded said and not the one it is in.
             if (root.streamWaiting >= 2)
@@ -593,11 +578,10 @@ ShellRoot {
         property bool known: false
     }
 
-    Socket {
+    Dialer {
         id: netLink
 
         path: Quickshell.env("XDG_RUNTIME_DIR") + "/zde/zded.sock"
-        connected: true
 
         // What has been asked and not answered yet, oldest first. One
         // connection carries the bar's question and the surface's join, and
@@ -624,7 +608,7 @@ ShellRoot {
             return true;
         }
 
-        onConnectionStateChanged: {
+        onConnectedChanged: {
             netLink.pending = [];
             if (netLink.connected)
                 netLink.ask("net.status", []);
@@ -632,84 +616,79 @@ ShellRoot {
                 netState.known = false;
         }
 
-        parser: SplitParser {
-            onRead: line => {
-                const was = netLink.pending.shift() ?? {
-                    method: "",
-                    about: ""
-                };
-                let res = null;
-                try {
-                    res = JSON.parse(line);
-                } catch (e) {
+        onHeard: line => {
+            const was = netLink.pending.shift() ?? {
+                method: "",
+                about: ""
+            };
+            let res = null;
+            try {
+                res = JSON.parse(line);
+            } catch (e) {
+                netState.known = false;
+                return;
+            }
+            if (was.method === "net.status") {
+                if (!res || res.error !== undefined || !res.ok) {
                     netState.known = false;
                     return;
                 }
-                if (was.method === "net.status") {
-                    if (!res || res.error !== undefined || !res.ok) {
-                        netState.known = false;
-                        return;
-                    }
-                    netState.kind = res.ok.kind ?? "";
-                    netState.ssid = res.ok.ssid ?? "";
-                    netState.strength = res.ok.signal ?? 0;
-                    netState.known = true;
-                    // And the surface, while it is up. A join often answers
-                    // "joining" rather than "joined" - NetworkManager takes
-                    // longer to decide than a keypress can wait - and the
-                    // header saying where you are is how that ends: it changes
-                    // when the link does. Without this the widget would sit
-                    // there naming the network you left, which is the same lie
-                    // the bar's known/unknown pattern exists to prevent.
-                    //
-                    // The link and not the rows. Signal moves on its own, so
-                    // re-listing would reorder what somebody is choosing from
-                    // under their hands.
-                    if (connections.visible)
-                        connections.link = res.ok;
-                    return;
-                }
-                // A join or a disconnect. The surface is waiting to be told
-                // what became of it, and a refusal is the half worth showing:
-                // NetworkManager says whether the password was wrong or the
-                // network went out of range, and a widget that swallowed that
-                // would leave a person pressing Enter at nothing.
-                if (!res)
-                    return;
-                if (res.error !== undefined)
-                    connections.said = res.error;
-                else if (res.ok !== undefined) {
-                    connections.said = String(res.ok);
-                    // A network that has been forgotten is not saved any more,
-                    // and the rows were handed over when the surface opened.
-                    // Without this the row would still read as saved and Enter
-                    // would join it without asking for the password that was
-                    // just thrown away, which is the whole point of the key.
-                    if (was.method === "net.forget")
-                        connections.forgotten(was.about);
-                }
-                // And ask again at once, so the bar catches up with what just
-                // changed rather than in five seconds' time.
-                netLink.ask("net.status", []);
+                netState.kind = res.ok.kind ?? "";
+                netState.ssid = res.ok.ssid ?? "";
+                netState.strength = res.ok.signal ?? 0;
+                netState.known = true;
+                // And the surface, while it is up. A join often answers
+                // "joining" rather than "joined" - NetworkManager takes
+                // longer to decide than a keypress can wait - and the
+                // header saying where you are is how that ends: it changes
+                // when the link does. Without this the widget would sit
+                // there naming the network you left, which is the same lie
+                // the bar's known/unknown pattern exists to prevent.
+                //
+                // The link and not the rows. Signal moves on its own, so
+                // re-listing would reorder what somebody is choosing from
+                // under their hands.
+                if (connections.visible)
+                    connections.link = res.ok;
+                return;
             }
+            // A join or a disconnect. The surface is waiting to be told
+            // what became of it, and a refusal is the half worth showing:
+            // NetworkManager says whether the password was wrong or the
+            // network went out of range, and a widget that swallowed that
+            // would leave a person pressing Enter at nothing.
+            if (!res)
+                return;
+            if (res.error !== undefined)
+                connections.said = res.error;
+            else if (res.ok !== undefined) {
+                connections.said = String(res.ok);
+                // A network that has been forgotten is not saved any more,
+                // and the rows were handed over when the surface opened.
+                // Without this the row would still read as saved and Enter
+                // would join it without asking for the password that was
+                // just thrown away, which is the whole point of the key.
+                if (was.method === "net.forget")
+                    connections.forgotten(was.about);
+            }
+            // And ask again at once, so the bar catches up with what just
+            // changed rather than in five seconds' time.
+            netLink.ask("net.status", []);
         }
     }
 
     Timer {
         // Five seconds rather than the bar's two: a link changes when somebody
         // walks out of a building, and a signal reading is not worth a question
-        // a second. This is also the redial, for the same reason the queue's
-        // timer is - `connected: true` is written once, and a socket that lost
-        // its daemon does not dial itself.
+        // a second. Asking only: the redial is the Dialer's, on its own clock,
+        // so this no longer decides how long the bar stays blind.
         interval: 5000
         running: true
         repeat: true
         triggeredOnStart: true
         onTriggered: {
-            if (!netLink.connected) {
-                netLink.connected = true;
+            if (!netLink.connected)
                 return;
-            }
             // Two questions outstanding means the first was never answered:
             // say nothing rather than the last thing that was true.
             if (netLink.pending.length >= 2)
