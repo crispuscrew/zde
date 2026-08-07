@@ -1126,10 +1126,12 @@ let
         # this script ever gets - a daemon answering, a compositor it can see,
         # the notification name taken, a manifest that parses - so nothing may
         # fail and the exit status has to be zero. The units are inactive here
-        # (this zded was started by hand) and no machine anywhere has zcr yet,
-        # which is exactly why those are warnings: neither is a session
-        # somebody cannot work in, and a command that exits non-zero on every
-        # machine is one nobody reads the output of.
+        # (this zded was started by hand) and no shell is listening, which is
+        # exactly why those two are warnings: neither is a session somebody
+        # cannot work in, and a command that exits non-zero on every machine is
+        # one nobody reads the output of. Nothing is warned about the desks yet
+        # - the directory doctor reads is still empty at this point, and the
+        # desk that names an app zinc has not got is written further down.
         if ! zde doctor >/tmp/doctor.txt 2>&1; then
           echo "doctor failed a check on a session that is working:"
           cat /tmp/doctor.txt; exit 1
@@ -1147,6 +1149,54 @@ let
         # this asserts doctor is the thing that would notice if it stopped.
         grep -q '/etc/pam.d/swaylock' /tmp/doctor.txt || {
           echo "doctor does not say what the screen lock would authenticate against:"
+          cat /tmp/doctor.txt; exit 1
+        }
+        # Which resolver judged the desks, on the one machine in CI that has
+        # both halves: zcr is on this PATH, and zde.apps names a terminal, a
+        # lock and a help.
+        #
+        # In the directory doctor itself reads, which is not the one zded was
+        # given above: that check goes to the disk rather than through the
+        # daemon (internal/doctor, probeDesks), so a desk in /tmp/desks would
+        # leave the line below an all-clear about an empty directory - true, and
+        # about nothing.
+        mkdir -p ~/.config/zde/desks
+        printf 'name: doctor-probe
+    monitors:
+      winit: { workspaces: [code] }
+    apps:
+      - { app: absent-app }
+    '       > ~/.config/zde/desks/doctor-probe.yaml
+        # Still a warning and not a failure: a desk naming an app nobody has
+        # defined is the ordinary young machine (docs/delivery.md, layer 2), and
+        # doctor's exit status has to keep meaning "something was promised and
+        # is not here".
+        if ! zde doctor >/tmp/doctor-desks.txt 2>&1; then
+          echo "a desk naming an app zinc has not got made doctor fail:"
+          cat /tmp/doctor-desks.txt; exit 1
+        fi
+        # `absent-app` is a zinc app name, and zde.apps has never heard of it
+        # and never would - the two are different namespaces that the docs
+        # happen to spell alike. So the verdict has to be zcr's own refusal
+        # about that name. Judged against zde.apps this line would be right here
+        # by accident, and wrong on every machine that keeps its apps in zinc,
+        # which is the machine zde is for.
+        grep -qE '^warn +desk apps +doctor-probe names absent-app.*asked of zcr' /tmp/doctor-desks.txt || {
+          echo "doctor did not judge the desk's app with the resolver a launch uses:"
+          cat /tmp/doctor-desks.txt; exit 1
+        }
+        grep -q 'no app "absent-app" defined' /tmp/doctor-desks.txt || {
+          echo "doctor did not carry zcr's own answer about the name:"
+          cat /tmp/doctor-desks.txt; exit 1
+        }
+        rm -f ~/.config/zde/desks/doctor-probe.yaml
+        # logind, which is what the four power verbs are. Warn or ok and never
+        # fail - a session with no logind still works, and the exit status above
+        # has to keep meaning something - but the line has to be there: "the
+        # power menu refuses everything on this machine" is a sentence about
+        # polkit or a bus, and it is invisible until somebody presses the key.
+        grep -qE '^(ok|warn) +logind ' /tmp/doctor.txt || {
+          echo "doctor says nothing about logind, so nothing says whether this session may power off:"
           cat /tmp/doctor.txt; exit 1
         }
 

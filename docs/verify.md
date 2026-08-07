@@ -339,6 +339,27 @@ ones are the point of zded holding the bus name.
   switch is the right amount of noise when you are switching desks all day, and
   whether the body says enough to act on without going to the log. The log has
   them all, whole, either way.
+  - **Which resolver said so**, which is the end of every one of those lines and
+    the thing to read first. A manifest's `app:` is a zinc app name - what `zcr
+    run <app>@<instance>` takes - and `zde.apps` is the separate map that turns
+    `terminal` and `editor` into an argv for the keys. zde asks zcr where there
+    is one, so the line should end `- asked of zcr` and carry zcr's own words
+    (`no app "x" defined (try: zc list)`). The way to see both halves:
+
+    ```sh
+    zde doctor | grep 'desk apps'          # asked of zcr
+    PATH=/nonexistent zde doctor | grep 'desk apps'   # asked of zde.apps
+    ```
+
+    The second is the machine layer 2 has not reached, and it judges a zinc app
+    name against a map that was never about zinc app names. If you ever see a
+    desk warned about here that switches and launches perfectly, that tail is
+    the first thing to send.
+  - **A zcr that is there and wedged.** Put a `zcr` earlier on PATH that exits
+    without saying anything (`printf '#!/bin/sh\nexit 3\n'`), and the whole
+    check should collapse to one `not known:` line naming the command to run by
+    hand - not a warning per desk. A partial list of faults reads exactly like a
+    complete one, which is the failure this is arranged against.
 - **A day's worth of arrivals.** History is a ring of 200, in memory: the 201st
   drops the oldest, and restarting zded empties it. The queue is the half that
   survives, because it is what you still owe. Whether 200 is a day or an hour
@@ -384,6 +405,44 @@ show up in use.
   a PAM service and so can accept a password at all - and `zde doctor` answers
   the same question on the machine you are sitting at, before you find out the
   hard way. Try it before you need it in a cafe.
+- **What logind would let this session do**, which is the other half of that and
+  the same kind of finding: a log out, a suspend, a reboot and a power off are
+  all logind's, and every way they refuse is invisible until somebody presses
+  the key.
+
+  ```sh
+  zde doctor | grep logind
+  ```
+
+  On a healthy machine that is one `ok` line naming the session a log out would
+  end - check it against `loginctl session-status`, and they must be the same
+  session. Three things to try to make it say something else:
+  - **A machine with no logind**, which is any container: run `zde doctor` in
+    one, or with `DBUS_SYSTEM_BUS_ADDRESS` pointed at nothing. One warning, and
+    it must come back at once rather than sit there - this is the command
+    somebody runs when something else has already gone wrong. Which of the two
+    warnings it is worth reading: a bus that answered and has nobody on
+    logind's name says nothing can log out, suspend, reboot or power off this
+    machine, and a bus that could not be reached or would not answer says `not
+    known:` and the reading it came from. The second must not claim the first -
+    a dial that ran out of its two seconds is a machine that is slow, not one
+    that cannot be shut down.
+  - **polkit refusing.** Deny the actions for your user
+    (`security.polkit.extraConfig`, returning `polkit.Result.AUTH_ADMIN` for
+    `org.freedesktop.login1.reboot`) and the line should say `reboot would be
+    refused` and name polkit's own word. `challenge` is a refusal on this
+    machine and has to read as one: there is no authentication agent in a zde
+    session, so nothing will ever get asked for that password.
+  - **No session to log out of.** `loginctl session-status` with nothing to say
+    is the case, and it is the one that has actually happened on real hardware:
+    `user@.service` is outside every session's cgroup, so a daemon asking
+    "which session am I in" gets no answer. doctor asks for the user's display
+    session, which is the fallback that works from either side. If it names no
+    session, a log out will refuse rather than end somebody else's, and that is
+    the report.
+
+  Whether these four are worth a line each, or whether the whole thing wants to
+  be one, is a question for a broken machine rather than for an argument here.
 - **`Mod+Tab` when the shell is unwell.** Kill the bar (`systemctl --user stop
   zde-bar`) and press it: you should get the desk list printed to wherever the
   key's output goes, rather than nothing at all. The daemon waits 200ms for the

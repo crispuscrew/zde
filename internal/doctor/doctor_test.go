@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"bufio"
 	"errors"
 	"os"
 	"os/exec"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/crispuscrew/zde/internal/bus"
 	"github.com/crispuscrew/zde/internal/manifest"
 	"github.com/crispuscrew/zde/internal/zded"
 )
@@ -39,7 +41,15 @@ func healthy() Session {
 			Service:    "swaylock",
 			PAM:        PAMPresent,
 		},
-		Desks: Desks{Dir: "/home/u/.config/zde/desks", Configured: true},
+		Desks: Desks{Dir: "/home/u/.config/zde/desks", Resolver: byZcr, Configured: true},
+		Power: Logind{
+			Session: "2",
+			Can: []Can{
+				{What: "suspend", Answer: "yes"},
+				{What: "reboot", Answer: "yes"},
+				{What: "power off", Answer: "yes"},
+			},
+		},
 	}
 }
 
@@ -88,7 +98,7 @@ func TestHealthySessionSaysSoOnEveryLine(t *testing.T) {
 func TestTheReportIsTheSameShapeEveryTime(t *testing.T) {
 	want := []string{
 		"zded", "compositor", "shell", "notify", "zinc", "podman",
-		"unit", "unit", "manifests", "desk apps", "locker", "journal",
+		"unit", "unit", "manifests", "desk apps", "locker", "logind", "journal",
 	}
 	var got []string
 	for _, c := range Judge(healthy()) {
@@ -343,11 +353,15 @@ func TestADeskNamingAnAppNobodyDefinedIsNotAFailure(t *testing.T) {
 	}
 }
 
-// A machine with nothing configured at all is one fact and one edit, so it is
-// said once however many desks mention however many names. Eight lines carrying
-// the same sentence would bury every other line of the report.
+// A machine with nothing in zde.apps is one fact and one edit, so it is said
+// once however many desks mention however many names. Eight lines carrying the
+// same sentence would bury every other line of the report.
 func TestAMachineWithNothingConfiguredSaysSoOnceAndNamesWhatTheDesksWanted(t *testing.T) {
 	s := healthy()
+	// zde.apps and not zcr on purpose: this collapse is that resolver's alone,
+	// because that one is a single option to set and zinc's apps are a file
+	// each.
+	s.Desks.Resolver = byApps
 	s.Desks.Configured = false
 	nothing := errors.New("nothing is configured to run: set zde.apps in your home-manager config, " +
 		"which is what writes /home/u/.config/zde/apps.json")
@@ -447,12 +461,187 @@ func TestPodmanSaysWhichKindOfMissingItIs(t *testing.T) {
 	}
 }
 
-// The gathering half, against files rather than a struct: what a desk declares
-// is asked of the same resolver a launch would ask, so the report and the key
-// cannot end up disagreeing about whether a name resolves.
-func TestTheDesksAreJudgedByTheResolverALaunchWouldUse(t *testing.T) {
+// noZcr is a machine layer 2 has not reached, which is what every dev host
+// running these tests happens to be - and "happens to be" is the part worth
+// removing: probeDesks asks whichever resolver PATH has, so a test that did not
+// say which one it meant would pass or fail on whether the person running it
+// had installed zinc.
+func noZcr(t *testing.T) {
+	t.Helper()
+	t.Setenv("PATH", t.TempDir())
+}
+
+// withZcr puts a zcr on PATH that answers `where` for the apps named and
+// refuses everything else in zinc's own words (zinc 0.9.1, cmdWhere - it
+// refuses a name it cannot load because the state and bus paths it prints come
+// out of that app's config).
+func withZcr(t *testing.T, defined ...string) {
+	t.Helper()
+	dir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"[ \"$1\" = where ] || { echo \"zcr: unexpected: $*\" >&2; exit 2; }\n" +
+		"case \"$2\" in\n" +
+		"  " + strings.Join(defined, "|") + ") echo \"state: /state/zinc/$2\"; echo \"container: $2\"; exit 0 ;;\n" +
+		"esac\n" +
+		"echo \"zcr: no app \\\"$2\\\" defined (try: zc list)\" >&2\n" +
+		"exit 1\n"
+	if err := os.WriteFile(filepath.Join(dir, "zcr"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+}
+
+// The bug this branch is about. A manifest's app is a zinc app name and
+// zde.apps is the keymap's own name-to-argv map, so a machine that defines its
+// apps in zinc and never sets that option would be warned about every desk it
+// has - and every one of those desks launches perfectly.
+func TestADeskWhoseAppsZincDefinesIsNotWarnedAboutForHavingNoZdeApps(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
+	withZcr(t, "browser", "notes")
+	if err := os.MkdirAll(filepath.Join(home, "zde", "desks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// No apps.json at all, which is what that machine looks like on disk.
+	if err := os.WriteFile(filepath.Join(home, "zde", "desks", "vshop.yaml"), []byte(
+		"name: vshop\nmonitors: { DP-1: { workspaces: [code] } }\napps:\n"+
+			"  - { app: browser }\n"+
+			"  - { app: notes, instance: work }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	d := probeDesks(manifest.DefaultDir())
+	if d.Err != nil {
+		t.Fatalf("probeDesks: %v", d.Err)
+	}
+	if d.Resolver != byZcr {
+		t.Errorf("resolver = %q, want the one a launch uses where there is a zcr", d.Resolver)
+	}
+	if len(d.Unrunnable) != 0 {
+		t.Fatalf("unrunnable = %+v, want nothing: zinc defines both", d.Unrunnable)
+	}
+	if c := only(t, Judge(Session{Desks: d}), "desk apps"); c.Level != OK {
+		t.Errorf("desk apps = %s, want an all-clear", c)
+	}
+}
+
+// And zcr's own refusal is the line, because zcr says why better than a
+// paraphrase of zcr would - and it names the next command to run.
+func TestWithAZcrTheLineCarriesZcrsOwnRefusal(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", home)
+	withZcr(t, "browser")
+	if err := os.MkdirAll(filepath.Join(home, "zde", "desks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A full zde.apps, and none of it is the answer: these are zinc app names.
+	if err := os.WriteFile(filepath.Join(home, "zde", "apps.json"),
+		[]byte(`{"terminal":["foot"],"editor":["nvim"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "zde", "desks", "vshop.yaml"), []byte(
+		"name: vshop\nmonitors: { DP-1: { workspaces: [code] } }\napps:\n"+
+			"  - { app: browser }\n"+
+			"  - { app: absent-app }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	d := probeDesks(manifest.DefaultDir())
+	if len(d.Unrunnable) != 1 || d.Unrunnable[0].App != "absent-app" {
+		t.Fatalf("unrunnable = %+v, want the one name zinc has no app for", d.Unrunnable)
+	}
+	if got := d.Unrunnable[0].Err.Error(); !strings.Contains(got, `no app "absent-app" defined`) {
+		t.Errorf("unrunnable err = %q, want zcr's own words", got)
+	}
+	// And it is a line about that app, not the one-line "set zde.apps" that a
+	// machine with an empty apps.json gets: this machine's apps are zinc's, and
+	// setting that option would not define one of them.
+	c := only(t, Judge(Session{Desks: d}), "desk apps")
+	if !strings.Contains(c.Detail, "vshop names absent-app") || strings.Contains(c.Detail, "set zde.apps") {
+		t.Errorf("desk apps = %s, want the desk and the name and no advice about the wrong option", c)
+	}
+}
+
+// A zcr that is there and not answering is a fact about the machine, and it
+// must not arrive as a list of desks that are wrong: a partial list of faults
+// reads exactly like a complete one, and the manifests here are fine.
+func TestAZcrThatWillNotAnswerIsNotWrittenDownAsABrokenDesk(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", home)
+	dir := t.TempDir()
+	// Non-zero and silent, which is the shape of a zcr that fell over rather
+	// than of one that answered: a refusal about a name comes with the name.
+	if err := os.WriteFile(filepath.Join(dir, "zcr"), []byte("#!/bin/sh\nexit 3\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	if err := os.MkdirAll(filepath.Join(home, "zde", "desks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "zde", "desks", "vshop.yaml"), []byte(
+		"name: vshop\nmonitors: { DP-1: { workspaces: [code] } }\napps:\n"+
+			"  - { app: browser }\n  - { app: notes }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	d := probeDesks(manifest.DefaultDir())
+	if d.Err == nil {
+		t.Fatalf("a zcr that answers nothing = %+v, want a check that says it could not be made", d)
+	}
+	if len(d.Unrunnable) != 0 {
+		t.Errorf("unrunnable = %+v, want no desk blamed for a resolver that went quiet", d.Unrunnable)
+	}
+	if got := d.Err.Error(); !strings.Contains(got, "zcr where browser") {
+		t.Errorf("err = %q, want the command to run by hand", got)
+	}
+	c := only(t, Judge(Session{Desks: d}), "desk apps")
+	if c.Level != Warn || !strings.Contains(c.Detail, "not known") {
+		t.Errorf("desk apps = %s, want a warning that no verdict was reached", c)
+	}
+}
+
+// Every line of that check says which resolver answered it. The two do not
+// answer the same question, so a warning somebody disagrees with has to say
+// what it was asked of - otherwise the answer is in the source, and the warning
+// is one they learn to skip.
+func TestEveryDeskAppsLineSaysWhichResolverAnsweredIt(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		resolver string
+		want     string
+	}{
+		{"zcr", byZcr, "asked of zcr"},
+		{"zde.apps", byApps, "asked of zde.apps, since no zcr is on PATH"},
+		// A session written down without one is judged the way a machine with
+		// no zcr would have been, and says so rather than printing a blank.
+		{"written down without one", "", "asked of zde.apps, since no zcr is on PATH"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := healthy()
+			s.Desks.Resolver = tc.resolver
+			if c := only(t, Judge(s), "desk apps"); !strings.Contains(c.Detail, tc.want) {
+				t.Errorf("the all-clear = %s, want it to say %q", c, tc.want)
+			}
+
+			s.Desks.Unrunnable = []DeskApp{{Desk: "vshop", App: "nvim", Err: errors.New("no such app")}}
+			if c := only(t, Judge(s), "desk apps"); !strings.Contains(c.Detail, tc.want) {
+				t.Errorf("a warning = %s, want it to say %q", c, tc.want)
+			}
+
+			s.Desks.Err = errors.New("something went wrong")
+			if c := only(t, Judge(s), "desk apps"); !strings.Contains(c.Detail, tc.want) {
+				t.Errorf("a check that could not be made = %s, want it to say %q", c, tc.want)
+			}
+		})
+	}
+}
+
+// The gathering half, against files rather than a struct: with no zcr the
+// desks are still judged, by the only map a machine without layer 2 has.
+func TestWithNoZcrTheDesksAreJudgedByZdeApps(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", home)
+	noZcr(t)
 	zde := filepath.Join(home, "zde")
 	if err := os.MkdirAll(filepath.Join(zde, "desks"), 0o755); err != nil {
 		t.Fatal(err)
@@ -474,6 +663,9 @@ func TestTheDesksAreJudgedByTheResolverALaunchWouldUse(t *testing.T) {
 	if d.Err != nil {
 		t.Fatalf("probeDesks: %v", d.Err)
 	}
+	if d.Resolver != byApps {
+		t.Errorf("resolver = %q, want the fallback on a machine with no zcr", d.Resolver)
+	}
 	if !d.Configured {
 		t.Error("a machine with a terminal reads as having nothing configured")
 	}
@@ -491,12 +683,276 @@ func TestTheDesksAreJudgedByTheResolverALaunchWouldUse(t *testing.T) {
 func TestNoDesksAtAllIsNothingToReport(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
+	noZcr(t)
 	d := probeDesks(manifest.DefaultDir())
 	if d.Err != nil || len(d.Unrunnable) != 0 {
 		t.Errorf("a machine with no desks = %+v, want nothing to say", d)
 	}
 	if c := only(t, Judge(Session{Desks: d}), "desk apps"); c.Level != OK {
 		t.Errorf("desk apps = %s, want an all-clear", c)
+	}
+}
+
+// A machine with no logind cannot be told to go, and every one of the four
+// verbs a power menu is made of is logind's. Said once, as the consequence,
+// because "nobody owns the name" is a reading and a machine that will not shut
+// down is what somebody is standing in front of.
+func TestNoLogindIsOneWarningSayingNoneOfTheFourWouldWork(t *testing.T) {
+	s := healthy()
+	s.Power = Logind{Absent: true} // the bus answered: there is no logind here
+	c := only(t, Judge(s), "logind")
+	if c.Level != Warn {
+		t.Fatalf("logind = %s, want a warning: a session with no logind is one somebody can still work in", c)
+	}
+	if !strings.Contains(c.Detail, logindName) {
+		t.Errorf("logind = %s, want the name nobody is on", c)
+	}
+	for _, verb := range []string{"log out", "suspend", "reboot", "power off"} {
+		if !strings.Contains(c.Detail, verb) {
+			t.Errorf("logind = %s, want it to name %q as one of what would not work", c, verb)
+		}
+	}
+	if Judge(s).Failed() != 0 {
+		t.Errorf("a machine with no logind failed a check:\n%s", Judge(s))
+	}
+}
+
+// And a question that could not be put is not an answer. The probe is bounded
+// at two seconds, so the ordinary way to land here is a machine that is slow or
+// a system bus that is the thing that broke - neither of which is a machine
+// that cannot be powered off, which is what this used to tell somebody on the
+// strength of a dial that timed out. Every other check in this package has this
+// middle state and this one is where it is worth most: it is read by somebody
+// deciding whether the power menu is worth pressing.
+func TestALogindThatCouldNotBeAskedIsNotAMachineThatCannotBeToldToGo(t *testing.T) {
+	s := healthy()
+	s.Power = Logind{Err: errors.New("the bus did not finish connecting within 2s")}
+	c := only(t, Judge(s), "logind")
+	if c.Level != Warn {
+		t.Fatalf("logind = %s, want a warning", c)
+	}
+	if !strings.Contains(c.Detail, "did not finish connecting") {
+		t.Errorf("logind = %s, want the reading it came from", c)
+	}
+	// The line this must not be: a verdict about the machine, off a question
+	// nothing answered.
+	if strings.Contains(c.Detail, "nothing can log out") {
+		t.Errorf("logind = %s, and nobody asked logind anything", c)
+	}
+	if !strings.Contains(c.Detail, "not known") || !strings.Contains(c.Detail, "never asked") {
+		t.Errorf("logind = %s, want it to say the question was not put", c)
+	}
+	// And the way to put it by hand, since somebody reading this is one command
+	// away from the answer doctor could not get.
+	if !strings.Contains(c.Detail, "loginctl") {
+		t.Errorf("logind = %s, want the question by hand", c)
+	}
+	if Judge(s).Failed() != 0 {
+		t.Errorf("a logind that could not be asked failed a check:\n%s", Judge(s))
+	}
+}
+
+// polkit answering "challenge" is a refusal on this machine, not a question
+// somebody gets asked: a zde session has no authentication agent, so whatever
+// asks logind either asks non-interactively or waits for a dialog nobody will
+// ever see. The line has to name the verb, polkit's own word, and where a rule
+// goes - it is the one finding here that is fixed by an edit rather than by
+// stopping something.
+func TestAPolkitChallengeIsSaidAsARefusalAndNamesTheVerb(t *testing.T) {
+	s := healthy()
+	s.Power.Can = []Can{
+		{What: "suspend", Answer: "yes"},
+		{What: "reboot", Answer: "challenge"},
+		{What: "power off", Answer: "challenge"},
+	}
+	r := Judge(s)
+	lines := named(r, "logind")
+	if len(lines) != 2 {
+		t.Fatalf("want a line per verb that would not work, got %d:\n%s", len(lines), r)
+	}
+	for i, verb := range []string{"reboot", "power off"} {
+		c := lines[i]
+		if c.Level != Warn || !strings.Contains(c.Detail, verb) {
+			t.Errorf("logind = %s, want a warning naming %q", c, verb)
+		}
+		if !strings.Contains(c.Detail, `"challenge"`) || !strings.Contains(c.Detail, "would be refused") {
+			t.Errorf("logind = %s, want polkit's own word and what it costs", c)
+		}
+		if !strings.Contains(c.Detail, "polkit.extraConfig") {
+			t.Errorf("logind = %s, want where the rule that fixes it goes", c)
+		}
+	}
+	// And the verb that does work says nothing, because a report where every
+	// line is a warning is one nobody reads to the end.
+	if strings.Contains(r.String(), "suspend would") {
+		t.Errorf("a permitted verb got a line of its own:\n%s", r)
+	}
+	if r.Failed() != 0 {
+		t.Errorf("polkit refusing a reboot failed a check:\n%s", r)
+	}
+}
+
+// "na" is a machine that cannot do it at all rather than one that is not
+// allowed to, and the two are different evenings: one is a polkit rule to
+// write, and the other is hardware.
+func TestAVerbTheMachineCannotDoIsNotSaidAsARefusal(t *testing.T) {
+	s := healthy()
+	s.Power.Can[0] = Can{What: "suspend", Answer: "na"}
+	c := only(t, Judge(s), "logind")
+	if c.Level != Warn || !strings.Contains(c.Detail, "not available on this machine") {
+		t.Errorf("logind = %s, want it separated from a refusal", c)
+	}
+	if strings.Contains(c.Detail, "polkit") {
+		t.Errorf("logind = %s, want no polkit advice about hardware that cannot suspend", c)
+	}
+}
+
+// A log out with no session to end is the failure this half exists for: zded
+// refuses rather than guessing, which is the right way round and still a key
+// that does nothing. Saying it before somebody presses it is the whole point.
+func TestALogOutWithNoSessionToEndSaysSoBeforeAnybodyPressesIt(t *testing.T) {
+	s := healthy()
+	s.Power.Session = ""
+	c := only(t, Judge(s), "logind")
+	if c.Level != Warn || !strings.Contains(c.Detail, "log out would refuse") {
+		t.Errorf("logind = %s, want a warning about the log out", c)
+	}
+	if !strings.Contains(c.Detail, "loginctl session-status") {
+		t.Errorf("logind = %s, want the command that says what logind can see", c)
+	}
+
+	s.Power.SessionErr = errors.New("Rejected send message, 1 matched rules")
+	c = only(t, Judge(s), "logind")
+	if c.Level != Warn || !strings.Contains(c.Detail, "matched rules") {
+		t.Errorf("logind = %s, want why logind could not be asked", c)
+	}
+}
+
+// The healthy line names the session, because that is the reading a person
+// checks against `loginctl` when a log out ends the wrong thing - and it says
+// what the four verbs are for, since this check landed before the menu that
+// presses them.
+func TestTheHealthyLogindLineNamesTheSessionALogOutWouldEnd(t *testing.T) {
+	c := only(t, Judge(healthy()), "logind")
+	if c.Level != OK || !strings.Contains(c.Detail, "session 2") {
+		t.Errorf("logind = %s, want the session id it would end", c)
+	}
+	if !strings.Contains(c.Detail, "power menu") {
+		t.Errorf("logind = %s, want what asks for these four", c)
+	}
+}
+
+// Whatever logind answers, this never reaches the exit status: a container has
+// no logind and is not a broken machine, and the smoke test's rule is that
+// doctor exits 0 on a session that works.
+func TestNoLogindAnswerIsEverAFailure(t *testing.T) {
+	for _, answer := range []string{"yes", "no", "na", "challenge", "", "something new"} {
+		s := healthy()
+		s.Power.Can = []Can{{What: "reboot", Answer: answer}}
+		if n := Judge(s).Failed(); n != 0 {
+			t.Errorf("logind answering %q failed %d checks:\n%s", answer, n, Judge(s))
+		}
+	}
+	s := healthy()
+	s.Power.Can[0].Err = errors.New("Connection reset by peer")
+	c := named(Judge(s), "logind")[0]
+	if c.Level != Warn || !strings.Contains(c.Detail, "Connection reset") {
+		t.Errorf("logind = %s, want a warning carrying why it could not be asked", c)
+	}
+}
+
+// The other half of that, and the half only a real bus can show: a session
+// where the bus answers and has nobody on logind's name is a machine that has
+// no logind, which is the verdict the line above must not be confused with. A
+// Logind built by hand says what Judge does with each state and nothing at all
+// about which state the probe produces, and that is where the two are told
+// apart (gather.go, probeLogind).
+func TestABusThatAnswersWithNoLogindOnItIsTheVerdictAndNotAReading(t *testing.T) {
+	busWithNobodyOnIt(t)
+	l := probeLogind()
+	if l.Err != nil {
+		t.Fatalf("probeLogind against a bus that answered = %v, want its answer", l.Err)
+	}
+	if !l.Absent {
+		t.Fatalf("probeLogind = %+v, want a machine with no logind said as one", l)
+	}
+	c := only(t, Judge(Session{Power: l}), "logind")
+	if c.Level != Warn || !strings.Contains(c.Detail, "nothing can log out") {
+		t.Errorf("logind = %s, want the warning that names what would not work", c)
+	}
+}
+
+// busWithNobodyOnIt is a private message bus with nobody on it at all.
+//
+// A real dbus-daemon rather than a fake at the Go boundary, for the reason
+// internal/link's fake NetworkManager is one (fakebus_test.go): what is being
+// asserted here is what the other end says, and the seam is the same single
+// environment variable, so no production code learns it is being tested.
+func busWithNobodyOnIt(t *testing.T) {
+	t.Helper()
+	const daemon = "dbus-daemon"
+	if _, err := exec.LookPath(daemon); err != nil {
+		t.Skipf("no %s on PATH, so there is no bus that answers to ask about logind: "+
+			"add pkgs.dbus to the devshell (flake.nix) and this runs", daemon)
+	}
+	cfg := filepath.Join(t.TempDir(), "bus.conf")
+	// The socket goes wherever the daemon puts it: a unix socket path is capped
+	// at about 108 bytes and a Go temp directory has spent most of that.
+	if err := os.WriteFile(cfg, []byte(`<!DOCTYPE busconfig PUBLIC
+ "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>session</type>
+  <listen>unix:tmpdir=/tmp</listen>
+  <auth>EXTERNAL</auth>
+  <policy context="default">
+    <allow own="*"/>
+    <allow send_destination="*"/>
+    <allow receive_sender="*"/>
+  </policy>
+</busconfig>
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(daemon, "--config-file="+cfg, "--nofork", "--print-address")
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	line, err := bufio.NewReader(out).ReadString('\n')
+	if err != nil {
+		cmd.Process.Kill() //nolint:errcheck // already failing
+		t.Fatalf("%s never printed an address: %v", daemon, err)
+	}
+	t.Cleanup(func() {
+		// Interrupt rather than kill, so it unlinks its socket on the way out
+		// instead of leaving one in /tmp per test run.
+		cmd.Process.Signal(os.Interrupt) //nolint:errcheck // it is going away either way
+		cmd.Wait()                       //nolint:errcheck // its exit status is not this test's business
+	})
+	t.Setenv("DBUS_SYSTEM_BUS_ADDRESS", strings.TrimSpace(line))
+}
+
+// The probe half. Every check here has to work on a machine where the thing is
+// simply absent, and a bus that is not there is the ordinary case in a build
+// sandbox and a container - so it has to answer, quickly, rather than hang the
+// one command somebody runs when something is already wrong.
+func TestTheLogindProbeAnswersOnAMachineWithNoSystemBus(t *testing.T) {
+	t.Setenv("DBUS_SYSTEM_BUS_ADDRESS", "unix:path="+filepath.Join(t.TempDir(), "no-bus-here"))
+	start := time.Now()
+	l := probeLogind()
+	if l.Err == nil {
+		t.Fatalf("probeLogind against nothing = %+v, want the absence said out loud", l)
+	}
+	if took := time.Since(start); took > askFor+bus.Within {
+		t.Errorf("probeLogind took %s with no bus to talk to, and doctor is the command that has to come back", took)
+	}
+	if c := only(t, Judge(Session{Power: l}), "logind"); c.Level != Warn {
+		t.Errorf("logind = %s, want a warning and not a failure", c)
 	}
 }
 
@@ -524,6 +980,16 @@ func TestRunIsBounded(t *testing.T) {
 	_, err := run(50*time.Millisecond, "sleep", "30")
 	if err == nil || !strings.Contains(err.Error(), "did not answer") {
 		t.Errorf("run of a program that never returns = %v, want a deadline", err)
+	}
+	// And a program's silence stays tellable from its answer, which is what
+	// lets zcr timing out be a fact about the machine rather than a fault
+	// written down beside somebody's desk (resolves).
+	var late noAnswer
+	if !errors.As(err, &late) {
+		t.Errorf("run of a program that never returns = %v, want it recognisable as no answer", err)
+	}
+	if _, err := run(probeTimeout, "sh", "-c", "echo said something >&2; exit 1"); errors.As(err, &late) {
+		t.Errorf("a program that complained and exited = %v, want that told apart from silence", err)
 	}
 }
 
