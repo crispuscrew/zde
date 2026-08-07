@@ -2494,15 +2494,43 @@ func TestNotificationClosedTakesTheRightOneOff(t *testing.T) {
 	}
 }
 
-// The body is kept even though nothing shows it, so the notification center
-// has it when it exists.
-func TestNotificationKeepsTheBody(t *testing.T) {
-	s, jrn, _ := queueTestServer(t, "vshop.DP-1.code")
-	if _, err := s.Arrived(attn.Notification{From: "ci", Text: "the build failed", Body: "on the third try"}); err != nil {
+// The message a notification carried is somebody's mail, and the journal is a
+// file: fsynced a line at a time, compacted only at Open, and still there in
+// the morning. The record in memory keeps the whole of it, which is what the
+// notification center shows; what reaches the disk is the row the queue is made
+// of and nothing else (internal/journal, Item).
+//
+// Asserted against the bytes of the file, because what is on the disk is the
+// whole of what this promises.
+func TestANotificationBodyNeverReachesTheJournal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "j.jsonl")
+	jrn, err := journal.Open(path)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if got := jrn.State().Queue[0].Body; got != "on the third try" {
-		t.Errorf("body = %q, want what was sent with it", got)
+	defer jrn.Close()
+	niri := &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code", output: "DP-1"}
+	s := New("test", jrn, niri, nil)
+	if _, err := s.Arrived(attn.Notification{
+		From: "clinic", Text: "your results are in", Body: "the biopsy came back clear",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "the biopsy came back clear") {
+		t.Error("a notification body is in the journal, where it outlives the session and anything that can read the state directory can read it")
+	}
+	if !strings.Contains(string(raw), "your results are in") {
+		t.Error("nothing was queued: the row is what a queue item is, and losing it is zde forgetting what you still owe")
+	}
+	// And the whole of it is still in the center, which is the half allowed to
+	// have it: display policy, never data policy (docs/vision.md, principle 3).
+	if seen := s.history.Recent(); len(seen) != 1 || seen[0].Body != "the biopsy came back clear" {
+		t.Errorf("history = %+v, want the message itself kept in memory", seen)
 	}
 }
 

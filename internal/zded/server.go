@@ -1182,8 +1182,10 @@ func (s *Server) Arrived(n attn.Notification) (uint64, error) {
 	}
 	if s.mode().Queues(n.Urgent) {
 		it, err := s.jrn.Queue(journal.Item{
+			// No body. The record above keeps the whole message in memory for
+			// the center to show; the journal is a file, and a file is not
+			// where somebody's mail goes (internal/journal, Item).
 			Text:   rec.Text,
-			Body:   rec.Body,
 			Desk:   rec.Desk,
 			From:   rec.From,
 			Urgent: rec.Urgent,

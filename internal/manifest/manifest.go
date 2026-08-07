@@ -286,8 +286,36 @@ func (dir Dir) Save(d *Desk) (string, error) {
 	if err := d.check(); err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(string(dir), 0o755); err != nil {
+	// 0700, and 0600 on the file below. A manifest is config a person edits and
+	// not a secret, but it is the file that says which desk is the private one
+	// and which directories the work on each desk is mounted from - and the
+	// point of a private desk is that it is not advertised (docs/vision.md,
+	// section 3). Nothing but zded reads these, and zded is the session.
+	if err := os.MkdirAll(string(dir), 0o700); err != nil {
 		return "", err
+	}
+	// MkdirAll's mode is only used for a directory it creates, so on its own the
+	// 0700 above reaches every machine except the ones that need it: one that
+	// has taken a snapshot before this was written already has the directory, at
+	// the 0755 the old code asked for, and MkdirAll leaves it as it found it.
+	// The chmod on every Save is what reaches those.
+	//
+	// The manifests already in it are deliberately left alone. A manifest is a
+	// file a person writes by hand, and silently rewriting its mode is zde
+	// changing their file behind their back; under a 0700 directory a 0644
+	// manifest is unreadable by anybody else anyway. That is also why a refusal
+	// here is an error where the journal's equivalent is best effort: there the
+	// file's own 0600 carries the privacy, here the directory is what stands
+	// between another account and a manifest zde will not chmod.
+	//
+	// Only for the directory zde picked for itself, cleaned so that a trailing
+	// slash makes no difference. `zded -desks /tmp` would otherwise take the
+	// machine's temp directory private on its way past, which is the restraint
+	// internal/journal already keeps for `-journal`.
+	if filepath.Clean(string(dir)) == DefaultDir() {
+		if err := os.Chmod(string(dir), 0o700); err != nil {
+			return "", fmt.Errorf("%s cannot be made 0700, and it says which of your desks is the private one: %w", dir, err)
+		}
 	}
 	path := filepath.Join(string(dir), d.Name+".yaml")
 	if _, err := os.Stat(path); err == nil {
@@ -299,7 +327,7 @@ func (dir Dir) Save(d *Desk) (string, error) {
 	}
 	header := "# Written by zde desk snapshot. Apps are not captured yet - add\n" +
 		"# them by hand (docs/model.md, section 5).\n"
-	if err := os.WriteFile(path, append([]byte(header), out...), 0o644); err != nil {
+	if err := os.WriteFile(path, append([]byte(header), out...), 0o600); err != nil {
 		return "", err
 	}
 	return path, nil

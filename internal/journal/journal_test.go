@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -698,4 +699,251 @@ func TestWaitingHandsBackACopy(t *testing.T) {
 	if again := j.Waiting(); again[0].Text != "reply to ilya" {
 		t.Errorf("the queue now says %q, edited through what a reader was handed", again[0].Text)
 	}
+}
+
+// The mode is the whole of what keeps this file to the person it belongs to.
+//
+// The queue in here is the summary of every notification that reached it, and
+// the directory above it is not always a private one - XDG_STATE_HOME goes
+// wherever it is pointed and DefaultPath falls back to /tmp (see journalMode).
+// Checked after a compaction as well, because compaction writes a new file and
+// renames it over this one: a mode set only at Open would hold until the
+// journal got long enough to be rewritten, and then quietly stop holding.
+func TestTheJournalAndTheDirectoryZdeMakesForItAreReadableByNobodyElse(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "state", "zde")
+	path := filepath.Join(dir, "journal.jsonl")
+	j := open(t, path)
+	if err := j.SetLastDesk("vshop"); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := mode(t, path); got != journalMode {
+		t.Errorf("a new journal is %04o, and anything wider than %04o is somebody else's read of your notifications", got, journalMode)
+	}
+	if got := mode(t, dir); got != stateDirMode {
+		t.Errorf("the directory zde made for it is %04o, want %04o", got, stateDirMode)
+	}
+
+	if err := j.Compact(); err != nil {
+		t.Fatal(err)
+	}
+	if got := mode(t, path); got != journalMode {
+		t.Errorf("a compacted journal is %04o: the rewrite widened it back to what anybody can read", got)
+	}
+}
+
+// The machine that has been running zde since before this was fixed.
+//
+// Its journal is 0644 and full of what it has been told since login, and a fix
+// that reached only the files it creates would leave that one exactly as it was
+// and call the problem solved. The directory goes with it, but only because it
+// is the one zde chose for itself - see the test below.
+func TestAJournalAnEarlierZdeLeftReadableIsTightenedWhenItIsOpened(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	path := DefaultPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(
+		`{"kind":"queued","id":7,"text":"ilya: about the invoice","desk":"vshop"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Said again rather than left to WriteFile, whose mode is masked by whatever
+	// umask the test is running under: this has to start wide to prove anything.
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	j := open(t, path)
+	if got := mode(t, path); got != journalMode {
+		t.Errorf("a journal that was already there is still %04o, so every notification an earlier zde wrote down is still readable by anybody with an account here", got)
+	}
+	if got := mode(t, filepath.Dir(path)); got != stateDirMode {
+		t.Errorf("zde's own state directory is still %04o, want %04o", got, stateDirMode)
+	}
+	// And it is still the journal it was. Tightening a file is not a reason to
+	// forget what somebody owes.
+	if q := j.State().Queue; len(q) != 1 || q[0].Text != "ilya: about the invoice" {
+		t.Errorf("queue = %+v, want what the older journal had on it", q)
+	}
+}
+
+// A directory somebody named is not zde's to take private.
+//
+// `zded -journal /tmp/live.jsonl` is what the smoke test runs, and it puts the
+// journal in a directory belonging to the whole machine. Chmodding that would
+// do far more harm than the listing it prevents, and it would do it to a
+// directory zde does not own. The file's own mode is what keeps the lines
+// unreadable, and that one is set wherever the journal was put.
+func TestADirectorySomebodyElseNamedIsLeftAlone(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	shared := filepath.Join(t.TempDir(), "shared")
+	if err := os.MkdirAll(shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(shared, "live.jsonl")
+	open(t, path)
+
+	if got := mode(t, shared); got != 0o755 {
+		t.Errorf("a directory zde was pointed at is now %04o: it took a shared directory private on its way past", got)
+	}
+	if got := mode(t, path); got != journalMode {
+		t.Errorf("the journal in it is %04o, want %04o wherever it was put", got, journalMode)
+	}
+}
+
+// The other half of the same upgrade: what the earlier zde already wrote.
+//
+// It put the whole of every notification in here, so tightening the mode alone
+// leaves a file that is private and still full of somebody's mail. Compaction
+// runs at Open and nowhere else, so this is the one chance to rewrite it, and a
+// journal that carried a body is rewritten whatever its length.
+func TestAJournalWrittenByAnEarlierZdeLosesTheNotificationBodiesInIt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "journal.jsonl")
+	if err := os.WriteFile(path, []byte(
+		`{"kind":"queued","id":1,"text":"your results are in","body":"the biopsy came back clear","from":"clinic"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	j := open(t, path)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "the biopsy came back clear") {
+		t.Error("the journal still holds a body an older zde wrote, so this protects the next notification and none of the ones already on the disk")
+	}
+	// The item itself stays. What is owed is not the part being taken away.
+	if q := j.State().Queue; len(q) != 1 || q[0].Text != "your results are in" || q[0].From != "clinic" {
+		t.Errorf("queue = %+v, want the item that was waiting, minus the message", q)
+	}
+	if !strings.Contains(string(raw), "your results are in") {
+		t.Error("the rewrite dropped the item as well as the body: a message is worth protecting, an empty queue is not")
+	}
+}
+
+// A symlink where the journal should be is refused, not followed.
+//
+// Without O_NOFOLLOW the open lands on whatever the link points at, and then
+// everything downstream is right about the wrong file: the descriptor chmod
+// tightens the target, and a session's worth of notification summaries is
+// appended to a file somebody else chose. ELOOP instead, and the target is
+// left exactly as it was found.
+func TestASymlinkAtTheJournalItselfIsRefusedRatherThanFollowed(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "somebody-elses.jsonl")
+	if err := os.WriteFile(target, []byte("theirs\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Past the umask, so that a chmod landing here would be visible.
+	if err := os.Chmod(target, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "journal.jsonl")
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+
+	j, err := Open(path)
+	if err == nil {
+		j.Close()
+		t.Fatal("opened a journal through a symlink: everything after this is done to a file somebody else named")
+	}
+	if got := mode(t, target); got != 0o644 {
+		t.Errorf("the far end of the link is now %04o: the chmod went through the symlink", got)
+	}
+	raw, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "theirs\n" {
+		t.Errorf("the far end of the link now holds %q: zde wrote through the symlink", raw)
+	}
+}
+
+// And the symlink that is allowed, which is why O_NOFOLLOW and not something
+// that walks the whole path.
+//
+// A state directory on another disk, reached through a link, is an ordinary
+// setup. O_NOFOLLOW constrains the last component only, so it stays ordinary.
+func TestAStateDirectoryThatIsItselfASymlinkStillWorks(t *testing.T) {
+	onTheOtherDisk := filepath.Join(t.TempDir(), "elsewhere")
+	if err := os.MkdirAll(onTheOtherDisk, stateDirMode); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "state")
+	if err := os.Symlink(onTheOtherDisk, link); err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(link, "journal.jsonl")
+	j := open(t, path)
+	if err := j.SetLastDesk("vshop"); err != nil {
+		t.Fatal(err)
+	}
+	if got := mode(t, filepath.Join(onTheOtherDisk, "journal.jsonl")); got != journalMode {
+		t.Errorf("the journal through a linked directory is %04o, want %04o", got, journalMode)
+	}
+}
+
+// What a refused chmod means, which is two opposite things.
+//
+// This is a decision that cannot be arranged on the disk a test runs on: it
+// needs a file belonging to another account, or a filesystem with no
+// permission bits, and a unit test has neither. So the choice itself is the
+// thing under test, and the inputs it is made from are what tighten reads off
+// the open descriptor.
+func TestAJournalThatIsSomebodyElsesIsFatalAndOneThatCannotHoldAModeIsNot(t *testing.T) {
+	refused := errors.New("operation not permitted")
+
+	// Somebody else's. The old code read every refusal this way, which is the
+	// half that was right.
+	err := chmodRefused("/home/them/.local/state/zde/journal.jsonl", refused, 1001, 1000)
+	if err == nil {
+		t.Fatal("a journal belonging to another account started anyway, and zde is now appending your notifications to it")
+	}
+	if !errors.Is(err, refused) {
+		t.Errorf("the refusal lost what the kernel said: %v", err)
+	}
+
+	// Ours, and the filesystem cannot hold a mode. vfat, exFAT and some 9p and
+	// SMB mounts, where refusing to start costs a person the whole session to
+	// enforce something the disk was never able to have.
+	if err := chmodRefused("/mnt/stick/zde/journal.jsonl", refused, 1000, 1000); err != nil {
+		t.Errorf("a journal that is ours on a filesystem with no permission bits stopped the daemon: %v", err)
+	}
+}
+
+// And where those two numbers come from.
+//
+// Off the descriptor, not the path: it names the file that was opened, which
+// is the same reason the chmod is on the descriptor. A descriptor that cannot
+// answer reports -1, which equals no uid, so an unanswerable file is treated
+// as somebody else's - the fail-closed way round.
+func TestTheOwnerOfAJournalIsReadOffTheOpenDescriptor(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "journal.jsonl")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, journalMode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ownerOf(f); got != os.Getuid() {
+		t.Errorf("ownerOf = %d, want %d: a file this process just made is this process's", got, os.Getuid())
+	}
+	f.Close()
+	if got := ownerOf(f); got != -1 {
+		t.Errorf("ownerOf = %d on a descriptor that cannot answer, want -1 so that it counts as somebody else's", got)
+	}
+}
+
+// mode is a path's permission bits and nothing else about it.
+func mode(t *testing.T, path string) os.FileMode {
+	t.Helper()
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fi.Mode().Perm()
 }
