@@ -16,6 +16,11 @@
 // sockets (docs/vision.md, section 2 - the shell is a thin adapter with zero
 // logic inside), which is also why a tier here is a name and never a command.
 //
+// One question does not come from the keyboard: `zde ask panel <question>`
+// typed at a terminal opens the panel with it already asked. What that means
+// for a conversation already on screen is the one decision this file makes
+// about somebody else's words (see askFromOutside).
+//
 // Nothing is kept. The transcript is a property of a window, closing clears it,
 // and no part of this writes anything anywhere - which is what "no history by
 // default" means (vision.md, section 2). There is no history file to turn off
@@ -88,7 +93,10 @@ PanelWindow {
     signal dismissed
     signal shown(string token)
 
-    function show(isPanel, newToken) {
+    // question is set only when the panel was asked for from somewhere with no
+    // window to type into: `zde ask panel <question>` at a terminal. Empty for
+    // every key.
+    function show(isPanel, newToken, question) {
         const wasUp = ask.visible;
         // The key pressed at a window that is already up is not a new window
         // and must not wipe what is on it: Mod+Shift+a with the panel open is
@@ -111,6 +119,61 @@ PanelWindow {
             // reports that nothing did.
             ask.shown(ask.token);
         }
+        // After the acknowledgement, so what the asker hears is that a window
+        // was drawn - which is all it asked and all this can promise. Whether
+        // the question then went out is this window's to show.
+        if ((question ?? "") !== "")
+            ask.askFromOutside(question);
+    }
+
+    // A question that was not typed here: `zde ask panel <question>`.
+    //
+    // It starts a fresh conversation, always, and that is the decision in this
+    // function rather than an accident of where it is called from. The turns a
+    // panel carries are what a question is asked inside, and a question typed
+    // at a terminal was not asked inside anything: joining it to what is on
+    // screen would drop a shell script's question into the middle of somebody's
+    // exchange, carry it into every turn after it, and hand whatever that
+    // exchange contains to the tier along with it - on a provider tier, off the
+    // machine. None of that is undoable except by ctrl+n, which ends the
+    // conversation anyway.
+    //
+    // "Always" is the whole of it, and it is why forget() is the first
+    // statement here rather than a step on the path that ends in submit(). The
+    // branch below cannot ask anything yet, and an early return that left the
+    // turns standing would be the leak with an extra second in front of it: the
+    // answer still arriving lands in turns when it ends (see finished), and the
+    // Enter that finally sends this question would send that with it. A test
+    // reads this function and fails if anything comes before the forget
+    // (internal/zded, wire_test.go).
+    //
+    // The cost is real and is not hidden: a panel with a conversation in it
+    // loses it, which is the same forgetting ctrl+n and Escape already do, and
+    // an answer still on its way is dropped rather than shown under a
+    // conversation that has ended - which is what forget() means everywhere
+    // else too. It is visible in the two places that say what a question is
+    // being asked with: an empty transcript, and no "carrying" beside the tier
+    // name.
+    function askFromOutside(question) {
+        ask.forget();
+        // It does replace anything half-typed in the field. That needs two
+        // hands - a terminal and this window - and the alternative is a
+        // question that arrived and is nowhere.
+        field.text = question;
+        if (ask.running) {
+            // One answer at a time down one connection (internal/zded,
+            // events.go - sink.asking), so this one cannot go now. It waits in
+            // the field with a line saying why, rather than being dropped: a
+            // question that vanished silently is the failure this whole
+            // component is arranged against, and Enter asks it once the last
+            // answer ends. Set after the forget, which clears this line.
+            ask.failure = "still answering the last question: press enter to ask this one";
+            return;
+        }
+        // The provider tier, which is what Enter in this window does. ctrl+l
+        // and ctrl+e are still there for the same question, since it is on the
+        // screen the moment this returns.
+        ask.submit("provider", false);
     }
 
     function hide() {

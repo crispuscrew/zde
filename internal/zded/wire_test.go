@@ -471,12 +471,81 @@ func kindsIn(re *regexp.Regexp, src []byte) map[string]bool {
 // machine is running the tests.
 func readShell(t *testing.T) []byte {
 	t.Helper()
-	path := filepath.Join("..", "..", "shell", "shell.qml")
+	return readQML(t, "shell.qml")
+}
+
+func readQML(t *testing.T, name string) []byte {
+	t.Helper()
+	path := filepath.Join("..", "..", "shell", name)
 	src, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return src
+}
+
+// A question that arrived from outside is asked with nothing in front of it,
+// and the surface has to be the thing that promises it.
+//
+// zded broadcasts Event.Question so that `zde ask panel <question>` reaches a
+// window (see askSurface), and what comes back is an ask.run carrying a tier, a
+// question, and the turns the panel is holding. Those turns go to the tier on
+// stdin - on a provider tier, off the machine - so a question typed at a
+// terminal, or by a cron job, or by anything else with no window of its own,
+// must not arrive inside somebody's open exchange and take its contents with
+// it. AskWindow.qml says exactly that in askFromOutside's own comment: "it
+// starts a fresh conversation, always".
+//
+// It did not. The function returned early while an answer was streaming, having
+// put the question in the field; finished() then appended the exchange that was
+// still arriving to ask.turns, and the Enter that finally sent the question sent
+// all of it. Two keystrokes apart from the leak the comment argues against, and
+// nothing failed.
+//
+// So this reads the function and requires the forget to come first. A shape
+// test and not a behaviour test, because there is no QML runner in this repo -
+// and the shape is the property: nothing can return, branch or send before the
+// turns are gone if the first statement is what drops them.
+func TestAQuestionFromOutsideCannotBeAskedInsideSomebodyElsesConversation(t *testing.T) {
+	const fn = "function askFromOutside("
+	src := string(readQML(t, "AskWindow.qml"))
+	i := strings.Index(src, fn)
+	if i < 0 {
+		t.Fatalf("no %s in AskWindow.qml, so this test is checking nothing: either the panel "+
+			"stopped taking a question from outside, and this test should go with it, or the "+
+			"function has another name now and this should follow it", fn)
+	}
+	// Past the rest of the signature line, and no further: an if, a try or an
+	// assignment in front of the forget is exactly what this is looking for, so
+	// nothing that opens a block may be skipped over.
+	body := src[i+len(fn):]
+	j := strings.Index(body, "\n")
+	if j < 0 {
+		t.Fatalf("askFromOutside has no body")
+	}
+	end := strings.Index(body, "\n    }")
+	if end < 0 {
+		t.Fatalf("askFromOutside does not end at this file's indentation, so this test cannot " +
+			"tell where the function stops and is checking something else")
+	}
+	body = body[j+1 : end]
+
+	first := ""
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		// Comments and the blank lines between them: neither carries a
+		// conversation anywhere.
+		if line == "" || strings.HasPrefix(line, "//") {
+			continue
+		}
+		first = line
+		break
+	}
+	if first != "ask.forget();" {
+		t.Errorf("the first thing askFromOutside does is %q, not ask.forget(): a question that was "+
+			"not typed in this window is asked inside whatever conversation the panel is holding, "+
+			"and every turn of it goes to the tier with it", first)
+	}
 }
 
 // "kind" is an ordinary word, and only one of them is an event kind. The

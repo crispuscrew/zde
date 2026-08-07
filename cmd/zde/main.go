@@ -346,11 +346,21 @@ func runDoctor() error {
 // ask is the quick LLM (docs/vision.md, section 2), in the two shapes it has:
 // a surface, which is what the keys press, and a terminal.
 //
-// A question typed here is answered here, and never in a popup. It was typed
-// into a terminal, so the answer belongs where it can be read back, piped and
-// kept - a popup would take it somewhere none of that is true. Without a
-// question there is nothing to type into, so the key asks the shell for a
-// window, and says so plainly when there is no shell to ask.
+// oneshot is one question and one answer, and a question typed here is answered
+// here, never in a popup: it was typed into a terminal, so the answer belongs
+// where it can be read back, piped and kept - a popup would take it somewhere
+// none of that is true. Without a question there is nothing to type into, so
+// the key asks the shell for a window, and says so plainly when there is no
+// shell to ask.
+//
+// panel is the other verb and it names the other thing, with or without a
+// question. The panel is the window that stays open and carries what was asked
+// in it into the next question, and none of that exists in a terminal - so a
+// question here opens the panel with it already asked rather than printing an
+// answer, which is what oneshot is for and what a script that wants text should
+// still use. It used to run a provider oneshot and ignore the word "panel"
+// entirely: harmless while nobody relied on it, and a verb that quietly does
+// something else is worse the longer it is left.
 //
 // local and escalate are terminal verbs only. They are the tiers the surface
 // reaches with a key of its own, and from here they are how a private question
@@ -369,11 +379,13 @@ func ask(kind, question string) error {
 	}
 	defer c.Close()
 	switch kind {
-	case "oneshot", "panel":
+	case "oneshot":
 		if question == "" {
-			return askSurface(c, "ask."+kind)
+			return askSurface(c, "ask.oneshot", "")
 		}
 		return askRun(c, zded.TierProvider, question)
+	case "panel":
+		return askSurface(c, "ask.panel", question)
 	case zded.TierLocal, zded.TierEscalate:
 		if question == "" {
 			return fmt.Errorf("zde ask %s takes the question, in an argument or on stdin: say what to ask", kind)
@@ -419,17 +431,36 @@ func questionOnStdin() (string, error) {
 // below anything that would make a daemon read a file it did not want.
 const questionMax = 64 << 10
 
-// askSurface asks the shell to open one. Nothing to print when no shell
-// answers: the switcher can fall back to its list, and a question nobody has
-// typed yet has no list - so this says how to ask from here instead, which is
-// the only useful thing left to say.
-func askSurface(c *zded.Client, method string) error {
+// askSurface asks the shell to open one, with the question already asked where
+// there is one. Nothing to print when no shell answers: the switcher can fall
+// back to its list, and a question nobody has typed yet has no list - so this
+// says how to ask from here instead, which is the only useful thing left to
+// say.
+//
+// A question and no shell is the case worth being loud about, and it is why
+// this refuses rather than quietly asking the tier itself. Falling back to
+// printing an answer would be the same verb doing two different things
+// depending on whether a shell happened to be up, which is exactly what nobody
+// can write a script against - so the failure says what did not happen and
+// names the verb that does work here.
+func askSurface(c *zded.Client, method, question string) error {
+	// Sent as no argument rather than an empty one: a surface opened to type
+	// into and a surface opened with an empty question are the same thing, and
+	// zded refuses the second (internal/zded, server.go).
+	var args []string
+	if question != "" {
+		args = []string{question}
+	}
 	var shown bool
-	if err := c.Call(method, &shown); err != nil {
+	if err := c.Call(method, &shown, args...); err != nil {
 		return err
 	}
 	if shown {
 		return nil
+	}
+	if question != "" {
+		return errors.New("no shell to draw the ask panel, so that question was not asked: " +
+			"`zde ask oneshot` takes the same question and answers here")
 	}
 	return errors.New("no shell to draw the ask window: ask from a terminal instead, " +
 		"as `zde ask oneshot what is the capital of peru`")
@@ -1423,8 +1454,13 @@ func usage() {
                          answer arrives here, streamed as it comes; without one
                          it opens the popup, and says so when no shell can
   zde ask panel [QUESTION]
-                         the same, in the window that stays open to keep asking
-                         (Mod+Shift+a)
+                         the window that stays open to keep asking
+                         (Mod+Shift+a), carrying what was asked in it into the
+                         next question. With a question it opens the panel with
+                         that one asked and nothing in front of it, so the
+                         answer arrives in the window and not here; with no
+                         shell to draw one, nothing is asked and it says so.
+                         Use oneshot for an answer on stdout
   zde ask local QUESTION the private tier, which is the one that runs with no
                          network
   zde ask escalate QUESTION

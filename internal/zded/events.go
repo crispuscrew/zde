@@ -72,6 +72,17 @@ type Event struct {
 	// asker learns that something was actually shown rather than merely
 	// written to (see Switcher.Shown).
 	Token string `json:"token,omitempty"`
+	// Question is what the panel should open with already asked
+	// (EventAskPanel), and empty for a panel somebody opened to type into.
+	// It exists because `zde ask panel <question>` names a surface rather than
+	// a terminal: the question was typed somewhere with no window, and the only
+	// way it reaches the window is with the event that opens it.
+	//
+	// Its own field rather than Text, which is a piece of an answer coming the
+	// other way. One field carrying both directions would be a shell deciding
+	// which it had by the event kind, and a kind it did not know would be a
+	// question drawn as an answer.
+	Question string `json:"question,omitempty"`
 	// Text is a piece of an answer as it arrives (EventAskText, internal/zded
 	// ask.go). Pieces rather than one reply at the end, because an answer takes
 	// seconds and a window that shows nothing until the last of it looks broken.

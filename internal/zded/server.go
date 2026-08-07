@@ -531,17 +531,36 @@ func (s *Server) Dispatch(req Request) Response {
 			return Response{Error: "desk.switcher takes no arguments"}
 		}
 		return s.switcher()
-	case "ask.oneshot", "ask.panel":
-		// The surface, and only the surface: the question is typed into it, so
-		// there is nothing to pass here. Which one is the kind of the event,
-		// because that is the whole difference between them.
+	case "ask.oneshot":
+		// The surface, and only the surface. A question typed at a terminal is
+		// answered at that terminal (cmd/zde, ask), which is what a oneshot is,
+		// so one never arrives here to be drawn.
 		if len(req.Args) != 0 {
-			return Response{Error: req.Method + " takes no arguments: the question is typed into the window"}
+			return Response{Error: "ask.oneshot takes no arguments: the question is typed into the window"}
 		}
-		if req.Method == "ask.panel" {
-			return s.askSurface(EventAskPanel)
+		return s.askSurface(EventAsk, "")
+	case "ask.panel":
+		// The panel, optionally with the first question already in it. That is
+		// the difference between the two verbs and not a convenience: `zde ask
+		// panel <question>` names a window that stays open, so the question
+		// goes to the window and the answer arrives there, where the next
+		// question can build on it.
+		if len(req.Args) > 1 {
+			return Response{Error: "ask.panel takes the question to open with, or nothing to open a panel to type into"}
 		}
-		return s.askSurface(EventAsk)
+		question := ""
+		if len(req.Args) == 1 {
+			// Trimmed here rather than in the window, so that what the surface
+			// draws and what a tier is handed are the same string: askRun trims
+			// too, and a question that arrived on stdin brings a newline with
+			// it. Refused when that leaves nothing, in the words askRun uses -
+			// an empty question is the one thing no tier can be asked.
+			question = strings.TrimSpace(req.Args[0])
+			if question == "" {
+				return Response{Error: "nothing to ask: say what the question is"}
+			}
+		}
+		return s.askSurface(EventAskPanel, question)
 	case MethodAskRun:
 		// Handled by the connection rather than here (see handle), for the same
 		// reason events are: an answer is not one reply. Named here so it is a

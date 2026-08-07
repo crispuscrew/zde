@@ -1036,3 +1036,70 @@ func TestAskOneshotTellsAListenerAndSaysWhetherItDrew(t *testing.T) {
 		t.Error("the event carries no token, so nothing can say it drew the window")
 	}
 }
+
+// `zde ask panel <question>` names a window, and the question was typed
+// somewhere that has none - so the event that opens the panel is the only thing
+// that can carry it there. Without this the verb opens an empty panel and the
+// question is simply gone, which is the quieter half of the same defect that
+// had it running a provider oneshot instead.
+func TestAPanelAskedForWithAQuestionOpensWithThatQuestionInIt(t *testing.T) {
+	f := &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code", output: "DP-1"}
+	s := New("test", nil, f, nil)
+	rec := &recorder{}
+	s.listen(&sink{w: rec})
+
+	// With the whitespace a question read from a pipe brings with it: what the
+	// window draws and what a tier is handed have to be the same string, and
+	// askRun trims.
+	resp := s.Dispatch(Request{Method: "ask.panel", Args: []string{"  what is the capital of peru\n"}})
+	if resp.Error != "" {
+		t.Fatalf("ask.panel with a question: %s", resp.Error)
+	}
+	var got struct{ Event Event }
+	line := strings.TrimSpace(rec.String())
+	if err := json.Unmarshal([]byte(line), &got); err != nil {
+		t.Fatalf("the event is not one line of json: %q", line)
+	}
+	if got.Event.Kind != EventAskPanel {
+		t.Errorf("kind = %q, want %q", got.Event.Kind, EventAskPanel)
+	}
+	if got.Event.Question != "what is the capital of peru" {
+		t.Errorf("question = %q: the panel opens with what was typed, trimmed the way a tier gets it", got.Event.Question)
+	}
+}
+
+// A question typed at a terminal is answered at that terminal, which is what a
+// oneshot is and what somebody's script depends on. So one never arrives here
+// to be drawn: a popup that accepted one would be a second way to ask the same
+// thing, differing only in where the answer lands.
+func TestTheOneshotPopupIsNeverHandedAQuestion(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
+	rec := &recorder{}
+	s.listen(&sink{w: rec})
+
+	resp := s.Dispatch(Request{Method: "ask.oneshot", Args: []string{"what is the capital of peru"}})
+	if resp.Error == "" {
+		t.Fatal("ask.oneshot took a question, so a question typed in a terminal has two places to go")
+	}
+	if rec.String() != "" {
+		t.Errorf("it was refused and a surface was asked for anyway: %q", rec.String())
+	}
+}
+
+// An empty question is the one thing no tier can be asked (see askRun), and a
+// panel that opened on one would ask it and show the refusal - a window that
+// appeared to say that what opened it was nothing. Refused where it arrives
+// instead, in the words askRun uses.
+func TestAPanelQuestionOfNothingButSpaceOpensNoPanel(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
+	rec := &recorder{}
+	s.listen(&sink{w: rec})
+
+	resp := s.Dispatch(Request{Method: "ask.panel", Args: []string{"   \n"}})
+	if resp.Error == "" {
+		t.Fatal("a question of nothing but space was accepted")
+	}
+	if rec.String() != "" {
+		t.Errorf("nothing was asked and a panel was opened anyway: %q", rec.String())
+	}
+}

@@ -258,7 +258,36 @@ func writeTurn(b *strings.Builder, who, text string) {
 // printing - the question has not been asked yet - so the caller says how to ask
 // from a terminal instead, and that is the CLI's business rather than the
 // daemon's.
-func (s *Server) askSurface(kind string) Response {
+//
+// question is what the panel opens with already asked, and empty for a surface
+// somebody opens to type into.
+//
+// It moves four times between the terminal it was typed at and the tier that
+// answers it, and this is the second of them: in as an argument to ask.panel,
+// out in this event, back in as an argument to ask.run from the surface that
+// drew it, and out on the tier's stdin (see askRun). Three of those four are
+// this socket, which lives in the runtime directory at 0600 under a 0700 parent
+// (see Listen), so a question crossing it stays inside this login. The fourth
+// is a pipe between two processes this user started.
+//
+// Two of the four are method arguments, so "never in an argument to anything"
+// would be false, and the claim that matters is a narrower one: no tier is ever
+// handed a question in argv. That is what keeps it off `ps`, which shows a
+// command line to every user on the machine and not only to this one - and it
+// is a claim about what zded runs rather than about the whole path, because
+// `zde ask panel <question>` does put it in the CLI's own argv, for as long as
+// the call takes (cmd/zde, questionOnStdin, which says so and names stdin as
+// the way round it).
+//
+// The event reaches every connection subscribed to events, not the shell alone.
+// That is what a broadcast is, and it is right here: the question is going to a
+// window somebody is about to look at, so the shell has to hear it whichever of
+// its connections is listening, and nothing else is subscribed except this
+// user's own zde processes on this user's own socket. It is the opposite of the
+// answer, which goes down the one connection that asked and nowhere else, for a
+// reason with a test on it (see askRun and
+// TestAnAnswerGoesOnlyToTheConnectionThatAsked).
+func (s *Server) askSurface(kind, question string) Response {
 	_, output, err := s.niri.FocusedPlace()
 	if err != nil {
 		// Which screen is a detail; not knowing it is not worth refusing over,
@@ -269,7 +298,7 @@ func (s *Server) askSurface(kind string) Response {
 	acked := s.await(token)
 	defer s.stopAwaiting(token)
 
-	if sent := s.broadcast(Event{Kind: kind, Output: output, Token: token}); sent == 0 {
+	if sent := s.broadcast(Event{Kind: kind, Output: output, Token: token, Question: question}); sent == 0 {
 		return ok(false)
 	}
 	select {
