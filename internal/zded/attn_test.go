@@ -436,6 +436,10 @@ func TestANotificationArrivingWhileTheDeskChangesIsNotARace(t *testing.T) {
 	for _, it := range state.Queue {
 		if it.Desk != "vshop" && it.Desk != "haven" {
 			t.Errorf("a notification is filed against %q, which is not a desk", it.Desk)
+		}
+	}
+}
+
 // One download, ninety-nine progress updates, one row.
 //
 // replaces_id is the sender saying this is the same notification with something
