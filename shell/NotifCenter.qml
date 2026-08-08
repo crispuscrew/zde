@@ -11,8 +11,14 @@
 // you are on lists what its sender said can be done about it, one digit each,
 // and Enter is the default action where there is one. That is what makes zded
 // claiming the spec's "actions" capability true rather than a promise (see
-// internal/attn, GetCapabilities) - an app's buttons are reachable here, behind
-// Mod+n, because there is no popup to put them on yet.
+// internal/attn, GetCapabilities).
+//
+// The popup (AttnPopup.qml) offers the same buttons the moment something
+// arrives, which is not a reason for this to stop: a popup is subject to the
+// mode and to five seconds, and this is where every arrival is, on your own
+// time. The two share a vocabulary on purpose - j/k, a digit per action, Enter
+// for the default, d to dismiss - because they are two views of one thing and
+// must not want two sets of fingers.
 //
 // The same shape as Picker.qml, and deliberately not the same surface. A picker
 // hands back the key of a row and knows nothing else; this one has several

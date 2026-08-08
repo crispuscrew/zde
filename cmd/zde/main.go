@@ -72,6 +72,8 @@ func run(args []string) error {
 		return attnMode("attn.quiet")
 	case len(args) == 2 && args[0] == "system" && args[1] == "notif-center":
 		return notifCenter()
+	case len(args) == 2 && args[0] == "system" && args[1] == "notif-reach":
+		return notifReach()
 	case len(args) == 1 && args[0] == "attn":
 		return attnMode("attn.mode")
 	case len(args) == 2 && args[0] == "attn":
@@ -332,11 +334,12 @@ func status() error {
 		fmt.Printf("journal    %d entries could not be read\n", st.Skipped)
 	}
 	// The cost of a fail-closed answer, said rather than left to be discovered
-	// as a history that will not fill up. It is only ever non-zero on a machine
-	// that declares a private desk, and it says which of the two things to fix:
-	// a desk nothing has named yet, or a compositor nothing can read.
+	// as a history that will not fill up and a session that stops drawing
+	// cards. It is only ever non-zero on a machine that declares a private
+	// desk, and it says which of the two things to fix: a desk nothing has
+	// named yet, or a compositor nothing can read.
 	if st.Unplaced > 0 {
-		fmt.Printf("unplaced   %d arrivals kept in memory: no desk could be named for them, and one here is private\n", st.Unplaced)
+		fmt.Printf("unplaced   %d arrivals kept in memory and drew no card: no desk could be named for them, and one here is private\n", st.Unplaced)
 	}
 	// The desks that are not there. Printed last and one per line, because this
 	// is the answer to "why is my desk gone", and a count would send someone
@@ -560,6 +563,31 @@ func attnMode(method string, args ...string) error {
 		return err
 	}
 	fmt.Println(a.Mode)
+	return nil
+}
+
+// notifReach puts the keyboard on the newest popup, which is the only way one
+// ever holds it (internal/zded, EventAttnReach).
+//
+// Nothing to fall back to printing, unlike the center: what this asks for is not
+// a list, it is the keys going somewhere else for a moment. So the failure is a
+// sentence, and it says both things it could mean at once - no popup is up, or
+// no shell is running to have drawn one - because from the far side of a
+// keypress those are one fact, and the next place to look is the same either way.
+func notifReach() error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	var r zded.Reach
+	if err := c.Call("attn.reach", &r); err != nil {
+		return err
+	}
+	if r.Reached {
+		return nil
+	}
+	fmt.Println("no popup to reach: what has arrived is in the notification center")
 	return nil
 }
 
@@ -1607,6 +1635,10 @@ func usage() {
                          what arrived (Mod+n); prints the history when no
                          shell is up - id, urgency, when, sender, whether it
                          is waiting, done or silent, and the text
+  zde system notif-reach put the keyboard on the newest popup (Mod+Ctrl+n), so
+                         its sender's buttons can be pressed. A popup never
+                         takes the keyboard on its own, which is why this key
+                         exists; says so when there is no popup to reach
   zde desk queue-jump    go to where the oldest thing waiting is
   zde desk regulars      the band that belongs to no desk (comms, music)
   zde desk last          go back to the desk you came from

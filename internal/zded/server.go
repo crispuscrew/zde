@@ -155,11 +155,12 @@ type Status struct {
 	// carries on with the manifests that do work, and says here which ones it
 	// gave up on.
 	BadManifests []string `json:"badManifests,omitempty"`
-	// Unplaced is how many arrivals were kept in memory only because nothing
-	// could say which desk they came in on while a desk here is declared
-	// private. It is the fail-closed answer being loud about what it costs: on
-	// that machine the alternative is a notification history that empties
-	// itself and never says why (internal/zded, privateArrival).
+	// Unplaced is how many arrivals were kept in memory and drew no card only
+	// because nothing could say which desk they came in on while a desk here is
+	// declared private. It is the fail-closed answer being loud about what it
+	// costs: on that machine the alternative is a notification history that
+	// empties itself and a session that quietly stops showing anything, neither
+	// of them ever saying why (internal/zded, privateArrival).
 	Unplaced int `json:"unplaced,omitempty"`
 }
 
@@ -199,6 +200,15 @@ type Server struct {
 	// which written keeps track of (history.go).
 	history attn.History
 	written written
+
+	// The popup path (attn.go). A buffered channel and one goroutine, because
+	// an arrival comes off the bus with an app blocked on the reply and must
+	// never wait for a shell to draw: see pop. popupStop is what ends the pump,
+	// closed once by Close.
+	popups    chan Event
+	startPump sync.Once
+	popupStop chan struct{}
+	stopPump  sync.Once
 
 	// The network side (net.go). openLink is a field for the same reason launch
 	// is: the tests need a manager without a system bus under them, and the
@@ -264,9 +274,9 @@ type Server struct {
 	mu       sync.Mutex
 	ln       net.Listener
 	problems []string
-	// unplaced counts the arrivals this session refused to write down only
-	// because nothing could say which desk they were on, on a machine that
-	// declares a private desk (history.go, couldNotPlace).
+	// unplaced counts the arrivals this session refused to write down and drew
+	// no card for, only because nothing could say which desk they were on, on a
+	// machine that declares a private desk (history.go, couldNotPlace).
 	unplaced uint64
 	subs     map[*sink]struct{}
 	waiting  map[string]chan struct{}
@@ -311,6 +321,10 @@ func New(version string, jrn *journal.Journal, compositor Compositor, desks Desk
 		// ones that have no radio and never asked for one (bluetooth.go, radio;
 		// net.go, links).
 		openBluetooth: func() (Bluetooth, error) { return bt.Dial() },
+		// Made here rather than beside the pump it stops, because Close may run
+		// on a daemon that never received a notification and closing a nil
+		// channel is a panic on the way out of a session (attn.go, pop).
+		popupStop: make(chan struct{}),
 	}
 }
 
@@ -390,6 +404,11 @@ func (s *Server) Serve() error {
 // end them too whichever way it got here.
 func (s *Server) Close() error {
 	s.closeRadio()
+	// And the popup pump, once and never twice: Close is reached from a signal
+	// handler and from the ordinary way out, and closing a closed channel is a
+	// panic on the last line of a session. It is not under s.mu either, because
+	// the pump broadcasts and broadcast takes that lock.
+	s.stopPump.Do(func() { close(s.popupStop) })
 	s.mu.Lock()
 	ln := s.ln
 	s.ln = nil
@@ -759,6 +778,11 @@ func (s *Server) Dispatch(req Request) Response {
 			return Response{Error: "attn.center takes no arguments"}
 		}
 		return s.center()
+	case "attn.reach":
+		if len(req.Args) != 0 {
+			return Response{Error: "attn.reach takes no arguments: it puts the keyboard on the newest popup"}
+		}
+		return s.reach()
 	case "attn.invoke":
 		if len(req.Args) != 2 {
 			return Response{Error: "attn.invoke takes a notification id and the key of the action to press"}
@@ -1361,9 +1385,20 @@ func (s *Server) Arrived(n attn.Notification) (uint64, error) {
 		// ~/.local/state/zde/history.json, start it again. In that order,
 		// because the records are still in the daemon's memory until it goes,
 		// and the next write would put them back (docs/verify.md, section 5).
+		//
+		// Once, and not once per reader: the popup path used to ask again for
+		// itself, which was a second read and parse of every manifest on the
+		// machine for every notification - on the far end of a Notify the
+		// sending app is blocked on - and two reads can disagree if a manifest
+		// is saved between them (attn.go, maybePop).
 		Private: s.privateArrival(on),
 	}
-	if s.mode().Queues(n.Urgent) {
+	// One reading of the mode for both decisions. Asked twice it could answer
+	// twice - `zde attn quiet` lands between them - and a notification that was
+	// queued but not shown, or shown but not queued, would be a session in two
+	// modes at once for one arrival.
+	mode := s.mode()
+	if mode.Queues(n.Urgent) {
 		it, err := s.jrn.Queue(journal.Item{
 			// No body. The record above keeps the whole message in memory for
 			// the center to show; the journal is a file, and a file is not
@@ -1415,6 +1450,11 @@ func (s *Server) Arrived(n attn.Notification) (uint64, error) {
 			}
 		}
 	}
+	// And in front of the person, last: after the record is kept and the queue
+	// has it, and never instead of either. What decides whether anything is
+	// drawn is the session's mode and the desk's own privacy, both of them
+	// display and neither of them touching what is above (attn.go, maybePop).
+	s.maybePop(rec, mode)
 	return rec.ID, nil
 }
 

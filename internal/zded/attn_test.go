@@ -6,9 +6,13 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/crispuscrew/zde/internal/attn"
+	"github.com/crispuscrew/zde/internal/desk"
 	"github.com/crispuscrew/zde/internal/journal"
 	"github.com/crispuscrew/zde/internal/manifest"
 )
@@ -595,6 +599,526 @@ func TestSettingTheNotifierWhileThingsArriveIsNotARace(t *testing.T) {
 	s.Watching(tellTale{ids: &[]uint64{}, forgotten: &[]uint64{}})
 	if err := <-arriving; err != nil {
 		t.Fatal(err)
+	}
+}
+
+// eventsOf reads the events of one kind a listener has been sent. The popup
+// path writes from a goroutine of its own, so a test that walked the buffer once
+// straight after Arrived would be racing the whole point of it.
+func eventsOf(rec *recorder, kind string) []Event {
+	var out []Event
+	for _, line := range strings.Split(rec.String(), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var got struct{ Event Event }
+		if json.Unmarshal([]byte(line), &got) != nil {
+			continue
+		}
+		if got.Event.Kind == kind {
+			out = append(out, got.Event)
+		}
+	}
+	return out
+}
+
+// waitForEvents waits until a listener has been sent at least this many of one
+// kind, and answers with what it has either way, so the assertion is about what
+// arrived rather than about a timeout.
+func waitForEvents(t *testing.T, rec *recorder, kind string, want int) []Event {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		got := eventsOf(rec, kind)
+		if len(got) >= want || time.Now().After(deadline) {
+			return got
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// A notification arriving is a card on the screen with the sender's own buttons
+// on it, and not only a row waiting behind Mod+n. That is the difference between
+// the "actions" capability being a claim about reach and one about immediacy: an
+// app that sends archive and delete has, until now, been offering them to
+// somebody who had to go and look (internal/attn, GetCapabilities).
+func TestAnArrivalIsPutInFrontOfYouWithTheSendersButtonsOnIt(t *testing.T) {
+	s, _, _ := queueTestServer(t, "vshop.DP-1.code")
+	defer s.Close()
+	rec := &recorder{}
+	s.listen(&sink{w: rec})
+
+	id, err := s.Arrived(attn.Notification{
+		From: "Fractal", Text: "Ilya: about the invoice", Body: "the one from March",
+		Actions: []attn.Action{{Key: attn.DefaultAction, Label: "Open"}, {Key: "reply", Label: "Reply"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := waitForEvents(t, rec, EventAttnPopup, 1)
+	if len(got) != 1 {
+		t.Fatalf("the shell was sent %d popups, want the one that arrived", len(got))
+	}
+	ev := got[0]
+	if len(ev.Notifications) != 1 {
+		t.Fatalf("the popup carries %d records, want the one it is about", len(ev.Notifications))
+	}
+	r := ev.Notifications[0]
+	if r.ID != id || r.Text != "Ilya: about the invoice" || r.Body != "the one from March" {
+		t.Errorf("popup record = %+v, want the arrival whole", r)
+	}
+	if len(r.Actions) != 2 || r.Actions[1].Key != "reply" || r.Actions[1].Label != "Reply" {
+		t.Errorf("popup actions = %+v, want every one the sender declared, with its label", r.Actions)
+	}
+	// And on the screen the person is looking at, the way every other surface
+	// zded asks for is: a popup on the monitor you are not using is a popup you
+	// find out about afterwards (docs/model.md, invariant 1).
+	if ev.Output != "DP-1" {
+		t.Errorf("popup output = %q, want the screen being looked at", ev.Output)
+	}
+}
+
+// A popup asks for no acknowledgement, and that is the one thing about it worth
+// pinning in the daemon: the token is how a surface is told to take the keyboard
+// and report back, and an arrival must never be able to ask for that. Only
+// attn.reach does, which is a person pressing a key.
+//
+// The other half of the same fact: nothing on the arrival path waits. Give it a
+// listener that will not finish taking a line and the notification still lands,
+// because the hand-off is a buffered channel and a goroutine (see pop).
+func TestAPopupAsksForNoKeyboardAndTheArrivalWaitsForNoShell(t *testing.T) {
+	s, _, _ := queueTestServer(t, "vshop.DP-1.code")
+	defer s.Close()
+	rec := &recorder{}
+	s.listen(&sink{w: rec})
+	if _, err := s.Arrived(attn.Notification{From: "ci", Text: "the build failed"}); err != nil {
+		t.Fatal(err)
+	}
+	got := waitForEvents(t, rec, EventAttnPopup, 1)
+	if len(got) != 1 {
+		t.Fatalf("the shell was sent %d popups, want one", len(got))
+	}
+	if got[0].Token != "" {
+		t.Errorf("the popup carries token %q: an arriving notification can ask for the keyboard", got[0].Token)
+	}
+}
+
+// Quiet shows nothing at all, and keeps everything. It is the mode for a
+// screencast: a card sliding onto the screen is exactly what somebody in it has
+// decided is worse than being late. What it must not do is forget, because a
+// mode that changed what is recorded would be a mode that decides what happened
+// (docs/vision.md, principle 3).
+//
+// Ordered rather than timed: the pump writes in the order things arrived, so a
+// popup for the second one proves the first was never sent.
+func TestQuietShowsNoPopupAndStillKeepsWhatArrived(t *testing.T) {
+	s, jrn, _ := queueTestServer(t, "vshop.DP-1.code")
+	defer s.Close()
+	rec := &recorder{}
+	s.listen(&sink{w: rec})
+
+	if err := jrn.SetMode("quiet"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Arrived(attn.Notification{From: "ci", Text: "production is down", Urgent: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := jrn.SetMode("work"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Arrived(attn.Notification{From: "chat", Text: "lunch?"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := waitForEvents(t, rec, EventAttnPopup, 1)
+	if len(got) != 1 {
+		t.Fatalf("%d popups reached the shell, want only the one that arrived in work", len(got))
+	}
+	if got[0].Notifications[0].Text != "lunch?" {
+		t.Errorf("the popup was %q: quiet put a card on the screen", got[0].Notifications[0].Text)
+	}
+	if seen := s.history.Recent(); len(seen) != 2 {
+		t.Errorf("history holds %d, want both: quiet stops the popup and never the record", len(seen))
+	}
+}
+
+// Focus shows the emergency and keeps the rest. It is the mode somebody leaves
+// on all afternoon, so a focus that showed every arrival would be work with a
+// different word on the bar, and one that showed none would be quiet.
+func TestFocusShowsOnlyTheUrgentAndKeepsBoth(t *testing.T) {
+	s, jrn, _ := queueTestServer(t, "vshop.DP-1.code")
+	defer s.Close()
+	rec := &recorder{}
+	s.listen(&sink{w: rec})
+
+	if err := jrn.SetMode("focus"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Arrived(attn.Notification{From: "chat", Text: "lunch?"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Arrived(attn.Notification{From: "ci", Text: "production is down", Urgent: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := waitForEvents(t, rec, EventAttnPopup, 1)
+	if len(got) != 1 {
+		t.Fatalf("%d popups reached the shell in focus, want only the urgent one", len(got))
+	}
+	if got[0].Notifications[0].Text != "production is down" {
+		t.Errorf("the popup was %q, want the one the sender called urgent", got[0].Notifications[0].Text)
+	}
+	if seen := s.history.Recent(); len(seen) != 2 {
+		t.Errorf("history holds %d, want both", len(seen))
+	}
+}
+
+// popupServer is a daemon standing on one desk of a directory of manifests,
+// with a journal under it so that arrivals can be recorded and a listener to
+// see what was drawn.
+//
+// Its own helper rather than queueTestServer, which is handed no manifests at
+// all: a machine that declares no desks cannot tell a private one from an open
+// one, and that is the whole question here.
+func popupServer(t *testing.T, focused string, manifests map[string]string) (*Server, *recorder) {
+	t.Helper()
+	dir := t.TempDir()
+	desks := filepath.Join(dir, "desks")
+	if err := os.MkdirAll(desks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range manifests {
+		if err := os.WriteFile(filepath.Join(desks, name+".yaml"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	jrn, err := journal.Open(filepath.Join(dir, "j.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { jrn.Close() })
+	m := desk.Rebuild([]desk.Workspace{
+		{Name: "work.DP-1.code", Output: "DP-1"},
+		{Name: "clinic.DP-1.mail", Output: "DP-1"},
+	}, []string{"DP-1"})
+	s := New("test", jrn, &fakeCompositor{m: m, focused: focused, output: "DP-1"}, manifest.Dir(desks))
+	t.Cleanup(func() { s.Close() })
+	rec := &recorder{}
+	s.listen(&sink{w: rec})
+	return s, rec
+}
+
+// A desk that declares itself private is popups off, history only
+// (docs/vision.md, section 3). The mode gate alone did not know that, so a
+// notification arriving while somebody stood on their private desk put its
+// sender, its summary and its body on the screen for five seconds - which is
+// the exact thing that desk exists to prevent, and worse than the queue-only
+// behaviour it replaced.
+//
+// Both halves in one test, because either alone would pass on a bug: drawing no
+// card ever keeps every secret, and drawing every card keeps none. And the
+// private one is still in the history, because this is display policy and the
+// mode gate makes the same argument (docs/vision.md, principle 3).
+func TestANotificationFromAPrivateDeskIsNeverPutOnTheScreen(t *testing.T) {
+	s, rec := popupServer(t, "clinic.DP-1.mail", map[string]string{
+		"work":   "name: work\nmonitors: { DP-1: { workspaces: [code] } }\n",
+		"clinic": "name: clinic\nprivate: true\nmonitors: { DP-1: { workspaces: [mail] } }\n",
+	})
+	if _, err := s.Arrived(attn.Notification{From: "clinic", Text: "your results are in", Body: "the clinic wrote back"}); err != nil {
+		t.Fatal(err)
+	}
+	// And one from the ordinary desk, which is what proves the first was
+	// withheld rather than the popup path being broken. The pump writes in the
+	// order things arrived, so a card for the second is a card the first never
+	// got.
+	s.niri.(*fakeCompositor).focused = "work.DP-1.code"
+	if _, err := s.Arrived(attn.Notification{From: "ci", Text: "the build failed"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := waitForEvents(t, rec, EventAttnPopup, 1)
+	if len(got) != 1 {
+		t.Fatalf("%d cards were drawn, want only the one from the open desk", len(got))
+	}
+	if drawn := got[0].Notifications[0]; drawn.Text != "the build failed" {
+		t.Errorf("the card said %q, so a private desk's notification was on the screen", drawn.Text)
+	}
+	// And the private one is kept, whole, with the desk it arrived on.
+	seen := s.history.Recent()
+	if len(seen) != 2 {
+		t.Fatalf("history holds %d, want both: a private desk stops the card and never the record", len(seen))
+	}
+	private := seen[1]
+	if private.Text != "your results are in" || private.Body != "the clinic wrote back" || private.Desk != "clinic" {
+		t.Errorf("record = %+v, want the private arrival kept whole with its desk", private)
+	}
+}
+
+// A machine that declares a private desk and cannot say which desk something
+// arrived on draws nothing, because the answer it cannot give is the one that
+// matters. Fail closed is principle 9, and here the cost of guessing wrong is a
+// private desk's notification on a screen somebody is recording.
+//
+// The ordinary machine declares no private desk at all, and there this refusal
+// must not fire: a compositor that cannot be read would otherwise turn every
+// popup off for the rest of the session.
+func TestAnArrivalWithNoDeskDrawsNothingOnlyWhereADeskIsPrivate(t *testing.T) {
+	guarded, rec := popupServer(t, "", map[string]string{
+		"work":   "name: work\nmonitors: { DP-1: { workspaces: [code] } }\n",
+		"clinic": "name: clinic\nprivate: true\nmonitors: { DP-1: { workspaces: [mail] } }\n",
+	})
+	// A compositor that cannot be read, so nothing can say which desk this
+	// arrived on - a wedged niri, or a session before anything is adopted.
+	guarded.niri.(*fakeCompositor).err = errors.New("no compositor")
+	if _, err := guarded.Arrived(attn.Notification{From: "app", Text: "could be anything"}); err != nil {
+		t.Fatal(err)
+	}
+	// And then one that is placeable, so the first can be shown to have been
+	// withheld rather than merely still in flight: the pump writes in the order
+	// things arrived, so a card for the second is a card the first never got.
+	// Asserted by ordering and not by a sleep, because a sleep would pass on the
+	// day the popup path got slower.
+	guarded.niri.(*fakeCompositor).err = nil
+	guarded.niri.(*fakeCompositor).focused = "work.DP-1.code"
+	if _, err := guarded.Arrived(attn.Notification{From: "ci", Text: "the build failed"}); err != nil {
+		t.Fatal(err)
+	}
+	got := waitForEvents(t, rec, EventAttnPopup, 1)
+	if len(got) != 1 {
+		t.Fatalf("%d cards were drawn, want only the one that could be placed", len(got))
+	}
+	if drawn := got[0].Notifications[0]; drawn.Text != "the build failed" {
+		t.Errorf("the card said %q: a machine with a private desk drew one for an arrival it could not place", drawn.Text)
+	}
+	if seen := guarded.history.Recent(); len(seen) != 2 {
+		t.Errorf("history holds %d, want both kept even though one drew no card", len(seen))
+	}
+
+	open, openRec := popupServer(t, "", map[string]string{
+		"work": "name: work\nmonitors: { DP-1: { workspaces: [code] } }\n",
+	})
+	open.niri.(*fakeCompositor).err = errors.New("no compositor")
+	if _, err := open.Arrived(attn.Notification{From: "app", Text: "could be anything"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitForEvents(t, openRec, EventAttnPopup, 1); len(got) != 1 {
+		t.Errorf("a machine with nothing private drew %d cards: an unreadable compositor turned the popups off", len(got))
+	}
+}
+
+// A second manifest naming a desk that is already declared is not how the
+// first one's `private: true` disappears.
+//
+// The manifests are keyed on the name inside the file and the first in
+// directory order wins, with the loser reported as a problem
+// (internal/manifest, LoadDir). So a copy of a private desk's manifest that
+// leaves the flag out decides the question by alphabetical order. Both files
+// are refused instead: the one that lost could have been the private
+// declaration, and nothing here can tell which.
+func TestADuplicateManifestDoesNotPutAPrivateDesksCardOnTheScreen(t *testing.T) {
+	s, rec := popupServer(t, "clinic.DP-1.mail", map[string]string{
+		// Sorts first, so it is the one LoadDir keeps: this is the copy
+		// winning, which is the case that has to be refused.
+		"aa-clinic": "name: clinic\nmonitors: { DP-1: { workspaces: [mail] } }\n",
+		"clinic":    "name: clinic\nprivate: true\nmonitors: { DP-1: { workspaces: [mail] } }\n",
+		"work":      "name: work\nmonitors: { DP-1: { workspaces: [code] } }\n",
+	})
+	if _, err := s.Arrived(attn.Notification{From: "clinic", Text: "your results are in"}); err != nil {
+		t.Fatal(err)
+	}
+	// Then take the copy away and send one that must draw. It proves the first
+	// was withheld rather than the popup path being broken - the pump writes in
+	// the order things arrived, so a card for the second is a card the first
+	// never got - and taking the copy away is what makes the machine ordinary
+	// again, since while it is there nothing on it can be placed with
+	// confidence and nothing is drawn at all.
+	if err := os.Remove(filepath.Join(string(s.desks.(manifest.Dir)), "aa-clinic.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	s.niri.(*fakeCompositor).focused = "work.DP-1.code"
+	if _, err := s.Arrived(attn.Notification{From: "ci", Text: "the build failed"}); err != nil {
+		t.Fatal(err)
+	}
+	got := waitForEvents(t, rec, EventAttnPopup, 1)
+	if len(got) != 1 {
+		t.Fatalf("%d cards were drawn, want only the one from the open desk", len(got))
+	}
+	if drawn := got[0].Notifications[0]; drawn.Text != "the build failed" {
+		t.Errorf("the card said %q: a duplicate manifest that says nothing about privacy was enough to put a private desk's notification on the screen", drawn.Text)
+	}
+}
+
+// The regulars are reachable from every desk and cannot be declared by any
+// manifest (internal/manifest, check), so they are the one name that is
+// certainly not the private desk. Answering them with the doubt owed to an
+// undeclared desk cost every card on them - most of a day, for somebody who
+// works out of the regulars - on any machine that declares one private desk
+// anywhere.
+func TestTheRegularsStillDrawCardsWhereADeskIsPrivate(t *testing.T) {
+	s, rec := popupServer(t, "regulars.DP-1.2", map[string]string{
+		"work":   "name: work\nmonitors: { DP-1: { workspaces: [code] } }\n",
+		"clinic": "name: clinic\nprivate: true\nmonitors: { DP-1: { workspaces: [mail] } }\n",
+	})
+	if _, err := s.Arrived(attn.Notification{From: "ci", Text: "the build failed"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitForEvents(t, rec, EventAttnPopup, 1); len(got) != 1 {
+		t.Errorf("%d cards were drawn for an arrival on the regulars, and no manifest can declare the regulars private", len(got))
+	}
+	if st := s.status(); st.Unplaced != 0 {
+		t.Errorf("status counts %d unplaced arrivals, and the regulars are a desk zde named itself", st.Unplaced)
+	}
+}
+
+// What the fail-closed answer costs is counted and said. Otherwise it is a
+// session that stops drawing cards on a machine where nothing is wrong with the
+// manifests and nothing appears in any log: the daemon refusing to show things
+// looks exactly like the popup not working.
+func TestACardNobodyCanPlaceIsCountedWhereADeskIsPrivate(t *testing.T) {
+	guarded, _ := popupServer(t, "", map[string]string{
+		"work":   "name: work\nmonitors: { DP-1: { workspaces: [code] } }\n",
+		"clinic": "name: clinic\nprivate: true\nmonitors: { DP-1: { workspaces: [mail] } }\n",
+	})
+	guarded.niri.(*fakeCompositor).err = errors.New("no compositor")
+	if _, err := guarded.Arrived(attn.Notification{From: "app", Text: "could be anything"}); err != nil {
+		t.Fatal(err)
+	}
+	if st := guarded.status(); st.Unplaced != 1 {
+		t.Errorf("status counts %d unplaced arrivals, want the one it drew no card for", st.Unplaced)
+	}
+
+	// And on the ordinary machine there is nothing to count: the same arrival
+	// draws its card, so nothing was refused and saying otherwise would send
+	// somebody looking for a problem they do not have.
+	open, _ := popupServer(t, "", map[string]string{
+		"work": "name: work\nmonitors: { DP-1: { workspaces: [code] } }\n",
+	})
+	open.niri.(*fakeCompositor).err = errors.New("no compositor")
+	if _, err := open.Arrived(attn.Notification{From: "app", Text: "could be anything"}); err != nil {
+		t.Fatal(err)
+	}
+	if st := open.status(); st.Unplaced != 0 {
+		t.Errorf("status counts %d unplaced arrivals on a machine where no desk is private", st.Unplaced)
+	}
+}
+
+// stuckListener takes the first line and does not finish taking it until the
+// test says so. A shell mid-frame, or one that has stopped drawing and not
+// closed its socket.
+type stuckListener struct {
+	mu      sync.Mutex
+	lines   int
+	release chan struct{}
+}
+
+func (h *stuckListener) Write(p []byte) (int, error) {
+	h.mu.Lock()
+	first := h.lines == 0
+	h.lines++
+	h.mu.Unlock()
+	if first {
+		<-h.release
+	}
+	return len(p), nil
+}
+
+func (h *stuckListener) count() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.lines
+}
+
+// A build bot can send a hundred in a minute, and the shell draws at human
+// speed. What must not happen is either half of the obvious failure: the arrival
+// path waiting on a surface, or the daemon growing a queue of undrawn cards.
+//
+// So the hand-off is bounded and non-blocking. This sends a flood at a listener
+// that is stuck on its first line and asserts both ends of that: every one of
+// them is in the history, and what the shell was ever offered stops at the
+// backlog. A synchronous popup path fails this by hanging on the first arrival,
+// which is the failure worth being unable to miss.
+//
+// The flood is spread over several senders on purpose. What this test is about
+// is the popup path costing a record, and a history that bounds what any one
+// name may hold would otherwise answer for it: 64 arrivals under one name is a
+// measurement of that bound and not of this one, and the test would fail the
+// day the bound changed while nothing was wrong with the path it names.
+func TestAFloodOfArrivalsNeverWaitsForTheShellAndLosesNoRecord(t *testing.T) {
+	s, _, _ := queueTestServer(t, "vshop.DP-1.code")
+	defer s.Close()
+	h := &stuckListener{release: make(chan struct{})}
+	s.listen(&sink{w: h})
+
+	// Eight each from eight senders: enough of both to be a flood, and few
+	// enough of either that nothing the history bounds is being tested here.
+	const senders = 8
+	const flood = popupBacklog * 4
+	for i := 0; i < flood; i++ {
+		from := "bot-" + strconv.Itoa(i%senders)
+		if _, err := s.Arrived(attn.Notification{From: from, Text: "build " + strconv.Itoa(i)}); err != nil {
+			t.Fatalf("arrival %d was lost: %v", i, err)
+		}
+	}
+	if seen := s.history.Recent(); len(seen) != flood {
+		t.Errorf("history holds %d of %d arrivals: the popup path cost a record", len(seen), flood)
+	}
+
+	// And now let it go, so what the backlog held can be counted.
+	close(h.release)
+	settled, last := 0, -1
+	for i := 0; i < 200 && settled < 3; i++ {
+		if n := h.count(); n == last {
+			settled++
+		} else {
+			settled, last = 0, n
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := h.count(); n < 1 || n > popupBacklog+1 {
+		t.Errorf("the shell was offered %d popups out of %d arrivals, want between 1 and %d: the backlog is the bound",
+			n, flood, popupBacklog+1)
+	}
+}
+
+// Reaching a popup is the deliberate key, and the answer says whether the
+// keyboard actually went anywhere. With no shell, or with nothing on the screen,
+// it did not - and the caller has a sentence for that, because a key that
+// silently does nothing is the failure this whole surface is arranged around.
+func TestReachingAPopupSaysWhetherAnythingTookTheKeyboard(t *testing.T) {
+	s, _, _ := queueTestServer(t, "vshop.DP-1.code")
+	defer s.Close()
+
+	var r Reach
+	call(t, s, Request{Method: "attn.reach"}, &r)
+	if r.Reached {
+		t.Error("nothing was listening and the key says the keyboard moved")
+	}
+
+	rec := &recorder{}
+	s.listen(&sink{w: rec})
+	// The shell's side: read the token out of the event and send it back, which
+	// is what AttnPopup.qml does once it has the keyboard.
+	go func() {
+		for i := 0; i < 2000; i++ {
+			if got := eventsOf(rec, EventAttnReach); len(got) > 0 && got[0].Token != "" {
+				s.acknowledge(got[0].Token)
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+	call(t, s, Request{Method: "attn.reach"}, &r)
+	if !r.Reached {
+		t.Fatal("a surface took the keyboard and the key says nothing happened")
+	}
+	got := eventsOf(rec, EventAttnReach)
+	if len(got) == 0 || got[0].Token == "" {
+		t.Fatalf("reach = %+v, want an event carrying a token to acknowledge", got)
+	}
+	if got[0].Output != "DP-1" {
+		t.Errorf("reach output = %q, want the screen being looked at", got[0].Output)
 	}
 }
 

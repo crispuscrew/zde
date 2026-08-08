@@ -40,6 +40,161 @@ type Center struct {
 	Notifications []attn.Record `json:"notifications"`
 }
 
+// Reach is what `attn.reach` answers: whether a surface took the keyboard onto
+// the newest popup. The same bargain as Switcher.Shown and Center.Shown - false
+// means nothing drew it, or nothing was up to reach, and the caller says so
+// rather than leaving a key looking broken.
+type Reach struct {
+	Reached bool `json:"reached"`
+}
+
+// popupBacklog is how many arrivals may be waiting to be drawn before the popup
+// path starts leaving them out.
+//
+// The bound exists because notifications arrive at machine speed: a build bot
+// can send a hundred in a minute, and the shell draws at human speed. It is the
+// arrival path that must never wait, so the hand-off is a buffered channel and a
+// full one drops the popup - never the record, which is already in the history
+// and on the queue by the time this is reached (see Arrived). A popup nobody saw
+// is a glance missed; a notification nobody kept is the thing zded exists to
+// prevent (docs/vision.md, principle 3).
+//
+// Sixteen because an ordinary burst - a build finishing and three things
+// reacting to it - must never be the thing that gets dropped, and because
+// sixteen stale lines is all a wedged shell can make the daemon hold. What
+// bounds the screen is a different number and lives where the screen is
+// (shell/AttnPopup.qml, maxUp).
+const popupBacklog = 16
+
+// maybePop puts an arrival in front of the person, if two different silences
+// both allow it. Called at the end of Arrived, after the record is kept and the
+// queue has it, and never instead of either.
+//
+// Two guards and deliberately not one condition, because they are two different
+// reasons for the same quiet and somebody reading this later must not fold them
+// together. The mode is the session's choice, made with a keypress and changed
+// with another one. A private desk is the desk's, declared in a manifest and
+// true whatever mode you are in, which is why quiet mode is not a way to get a
+// private desk and leaving quiet mode is not a way to lose one.
+//
+// Both are display and nothing else. The record is in the history and, where the
+// mode let it, on the queue, whichever way these two answer: that is principle 3
+// (docs/vision.md), and it is the same argument for both gates.
+//
+// The mode is passed in rather than read again: Arrived reads it once so that
+// what was queued and what was shown are one session's answer, and a second
+// reading here could land the other side of `zde attn quiet`.
+func (s *Server) maybePop(rec attn.Record, mode attn.Mode) {
+	// The session's answer: quiet shows nothing, focus shows what the sender
+	// called urgent, work shows everything (internal/attn, Pops).
+	if !mode.Pops(rec.Urgent) {
+		return
+	}
+	// The desk's. A private desk is popups off, history only (docs/vision.md,
+	// section 3), and until now this path read the mode and nothing else - so a
+	// notification arriving while somebody stood on a desk they had declared
+	// private put its sender, its summary and its body on the screen for five
+	// seconds, which is the one thing that desk exists to prevent.
+	//
+	// Read off the record rather than asked again here. The answer was decided
+	// when the arrival was placed, which is where the desk is known (Arrived),
+	// and asking a second time is a directory of manifests read and parsed twice
+	// per notification, on the far end of a D-Bus call the sending app is
+	// blocked on - for two answers that could disagree if a manifest were saved
+	// between them.
+	if rec.Private {
+		return
+	}
+	// Which screen, asked here rather than in the pump. The pump runs on its own
+	// goroutine and the compositor client is one request at a time, so asking
+	// there would put it beside every other question the daemon is answering.
+	// Here it is one more round trip on a path that already makes one
+	// (whereWeAre), and the answer is the screen that was being looked at when
+	// the thing arrived, which is the honest one.
+	//
+	// Last of the three, so the two silences cost nothing: a machine in quiet
+	// mode, and a private desk, ask niri nothing at all.
+	_, output, err := s.niri.FocusedPlace()
+	if err != nil {
+		output = ""
+	}
+	s.pop(Event{
+		Kind:          EventAttnPopup,
+		Notifications: []attn.Record{rec},
+		Output:        output,
+	})
+}
+
+// pop offers one arrival to whatever is drawing popups, and never waits for it.
+//
+// A channel and a goroutine rather than a broadcast from here, because this is
+// called from the bus: an app calls Notify and blocks until it gets an id back,
+// and broadcast waits up to sendWait on a listener that has stopped reading.
+// Two hundred milliseconds of a shell's bad afternoon must not become two
+// hundred milliseconds of every notify-send on the machine.
+//
+// The pump is started on the first popup and not in New, so a daemon that never
+// receives a notification never starts one, and Close is what ends it.
+func (s *Server) pop(ev Event) {
+	s.startPump.Do(func() {
+		s.popups = make(chan Event, popupBacklog)
+		go s.pumpPopups(s.popups)
+	})
+	select {
+	case s.popups <- ev:
+	default:
+		// Full: the shell is not keeping up, or is not reading at all. Not
+		// logged - a flood that fills this is a flood that would fill the log
+		// with one line each - and not waited on, which is the whole point.
+	}
+}
+
+// pumpPopups writes what pop handed over, one at a time and in the order it
+// arrived. One goroutine, so a hundred arrivals are a hundred lines on the
+// socket in the order the person's day happened, rather than a hundred
+// goroutines racing to write into the same connection.
+func (s *Server) pumpPopups(in <-chan Event) {
+	for {
+		select {
+		case <-s.popupStop:
+			return
+		case ev := <-in:
+			s.broadcast(ev)
+		}
+	}
+}
+
+// reach puts the keyboard on the newest popup: the deliberate key, and the only
+// way a popup ever holds it (events.go, EventAttnReach).
+//
+// The same shape as the switcher and the center, deliberately: a key asks, zded
+// tells whoever is listening, and the answer says whether anything came of it.
+// Nothing was up to reach and no shell is running are the same answer here -
+// both mean the keys stayed where they were - and the caller has one sentence
+// for both, because from a person's side they are one fact.
+func (s *Server) reach() Response {
+	_, output, err := s.niri.FocusedPlace()
+	if err != nil {
+		// Which screen is a detail, and not knowing it is not worth refusing
+		// over: the shell falls back to the screen it can see.
+		output = ""
+	}
+	token := s.nextToken()
+	acked := s.await(token)
+	defer s.stopAwaiting(token)
+
+	sent := s.broadcast(Event{Kind: EventAttnReach, Output: output, Token: token})
+	if sent == 0 {
+		return ok(Reach{Reached: false})
+	}
+	select {
+	case <-acked:
+		return ok(Reach{Reached: true})
+	case <-time.After(ackWait):
+		return ok(Reach{Reached: false})
+	}
+}
+
 // mode is the mode the session is in. Never an error: an unreadable or unknown
 // mode is a session in the default, and refusing to answer would take the queue
 // down with the answer (see Arrived).

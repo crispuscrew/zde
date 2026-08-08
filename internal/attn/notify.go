@@ -518,10 +518,13 @@ func (n *notifications) CloseNotification(sender dbus.Sender, id uint32) *dbus.E
 // default could be invoked, because the capability promises the whole list and
 // half a list is a promise apps would send buttons against.
 //
-// It is a claim about reach, not about immediacy. There is no popup yet, so the
-// offer is behind Mod+n rather than in front of you, and an app expecting a
-// button on the screen the moment it sends will not see one. That is the part
-// worth knowing before reading this as more than it says.
+// It is a claim about immediacy too, since the popup: an arrival puts a card on
+// the screen with those same buttons on it, and takes itself away (shell,
+// AttnPopup.qml). What the popup is subject to is the mode - quiet shows none of
+// them, focus only what the sender called urgent - and the center still holds
+// every one either way, which is the part worth knowing. An app that sends
+// buttons in quiet mode is offering them to somebody who will find them behind
+// Mod+n, on their own time.
 //
 // Nothing else is claimed. action-icons, body-markup, body-images, icon-static
 // and sound are all things the spec defines and this does not do.

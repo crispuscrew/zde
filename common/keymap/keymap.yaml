@@ -142,6 +142,10 @@ binds:
   - { action: system.help, key: Mod+slash }
   - { action: system.layout-switch, key: Mod+space } # lang switch
   - { action: system.notif-center, key: Mod+n }
+  # The n cluster is notifications: n is the center, Ctrl+n reaches into the
+  # popup that is on the screen now. A popup takes no keyboard by itself, so
+  # without this key its buttons are mouse-only - and this desktop is not.
+  - { action: system.notif-reach, key: Mod+Ctrl+n }
   # Two ways, on purpose. The chord is deliberately awkward - the vim grid owns
   # l in every modifier set it has, so lock cannot have the one everybody's
   # fingers expect - and Mod+Tab then l is the one to actually use: it is a menu

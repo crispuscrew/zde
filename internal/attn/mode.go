@@ -46,15 +46,34 @@ func ParseMode(s string) (Mode, error) {
 
 // Queues reports whether an arrival of this urgency reaches the queue.
 //
-// The whole policy, in one function, so that the daemon, the CLI and the bar
-// cannot each grow their own idea of what a mode does - the bug that shape
+// The whole policy is one function below, so that the daemon, the CLI and the
+// bar cannot each grow their own idea of what a mode does - the bug that shape
 // produces is a bar saying "quiet" over a queue that is still filling.
+func (m Mode) Queues(urgent bool) bool { return m.lets(urgent) }
+
+// Pops reports whether an arrival of this urgency is put in front of a person
+// the moment it lands, rather than waiting to be looked for.
 //
-// Anything that is not a mode this file knows queues, which is deliberate: the
-// failure this could have is a hand-edited journal or an entry from a newer zde,
-// and being interrupted by something you would rather not see beats never
-// hearing about the thing you were waiting for.
-func (m Mode) Queues(urgent bool) bool {
+// A second name for the same predicate rather than a second switch beside it.
+// They are two decisions - what is still owed, and what interrupts - and today
+// they have one answer each: quiet shows nothing, focus shows what the sender
+// called urgent, work shows everything. The day a desk carries its own attn
+// policy (docs/roadmap.md, 0.1) is the day they can differ, and a copied switch
+// would have drifted before then, which is the bug this file's header is about.
+//
+// Neither of them decides what is recorded. A popup is display and nothing else:
+// what arrived is in the history and, where the queue took it, on the queue,
+// whatever this answers. That is principle 3 (docs/vision.md) - a mode that
+// changed what is kept would be a mode that decides what happened.
+func (m Mode) Pops(urgent bool) bool { return m.lets(urgent) }
+
+// lets is the one rule both of them read.
+//
+// Anything that is not a mode this file knows lets it through, which is
+// deliberate: the failure this could have is a hand-edited journal or an entry
+// from a newer zde, and being interrupted by something you would rather not see
+// beats never hearing about the thing you were waiting for.
+func (m Mode) lets(urgent bool) bool {
 	switch m {
 	case Quiet:
 		return false
