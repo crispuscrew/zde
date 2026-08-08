@@ -310,6 +310,66 @@ func (b *blocker) Write(p []byte) (int, error) {
 	return 0, errClosed
 }
 
+// stalled is a blocker that says when a write has begun. The difference is what
+// makes the test below a measurement: a broadcast fired before the answer's
+// write was actually inside the connection would be waiting for nothing.
+type stalled struct {
+	blocker
+	started chan struct{}
+	once    sync.Once
+}
+
+func (s *stalled) Write(p []byte) (int, error) {
+	s.once.Do(func() { close(s.started) })
+	return s.blocker.Write(p)
+}
+
+// A broadcast may not wait behind an answer being streamed down the same
+// connection.
+//
+// The protocol allows one connection to subscribe and to ask - the read loop
+// keeps answering while an ask runs, which is why the run is a goroutine - so
+// the two callers meet on one sink. They meet on its lock, and the lock was a
+// sync.Mutex: the 200ms a broadcast is allowed to spend on a listener bounded
+// the write and not the wait for the write before it, which is askSendWait,
+// five seconds. Measured against a real daemon on a real socket: one
+// attn.center took 2.85 seconds while an answer streamed at a client that had
+// stopped reading, against 216µs with nothing streaming. Every surface key goes
+// through a broadcast, so that is every surface key.
+func TestABroadcastDoesNotWaitBehindAnAnswerOnTheSameConnection(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
+	w := &stalled{started: make(chan struct{})}
+	k := &sink{w: w}
+	s.listen(k)
+
+	// A piece of an answer, with the patience an answer gets. The goroutine
+	// outlives the test by design: what is being held is the connection, for
+	// exactly as long as the real thing would hold it.
+	go k.sendWithin(Event{Kind: EventAskText, Text: "a piece of an answer"}, askSendWait)
+	<-w.started
+
+	start := time.Now()
+	sent := s.broadcast(Event{Kind: EventPicker})
+	took := time.Since(start)
+
+	// Twice the deadline it was given, which is loose on purpose: what this
+	// catches took the whole five seconds, so the order of magnitude is the
+	// assertion and the millisecond is not.
+	if took > 2*sendWait {
+		t.Errorf("a broadcast waited %v behind an answer on the same connection, with %v to spend",
+			took, sendWait)
+	}
+	if sent != 0 {
+		t.Errorf("the busy listener took %d events", sent)
+	}
+	// And it is still a listener. Busy is not broken, and dropping it would
+	// make one long answer cost a shell every event for the rest of the
+	// session - which is a worse failure than the one being fixed.
+	if n := s.listeners(); n != 1 {
+		t.Errorf("listeners = %d after a broadcast met a connection mid-answer, want 1", n)
+	}
+}
+
 // A listener that has stopped reading must cost one send and then stop being a
 // listener. Before the deadline it blocked for ever: measured, 276 events filled
 // the socket and the next write never returned, so every later Mod+Tab waited

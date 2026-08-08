@@ -7,7 +7,9 @@ the model, and the smoke test ([`nix/tests/smoke.nix`](../nix/tests/smoke.nix))
 boots a NixOS host in QEMU and drives a real niri through the desks, the queue,
 a notification and the centre that reads it back, a desk starting what its
 manifest declares, and the bar saying it has no microphone and no
-NetworkManager to ask. What it boots has no GPU, no keyboard, one virtual
+NetworkManager to ask. What it does not do is restart zded, so the half of the
+history that now survives one (section 5) has never been proved by anything but
+the go tests. What it boots has no GPU, no keyboard, one virtual
 screen and nobody looking at it - and no microphone, no access point and no
 bluetooth adapter, which is why it can only check that those read as absent.
 Everything below is what that leaves over.
@@ -269,7 +271,11 @@ ones are the point of zded holding the bus name.
   lands in `zde queue` with its text and the desk you were on.
 - **A volume OSD or anything that reuses one id.** It must replace, not pile
   up. This is what per-sender id mapping is for and it has never met a real
-  client.
+  client. In the centre it should be one row, not a hundred: a notification
+  carrying `replaces_id` is written over the record it supersedes and moves to
+  the top, rather than landing beside it. A download's progress bar is the
+  other shape to try it with - `Mod+n` during the download and again after it,
+  and both times it is one row saying what the download says now.
 - `notify-send --wait "test"` in one terminal, `zde queue done <id>` in
   another: the first command returns.
 - **The popup, which is the one thing in this section CI cannot touch at all.**
@@ -377,10 +383,165 @@ ones are the point of zded holding the bus name.
   back in the mode you left rather than quietly reverting to work. What to feel
   for is whether focus lets through what you actually wanted: urgency is the
   sender's own claim, and a sender that never sets it is invisible in focus.
+- **A desk that declares a mode.** Put `policies: { attn: focus }` in one desk's
+  manifest (`~/.config/zde/desks/<name>.yaml`) and switch onto it: the bar says
+  focus by the time the screens have moved, and `zde status` agrees. Switch away
+  and it says whatever it said before you arrived - not work, unless work is
+  what you were in. A desk that declares nothing changes nothing, which is the
+  case to check second, because it is every other desk you own.
+
+  Then the half worth arguing with: `Mod+q` while standing on the declaring desk
+  wins, and goes on winning when you leave, because a mode you chose is yours.
+  Entering that desk again is what takes it back to focus. If that reads wrong
+  after a week - if the desk should have its mode back the moment you walk off
+  it - that is the decision to reopen, not a bug.
+
+  Two edges to know rather than to test: a switch that fails partway leaves the
+  mode alone (the mode belongs to the desk you can still see, and the retry
+  applies it), and the policy rides on a desk switch, so arriving on a desk by
+  niri's own workspace keys or through the overview keeps the mode you came
+  with until the next switch. A typo in the mode name is refused when the
+  manifest is read, so that desk is undeclared until it is fixed and
+  `zde status` names the file.
+- **A desk that names an app this machine cannot start**, which on a fresh
+  install is every desk that names anything at all. Write a manifest declaring
+  two or three apps nobody has defined, then:
+
+  ```sh
+  zde doctor | grep 'desk apps'   # the desk and the name, one line each
+  zde desk switch <that desk>     # and the switch says it out loud
+  ```
+
+  One notification for the whole switch, however many apps failed: it names the
+  desk, counts them, and the body under `Mod+n` says which ones and what the
+  runner said about each. In work mode `zde queue` has the same line; in focus
+  or quiet it does not, and that is the mode doing its job rather than the
+  notification going missing - `Mod+n` has it in every mode, marked as one the
+  mode kept off the queue. The other half is the switch back: on a desk whose
+  apps do start, leave it and come back, and the second switch says nothing at
+  all, because zinc refusing to start a second copy of something already up is
+  not a launch that failed. Two things only use settles: whether one arrival per
+  switch is the right amount of noise when you are switching desks all day, and
+  whether the body says enough to act on without going to the log. The log has
+  them all, whole, either way.
+  - **Which resolver said so**, which is the end of every one of those lines and
+    the thing to read first. A manifest's `app:` is a zinc app name - what `zcr
+    run <app>@<instance>` takes - and `zde.apps` is the separate map that turns
+    `terminal` and `editor` into an argv for the keys. zde asks zcr where there
+    is one, so the line should end `- asked of zcr` and carry zcr's own words
+    (`no app "x" defined (try: zc list)`). The way to see both halves:
+
+    ```sh
+    zde doctor | grep 'desk apps'          # asked of zcr
+    PATH=/nonexistent zde doctor | grep 'desk apps'   # asked of zde.apps
+    ```
+
+    The second is the machine layer 2 has not reached, and it judges a zinc app
+    name against a map that was never about zinc app names. If you ever see a
+    desk warned about here that switches and launches perfectly, that tail is
+    the first thing to send.
+  - **A zcr that is there and wedged.** Put a `zcr` earlier on PATH that exits
+    without saying anything (`printf '#!/bin/sh\nexit 3\n'`), and the whole
+    check should collapse to one `not known:` line naming the command to run by
+    hand - not a warning per desk. A partial list of faults reads exactly like a
+    complete one, which is the failure this is arranged against.
 - **A day's worth of arrivals.** History is a ring of 200, in memory: the 201st
-  drops the oldest, and restarting zded empties it. The queue is the half that
-  survives, because it is what you still owe. Whether 200 is a day or an hour
-  is a question about your machine and not about the number.
+  drops the oldest. Whether 200 is a day or an hour is a question about your
+  machine and not about the number.
+- **Who can read what you were sent.** One line: `ls -l
+  ~/.local/state/zde/journal.jsonl` says `-rw-------`. It has to say that on a
+  machine that has been running an earlier zde too, because the mode is set on
+  the file that is already there and not only on one zde creates - so check it
+  on the machine you upgraded, not only on the one you installed today.
+- **And what the file holds.** `notify-send "your results are in" "the biopsy
+  came back clear"`, then `grep biopsy ~/.local/state/zde/journal.jsonl` finds
+  nothing, and `grep results` finds the queue item. The summary is on the disk
+  because it is the row you still owe; the message itself never goes into the
+  journal, on any desk. That settles the journal and only the journal. What the
+  notification centre keeps is a separate record with a separate life, so
+  whether a desk declared `private: true` keeps its arrivals off the disk is a
+  question to put to that record rather than to this file. On a machine
+  upgrading from an earlier zde, which wrote the whole message down, `grep` for
+  one you remember before you upgrade and again afterwards: the first `zded`
+  start on the new build rewrites the file without them.
+- **A day's worth of arrivals.** History is a bounded ring per sender, in
+  memory: 30 records each, for at most 12 named senders plus the nameless ring
+  a person's own entries use. The 31st from one app drops that app's oldest and
+  nothing else, which is the thing to feel for - leave a download or a build bot
+  running all afternoon and the mail from the morning should still be in
+  `Mod+n`. Whether 30 is a day or an hour of one app is a question about your
+  machine and not about the number.
+- **A thirteenth app that sends you something.** The names are bounded too,
+  because an app's name for itself is its own claim and nothing checks it. When
+  a thirteenth arrives, the ring that is cheapest to lose goes whole - fewest
+  records first, and between two that cost the same, the one heard from longest
+  ago. So what it takes is the sender that has told you least, and never the one
+  that just arrived. The bias is deliberate and it is the thing to feel for: this
+  prefers volume to recency, so an app you hear from once a week is the one that
+  churns. On a real machine, count the distinct senders in `Mod+n` over a week:
+  if twelve is routinely too few, that is the number to report, and it is one
+  constant (`internal/attn`, `SendersMax`).
+- **An app that varies the name it puts on its notifications.** Nothing verifies
+  that name, so this is the case the bound above is really shaped for. Twelve
+  notifications under twelve invented names must not cost you twelve real
+  senders: each invented name arrives holding one record, so it is the next
+  one's cheapest candidate and they evict each other. What it should cost is one
+  ring, the cheapest on the machine at the moment the first invented name turned
+  up, and nothing after that. Fake it with `notify-send -a "name-$i"` in a loop
+  and read `Mod+n` before and after.
+- **What a restart keeps.** `systemctl --user restart zded`, then `Mod+n`. The
+  newest 40 records are still there and each says so on its own row - `waiting ·
+  earlier`, because the time column is a clock with no date on it. The newest 40
+  across every sender, not 40 from each: the file answers the same question the
+  centre does. Bodies are cut to 400 characters and a row that was cut says that
+  too, under the list, rather than ending mid-sentence. Gone: the rest of every
+  ring, the rest of every long body, and the actions - a digit on a restored row
+  answers with why there is nothing left to press instead of sending a keypress
+  to a bus nobody is on.
+  The file is `~/.local/state/zde/history.json`, and it should be `0600`
+  (`ls -l`), because it is notification bodies and nothing else.
+- **And what a crash keeps.** The snapshot is written every two minutes and
+  again on the way out, so do it the rude way as well: `pkill -9 zded`,
+  `systemctl --user start zded`, `Mod+n`. What it costs should be the last
+  couple of minutes of arrivals, not the day. This is the number to report if it
+  feels wrong on a machine that receives a lot.
+- **A private desk keeps its arrivals out of the snapshot.** The invariant worth
+  trying to break. Add `private: true` to one of the manifests above, stand on
+  that desk, send yourself a notification, and restart zded: it is in `Mod+n`
+  before the restart and gone after it, and `grep` for its text in
+  `history.json` finds nothing.
+
+  Out of the snapshot, and not off the disk, which would be a wider claim than
+  anything here earns: a notification the mode queues writes its body to the
+  journal as well, so the same `grep` finds it in `j.jsonl`. That file is the
+  queue's and getting the bodies out of it is its own change. What this section
+  is about is `history.json`, and about that the claim is exact.
+
+  Three ways to try to break it, all of which should end with nothing written.
+  Break the same manifest with a typo - a desk whose manifest will not parse is
+  treated as private too, because a typo must not be how a desk stops being one,
+  and `zde status` names the file. Copy the manifest to a second filename and
+  leave `private:` out of the copy: two files naming one desk would otherwise
+  settle the flag by which filename sorts first, so both are refused while the
+  pair is there. And `zde desk snapshot` of a private desk should write a
+  manifest that still says `private: true`, because that file is the one zde
+  itself could have used to un-declare the desk.
+- **What the doubt costs, said out loud.** On a machine that declares a private
+  desk, an arrival zde cannot place on any desk is kept in memory and nothing
+  else - it could have come in on the private one, and there is no finding out
+  afterwards. That is a session before any desk has been named, or a niri
+  nothing can read. `zde status` grows an `unplaced` line counting them and the
+  daemon says so once in `journalctl --user -u zded`, which is the difference
+  between a rule and a history that quietly will not fill up. On the ordinary
+  machine, which declares no private desk, the line never appears and nothing is
+  refused.
+- **What marking a desk private does not do.** It is a statement about what
+  happens from now on, and it does not retract what is already in the file: a
+  record carries the answer that was true when it arrived. Removing what is
+  there is removing it - `systemctl --user stop zded`, delete
+  `~/.local/state/zde/history.json`, start it again. In that order, because
+  until the daemon goes those records are still in its memory and the next write
+  puts them back.
 - Two terminals, two `notify-send`s: neither can close or replace the other's.
   Closing from the wrong one should leave the item where it is:
 
@@ -406,6 +567,130 @@ show up in use.
   a PAM service and so can accept a password at all - and `zde doctor` answers
   the same question on the machine you are sitting at, before you find out the
   hard way. Try it before you need it in a cafe.
+- **What logind would let this session do**, which is the other half of that and
+  the same kind of finding: a log out, a suspend, a reboot and a power off are
+  all logind's, and every way they refuse is invisible until somebody presses
+  the key.
+
+  ```sh
+  zde doctor | grep logind
+  ```
+
+  On a healthy machine that is one `ok` line naming the session a log out would
+  end - check it against `loginctl session-status`, and they must be the same
+  session. Three things to try to make it say something else:
+  - **A machine with no logind**, which is any container: run `zde doctor` in
+    one, or with `DBUS_SYSTEM_BUS_ADDRESS` pointed at nothing. One warning, and
+    it must come back at once rather than sit there - this is the command
+    somebody runs when something else has already gone wrong. Which of the two
+    warnings it is worth reading: a bus that answered and has nobody on
+    logind's name says nothing can log out, suspend, reboot or power off this
+    machine, and a bus that could not be reached or would not answer says `not
+    known:` and the reading it came from. The second must not claim the first -
+    a dial that ran out of its two seconds is a machine that is slow, not one
+    that cannot be shut down.
+  - **polkit refusing.** Deny the actions for your user
+    (`security.polkit.extraConfig`, returning `polkit.Result.AUTH_ADMIN` for
+    `org.freedesktop.login1.reboot`) and the line should say `reboot would be
+    refused` and name polkit's own word. `challenge` is a refusal on this
+    machine and has to read as one: there is no authentication agent in a zde
+    session, so nothing will ever get asked for that password.
+  - **No session to log out of.** `loginctl session-status` with nothing to say
+    is the case, and it is the one that has actually happened on real hardware:
+    `user@.service` is outside every session's cgroup, so a daemon asking
+    "which session am I in" gets no answer. doctor asks for the user's display
+    session, which is the fallback that works from either side. If it names no
+    session, a log out will refuse rather than end somebody else's, and that is
+    the report.
+
+  Whether these four are worth a line each, or whether the whole thing wants to
+  be one, is a question for a broken machine rather than for an argument here.
+- **The power menu**: `Mod+Shift+x`. Five rows - lock, log out, suspend, reboot,
+  power off - with `j`/`k`, the arrows or a digit to move, Enter to choose and
+  Escape to close. A digit moves to that row and stops there rather than running
+  it, which is why `1` does not lock the screen from under you. The three that
+  end something ask a second time and put what is about to be lost under the
+  question: the windows that close, the arrivals the queue never got, anybody
+  else logged in. **`y` or the space bar confirms and every other key backs
+  out**; Enter deliberately does not, because Enter is the key that got you
+  there and a second press in the rhythm of choosing would power the machine
+  off. Space is there because `y` is not on every keyboard: the keys are read by
+  keycode, and Qt only goes looking through your other layouts for a Latin one
+  while Control is held, so with a Cyrillic or Greek layout active nothing else
+  on the surface can say yes. Try it with your second layout on if you keep one.
+  Whether those are the right keys is a thing for fingers rather than for an
+  argument.
+  - **The lock row and `Mod+Ctrl+semicolon` lock the same way**, because both
+    run whatever `zde.apps.lock` names. One of them working and the other not is
+    the report.
+  - **Log out lands at the greeter**, and this is the item most worth doing
+    first. zded ends the session by asking logind which session it is in, and
+    the obvious answer does not work where zded runs: `user@.service` is outside
+    every session's cgroup, so the id comes from `XDG_SESSION_ID` if the session
+    put one in the user manager's environment, and otherwise from the user's
+    display session, which is the fallback `loginctl` makes. If the row answers
+    "logind cannot say which session this is", that is which of the three failed
+    on real hardware, and `loginctl session-status` beside
+    `systemctl --user show-environment | grep XDG_SESSION_ID` says why. What it
+    must never do is end somebody else's session, which is why it refuses rather
+    than guessing.
+  - **A refusal has to read as a refusal.** Hold sleep off in a terminal, then
+    suspend from the menu:
+
+    ```sh
+    systemd-inhibit --what=sleep --why="testing zde" sleep 300 &
+    ```
+
+    The suspend row should start asking first, naming that inhibitor and the
+    reason it gave, and confirming should bring the refusal back onto the
+    surface still naming it. That refusal is logind's own and not polkit's: on
+    systemd 257 and later a block lock ends the call inside
+    `verify_shutdown_creds` before polkit is asked about the ignore-inhibit
+    action at all. 258 says so as `org.freedesktop.login1.BlockedByInhibitorLock`
+    and "Operation denied due to active block inhibitor"; 257 said the same
+    thing as a plain access-denied. Neither names the program or the reason, and
+    zde puts those back from `ListInhibitors`. `systemd-inhibit` takes a
+    `--mode=block` lock unless told otherwise and that is the kind that is
+    enforced; `--mode=block-weak` is deliberately not enforced against the user
+    who owns it, so a suspend that happens anyway is what to expect from *that*
+    one and is not this check. Here, a machine that suspends anyway is the
+    report, and so is a surface that closes with nothing happening - which is
+    the exact failure this menu is arranged around.
+  - **Somebody else logged in.** Log in as a second user on Ctrl+Alt+F3, come
+    back to your own vt, and open the menu: reboot and power off should name
+    them under the row, before anything is pressed. Read that line and press
+    Escape. **Do not confirm it.** systemd's own policy gives `allow_active` the
+    value `yes` for `org.freedesktop.login1.reboot-multiple-sessions` and for
+    `power-off-multiple-sessions`
+    (`/usr/share/polkit-1/actions/org.freedesktop.login1.policy`), so the
+    session in front of the screen is allowed both outright - a yes here reboots
+    the machine and takes the other person's afternoon with it. The warning is
+    the check. The refusal is not one to go looking for on a desktop: it belongs
+    to a session polkit does not call active, which is a second one on another
+    vt while somebody else's is in front.
+  - **A greeter is not a person.** On a machine with a display manager, the
+    greeter is a session of another uid on another vt, and it must not appear on
+    those rows. logind counts only the classes `user`, `user-early`,
+    `user-light` and `user-early-light` when it decides whether a reboot needs
+    the second authorisation (`have_multiple_sessions`,
+    `src/login/logind-dbus.c`), and zde reads the class off `ListSessionsEx` so
+    that it counts the same ones. `loginctl list-sessions` prints the classes
+    beside the ids. A menu that says gdm or greetd is logged in here as well is
+    the report.
+  - **With no shell**, which is a session somebody very much wants to log out
+    of: `systemctl --user stop zde-bar`, then `zde system power` prints the five
+    rows with what each costs underneath, and `zde system power suspend` runs
+    one from there. That form does not ask again - the word is the answer.
+  - **On a machine with no input devices** the surface is drivable over
+    Quickshell's IPC, which is the only way to reach the second question without
+    a keyboard:
+
+    ```sh
+    bar=$(pgrep -f 'shell/shell.qml')
+    quickshell ipc --pid "$bar" call power state           # open 5 -
+    quickshell ipc --pid "$bar" call power choose reboot   # asks
+    quickshell ipc --pid "$bar" call power confirm         # ran
+    ```
 - **`Mod+Tab` when the shell is unwell.** Kill the bar (`systemctl --user stop
   zde-bar`) and press it: you should get the desk list printed to wherever the
   key's output goes, rather than nothing at all. The daemon waits 200ms for the
@@ -416,8 +701,9 @@ show up in use.
   the worry that a layer surface holding focus reads to niri as nothing focused
   at all - so a nav key pressed just after one closes would spend itself putting
   focus back on a window. Every key that draws one: `Mod+Tab` and `Mod+w` for
-  the picker, `Mod+n`, `Mod+Shift+c`, `Mod+semicolon`, and `Mod+a` or
-  `Mod+Shift+a` for ask. Open each, close it with Escape, and press `Mod+j`
+  the picker, `Mod+n`, `Mod+Shift+c`, `Mod+semicolon`, `Mod+Shift+x` for the
+  power menu, and `Mod+a` or `Mod+Shift+a` for ask. Open each, close it with
+  Escape, and press `Mod+j`
   immediately: if the first press goes nowhere, that is the thing, and it wants
   `keyboardFocus` on demand rather than exclusive. One surface behaving
   differently from the rest is worth as much as all of them behaving badly.
@@ -559,18 +845,82 @@ actually gets.
   only eyes decide.
 - **Two minutes** caps a tier that has stopped answering without exiting.
   Whether that is the right number with a real local model behind `local`, which
-  can take a while to say anything at all, is the open half of it.
+  can take a while to say anything at all, is the open half of it - and more so
+  now that the panel puts a conversation in front of the question, since a model
+  that reprocesses its whole context each turn gets slower as the conversation
+  grows. The 64 KiB cap on a conversation is set with that deadline in mind;
+  whether the pair is right is a thing only a real tier says.
+- **`Mod+Shift+a`, then two questions where the second only makes sense after the
+  first.** "what is the capital of peru", then "and of chile". A panel that
+  answers the second one properly is carrying the first; one that asks what you
+  mean is not. The prompt line says `carrying 1` before the second question goes
+  out, which is what that costs on a provider tier.
+- **`ctrl+n`** in the panel clears the transcript and the count beside the tier
+  name, and the next question goes out with nothing in front of it. Ask
+  something that depends on what was said before and check it has been
+  forgotten. `Mod+a` never carries anything - a oneshot is one question - and its
+  hint line does not offer `ctrl+n`.
+- **What a tier is handed.** Point a tier at `cat` (or
+  `[ "sh" "-c" "cat" ]`) and ask twice in the panel: the second question comes
+  back as `zde-ask 1` and then a line of JSON per turn, oldest first, question
+  last. That is the seam, and it is what somebody writing a tier reads.
 - **A tier whose binary is missing**, one that exits non-zero, and one that
   exits happily having said nothing all end in words on the screen. Worth
   breaking on purpose once, since this is the whole design.
 - **Escape** stops the answer being shown, not the tier running. Nothing is
-  written down anywhere - no journal line, no cache, no transcript - and the
-  panel does not send the previous turns as context, so each question is its own
-  run and calling it a conversation would outrun the code.
+  written down anywhere - no journal line, no cache, no transcript. The panel's
+  turns live in the window that is showing them and go back down the socket with
+  each question, so closing it is still the whole of forgetting: reopen the panel
+  and the conversation is gone.
+- **Stopping the daemon stops the tier.** Ask something on a tier that takes a
+  while, and with the answer still arriving run `systemctl --user stop zded` from
+  another tty (`Ctrl+Alt+F2`), then `ps -ef | grep <your tier>`. Nothing of it is
+  left. A tier runs in a process group of its own so that stopping it stops what
+  it forked, and that same choice puts it out of reach of the signal that ends
+  the session - so this used to leave a model running for a login that had ended.
+  The same on log out, which is the case that matters on a machine with a GPU in
+  it.
+- **A long answer does not slow the keys.** With one arriving, press `Mod+Tab`,
+  `Mod+n`, `Mod+semicolon`. Each surface appears at once. Every one of them is a
+  broadcast, and a broadcast used to queue behind whatever was being written to
+  the same connection: measured at 2.85 seconds for one keypress against a
+  client that had stopped reading its answer.
 - `zde ask oneshot <question>` answers in the terminal it was typed in and never
   in a popup. `zde ask local` and `zde ask escalate` are the other tiers, and a
   question read from stdin (`zde ask local < note`) is how one stays out of the
   process list.
+- **`zde ask panel <question>` from a terminal** opens the panel with that
+  question already asked, and the answer arrives in the window rather than on
+  the terminal. That is the whole difference between the two verbs, and
+  `oneshot` is the one to script against when what is wanted is text on stdout.
+  It used to ignore the word `panel` and run a provider oneshot. Note where the
+  keyboard goes: the panel takes an exclusive grab while it is up, so the
+  terminal you typed at is unreachable until Escape closes it.
+- **The same command with the panel already open on a conversation.** That grab
+  is why this one has to be scheduled rather than typed: run
+  `(sleep 30; zde ask panel "and what is the capital of chile") &` at a
+  terminal, then `Mod+Shift+a` and ask two questions, and wait for it to fire
+  with the exchange on screen. It starts a fresh conversation: the transcript
+  goes, `carrying N` goes with it, and the question is asked with nothing in
+  front of it. That is the invariant worth trying to break - a question typed at
+  a terminal, or by a cron job, must never land in the middle of an exchange
+  that was on screen, because it would then travel with every turn after it and
+  go to the tier along with whatever that exchange contained. On a provider tier
+  that is off the machine. Losing the transcript is the cost, and it is the same
+  forgetting `ctrl+n` does.
+- **The same again while an answer is still streaming.** Schedule it the same
+  way, with a tier slow enough to still be answering when it fires -
+  `[ "sh" "-c" "sleep 25; cat" ]` will do. It does not interrupt: the question
+  lands in the field with a line saying the panel is still answering the last
+  one, and Enter asks it. The conversation is gone by then all the same, and the
+  answer still arriving is dropped rather than drawn under an exchange that has
+  ended - so what Enter finally sends carries nothing either. A version that
+  kept the transcript here would be the leak above with a keystroke in front of
+  it, since an answer that finishes joins the turns.
+- **`zde ask panel <question>` with the bar stopped** (`systemctl --user stop
+  zde-bar`) asks nothing and says so, naming `oneshot` as the verb that answers
+  on a terminal. A version that quietly answered there instead would be one verb
+  doing two different things depending on what happens to be running.
 
 ## Expected to be missing
 
@@ -578,11 +928,11 @@ Not bugs, do not report them:
 
 - **The rest of the shell**: the bar and six surfaces over it - the picker
   (desks on `Mod+Tab`, windows on `Mod+w`, one surface for both), the
-  notification centre, the connections list, the palette, the ask window, and
-  the notification popup, which is the only one that is not opened by a key.
-  There is no mixer, no media panel, no clipboard, no calendar and no power
-  menu; a notification is the one thing that puts itself in front of you. The
-  launcher on `Mod+g` is zinc's, not zde's.
+  notification centre, the connections list, the palette, the ask window, the
+  power menu, and the notification popup, which is the only one that is not
+  opened by a key. There is no mixer, no media panel, no clipboard and no
+  calendar; a notification is the one thing that puts itself in front of you.
+  The launcher on `Mod+g` is zinc's, not zde's.
 - **Part of the cheatsheet.** A bind whose command is not written yet prints
   usage to a stderr nobody reads, so the key is silent and so is the machine.
   `Mod+semicolon` says which ones those are on the machine in front of you,
@@ -596,10 +946,10 @@ Not bugs, do not report them:
   | `Mod+Shift+j`/`k` (move window) | `Mod+Shift+t`, `Mod+Shift+e` (launch-at) |
   | `Mod+r` (regulars), `Mod+u` (queue jump) | `Mod+p`, `Mod+Shift+p`, `Mod+Ctrl+p` (media) |
   | `Mod+t` (terminal) | `Mod+m` (modes), `Mod+Shift+n` (net observer) |
-  | `Mod+n` (the notification centre), `Mod+q` (quiet) | `Mod+c` (calendar), `Mod+Shift+w` (wallpapers) |
+  | `Mod+n` (the notification centre, with the newest of it kept across a zded restart), `Mod+q` (quiet) | `Mod+c` (calendar), `Mod+Shift+w` (wallpapers) |
   | `Mod+Ctrl+n` (the keyboard onto the newest popup) | |
-  | `Mod+semicolon` (the palette) | `Mod+Shift+x` (power) |
-  | `Mod+a`, `Mod+Shift+a` (ask, once a tier is set) | `XF86AudioPlay`/`Next`/`Prev` (the media target) |
+  | `Mod+semicolon` (the palette), `Mod+Shift+x` (the power menu) | |
+  | `Mod+a` (one question), `Mod+Shift+a` (a conversation), once a tier is set | `XF86AudioPlay`/`Next`/`Prev` (the media target) |
   | `Mod+Shift+c` (wifi, and the link you are on) | `Mod+e`, until `zde.apps.editor` names one (below) |
   | `Mod+g` (zinc's launcher), `Mod+Ctrl+semicolon` (lock) | |
   | `Mod+slash` (the keymap, in a pager) | |
@@ -610,8 +960,9 @@ Not bugs, do not report them:
   | `zde status`, `doctor`, `keys`, `palette`, `ask`, `attn`, `queue`/`add`/`done` | `zde net observe\|app-cut\|kill` |
   | `zde app list\|launch`, `window jump-to`, `workspace next\|prev`, `nav down\|up` | `zde desk panic\|zen\|block`, which are not verbs at all |
   | `zde net status\|connect\|disconnect\|forget` | `zde clip`, `pass`, `media`, `mode` |
-  | `zde system lock\|quiet\|notif-center\|notif-reach\|connections\|bluetooth` | `zde system power\|calendar\|wallpapers` |
-  | every other `zde desk` verb: `list`, `switch`, `switcher`, `next`/`prev`/`last`, `apps`, `snapshot`, `reconcile`, `queue-jump`, `regulars`, `move-window`, `move-window-to`, `move-workspace-to` | |
+  | `zde system lock\|quiet\|notif-center\|notif-reach\|connections\|bluetooth\|power` | `zde system calendar\|wallpapers` |
+  | every other `zde desk` verb: `list`, `switch`, `switcher`, `next`/`prev`/`last`, `apps`, `snapshot`, `reconcile`, `queue-jump`, `regulars`, `move-window`, `move-window-to`, `move-workspace-to` | a manifest's `policies.zen`, `background: pause`, `on_enter`/`on_exit`, all parsed and read by nobody |
+  | a manifest's `policies.attn`: entering the desk puts the session in the mode it declares | |
   | the niri natives: columns, monitors, fullscreen, float, close, overview, consume/expel, layout switch | |
 
   The `zde` rows are the ones worth reading twice: the CLI is one binary with
@@ -619,7 +970,9 @@ Not bugs, do not report them:
   from a keybind that is indistinguishable from a key that did nothing.
   `Mod+Shift+Escape` is worth singling out for the same reason: panic is the key
   you reach for first when something goes wrong, and it is one of the silent
-  ones.
+  ones. The one failure that has come off this table is a desk's own launches:
+  what a switch could not start now arrives as a notification, and `zde doctor`
+  names it before you press anything (section 5).
 - **Modes** (`Mod+m`) and the leader sequences for panic and block. They wait
   on the input layer landing.
 - **Brightness** (`Mod+b`, `Mod+Shift+b`) needs your user in the `video` group,
@@ -640,8 +993,11 @@ Not bugs, do not report them:
   running under them, so the machinery is there - but no app is defined, so
   `zlg` lists nothing and no key starts anything sandboxed. Defining one is
   zinc's `zc`. A desk does start what its manifest declares, which means a
-  manifest naming apps nobody has defined starts nothing and says why in
-  `journalctl --user -u zded`.
+  manifest naming apps nobody has defined starts nothing - and that part is no
+  longer quiet: `zde doctor` names the desk and the app before you go there, and
+  the switch itself sends one notification saying what did not start and why
+  (section 5). The log still has every failure whole, in `journalctl --user -u
+  zded`.
 - **An editor**, and this is the one distinction in `zde.apps` worth reading
   once rather than meeting three times. That option is the seam between the
   keymap's names and this machine's programs, and three of its names have
@@ -666,9 +1022,11 @@ Not bugs, do not report them:
   a default would be zde choosing somebody's cloud for them - so a question
   asked on a fresh install comes back with the option to set instead of an
   answer (section 8).
-- **Persistence**: it is a live image. The journal, the queue and anything you
-  configure are gone on reboot, and the notification history goes with the
-  daemon rather than with the disk.
+- **Persistence across boots**: it is a live image, so the disk keeps nothing.
+  The journal, the queue, the notification snapshot and anything you configure
+  are gone at the next boot. Within one boot they are real: a `systemctl --user
+  restart zded` comes back with the queue and with the newest 40 of the history,
+  which is what section 5 is asking you to try.
 
 ## What to do with what you find
 

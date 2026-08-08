@@ -1,21 +1,32 @@
 // The ask windows (docs/roadmap.md, 0.1: ask MVP). Mod+a is one question and
 // one answer; Mod+Shift+a is the same window with room to keep asking while it
-// is open.
+// is open, and what has been asked in it goes with the next question.
 //
 // One surface for both, the way one picker draws desks and windows: they differ
-// in whether the last exchange is replaced or added to, and in nothing else. A
-// second copy of the keyboard handling and the focus dance would be a second
-// place for either to stop working.
+// in whether the last exchange is replaced or added to, and in whether the
+// exchanges before it are carried. A second copy of the keyboard handling and
+// the focus dance would be a second place for either to stop working.
+//
+// The popup carries nothing, deliberately. Mod+a is a question with no history
+// in front of it - which is the whole of what it is for - and one that quietly
+// remembered the last one would be the panel with a different key.
 //
 // The same bargain Picker.qml makes with the shell: this draws, reads keys and
 // hands back a question with the tier to ask it on. It knows nothing about
 // sockets (docs/vision.md, section 2 - the shell is a thin adapter with zero
 // logic inside), which is also why a tier here is a name and never a command.
 //
+// One question does not come from the keyboard: `zde ask panel <question>`
+// typed at a terminal opens the panel with it already asked. What that means
+// for a conversation already on screen is the one decision this file makes
+// about somebody else's words (see askFromOutside).
+//
 // Nothing is kept. The transcript is a property of a window, closing clears it,
 // and no part of this writes anything anywhere - which is what "no history by
 // default" means (vision.md, section 2). There is no history file to turn off
-// because nothing makes one.
+// because nothing makes one. The turns go back down the socket with each
+// question rather than being held by the daemon, so the only copy of a
+// conversation is the one on this screen.
 pragma ComponentBehavior: Bound
 
 import QtQuick
@@ -36,6 +47,17 @@ PanelWindow {
     // because nothing here does anything per exchange - it is read, and then it
     // is forgotten.
     property string log: ""
+    // The same exchanges again, as the tier is given them: question, answer,
+    // question, answer, oldest first. Apart from the log because the log is
+    // written to be read by a person and this is written to be read by a
+    // program - and because who said which half has to survive the trip, which
+    // "> " down the left margin of one string cannot promise (internal/zded,
+    // ask.go). Flat and alternating, so the role of a turn is its position and
+    // never a marker inside it.
+    //
+    // The panel's, and empty in the popup: a oneshot is one question with
+    // nothing in front of it.
+    property var turns: []
     // The answer being streamed right now, kept apart so that a piece arriving
     // costs one string append and not a rebuild of the transcript.
     property string live: ""
@@ -65,12 +87,16 @@ PanelWindow {
     // which a frozen shell also does.
     property string token: ""
 
-    // asked(tier, question) is the whole output of this surface.
-    signal asked(string tier, string question)
+    // asked(tier, question, prior) is the whole output of this surface: what to
+    // ask, where to ask it, and the conversation it belongs to.
+    signal asked(string tier, string question, var prior)
     signal dismissed
     signal shown(string token)
 
-    function show(isPanel, newToken) {
+    // question is set only when the panel was asked for from somewhere with no
+    // window to type into: `zde ask panel <question>` at a terminal. Empty for
+    // every key.
+    function show(isPanel, newToken, question) {
         const wasUp = ask.visible;
         // The key pressed at a window that is already up is not a new window
         // and must not wipe what is on it: Mod+Shift+a with the panel open is
@@ -93,6 +119,61 @@ PanelWindow {
             // reports that nothing did.
             ask.shown(ask.token);
         }
+        // After the acknowledgement, so what the asker hears is that a window
+        // was drawn - which is all it asked and all this can promise. Whether
+        // the question then went out is this window's to show.
+        if ((question ?? "") !== "")
+            ask.askFromOutside(question);
+    }
+
+    // A question that was not typed here: `zde ask panel <question>`.
+    //
+    // It starts a fresh conversation, always, and that is the decision in this
+    // function rather than an accident of where it is called from. The turns a
+    // panel carries are what a question is asked inside, and a question typed
+    // at a terminal was not asked inside anything: joining it to what is on
+    // screen would drop a shell script's question into the middle of somebody's
+    // exchange, carry it into every turn after it, and hand whatever that
+    // exchange contains to the tier along with it - on a provider tier, off the
+    // machine. None of that is undoable except by ctrl+n, which ends the
+    // conversation anyway.
+    //
+    // "Always" is the whole of it, and it is why forget() is the first
+    // statement here rather than a step on the path that ends in submit(). The
+    // branch below cannot ask anything yet, and an early return that left the
+    // turns standing would be the leak with an extra second in front of it: the
+    // answer still arriving lands in turns when it ends (see finished), and the
+    // Enter that finally sends this question would send that with it. A test
+    // reads this function and fails if anything comes before the forget
+    // (internal/zded, wire_test.go).
+    //
+    // The cost is real and is not hidden: a panel with a conversation in it
+    // loses it, which is the same forgetting ctrl+n and Escape already do, and
+    // an answer still on its way is dropped rather than shown under a
+    // conversation that has ended - which is what forget() means everywhere
+    // else too. It is visible in the two places that say what a question is
+    // being asked with: an empty transcript, and no "carrying" beside the tier
+    // name.
+    function askFromOutside(question) {
+        ask.forget();
+        // It does replace anything half-typed in the field. That needs two
+        // hands - a terminal and this window - and the alternative is a
+        // question that arrived and is nowhere.
+        field.text = question;
+        if (ask.running) {
+            // One answer at a time down one connection (internal/zded,
+            // events.go - sink.asking), so this one cannot go now. It waits in
+            // the field with a line saying why, rather than being dropped: a
+            // question that vanished silently is the failure this whole
+            // component is arranged against, and Enter asks it once the last
+            // answer ends. Set after the forget, which clears this line.
+            ask.failure = "still answering the last question: press enter to ask this one";
+            return;
+        }
+        // The provider tier, which is what Enter in this window does. ctrl+l
+        // and ctrl+e are still there for the same question, since it is on the
+        // screen the moment this returns.
+        ask.submit("provider", false);
     }
 
     function hide() {
@@ -106,11 +187,18 @@ PanelWindow {
     // What is on the screen, and nothing else: running is what an answer ending
     // clears, because a tier that is already thinking goes on thinking whether
     // or not anybody is looking at the window.
+    //
+    // This is also what ctrl+n does, which is the whole of starting a fresh
+    // conversation: the turns go, so the next question is asked with nothing in
+    // front of it, and awaiting goes with them - an answer still on its way
+    // belongs to a conversation that has ended and is dropped rather than
+    // appearing at the top of a new one.
     function forget() {
         ask.log = "";
         ask.live = "";
         ask.failure = "";
         ask.lastAsked = "";
+        ask.turns = [];
         ask.awaiting = false;
     }
 
@@ -138,7 +226,10 @@ PanelWindow {
         ask.running = true;
         ask.awaiting = true;
         field.text = "";
-        ask.asked(onTier, q);
+        // The turns as they stand, which is the conversation this question is
+        // being asked inside: this one is not among them yet, and joins them
+        // when there is an answer to pair it with.
+        ask.asked(onTier, q, ask.turns);
     }
 
     // A piece of the answer, as it arrives.
@@ -155,6 +246,18 @@ PanelWindow {
         ask.awaiting = false;
         if (ask.live !== "") {
             ask.log += ask.live + "\n";
+            // And into the conversation, in the panel, now that the question
+            // has something paired with it. Only with an answer: a question
+            // nothing answered never reached anybody, so carrying it alone
+            // would tell the tier that somebody spoke and it stayed silent,
+            // which is not what happened. It stays on the screen with its
+            // failure line, where it can be asked again.
+            //
+            // A new array rather than a push, because a property of this type
+            // notifies on assignment and not on being mutated - and the count
+            // on the prompt line is bound to it.
+            if (ask.panel)
+                ask.turns = ask.turns.concat([ask.lastAsked, ask.live]);
             ask.live = "";
         }
         ask.failure = why ?? "";
@@ -225,7 +328,16 @@ PanelWindow {
             // Which tier this is going to, said before it goes: the local tier
             // is a promise about the network, and one that is not on screen is
             // one nobody can rely on.
-            text: (ask.running ? "..." : ">") + " " + ask.tier
+            //
+            // And how many exchanges go with it, for the same reason and one
+            // more: carrying them is what the next question costs, in money on
+            // a provider tier and in seconds on a local one (docs/vision.md,
+            // principle 4 - whatever a keypress depends on is visible). It is
+            // also the only way to see that ctrl+n did anything.
+            text: {
+                const carried = ask.turns.length > 0 ? "  carrying " + (ask.turns.length / 2) : "";
+                return (ask.running ? "..." : ">") + " " + ask.tier + carried;
+            }
             color: ask.tier === "provider" ? "#7a7f8a" : "#c9ccd4"
             font.pixelSize: 12
             font.family: "monospace"
@@ -260,6 +372,18 @@ PanelWindow {
                     ask.submit("escalate", true);
                 } else if ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_L) {
                     ask.submit("local", true);
+                } else if (ask.panel && (event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_N) {
+                    // A fresh conversation, without closing the window: the
+                    // other way to get one is Escape and Mod+Shift+a, which is
+                    // two keys and takes the window away from under somebody
+                    // who only wanted to change the subject. Gated on the
+                    // panel, since the popup has no conversation to end.
+                    //
+                    // Nothing confirms it, because nothing is lost that was not
+                    // already going to be: the transcript was never written
+                    // anywhere, and this is the same forgetting that closing
+                    // the window does.
+                    ask.forget();
                 } else {
                     return;
                 }
@@ -317,14 +441,16 @@ PanelWindow {
 
         // What else this window does, said on the window. The tier keys are the
         // whole point of having tiers, and a key nobody can see is a key nobody
-        // presses.
+        // presses - which goes double for ctrl+n, since the way out of a
+        // conversation that has gone the wrong way has to be in front of
+        // somebody at the moment it does.
         Text {
             id: hint
 
             anchors.bottom: parent.bottom
             anchors.left: parent.left
             anchors.margins: 12
-            text: "enter ask    ctrl+e escalate    ctrl+l local    ctrl+v paste    esc close"
+            text: "enter ask    ctrl+e escalate    ctrl+l local" + (ask.panel ? "    ctrl+n new" : "") + "    ctrl+v paste    esc close"
             color: "#7a7f8a"
             font.pixelSize: 11
             font.family: "monospace"

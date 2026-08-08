@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/crispuscrew/zde/internal/attn"
-	"github.com/crispuscrew/zde/internal/desk"
+	"github.com/crispuscrew/zde/internal/journal"
 )
 
 // The attn half of the daemon: the verbs that read and change the mode, and the
@@ -125,103 +125,6 @@ func (s *Server) maybePop(rec attn.Record, mode attn.Mode) {
 	})
 }
 
-// privateArrival says whether something arriving on this desk must stay in
-// memory (docs/vision.md, section 3: private desks are popups off, history
-// only, capture-blocked).
-//
-// A notification on a screen is a different thing from one in a daemon's
-// memory: it is readable by whoever is in the room, and by whatever is
-// recording it, which is the case a private desk is for - a screencast, or
-// guest mode. A desk marked private is somebody saying that what arrives there
-// is not to be left lying around, and here that means no card is drawn.
-//
-// The same helper answers the same question for the history snapshot on
-// feat/attn-persist (#78), where "lying around" means a file that outlives the
-// session. It is deliberately one function and not two, because two ways of
-// asking whether a desk is private is two places for the answer to be wrong;
-// whichever of the two branches lands second should keep one copy of this, and
-// the two copies are byte for byte the same so that doing so is mechanical.
-//
-// It is called once per arrival, from Arrived, and the answer travels on the
-// record (internal/attn, Record.Private). Every path that would put a
-// notification somewhere other than this session's memory reads that field
-// rather than asking here again.
-//
-// Fail closed, which is principle 9, and it decides the cases that are not a
-// plain yes or no:
-//
-//   - the regulars are the one band no manifest can declare (internal/manifest,
-//     check), so they are the one name that cannot be a private desk, and they
-//     are answered before any of the doubt below. Without that they counted as
-//     an undeclared desk - and they are reachable from every desk, so one
-//     private desk anywhere on the machine turned the cards off for a band
-//     somebody can spend the day in.
-//   - the manifests cannot be read at all: we cannot tell which desk is
-//     private, so no card is drawn.
-//   - one of them would not parse, or two of them name the same desk: the file
-//     that lost could be the private declaration of any desk here, this one
-//     included, so no card is drawn while either is true. Asked before the desk
-//     is looked up and not after, which is the difference between a rule and a
-//     comment: LoadDir keeps the first of two manifests naming one desk and
-//     calls the second a problem, so a copied manifest that leaves `private:`
-//     out was otherwise all it took to un-declare a private desk. `zde status`
-//     names the file (see rememberProblems).
-//   - the desk is not declared, or nothing could say which desk it was (niri
-//     unreadable, or a session where nothing is named yet): then it could have
-//     been the private one, so it is refused whenever this machine declares a
-//     private desk at all. On the ordinary machine, which declares none, there
-//     is nothing to protect and the card is drawn. That last doubt is counted
-//     and said, because it is otherwise a session that quietly stops showing
-//     anything (see couldNotPlace).
-func (s *Server) privateArrival(deskName string) bool {
-	if deskName == desk.Regulars {
-		return false
-	}
-	all, problems, err := s.desks.All()
-	if err != nil {
-		return true
-	}
-	s.rememberProblems(problems)
-	if len(problems) > 0 {
-		return true
-	}
-	if d, declared := all[deskName]; declared && deskName != "" {
-		return d.Private
-	}
-	for _, d := range all {
-		if d.Private {
-			s.couldNotPlace()
-			return true
-		}
-	}
-	return false
-}
-
-// couldNotPlace records one arrival that was refused only because nothing could
-// say which desk it was on, and says so the first time it happens.
-//
-// The refusal above is right and it is also invisible. On a machine that
-// declares a private desk, a session where nothing has been named yet - or a
-// compositor that cannot be read - answers every arrival the same way, and what
-// a person sees is a feature that does not work, with no reason given anywhere.
-// One line in `journalctl --user -u zded` at the moment it first happens, and a
-// running count in `zde status`, are what make that a thing somebody can find
-// rather than a thing they have to guess.
-//
-// Counted rather than logged every time: notifications arrive at machine speed,
-// and a hundred a minute would be a hundred lines a minute. The first line says
-// what is happening; the count says how much of the session it has cost.
-func (s *Server) couldNotPlace() {
-	s.mu.Lock()
-	first := s.unplaced == 0
-	s.unplaced++
-	s.mu.Unlock()
-	if first {
-		log.Print("zded: nothing can say which desk these are arriving on and a desk here is declared private, " +
-			"so they are being kept in memory only - `zde status` counts them")
-	}
-}
-
 // pop offers one arrival to whatever is drawing popups, and never waits for it.
 //
 // A channel and a goroutine rather than a broadcast from here, because this is
@@ -338,7 +241,118 @@ func (s *Server) setMode(name string) Response {
 	if err := s.jrn.SetMode(string(m)); err != nil {
 		return Response{Error: err.Error()}
 	}
+	// And the desk's loan ends here, if one was open. A mode chosen by hand is
+	// the session's again: it goes with you when you leave the desk that lent
+	// one, and that desk takes the mode back the next time you enter it, which
+	// is a moment somebody can see happening.
+	//
+	// Giving it back on the way out instead - keeping the loan and restoring it
+	// when you leave - would make Mod+q mean two different things depending on
+	// which desk you were standing on when you pressed it: silence that follows
+	// you off an ordinary desk, and silence that ends the moment you switch
+	// away from a declaring one. The second is the one that ends a call badly.
+	if s.jrn.Borrowed().Desk != "" {
+		if err := s.jrn.SetBorrowed(journal.Borrowed{}); err != nil {
+			return Response{Error: err.Error()}
+		}
+	}
 	return ok(Attn{Mode: string(m)})
+}
+
+// enterDesk puts the session in the mode the desk being entered declares, and
+// gives back the mode the desk being left had borrowed (docs/model.md, section
+// 5: policies.attn).
+//
+// Borrowed, not taken. Entering writes down the mode that was in force and
+// entering anywhere else puts it back, because the alternative - a desk that
+// simply sets the mode - is a session sitting in whatever the last declaring
+// desk asked for hours after leaving it, with nothing anywhere saying why. A
+// desk's policy is a display policy for that desk (docs/vision.md, section 2).
+//
+// Two things are deliberately not entries here, and each is a decision:
+//
+//   - A switch that failed partway is not a desk you are on, so this is called
+//     only after the journal has recorded the switch (see switchFrom). The mode
+//     then still belongs to the desk you are still looking at, rather than to
+//     the one whose workspaces are half up. Retrying the switch is what applies
+//     it, which is also what fixes the screens.
+//   - The first desk after login is only an entry if it is a different desk
+//     from the one you logged out on, because re-entering the desk you are
+//     standing on is not entering (that guard is switchFrom's, and it is what
+//     stops half the nav keys from undoing a mode set by hand a keypress after
+//     it was set). Coming back to where you left off is therefore the mode you
+//     left off in - which is what the journal keeps a mode for - and the loan
+//     comes back with it, so leaving that desk still gives the mode back. There
+//     is nothing to re-apply and no second answer about what was in force
+//     before: the record already holds it.
+func (s *Server) enterDesk(target string) {
+	if s.jrn == nil {
+		return // nothing to write a mode into, so nothing can be given back
+	}
+	was := s.mode()
+	now := was
+	held := s.jrn.Borrowed()
+	if held.Desk != "" && held.Desk != target {
+		// Leaving the borrower. What it displaced comes back before the desk
+		// being entered has its say, so that a switch between two declaring
+		// desks writes down the session's own mode rather than the previous
+		// desk's - which would make the mode of one desk outlive two more.
+		//
+		// A name this zde does not know replays as work, the way the mode
+		// itself does (see mode): an unreadable record is not a reason to leave
+		// a desk's mode behind on the desk you walked to.
+		back, _ := attn.ParseMode(held.Mode)
+		now = back
+		held = journal.Borrowed{}
+	}
+	if declared, declares := s.declaredMode(target); declares {
+		if held.Desk != target {
+			// What this desk displaces is the mode in force now. Re-entering
+			// the desk that already holds the loan keeps the record it has:
+			// overwriting it with the mode that desk itself set would make
+			// giving it back a no-op, and you get there for real by leaving a
+			// desk through a switch that failed and then coming back.
+			held = journal.Borrowed{Desk: target, Mode: string(now)}
+		}
+		now = declared
+	}
+	// Written only where something changed. Every line here is an fsync and a
+	// thousand of them is a compaction, and a nav key that re-enters a desk
+	// declaring nothing has nothing to say.
+	if held != s.jrn.Borrowed() {
+		if err := s.jrn.SetBorrowed(held); err != nil {
+			log.Printf("zded: remembering which desk lent the mode: %v", err)
+		}
+	}
+	if now != was {
+		if err := s.jrn.SetMode(string(now)); err != nil {
+			log.Printf("zded: entering %s in %s: %v", target, now, err)
+		}
+	}
+}
+
+// declaredMode is the mode a desk's manifest declares, and whether it declares
+// one at all.
+//
+// The second answer is the point. Empty is not work: a desk that says nothing
+// about attn leaves the session in whatever mode it is in, and reading empty as
+// work would make every undeclared desk an instruction to turn the
+// notifications back on - in the middle of a call, on the way to a terminal.
+func (s *Server) declaredMode(target string) (attn.Mode, bool) {
+	d := s.manifestFor(target)
+	if d == nil || d.Policies.Attn == "" {
+		return "", false
+	}
+	m, err := attn.ParseMode(d.Policies.Attn)
+	if err != nil {
+		// The manifest layer refuses this at parse, so a desk only reaches here
+		// with an unreadable mode if it came from a newer zde. Logged and left
+		// alone: this is the daemon, and the mode it would otherwise guess at
+		// decides whether the person hears anything for the rest of the day.
+		log.Printf("zded: desk %s declares attn %q, which this zde cannot read: %v", target, d.Policies.Attn, err)
+		return "", false
+	}
+	return m, true
 }
 
 // quiet is Mod+q: into quiet, or back out of it.
@@ -408,6 +422,15 @@ func (s *Server) invoke(id, key string) Response {
 	rec, found := s.history.Find(n)
 	if !found {
 		return Response{Error: "nothing in the history has id " + id + ", so there is nothing to act on"}
+	}
+	if rec.Restored {
+		// Its own refusal, and the reason is not the one below. A restored
+		// record has no actions because the snapshot does not keep them
+		// (internal/attn, Snapshot), so saying its sender declared none would
+		// be blaming an app for what a restart did - and even where it did
+		// declare some, the connection that offered them ended with the last
+		// session.
+		return Response{Error: strconv.Quote(rec.Text) + " arrived before this session started, so whatever it offered went with the app that sent it"}
 	}
 	if len(rec.Actions) == 0 {
 		return Response{Error: strconv.Quote(rec.Text) + " came with no actions: its app sent a notification, not a button"}

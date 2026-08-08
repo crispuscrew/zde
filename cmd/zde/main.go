@@ -54,6 +54,18 @@ func run(args []string) error {
 			return fmt.Errorf("nothing to lock the screen with: %w", err)
 		}
 		return nil
+	case len(args) == 2 && args[0] == "system" && args[1] == "power":
+		return powerMenu("")
+	case len(args) == 3 && args[0] == "system" && args[1] == "power":
+		// The name from the list, handed straight back - the same two arities
+		// the window picker has, and for the same reason: with no surface to
+		// ask, what the first form printed is what the second one takes.
+		//
+		// Nothing asks again here. The menu is where a person is told what a
+		// reboot is about to cost and answers for it; from a terminal the
+		// answer is having typed the word, which is the same bargain
+		// `zde system bluetooth confirm ID yes` makes.
+		return powerMenu(args[2])
 	case len(args) == 2 && args[0] == "system" && args[1] == "quiet":
 		// Mod+q. A toggle rather than a mode name, because the key is for the
 		// moment somebody needs silence now: one press in, one press out.
@@ -322,11 +334,12 @@ func status() error {
 		fmt.Printf("journal    %d entries could not be read\n", st.Skipped)
 	}
 	// The cost of a fail-closed answer, said rather than left to be discovered
-	// as a session that stops drawing cards. It is only ever non-zero on a
-	// machine that declares a private desk, and it says which of the two things
-	// to fix: a desk nothing has named yet, or a compositor nothing can read.
+	// as a history that will not fill up and a session that stops drawing
+	// cards. It is only ever non-zero on a machine that declares a private
+	// desk, and it says which of the two things to fix: a desk nothing has
+	// named yet, or a compositor nothing can read.
 	if st.Unplaced > 0 {
-		fmt.Printf("unplaced   %d arrivals drew no card: no desk could be named for them, and one here is private\n", st.Unplaced)
+		fmt.Printf("unplaced   %d arrivals kept in memory and drew no card: no desk could be named for them, and one here is private\n", st.Unplaced)
 	}
 	// The desks that are not there. Printed last and one per line, because this
 	// is the answer to "why is my desk gone", and a count would send someone
@@ -355,11 +368,21 @@ func runDoctor() error {
 // ask is the quick LLM (docs/vision.md, section 2), in the two shapes it has:
 // a surface, which is what the keys press, and a terminal.
 //
-// A question typed here is answered here, and never in a popup. It was typed
-// into a terminal, so the answer belongs where it can be read back, piped and
-// kept - a popup would take it somewhere none of that is true. Without a
-// question there is nothing to type into, so the key asks the shell for a
-// window, and says so plainly when there is no shell to ask.
+// oneshot is one question and one answer, and a question typed here is answered
+// here, never in a popup: it was typed into a terminal, so the answer belongs
+// where it can be read back, piped and kept - a popup would take it somewhere
+// none of that is true. Without a question there is nothing to type into, so
+// the key asks the shell for a window, and says so plainly when there is no
+// shell to ask.
+//
+// panel is the other verb and it names the other thing, with or without a
+// question. The panel is the window that stays open and carries what was asked
+// in it into the next question, and none of that exists in a terminal - so a
+// question here opens the panel with it already asked rather than printing an
+// answer, which is what oneshot is for and what a script that wants text should
+// still use. It used to run a provider oneshot and ignore the word "panel"
+// entirely: harmless while nobody relied on it, and a verb that quietly does
+// something else is worse the longer it is left.
 //
 // local and escalate are terminal verbs only. They are the tiers the surface
 // reaches with a key of its own, and from here they are how a private question
@@ -378,11 +401,13 @@ func ask(kind, question string) error {
 	}
 	defer c.Close()
 	switch kind {
-	case "oneshot", "panel":
+	case "oneshot":
 		if question == "" {
-			return askSurface(c, "ask."+kind)
+			return askSurface(c, "ask.oneshot", "")
 		}
 		return askRun(c, zded.TierProvider, question)
+	case "panel":
+		return askSurface(c, "ask.panel", question)
 	case zded.TierLocal, zded.TierEscalate:
 		if question == "" {
 			return fmt.Errorf("zde ask %s takes the question, in an argument or on stdin: say what to ask", kind)
@@ -428,17 +453,36 @@ func questionOnStdin() (string, error) {
 // below anything that would make a daemon read a file it did not want.
 const questionMax = 64 << 10
 
-// askSurface asks the shell to open one. Nothing to print when no shell
-// answers: the switcher can fall back to its list, and a question nobody has
-// typed yet has no list - so this says how to ask from here instead, which is
-// the only useful thing left to say.
-func askSurface(c *zded.Client, method string) error {
+// askSurface asks the shell to open one, with the question already asked where
+// there is one. Nothing to print when no shell answers: the switcher can fall
+// back to its list, and a question nobody has typed yet has no list - so this
+// says how to ask from here instead, which is the only useful thing left to
+// say.
+//
+// A question and no shell is the case worth being loud about, and it is why
+// this refuses rather than quietly asking the tier itself. Falling back to
+// printing an answer would be the same verb doing two different things
+// depending on whether a shell happened to be up, which is exactly what nobody
+// can write a script against - so the failure says what did not happen and
+// names the verb that does work here.
+func askSurface(c *zded.Client, method, question string) error {
+	// Sent as no argument rather than an empty one: a surface opened to type
+	// into and a surface opened with an empty question are the same thing, and
+	// zded refuses the second (internal/zded, server.go).
+	var args []string
+	if question != "" {
+		args = []string{question}
+	}
 	var shown bool
-	if err := c.Call(method, &shown); err != nil {
+	if err := c.Call(method, &shown, args...); err != nil {
 		return err
 	}
 	if shown {
 		return nil
+	}
+	if question != "" {
+		return errors.New("no shell to draw the ask panel, so that question was not asked: " +
+			"`zde ask oneshot` takes the same question and answers here")
 	}
 	return errors.New("no shell to draw the ask window: ask from a terminal instead, " +
 		"as `zde ask oneshot what is the capital of peru`")
@@ -1111,6 +1155,73 @@ func palette() error {
 	return nil
 }
 
+// powerMenu opens the power menu, or runs one row of it.
+//
+// The same bargain as the desk switcher: with a shell listening this prints
+// nothing and a surface appears, and without one it prints the menu, so that
+// Mod+Shift+x does something on a session whose shell has died - which is one
+// of the sessions somebody most wants to log out of.
+//
+// Printed rather than tab separated, unlike every list in this CLI, because
+// this is not a list of ids to cut a column out of: it is five rows and the
+// half worth reading is underneath each one - what it is about to cost, and
+// what would stop it. The name is still first, so `zde system power reboot` is
+// what the row says.
+func powerMenu(what string) error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	if what != "" {
+		var said string
+		if err := c.Call("system.power", &said, what); err != nil {
+			return err
+		}
+		// In the present tense, because logind answers when it has taken the
+		// request: the machine goes some moments after this line.
+		fmt.Println(said)
+		return nil
+	}
+	var menu zded.Power
+	if err := c.Call("system.power", &menu); err != nil {
+		return err
+	}
+	if menu.Shown {
+		return nil
+	}
+	for _, ch := range menu.Choices {
+		// The mark is the queue's, in the one character both surfaces use: "!"
+		// is the row the menu asks twice about, which is also the row with
+		// something under it worth reading.
+		fmt.Printf("%-9s %s  %s\n", ch.Name, asksFirst(ch), ch.Desc)
+		if ch.Why != "" {
+			fmt.Println(powerIndent + ch.Why)
+		}
+		for _, cost := range ch.Costs {
+			fmt.Println(powerIndent + cost)
+		}
+	}
+	return nil
+}
+
+// powerIndent lines the continuations up under the description, the way the
+// bluetooth readout does: what a row costs belongs to that row, and a line
+// starting in column one reads as another choice.
+//
+// Thirteen, counted off the format above rather than guessed: `%-9s` is nine,
+// then a space, then the one-character mark, then two more spaces, so the
+// description starts at column fourteen and a continuation has thirteen to
+// fill.
+const powerIndent = "             "
+
+func asksFirst(ch zded.PowerChoice) string {
+	if ch.Confirm {
+		return "!"
+	}
+	return "."
+}
+
 func security(n link.Network) string {
 	if n.Secure {
 		return "secure"
@@ -1403,6 +1514,20 @@ func usage() {
   zde desk switcher      open the picker; prints the list when no shell is up
   zde app launch NAME    run what this machine calls that (Mod+t, Mod+e)
   zde system lock        lock the screen (Mod+Ctrl+semicolon)
+  zde system power       the power menu (Mod+Shift+x): lock, log out, suspend,
+                         reboot, power off. Prints the five when no shell is
+                         up, each with what it is about to cost underneath -
+                         the windows that close, what the notification center
+                         is holding that the queue never got, anybody else
+                         logged in here, and whatever is holding a suspend off
+  zde system power NAME  run one of them, by the name in column one. The menu
+                         is where the three that end things are asked about;
+                         typing the word here is the answer, the same bargain
+                         zde system bluetooth confirm makes. The lock runs the
+                         same locker zde system lock does, and the other four
+                         are logind's - so a refusal, an inhibitor holding
+                         sleep or a second person logged in, comes back as a
+                         refusal and not as silence
   zde system connections open the connections widget (Mod+Shift+c); prints the
                          link and what is in range when no shell is up -
                          signal, security, note, network - and says so plainly
@@ -1457,8 +1582,13 @@ func usage() {
                          answer arrives here, streamed as it comes; without one
                          it opens the popup, and says so when no shell can
   zde ask panel [QUESTION]
-                         the same, in the window that stays open to keep asking
-                         (Mod+Shift+a)
+                         the window that stays open to keep asking
+                         (Mod+Shift+a), carrying what was asked in it into the
+                         next question. With a question it opens the panel with
+                         that one asked and nothing in front of it, so the
+                         answer arrives in the window and not here; with no
+                         shell to draw one, nothing is asked and it says so.
+                         Use oneshot for an answer on stdout
   zde ask local QUESTION the private tier, which is the one that runs with no
                          network
   zde ask escalate QUESTION

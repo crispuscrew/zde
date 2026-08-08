@@ -10,6 +10,7 @@ package zded
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,6 +34,7 @@ import (
 	"github.com/crispuscrew/zde/internal/journal"
 	"github.com/crispuscrew/zde/internal/link"
 	"github.com/crispuscrew/zde/internal/manifest"
+	"github.com/crispuscrew/zde/internal/power"
 	"github.com/crispuscrew/zde/internal/zinc"
 )
 
@@ -153,11 +155,12 @@ type Status struct {
 	// carries on with the manifests that do work, and says here which ones it
 	// gave up on.
 	BadManifests []string `json:"badManifests,omitempty"`
-	// Unplaced is how many arrivals drew no card only because nothing could say
-	// which desk they came in on while a desk here is declared private. It is
-	// the fail-closed answer being loud about what it costs: on that machine the
-	// alternative is a session that quietly stops showing anything and never
-	// says why (internal/zded, privateArrival).
+	// Unplaced is how many arrivals were kept in memory and drew no card only
+	// because nothing could say which desk they came in on while a desk here is
+	// declared private. It is the fail-closed answer being loud about what it
+	// costs: on that machine the alternative is a notification history that
+	// empties itself and a session that quietly stops showing anything, neither
+	// of them ever saying why (internal/zded, privateArrival).
 	Unplaced int `json:"unplaced,omitempty"`
 }
 
@@ -191,9 +194,13 @@ type Server struct {
 	spawn func(argv []string) error
 
 	notifier Notifier
-	// history is what has arrived, whatever the mode did about it. Bounded, and
-	// in memory rather than in the journal: see attn.HistoryMax.
+	// history is what has arrived, whatever the mode did about it. A bounded
+	// ring per sender, and in memory rather than in the journal: see
+	// attn.PerSenderMax. The short end of it is written to a file of its own,
+	// which written keeps track of (history.go).
 	history attn.History
+	written written
+
 	// The popup path (attn.go). A buffered channel and one goroutine, because
 	// an arrival comes off the bus with an app blocked on the reply and must
 	// never wait for a shell to draw: see pop. popupStop is what ends the pump,
@@ -234,22 +241,71 @@ type Server struct {
 	bluetoothGone uint64
 	openBluetooth func() (Bluetooth, error)
 
+	// logind, for the power menu (power.go). Opened on first use and kept, like
+	// the two above, and for the third time for the same reason: a machine that
+	// has none is a state rather than a daemon that will not start. openPower is
+	// a field so a test can drive a log out without ending the machine it runs
+	// on.
+	powerMu   sync.Mutex
+	logind    power.Manager
+	openPower func() (power.Manager, error)
+	// What the last dial said when there was no logind to reach, and when it
+	// said it. Somebody leaning on the power key is not a poll, but it is
+	// enough dials to be worth not making (power.go, noLogindFor).
+	noLogind   error
+	noLogindAt time.Time
+
+	// The tier runs in flight (ask.go). A run is a subprocess in a process group
+	// of its own, deliberately, so that stopping it stops what it started - and
+	// that same choice is why the session's own signal never reaches it. Without
+	// something here, `systemctl --user stop zded` left the tier and everything
+	// it forked running under pid 1: measured, a shell tier and its `sleep 600`
+	// still there eighteen seconds after the daemon exited, and a local tier is
+	// a model that can be holding a GPU.
+	//
+	// runCtx is the parent of every run's context, so cancelling it runs each
+	// cmd.Cancel and kills each group. runs is how Close knows when they have
+	// gone. Both are touched under mu, which is what keeps a run being added
+	// from racing the wait for them.
+	runCtx  context.Context
+	runStop context.CancelFunc
+	runs    sync.WaitGroup
+
 	mu       sync.Mutex
 	ln       net.Listener
 	problems []string
-	// unplaced counts the arrivals this session drew no card for only because
-	// nothing could say which desk they were on, on a machine that declares a
-	// private desk (attn.go, couldNotPlace).
+	// unplaced counts the arrivals this session refused to write down and drew
+	// no card for, only because nothing could say which desk they were on, on a
+	// machine that declares a private desk (history.go, couldNotPlace).
 	unplaced uint64
 	subs     map[*sink]struct{}
 	waiting  map[string]chan struct{}
 	tokens   uint64
 }
 
+// askStopWait is how long Close waits for the tiers to go. They are sent a kill
+// to the whole process group rather than asked politely, so this is the time it
+// takes a dead process to be reaped and a goroutine to unwind, which is
+// milliseconds - and it is a ceiling rather than a delay. Bounded at all
+// because the alternative is a logout that waits on a model: whatever a tier
+// does with a signal, the session ends.
+const askStopWait = 2 * time.Second
+
+// New builds the daemon.
+//
+// The compositor is required, and deliberately not guarded for at the dispatch
+// boundary. cmd/zded makes one and hands it over, so the only way a nil reaches
+// a method is code that was wired up wrong, and a Dispatch that turned that into
+// "the compositor is not connected" would report a wiring mistake as a session
+// problem - on every surface, for the rest of the run, with the real cause a
+// stack frame nobody ever sees. The panic names the line instead. A daemon that
+// cannot reach a niri that is really there is a different thing and already has
+// an answer: `zde status` says so on the compositor line.
 func New(version string, jrn *journal.Journal, compositor Compositor, desks Desks) *Server {
 	if desks == nil {
 		desks = noDesks{}
 	}
+	runCtx, runStop := context.WithCancel(context.Background())
 	return &Server{
 		version:  version,
 		jrn:      jrn,
@@ -258,6 +314,8 @@ func New(version string, jrn *journal.Journal, compositor Compositor, desks Desk
 		launch:   zinc.Run,
 		spawn:    spawnDetached,
 		openLink: link.Open,
+		runCtx:   runCtx,
+		runStop:  runStop,
 		// Neither radio is dialled here: opening a system bus connection at
 		// startup would be zded doing that work on every machine, including the
 		// ones that have no radio and never asked for one (bluetooth.go, radio;
@@ -332,12 +390,18 @@ func (s *Server) Serve() error {
 	}
 }
 
-// Close stops listening, and gives up the radio with it.
+// Close stops listening, gives up the radio, and stops the tiers.
 //
 // The radio first, and outside s.mu: it is a bus connection with a pairing
 // agent exported on it, and one left behind is an agent for a session that has
 // ended - bluetoothd would keep calling it and every question would time out
 // into a refusal nobody was asked for.
+//
+// The tiers last, and after the listener rather than before it, so that nothing
+// new can be asked while this waits for what is already running. Bounded (see
+// askStopWait), and safe to call twice: the whole of what this daemon can leave
+// behind is a subprocess, and the caller that ends the process has to be able to
+// end them too whichever way it got here.
 func (s *Server) Close() error {
 	s.closeRadio()
 	// And the popup pump, once and never twice: Close is reached from a signal
@@ -346,13 +410,66 @@ func (s *Server) Close() error {
 	// the pump broadcasts and broadcast takes that lock.
 	s.stopPump.Do(func() { close(s.popupStop) })
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.ln == nil {
-		return nil
-	}
-	err := s.ln.Close()
+	ln := s.ln
 	s.ln = nil
+	s.mu.Unlock()
+	var err error
+	if ln != nil {
+		err = ln.Close()
+	}
+	s.stopRuns()
 	return err
+}
+
+// startRun runs a tier in its own goroutine and counts it as in flight, or
+// refuses because this daemon is stopping.
+//
+// Counted under mu, and refused once runCtx is cancelled, which together are
+// what keep the count from being raised while stopRuns is waiting on it: after
+// the cancel there is no path that adds another.
+func (s *Server) startRun(k *sink, args []string) {
+	s.mu.Lock()
+	if s.runCtx.Err() != nil {
+		s.mu.Unlock()
+		k.reply(Response{Error: "zded is stopping, so there is nothing to ask it"})
+		return
+	}
+	s.runs.Add(1)
+	s.mu.Unlock()
+	go func() {
+		defer s.runs.Done()
+		s.askRun(k, args)
+	}()
+}
+
+// stopRuns ends every tier this daemon started and waits, briefly, to see them
+// go.
+//
+// The cancel is what does it: each run's context has runCtx as its parent, and
+// cancelling reaches cmd.Cancel, which kills the process group rather than the
+// one pid - which is the whole reason the group exists (see askRun). The wait is
+// only so that the process does not exit out from under the kill it has just
+// sent; a group that has been killed is gone, so the ceiling is there for the
+// case that is not true rather than for the ordinary one.
+func (s *Server) stopRuns() {
+	s.mu.Lock()
+	s.runStop()
+	s.mu.Unlock()
+
+	gone := make(chan struct{})
+	go func() {
+		s.runs.Wait()
+		close(gone)
+	}()
+	t := time.NewTimer(askStopWait)
+	defer t.Stop()
+	select {
+	case <-gone:
+	case <-t.C:
+		// Said rather than swallowed: what is left is a tier that did not die
+		// when its group was killed, which is a thing worth finding in a log.
+		fmt.Fprintf(os.Stderr, "zded: a tier was still running %v after being stopped\n", askStopWait)
+	}
 }
 
 func (s *Server) handle(conn net.Conn) {
@@ -399,7 +516,11 @@ func (s *Server) handle(conn net.Conn) {
 			// read loop keeps answering meanwhile - the shell acknowledges a
 			// picker on the connection it asks on, and a twenty second answer
 			// must not be what Mod+Tab waits for.
-			go s.askRun(k, req.Args)
+			//
+			// Through startRun rather than a bare go, so that the daemon knows
+			// what it has started: a tier is a subprocess in a process group of
+			// its own, and nothing else would stop it when the session ends.
+			s.startRun(k, req.Args)
 			continue
 		}
 		k.reply(s.Dispatch(req))
@@ -457,17 +578,36 @@ func (s *Server) Dispatch(req Request) Response {
 			return Response{Error: "desk.switcher takes no arguments"}
 		}
 		return s.switcher()
-	case "ask.oneshot", "ask.panel":
-		// The surface, and only the surface: the question is typed into it, so
-		// there is nothing to pass here. Which one is the kind of the event,
-		// because that is the whole difference between them.
+	case "ask.oneshot":
+		// The surface, and only the surface. A question typed at a terminal is
+		// answered at that terminal (cmd/zde, ask), which is what a oneshot is,
+		// so one never arrives here to be drawn.
 		if len(req.Args) != 0 {
-			return Response{Error: req.Method + " takes no arguments: the question is typed into the window"}
+			return Response{Error: "ask.oneshot takes no arguments: the question is typed into the window"}
 		}
-		if req.Method == "ask.panel" {
-			return s.askSurface(EventAskPanel)
+		return s.askSurface(EventAsk, "")
+	case "ask.panel":
+		// The panel, optionally with the first question already in it. That is
+		// the difference between the two verbs and not a convenience: `zde ask
+		// panel <question>` names a window that stays open, so the question
+		// goes to the window and the answer arrives there, where the next
+		// question can build on it.
+		if len(req.Args) > 1 {
+			return Response{Error: "ask.panel takes the question to open with, or nothing to open a panel to type into"}
 		}
-		return s.askSurface(EventAsk)
+		question := ""
+		if len(req.Args) == 1 {
+			// Trimmed here rather than in the window, so that what the surface
+			// draws and what a tier is handed are the same string: askRun trims
+			// too, and a question that arrived on stdin brings a newline with
+			// it. Refused when that leaves nothing, in the words askRun uses -
+			// an empty question is the one thing no tier can be asked.
+			question = strings.TrimSpace(req.Args[0])
+			if question == "" {
+				return Response{Error: "nothing to ask: say what the question is"}
+			}
+		}
+		return s.askSurface(EventAskPanel, question)
 	case MethodAskRun:
 		// Handled by the connection rather than here (see handle), for the same
 		// reason events are: an answer is not one reply. Named here so it is a
@@ -494,6 +634,19 @@ func (s *Server) Dispatch(req Request) Response {
 			return Response{Error: "net.connections takes no arguments"}
 		}
 		return s.connections()
+	case "system.power":
+		// One verb, two arities, for the reason window.jump-to has two: the
+		// menu and the choice are the same question - which one - asked twice,
+		// and with no surface to ask it of, the name printed by the first form
+		// is what the second one takes.
+		switch len(req.Args) {
+		case 0:
+			return s.powerMenu()
+		case 1:
+			return s.powerRun(req.Args[0])
+		default:
+			return Response{Error: "system.power takes one action name, or none to open the menu"}
+		}
 	case "net.status":
 		if len(req.Args) != 0 {
 			return Response{Error: "net.status takes no arguments"}
@@ -872,7 +1025,19 @@ func (s *Server) snapshot(args []string) Response {
 		return Response{Error: "the regulars are not a desk, so there is no manifest to write: they are named into, never declared"}
 	}
 
-	d, err := manifest.FromMap(m, target)
+	// A desk that is already declared private stays private. The screen cannot
+	// say so - the flag is a declaration and lives only in the manifest this
+	// desk already has - and a snapshot that dropped it would write a second
+	// manifest for that desk which says it is ordinary. That file is how a
+	// private desk stops being one: the manifests are keyed on the name inside
+	// them, so the two would collide, and until this fix whichever the
+	// directory listed first decided whether anything arriving there could be
+	// written to disk (history.go, privateArrival).
+	private := false
+	if prev := s.manifestFor(target); prev != nil {
+		private = prev.Private
+	}
+	d, err := manifest.FromMap(m, target, private)
 	if err != nil {
 		return Response{Error: err.Error()}
 	}
@@ -1202,12 +1367,30 @@ func (s *Server) Arrived(n attn.Notification) (uint64, error) {
 		Extra:   n.Extra,
 		At:      time.Now(),
 		Desk:    on,
-		// Decided here, once, while the desk it arrived on is known. The popup
-		// path used to ask again for itself, which was a second read and parse
-		// of every manifest on the machine for every notification - on the far
-		// end of a Notify the sending app is blocked on - and two reads can
-		// disagree if a manifest is saved between them (attn.go, maybePop and
-		// privateArrival).
+		// Decided here, while the desk it arrived on is known. Asking the
+		// manifests again when the snapshot is written would be asking about a
+		// file that can have changed since - and a desk that stopped being
+		// private in the meantime would take the bodies that arrived while it
+		// was private to disk with it (history.go, privateArrival).
+		//
+		// The other direction is what that costs, and it is chosen rather than
+		// overlooked: declaring a desk private now does not retract what is
+		// already in the file. The flag records what was true when the record
+		// arrived, and marking a desk private is a statement about what happens
+		// from here. A retraction would also be a promise this cannot keep - it
+		// cannot reach a snapshot a backup has already copied, and on this
+		// branch the body of anything the mode queued is in the journal as well
+		// - so it would clean one file and read as a promise about the disk.
+		// What removes what is already there is removing it: stop zded, delete
+		// ~/.local/state/zde/history.json, start it again. In that order,
+		// because the records are still in the daemon's memory until it goes,
+		// and the next write would put them back (docs/verify.md, section 5).
+		//
+		// Once, and not once per reader: the popup path used to ask again for
+		// itself, which was a second read and parse of every manifest on the
+		// machine for every notification - on the far end of a Notify the
+		// sending app is blocked on - and two reads can disagree if a manifest
+		// is saved between them (attn.go, maybePop).
 		Private: s.privateArrival(on),
 	}
 	// One reading of the mode for both decisions. Asked twice it could answer
@@ -1217,8 +1400,10 @@ func (s *Server) Arrived(n attn.Notification) (uint64, error) {
 	mode := s.mode()
 	if mode.Queues(n.Urgent) {
 		it, err := s.jrn.Queue(journal.Item{
+			// No body. The record above keeps the whole message in memory for
+			// the center to show; the journal is a file, and a file is not
+			// where somebody's mail goes (internal/journal, Item).
 			Text:   rec.Text,
-			Body:   rec.Body,
 			Desk:   rec.Desk,
 			From:   rec.From,
 			Urgent: rec.Urgent,
@@ -1234,15 +1419,35 @@ func (s *Server) Arrived(n attn.Notification) (uint64, error) {
 		}
 		rec.ID = id
 	}
+	// A replacement lands on top of the record it supersedes rather than beside
+	// it. replaces_id is a sender saying this is the same notification with
+	// something new to say, and appending was what turned one download into a
+	// hundred rows of history (internal/attn, Replace).
+	var gone []uint64
+	if n.Replaces != 0 {
+		gone = s.history.Replace(n.Replaces, rec)
+	} else {
+		gone = s.history.Add(rec)
+	}
 	// What the history pushed out is what nothing can reach any more: it cannot
 	// be listed, dismissed or invoked, so the bus side is told to stop holding
 	// the sender's names for it. Without this, the one table in the system with
 	// no bound would grow by one for every notification the session ever
 	// received - and the modes made that worse, because a notification a mode
 	// keeps off the queue is one nobody can finish, so nothing else prunes it.
-	if gone := s.history.Add(rec); gone != 0 {
+	//
+	// Every one of them, not the first. One arrival can push a record out of
+	// its own sender's ring and, when the name is a new one, take a whole other
+	// sender's ring with it (internal/attn, SendersMax) - so a loop that
+	// stopped at one id would leave the rest of that ring remembered here for
+	// the life of the session, which is the leak this call exists to stop.
+	if len(gone) > 0 {
+		// Read once and outside the loop: watcher takes the daemon's lock, and
+		// every method on what it answers puts a message on the session bus.
 		if w := s.watcher(); w != nil {
-			w.Forget(gone)
+			for _, id := range gone {
+				w.Forget(id)
+			}
 		}
 	}
 	// And in front of the person, last: after the record is kept and the queue
@@ -1315,6 +1520,11 @@ func (s *Server) watcher() Notifier {
 // whereWeAre is the desk to file something arriving against, and never an
 // error: a notification with no desk still waits, and one refused because niri
 // was unreadable is gone for good.
+//
+// This is a read that writes: it goes through deskOf, which records the desk
+// when the journal is behind the compositor. Anything calling this from a
+// goroutine of its own should read the note there first - it says why that is
+// safe, and what it costs.
 func (s *Server) whereWeAre() string {
 	if m, err := s.niri.DeskMap(); err == nil {
 		return s.activeDesk(m)
@@ -1560,6 +1770,30 @@ func (s *Server) activeDesk(m *desk.Map) string {
 // deskOf is activeDesk with the focused workspace already read. A caller that
 // needs the name for something else too asks once and passes it here, rather
 // than asking again and getting an answer from a different moment.
+//
+// It writes, and a reader can be on any goroutine. Where you are is what
+// adoption spends on a workspace that has no name yet, and the compositor is
+// the authority on it - so a read that finds the journal disagreeing corrects
+// it, which is also how a jump records the desk it landed on (see focusWindow).
+// That means a notification arriving on the bus - Arrived, whereWeAre, here -
+// writes a line to the journal, on whatever goroutine the bus handed it to. It
+// is safe, and this is the whole of why:
+//
+//   - The journal is one mutex over the file and the state (internal/journal),
+//     so two writers cannot tear an entry or lose a queue id.
+//   - The value is not this caller's opinion. It is the desk the focused
+//     workspace names, read from niri a moment earlier, so two goroutines that
+//     race here write the same answer rather than fighting over two.
+//   - It converges. The read and the write are not one atomic step, so a switch
+//     that lands between them can be followed by a write of the desk that was
+//     focused just before it - and the watcher reconciles after every burst of
+//     compositor events (watch.go), which reads the compositor again and puts
+//     the truth back. The window is one niri round trip wide and it costs a
+//     stale OnDesk until the next event, never a wrong desk on the screen.
+//
+// The cost that is worth knowing about is the other one: this path asks niri
+// before it writes anything, so posting a notification from a goroutine that
+// cannot afford to block is posting it behind a compositor round trip.
 func (s *Server) deskOf(m *desk.Map, focused string) string {
 	if focused != "" {
 		n, err := desk.ParseName(focused)
@@ -1657,9 +1891,11 @@ func (s *Server) switchFrom(target, from string) Response {
 	}
 	if was != target {
 		// A desk is what its manifest declares, so entering one brings it up
-		// (docs/model.md, section 5). Only on a change of desk: re-entering the
-		// desk you are standing on is what half the nav keys do, and each pass
-		// would be a launch attempt per declared app.
+		// and puts the session in the mode it asks for (docs/model.md, section
+		// 5). Only on a change of desk: re-entering the desk you are standing
+		// on is what half the nav keys do, and each pass would be a launch
+		// attempt per declared app and a mode set by hand overwritten.
+		s.enterDesk(target)
 		s.startApps(target)
 	}
 	// Names as strings, not as their parts. A workspace name is one thing
@@ -1692,17 +1928,34 @@ func (s *Server) startApps(target string) {
 	}
 	apps := d.Apps
 	go func() {
+		var failed []launchFailure
 		for _, app := range apps {
 			address := zinc.Address(app.App, app.Instance)
-			if err := s.launch(address); err != nil {
-				// The daemon's log is where this belongs: it is one app on one
-				// desk, and taking the switch down over it would make an
-				// unbuildable image cost somebody their whole desk. "Already
-				// running" arrives here too, which is worth reading rather than
-				// filtering - it is how you find out a desk started twice.
-				log.Printf("zded: starting %s: %v", address, err)
+			err := s.launch(address)
+			if err == nil {
+				continue
 			}
+			if errors.Is(err, zinc.ErrAlreadyRunning) {
+				// The ordinary case, and the reason this is a check rather than
+				// a line in the log: zinc refuses a second launch of an app that
+				// is up, so every switch back to a desk you were on this session
+				// refuses once per app it declares. Counting that as a failure
+				// made a healthy machine say "3 apps did not start" for pressing
+				// a key twice, and the notification people learn to ignore is the
+				// one that cries wolf. Nothing to say about it either: the desk
+				// declares the app and the app is running, which is the state the
+				// switch was asking for.
+				continue
+			}
+			// Every real one in the daemon's log, whole: it is one app on one
+			// desk, and taking the switch down over it would make an unbuildable
+			// image cost somebody their whole desk.
+			log.Printf("zded: starting %s: %v", address, err)
+			failed = append(failed, launchFailure{Address: address, Err: err})
 		}
+		// And once, in front of the person, because a log is not somewhere
+		// anybody looks while they are working (launch.go).
+		s.launchesFailed(target, failed)
 	}()
 }
 

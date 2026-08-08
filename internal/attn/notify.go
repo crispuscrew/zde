@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/crispuscrew/zde/internal/bus"
 	"github.com/godbus/dbus/v5"
@@ -58,6 +59,26 @@ const DefaultAction = "default"
 // with it.
 const actionsMax = 9
 
+// actionTextMax bounds one action's key and one action's label.
+//
+// It exists because the count was wrong everywhere. Both went through oneLine,
+// so both were bounded at summaryMax, and nine of them was 9 x 600 characters -
+// 24 KB a record in an alphabet that costs four bytes a character, which is
+// half as much again as the body that every memory figure in this package is
+// built around (see bodyMax, snapshotBodyMax, SendersMax). A list of buttons is
+// not the largest thing a notification says, and while it was unbounded in
+// practice it was.
+//
+// Eighty, because both of the things it bounds are short by nature. A key is an
+// identifier the sender wants handed back, and the longest shapes in the wild
+// are reverse-DNS or a UUID, both under forty. A label is a word or three on a
+// button, and the center draws every one of them on one line under the list, so
+// eighty is already past what fits.
+//
+// A label longer than this is cut, because a label is read and nothing depends
+// on its bytes. A key longer than this is not kept at all - see takeActions.
+const actionTextMax = 80
+
 // Action is one thing a sender says can be done about a notification: the key
 // it wants back, and the label a person reads.
 type Action struct {
@@ -77,11 +98,19 @@ const summaryMax = 300
 // cutting an ordinary two-paragraph message in half, which made "it lands in
 // history with what was sent" a claim the code did not keep.
 //
-// Still bounded, because the body is attacker-controlled and it is what decides
-// how large the history can get. The arithmetic: HistoryMax is 200 records, so
-// 200 x 4000 characters is about 3 MB if every record is at its limit and
-// written in an alphabet that costs four bytes a character - and a few hundred
-// kilobytes in any session made of real notifications.
+// Still bounded, because the body is attacker-controlled and it is the largest
+// single thing that decides how big the history can get. The arithmetic: the
+// history holds a ring of PerSenderMax for each of SendersMax senders plus the
+// nameless one, so 390 records, and 390 x 4000 characters is 6.2 MB of body if
+// every record is at its limit and written in an alphabet that costs four bytes
+// a character - a few hundred kilobytes in any session made of real
+// notifications. SendersMax carries the whole count, which adds the summaries,
+// the sender names and the action lists to that and comes to about 9 MB.
+//
+// Largest single thing, and only since the action lists were bounded. Nine
+// actions at summaryMax for both key and label was 24 KB a record against this
+// 16 KB, so the sentence above used to be false in the direction that matters:
+// see actionTextMax.
 const bodyMax = 4000
 
 // Notification is what an app said, narrowed to what the queue keeps.
@@ -116,6 +145,30 @@ type Notification struct {
 	// center can say that some cannot be reached from here, which is the honest
 	// version of a list that quietly ends.
 	Extra int
+	// Replaces is the notification already in the history that this one
+	// supersedes, or zero for an ordinary arrival.
+	//
+	// Not the sender's replaces_id, and that is the point. That number is the
+	// sender's own name for a thing (notify-send -r 42, and dunstify's -r
+	// before it), and only this side knows which item it stood for - and only
+	// after checking that the connection asking is the one that sent it. By
+	// the time it is in here it is a fact rather than a claim, which is what
+	// lets the history put the new record where the old one was instead of
+	// beside it (history.go, Replace).
+	Replaces uint64
+}
+
+// Local is a notification zde sends itself, through the same door as anything
+// on the bus: zded is the session's notification server, so what it has to tell
+// somebody it can hand to its own sink rather than dial out and back.
+//
+// It exists for the bounds. Notify clamps everything a client sends and nothing
+// else did, so a caller filling in a Notification by hand was the one way into
+// the history with no bound on it - and what zde has to say is usually a
+// program's own complaint, which is one line until the day it is a screen of
+// them (internal/zded, launchesFailed).
+func Local(from, text, body string) Notification {
+	return Notification{From: from, Text: oneLine(text), Body: bodyText(body)}
 }
 
 // Sink is where a notification goes. attn does not own the queue - the journal
@@ -398,23 +451,31 @@ func (n *notifications) Notify(
 	// updates. Only this sender's own notifications can be replaced, and only
 	// by the name this sender gave them: ids are the journal's and small, so
 	// without that an app could replace a reminder somebody typed.
+	//
+	// Which item it was is carried into the arrival rather than left behind
+	// here. It is the same fact the history needs to keep one download to one
+	// row instead of a hundred (history.go, Replace), and this is the only
+	// place that knows it.
+	var replaced uint64
 	if replaces != 0 {
 		if old, ok := s.lookup(owned{sender, replaces}); ok {
 			if err := s.sink.Closed(old); err != nil {
 				return 0, dbus.MakeFailedError(err)
 			}
 			s.forget(old)
+			replaced = old
 		}
 	}
 
 	kept, extra := takeActions(actions)
 	id, err := s.sink.Arrived(Notification{
-		From:    claim(app, sender),
-		Text:    text,
-		Body:    rest,
-		Urgent:  urgency(hints) == 2,
-		Actions: kept,
-		Extra:   extra,
+		From:     claim(app, sender),
+		Text:     text,
+		Body:     rest,
+		Urgent:   urgency(hints) == 2,
+		Actions:  kept,
+		Extra:    extra,
+		Replaces: replaced,
 	})
 	if err != nil {
 		return 0, dbus.MakeFailedError(err)
@@ -478,9 +539,17 @@ func (n *notifications) GetCapabilities() ([]string, *dbus.Error) {
 // key becomes its label: showing "reply" beats dropping an action somebody
 // declared, and beats a button with nothing written on it.
 //
-// Labels go through oneLine for the same reason summaries do: this one ends up
-// on a surface, and a label with a newline in it is a row that draws over the
-// one below.
+// Labels go through the same cleaning summaries do, at actionTextMax: this one
+// ends up on a surface, and a label with a newline in it is a row that draws
+// over the one below.
+//
+// A key past actionTextMax is counted and not kept, where a label past it is
+// cut. The difference is what each is for. The key is what goes back to the
+// sender as ActionInvoked, so a shortened one is a key that app never declared
+// and a button that quietly does nothing when it is pressed; counted, the
+// surface says there is an action it cannot reach, which is exactly what it
+// says about the tenth one. A label is read by a person and nothing depends on
+// its bytes.
 func takeActions(actions []string) ([]Action, int) {
 	var kept []Action
 	declared := 0
@@ -490,12 +559,15 @@ func takeActions(actions []string) ([]Action, int) {
 			continue // an empty key addresses nothing
 		}
 		declared++
+		if utf8.RuneCountInString(key) > actionTextMax {
+			continue // counted above, and unreachable rather than wrong
+		}
 		if len(kept) >= actionsMax {
 			continue
 		}
 		label := ""
 		if i+1 < len(actions) {
-			label = oneLine(actions[i+1])
+			label = actionLabel(actions[i+1])
 		}
 		if label == "" {
 			label = key
@@ -555,6 +627,10 @@ func urgency(hints map[string]dbus.Variant) byte {
 // reminder can be told to try again; an app's notification is the only copy
 // there will ever be of something that already happened.
 func oneLine(s string) string { return clean(s, summaryMax, false) }
+
+// actionLabel is what a person reads on one of a notification's buttons, on
+// one line and bounded at actionTextMax rather than at a summary's 300.
+func actionLabel(s string) string { return clean(s, actionTextMax, false) }
 
 // bodyText is the rest of the message, kept the way it was written: its line
 // breaks survive, because a body is where the paragraph goes and flattening it

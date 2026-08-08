@@ -2,11 +2,14 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -15,6 +18,7 @@ import (
 
 	"github.com/crispuscrew/zde/internal/keymap"
 	"github.com/crispuscrew/zde/internal/link"
+	"github.com/crispuscrew/zde/internal/zded"
 )
 
 // quiet points os.Stderr at nothing for the length of a test: run() prints the
@@ -204,6 +208,377 @@ func TestPaletteTakesANameWithSpacesInIt(t *testing.T) {
 	// verb gets to here. Anything else means the name was never assembled.
 	if strings.Contains(err.Error(), "unknown command") {
 		t.Errorf("`zde palette window.focus left` got as far as %q", err)
+	}
+}
+
+// fakeZded is a daemon only far enough along to say which request arrived and
+// to answer it. The defect these tests cover is the CLI sending the wrong
+// request, so a test that could not see the request would be a test of nothing
+// - and the real dispatcher needs a compositor these tests are not about.
+type fakeZded struct {
+	mu   sync.Mutex
+	got  []zded.Request
+	says func(zded.Request) []string
+}
+
+// fakeDaemon puts one on the socket `zde` dials, and points the environment at
+// it. says answers a request with the lines to write back, whole lines, in
+// order: a reply, and for an ask, the events after it.
+func fakeDaemon(t *testing.T, says func(zded.Request) []string) *fakeZded {
+	t.Helper()
+	// Short, and not t.TempDir: a unix address is capped near 108 bytes and a
+	// test's own temp directory carries the test's name in it.
+	dir, err := os.MkdirTemp("", "zde")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	t.Setenv("XDG_RUNTIME_DIR", dir)
+	if err := os.Mkdir(filepath.Join(dir, "zde"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", filepath.Join(dir, "zde", "zded.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	f := &fakeZded{says: says}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go f.serve(conn)
+		}
+	}()
+	return f
+}
+
+func (f *fakeZded) serve(conn net.Conn) {
+	defer conn.Close()
+	r := bufio.NewReader(conn)
+	for {
+		raw, err := r.ReadBytes('\n')
+		if err != nil {
+			return
+		}
+		var req zded.Request
+		if err := json.Unmarshal(raw, &req); err != nil {
+			return
+		}
+		f.mu.Lock()
+		f.got = append(f.got, req)
+		f.mu.Unlock()
+		for _, line := range f.says(req) {
+			if _, err := conn.Write([]byte(line + "\n")); err != nil {
+				return
+			}
+		}
+	}
+}
+
+// asked is every request that arrived, in order. Copied under the lock: the
+// connection is served on a goroutine of its own and the test reads this after
+// the command returns, which is not the same as after the goroutine has.
+func (f *fakeZded) asked() []zded.Request {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]zded.Request(nil), f.got...)
+}
+
+// tierAnswers is a whole answer to an ask.run: the reply, a piece of it, and
+// the end. Every fake here gives one, including in the tests where an ask.run
+// is the bug being looked for - the CLI waits for an event with no deadline of
+// its own, so a regression that was left unanswered would time this file out
+// rather than fail it, and a test that hangs says nothing about what broke.
+func tierAnswers(text string) []string {
+	said, err := json.Marshal(text)
+	if err != nil {
+		panic(err)
+	}
+	return []string{
+		`{"ok":"asking"}`,
+		`{"event":{"kind":"ask.text","text":` + string(said) + `}}`,
+		`{"event":{"kind":"ask.text","done":true}}`,
+	}
+}
+
+// onStdout runs it with stdout pointed at a file, and answers what landed
+// there. fmt.Print reads os.Stdout when it prints, so swapping it is enough -
+// and these are tests about where an answer arrives, which means where it
+// arrives has to be readable.
+func onStdout(t *testing.T, run func() error) (string, error) {
+	t.Helper()
+	tmp, err := os.CreateTemp(t.TempDir(), "stdout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdout
+	os.Stdout = tmp
+	runErr := run()
+	os.Stdout = old
+	said, err := os.ReadFile(tmp.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(said), runErr
+}
+
+// The word "panel" names a surface, and for a while it named nothing at all:
+// `zde ask panel <question>` ignored it and ran a provider oneshot, printing an
+// answer to the terminal. Harmless while nobody relied on it, which is exactly
+// why it would still have been there when somebody did.
+//
+// If this regresses, a question meant for the window that keeps a conversation
+// is answered once, on a terminal, with nowhere to ask the next one - and the
+// only sign is that the panel never opened.
+func TestAskPanelWithAQuestionOpensThePanelAndRunsNoTier(t *testing.T) {
+	f := fakeDaemon(t, func(req zded.Request) []string {
+		if req.Method == "ask.panel" {
+			// A shell drew it. What happens when nothing does is the test
+			// below.
+			return []string{`{"ok":true}`}
+		}
+		return tierAnswers("Lima\n")
+	})
+
+	said, err := onStdout(t, func() error {
+		return run([]string{"ask", "panel", "what", "is", "the", "capital", "of", "peru"})
+	})
+	if err != nil {
+		t.Fatalf("zde ask panel: %v", err)
+	}
+	got := f.asked()
+	if len(got) != 1 || got[0].Method != "ask.panel" {
+		t.Fatalf("zde ask panel sent %+v, want one ask.panel: the verb names the surface", got)
+	}
+	if len(got[0].Args) != 1 || got[0].Args[0] != "what is the capital of peru" {
+		t.Errorf("the question did not reach the panel whole: %q", got[0].Args)
+	}
+	// And nothing on the terminal: the answer arrives in the window, so a
+	// terminal that printed one would mean the question was asked twice.
+	if said != "" {
+		t.Errorf("zde ask panel printed %q, and the answer belongs in the window", said)
+	}
+}
+
+// The other verb, unchanged, because it is somebody's script: a question
+// written after `oneshot` is answered on the terminal it was typed at, on the
+// provider tier, streamed as it comes. This is the guarantee the panel change
+// is not allowed to cost.
+func TestAskOneshotWithAQuestionStillAnswersOnTheTerminal(t *testing.T) {
+	f := fakeDaemon(t, func(req zded.Request) []string {
+		if req.Method != zded.MethodAskRun {
+			return []string{`{"error":"` + req.Method + ` is not how a oneshot asks"}`}
+		}
+		return tierAnswers("Lima\n")
+	})
+
+	said, err := onStdout(t, func() error {
+		return run([]string{"ask", "oneshot", "what", "is", "the", "capital", "of", "peru"})
+	})
+	if err != nil {
+		t.Fatalf("zde ask oneshot: %v", err)
+	}
+	if said != "Lima\n" {
+		t.Errorf("the answer landed as %q, and a oneshot answers where it was typed", said)
+	}
+	got := f.asked()
+	if len(got) != 1 || got[0].Method != zded.MethodAskRun {
+		t.Fatalf("zde ask oneshot sent %+v, want one %s", got, zded.MethodAskRun)
+	}
+	want := []string{zded.TierProvider, "what is the capital of peru"}
+	if strings.Join(got[0].Args, "\x00") != strings.Join(want, "\x00") {
+		t.Errorf("args = %q, want %q", got[0].Args, want)
+	}
+}
+
+// No shell means no panel, and a question that reached no panel was not asked.
+// It has to say so: the one thing it must not do is quietly run the tier
+// instead, because then the verb answers on a terminal or in a window depending
+// on what is running, and nothing can be written against it.
+//
+// The same shape the rest of the CLI uses for a surface that did not appear,
+// with the difference that there is no list to fall back to printing - so what
+// is left to say is what did not happen and which verb does work here.
+func TestAskPanelWithNoShellSaysTheQuestionWasNotAsked(t *testing.T) {
+	f := fakeDaemon(t, func(req zded.Request) []string {
+		if req.Method == "ask.panel" {
+			// Nothing acknowledged the event, which is the answer a session
+			// with no shell gets (internal/zded, askSurface).
+			return []string{`{"ok":false}`}
+		}
+		return tierAnswers("Lima\n")
+	})
+
+	said, err := onStdout(t, func() error {
+		return run([]string{"ask", "panel", "what", "is", "the", "capital", "of", "peru"})
+	})
+	if err == nil {
+		t.Fatal("nothing drew the panel and the question was reported as asked")
+	}
+	if !strings.Contains(err.Error(), "not asked") {
+		t.Errorf("the refusal does not say the question went nowhere: %q", err)
+	}
+	if !strings.Contains(err.Error(), "oneshot") {
+		t.Errorf("the refusal does not name the verb that answers here: %q", err)
+	}
+	if said != "" {
+		t.Errorf("it refused and printed %q as well", said)
+	}
+	for _, req := range f.asked() {
+		if req.Method == zded.MethodAskRun {
+			t.Error("no shell, so it ran the tier instead: the verb does one thing or the other by what is running")
+		}
+	}
+}
+
+// printed runs one command with os.Stdout pointed at a pipe, and answers with
+// what it wrote. The power menu's whole no-shell bargain is what it prints, and
+// a test that never reads that is a test of nothing but the argument parser.
+func printed(t *testing.T, args []string) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdout
+	os.Stdout = w
+	runErr := run(args)
+	os.Stdout = old
+	w.Close()
+	out, err := io.ReadAll(r)
+	r.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runErr != nil {
+		t.Fatalf("zde %s: %v", strings.Join(args, " "), runErr)
+	}
+	return string(out)
+}
+
+// shortDir is a temporary directory whose path is short enough to put a unix
+// socket in.
+//
+// t.TempDir spells the test's own name into the path, and a unix address is
+// capped at 108 bytes including the terminator, so a test whose name is long
+// enough will not bind on a machine whose temp root is long enough. That is not
+// hypothetical: this test's name is thirty-nine characters, a CI runner's temp
+// root was forty-one, and the socket under it came to exactly 108 - one over
+// what fits. It passed on a developer machine, where the temp root is /tmp.
+//
+// So a socket path must never be built from t.TempDir, and the fix is not a
+// shorter test name: a name chosen to fit a filesystem limit is a name that
+// stops saying what the test proves. This is the fourth copy of this helper -
+// cmd/zded, internal/zded (socketPath) and internal/niri have the same one, in
+// their own packages because a test helper cannot cross one. A fifth is cheaper
+// than a package that exists to hold six lines.
+func shortDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "zde")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
+}
+
+// firstWord is the column something starts in, counted from zero.
+func firstWord(line string) int {
+	for i := 0; i < len(line); i++ {
+		if line[i] != ' ' {
+			return i
+		}
+	}
+	return 0
+}
+
+// The power menu prints its five rows when no shell is up, with the name in
+// column one, so the obvious thing to do with a row is to type what it says.
+// A CLI that only knew the bare verb would answer a name copied off the row
+// with "unknown command", which blames the person - and the row it happens to
+// is the one that ends the session.
+//
+// So the names here are read off the rows rather than written down again: a
+// list spelled twice is a list that can disagree with itself, which is the one
+// way this can break without anybody noticing.
+//
+// Nothing is performed. The daemon it prints from is pointed at a system bus
+// that is not there, so there is no logind to ask and every row carries the
+// reason instead - and the names are then typed at a runtime directory with no
+// daemon in it, which is as far as a name needs to get to prove it was
+// dispatched.
+func TestPowerTakesTheNameOffTheRowItPrinted(t *testing.T) {
+	quiet(t)
+	// Before the daemon: power.Open reads this to find the system bus, and a
+	// path nothing is listening on is a machine with no logind. Without it this
+	// test would open the real one on the machine it is running on.
+	t.Setenv("DBUS_SYSTEM_BUS_ADDRESS", "unix:path="+filepath.Join(shortDir(t), "no-bus"))
+	t.Setenv("XDG_RUNTIME_DIR", shortDir(t))
+	socket, err := zded.DefaultSocket()
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := zded.New("test", nil, nil, nil)
+	if err := srv.Listen(socket); err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve() //nolint:errcheck // it ends with the listener below
+	t.Cleanup(func() { srv.Close() })
+
+	var names []string
+	// Where the description begins on the last row printed, and where the lines
+	// under it begin. They have to be the same column: a continuation that
+	// starts anywhere else reads as another choice, which on this list is a
+	// choice that ends the session.
+	desc, under := 0, 0
+	for _, line := range strings.Split(printed(t, []string{"system", "power"}), "\n") {
+		if line == "" {
+			continue
+		}
+		// The rows start in column one and everything under them is indented,
+		// which is the shape the whole readout is arranged around.
+		if strings.HasPrefix(line, " ") {
+			under = firstWord(line)
+			continue
+		}
+		name := strings.Fields(line)[0]
+		names = append(names, name)
+		// Past the name, past the padding, past the one-character mark, and
+		// past the space after it: worked out from the shape of the row rather
+		// than from the format string, so that a change to either is caught.
+		i := len(name)
+		for i < len(line) && line[i] == ' ' {
+			i++
+		}
+		i++
+		desc = firstWord(line[i:]) + i
+	}
+	if len(names) != 5 {
+		t.Fatalf("the menu printed %d rows, want the five: %v", len(names), names)
+	}
+	if under == 0 {
+		t.Fatal("nothing was printed under any row, so there is no indent to check")
+	}
+	if under != desc {
+		t.Errorf("what a row costs starts at column %d and the description at column %d", under+1, desc+1)
+	}
+
+	// Somewhere with no daemon, so that typing one of those names goes no
+	// further than the dial.
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	for _, name := range names {
+		err := run([]string{"system", "power", name})
+		if err == nil {
+			t.Fatalf("there is no zded here, so `zde system power %s` cannot have worked", name)
+		}
+		// It got as far as trying to reach the daemon, which is where every
+		// verb gets to here. Anything else means the form was never dispatched.
+		if strings.Contains(err.Error(), "unknown command") {
+			t.Errorf("`zde system power %s` got as far as %q, and that name is on a row it printed", name, err)
+		}
 	}
 }
 

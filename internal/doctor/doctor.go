@@ -16,6 +16,8 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/crispuscrew/zde/internal/attn"
@@ -96,12 +98,15 @@ func Judge(s Session) Report {
 		compositor(s),
 		shell(s),
 		notify(s),
-		zinc(s),
+		layer2(s),
 		podman(s),
 	}
 	r = append(r, units(s)...)
 	r = append(r, manifests(s)...)
-	r = append(r, locker(s), journal(s))
+	r = append(r, deskApps(s)...)
+	r = append(r, locker(s))
+	r = append(r, logind(s)...)
+	r = append(r, journal(s))
 	return r
 }
 
@@ -171,11 +176,23 @@ func notify(s Session) Check {
 	return Check{level, "notify", attn.BusName + " is owned by " + s.Notify}
 }
 
-// zinc is layer 2 (docs/delivery.md), and a warning on every machine today:
-// zcr is not in this repo and nothing installs it, so apps are host programs.
-// It is here anyway because that is precisely the thing somebody will not
-// believe when they read that their editor is unsandboxed.
-func zinc(s Session) Check {
+// layer2 is whether zcr is there at all (docs/delivery.md). It is here because
+// that is precisely the thing somebody will not believe when they read that
+// their editor is unsandboxed.
+//
+// It is the daemon's answer about the daemon's PATH, which is what decides
+// whether a desk switch can start anything. The desk apps check below asks the
+// same question of this process instead (probeDesks), because it is made off
+// the disk so that it still works on a session where zded is what is wrong -
+// and the two can disagree: a zded started by systemd carries the session's
+// PATH and this command carries the shell's. So this line does not stand for
+// that one, which is why every line of it ends with the resolver that actually
+// answered rather than pointing back here.
+//
+// Named for the layer rather than for the line it prints, because this package
+// asks zinc things now and a function called zinc would shadow the package that
+// answers them.
+func layer2(s Session) Check {
 	switch {
 	case s.Status == nil:
 		return Check{Warn, "zinc", noDaemon}
@@ -235,6 +252,171 @@ func manifests(s Session) []Check {
 	for _, bad := range s.Status.BadManifests {
 		out = append(out, Check{Fail, "manifests", bad})
 	}
+	return out
+}
+
+// deskApps is one line per app a desk declares that this machine has nothing to
+// run under that name. It is the failure that used to be silent: entering a
+// desk starts what its manifest declares, behind the switch, and a name nothing
+// could resolve cost one line in zded's log and nothing anybody saw
+// (docs/roadmap.md, 0.1).
+//
+// One line per desk and app, because that is the shape of the fix: the desk to
+// open and the name in it to correct or define. A count would send somebody
+// through the directory looking for which one, which is the same reason the
+// manifests above get a line each.
+//
+// Warnings, never failures. Layer 2 is provisioned by hand on every machine
+// there is (docs/delivery.md), so a machine whose desks name apps nobody has
+// defined yet is the ordinary young machine and not a broken one - and a
+// command that exits non-zero everywhere is one nobody reads the output of.
+func deskApps(s Session) []Check {
+	d := s.Desks
+	switch {
+	case d.Err != nil:
+		return []Check{{Warn, "desk apps", "not known: " + d.Err.Error() + d.askedOf()}}
+	case len(d.Unrunnable) == 0:
+		// The directory is named on this line alone, and that is deliberate: it
+		// is the reading that can quietly be about the wrong place, since zded
+		// can be started with another one (cmd/zded, -desks).
+		return []Check{{OK, "desk apps", "no desk in " + d.Dir + " names an app this machine cannot start" + d.askedOf()}}
+	case d.resolver() == byApps && !d.Configured:
+		// A machine with nothing in zde.apps gets one line and not one per name.
+		// The reason is the same sentence every time and the fix is a single
+		// edit, so a line each would bury the rest of the report under one fact
+		// - which is the wall of noise this check exists to replace.
+		//
+		// Only for that resolver. A zinc app is a YAML file of its own in a
+		// store (docs/delivery.md, layer 2), so there is no one edit to name and
+		// a line each is exactly right: they are that many things to write.
+		return []Check{{Warn, "desk apps", d.Unrunnable[0].Err.Error() + ", and the desks name " +
+			strings.Join(wanted(d.Unrunnable), ", ") + d.askedOf()}}
+	}
+	out := make([]Check, 0, len(d.Unrunnable))
+	for _, a := range d.Unrunnable {
+		out = append(out, Check{Warn, "desk apps", a.Desk + " names " + a.App + ": " + a.Err.Error() + d.askedOf()})
+	}
+	return out
+}
+
+// resolver is which of the two answered, and what a Session written down
+// without one would have used. Judge is a pure function of a struct anybody can
+// write by hand (this package's doc), so the zero value has to mean the same
+// thing the machine it describes would have done.
+func (d Desks) resolver() string {
+	if d.Resolver == byZcr {
+		return byZcr
+	}
+	return byApps
+}
+
+// askedOf is the tail every line of that check carries.
+//
+// It is on the line and not only in the code because a warning nobody can see
+// the basis of is one people learn to ignore, and these two resolvers do not
+// answer the same question: zde.apps is the keymap's own logical-name-to-argv
+// map (internal/apps), and a manifest's `app:` is a zinc app name, which is
+// what `zcr run <app>@<instance>` takes (internal/manifest, App). On a machine
+// that keeps its apps in zinc, a verdict from zde.apps is about the wrong
+// namespace entirely - and saying which one answered is what lets somebody
+// reading a warning they disagree with find out why in one line rather than in
+// the source.
+func (d Desks) askedOf() string {
+	if d.resolver() == byZcr {
+		return " - asked of " + byZcr
+	}
+	return " - asked of " + byApps + ", since no " + byZcr + " is on PATH"
+}
+
+// logind is whether the four verbs a power menu is made of would work on this
+// machine: a log out, a suspend, a reboot and a power off, which are
+// TerminateSession, Suspend, Reboot and PowerOff on
+// org.freedesktop.login1.Manager.
+//
+// Warnings, never failures. A session with no logind is a session somebody can
+// still work in - it locks, and every key but one still does what it did - and
+// doctor's exit status has to keep meaning "this machine is missing something
+// it was promised". A container has no logind and is not broken.
+//
+// One line when all four would work, and one per thing that would not
+// otherwise. That is the shape the rest of this report uses and for the same
+// reason: what fixes one of these is per verb - a polkit rule, an inhibitor to
+// go and stop - and a count would send somebody looking for which.
+func logind(s Session) []Check {
+	l := s.Power
+	switch {
+	case l.Absent:
+		// Said as the consequence and not only as the reading. "nobody owns the
+		// name" is a fact; a machine that cannot be told to go is what somebody
+		// is standing in front of.
+		return []Check{{Warn, "logind", "nothing owns " + logindName +
+			", so nothing can log out, suspend, reboot or power off this machine: a power menu, where there is one, could only lock"}}
+	case l.Err != nil:
+		// The middle state every other check here has. A question that could not
+		// be put has no answer, and the two-second bound above it means the
+		// ordinary way to land here is a machine that is slow rather than one
+		// that is missing something: telling somebody their machine cannot be
+		// powered off, on the evidence of a dial that timed out, is doctor
+		// inventing a fault. So it says what it could not do and hands over the
+		// question by hand, the way the desk apps check does.
+		return []Check{{Warn, "logind", "not known: " + l.Err.Error() +
+			" - so whether this session may log out, suspend, reboot or power off was never asked, and `loginctl show-session` puts the same question by hand"}}
+	}
+	var out []Check
+	for _, c := range l.Can {
+		switch {
+		case c.Err != nil:
+			out = append(out, Check{Warn, "logind", "could not ask logind whether this session may " + c.What + ": " + c.Err.Error()})
+		case c.Answer == "yes":
+			// Nothing. A verb that works has nothing to say, and a report where
+			// every line is a warning is one nobody reads to the end.
+		case c.Answer == "challenge":
+			// polkit would want an authentication first, and a zde session has
+			// no agent to put that question to anybody with. Whatever asks has
+			// to ask non-interactively or else wait for a dialog nobody will
+			// ever see, so this is a refusal however it is worded.
+			out = append(out, Check{Warn, "logind", c.What + " would be refused: polkit answers " + strconv.Quote(c.Answer) +
+				", and this session has no authentication agent to answer it with - security.polkit.extraConfig is where a rule goes"})
+		case c.Answer == "na":
+			out = append(out, Check{Warn, "logind", c.What + " is not available on this machine: logind answers " + strconv.Quote(c.Answer)})
+		default:
+			out = append(out, Check{Warn, "logind", c.What + " would be refused: logind answers " + strconv.Quote(c.Answer)})
+		}
+	}
+	switch {
+	case l.SessionErr != nil:
+		out = append(out, Check{Warn, "logind", "could not ask which session this is, so a log out has nothing to end: " + l.SessionErr.Error()})
+	case l.Session == "":
+		// It refuses rather than guessing, which is the right way round and
+		// still a key that does nothing. Worth saying before somebody presses
+		// it: the two places the answer comes from are the ones to go and look
+		// at (docs/verify.md).
+		out = append(out, Check{Warn, "logind", "logind names no session for this user, so a log out would refuse " +
+			"rather than end somebody else's - loginctl session-status says what it can see"})
+	}
+	if len(out) == 0 {
+		// The aside is there because this check landed before the thing that
+		// uses it, and a line about four verbs nothing presses would otherwise
+		// read as a check about nothing.
+		return []Check{{OK, "logind", "session " + l.Session + " is what a log out would end, and suspend, " +
+			"reboot and power off are this session's to use - what a power menu asks for, on a build that has one"}}
+	}
+	return out
+}
+
+// wanted is every name the desks asked for, once each and in order: what a
+// machine with nothing configured would have to define.
+func wanted(unrunnable []DeskApp) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, a := range unrunnable {
+		if seen[a.App] {
+			continue
+		}
+		seen[a.App] = true
+		out = append(out, a.App)
+	}
+	sort.Strings(out)
 	return out
 }
 
