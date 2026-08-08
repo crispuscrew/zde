@@ -93,6 +93,16 @@ func TestWriteRulesMakesTheDirectoryItWritesInto(t *testing.T) {
 	if string(got) != "one\n" {
 		t.Errorf("file holds %q", got)
 	}
+	// Only niri reads this, and niri is the person's own compositor. It names a
+	// desk per pinned app, and one of those desks can be one zde keeps out of
+	// the picker (docs/vision.md, section 3).
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := fi.Mode().Perm(); mode != 0o600 {
+		t.Errorf("the placement rules are %04o, want 0600: they name the desks, private ones included", mode)
+	}
 }
 
 func TestWriteRulesOnlyWhenChanged(t *testing.T) {
@@ -140,5 +150,44 @@ func TestWriteRulesOnlyWhenChanged(t *testing.T) {
 	}
 	if len(entries) != 1 {
 		t.Errorf("left %d files in the directory, want only dynamic.kdl", len(entries))
+	}
+}
+
+// The machine that has been running zde since before the mode was narrowed.
+//
+// Its dynamic.kdl is 0644 and holds exactly what would be written now, so the
+// "only when they changed" return above is the only path it ever takes and a
+// tightening below it never arrives. This file is zde's own - the header says
+// not to edit it - so the mode is zde's to set even when the bytes are not
+// touched, and the file must not be replaced to set it: niri reloads its whole
+// config on a write here.
+func TestPlacementRulesAnEarlierZdeLeftOpenAreTightenedWithoutBeingRewritten(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dynamic.kdl")
+	if err := os.WriteFile(path, []byte("one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Past whatever umask the test runs under, so this starts wide enough to
+	// prove something.
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writeRules(path, "one\n"); err != nil {
+		t.Fatalf("writing the placement rules: %v", err)
+	}
+
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := after.Mode().Perm(); got != 0o600 {
+		t.Errorf("rules that were already there are still %04o: the desk names in them, private ones included, stay readable on every machine that has run zde before", got)
+	}
+	if !os.SameFile(before, after) {
+		t.Error("identical rules were written again to fix the mode, which makes niri reload for nothing")
 	}
 }

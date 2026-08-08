@@ -197,7 +197,9 @@ let
           XDG_RUNTIME_DIR=$mgr zde status 2>/dev/null | grep -qx 'shell      yes'
         }
         if ! waitfor 30 shell_seen; then
-          echo "the bar is running and status does not say a shell is listening:"
+          # Not "the bar is running and": whether it is still running is the
+          # other half of this and is what the unit status below answers.
+          echo "nothing said a shell was listening in 30s:"
           XDG_RUNTIME_DIR=$mgr zde status; sctl status zde-bar.service || true; exit 1
         fi
 
@@ -275,9 +277,14 @@ let
         # subscription that never connected at all, which is the one failure
         # this can catch from outside a machine with real audio. Waited for
         # rather than read once: the session and the socket come up together.
-        answered() { [ "$(barq mic)" = "none" ]; }
+        #
+        # The value it last read, kept, rather than asked for again inside the
+        # message: a second ask is a second question, and the answer names a
+        # different fault each way. 'unknown' is PipeWire never answering;
+        # 'muted' or 'open' would be a source this VM does not have.
+        answered() { micread=$(barq mic); [ "$micread" = "none" ]; }
         if ! waitfor 20 answered; then
-          echo "the bar reads '$(barq mic)': PipeWire never answered the mic widget"
+          echo "the mic widget last read '$micread', and 'none' is what PipeWire answering looks like on a machine with no source"
           journalctl --user -u zde-bar.service --no-pager | tail -25; exit 1
         fi
 
@@ -286,20 +293,30 @@ let
         # this VM is perfectly online and simply has nothing to ask. Same
         # argument as the battery above, and the first tick may not have
         # answered yet, so this waits.
-        no_manager() { [ "$(barq net)" = "absent" ]; }
+        no_manager() { netread=$(barq net); [ "$netread" = "absent" ]; }
         if ! waitfor 20 no_manager; then
-          echo "no NetworkManager here and the bar reads '$(barq net)'"; exit 1
+          echo "no NetworkManager here and the bar last read '$netread'"; exit 1
         fi
 
         # Then the count, against a queue that changes underneath it. "0 0"
-        # before, "1 0" after: the poll is two seconds, so this waits rather
-        # than sleeping once and hoping.
-        empty=$(barq count)
-        [ "$empty" = "0 0" ] || { echo "the bar says '$empty' for an empty queue"; exit 1; }
+        # before, "1 0" after: the poll is two seconds, so both of these wait
+        # rather than asking once and hoping.
+        #
+        # The before reading waits too, which it did not. The bar answers
+        # 'unlinked' until its own socket is up and 'unknown' until the first
+        # reply parses, and both are briefly true after a session starts - so
+        # asking once here races the bar's first poll and reads as a bar that
+        # miscounted an empty queue.
+        was_empty() { empty=$(barq count); [ "$empty" = "0 0" ]; }
+        if ! waitfor 20 was_empty; then
+          echo "nothing has been added yet and the bar last read '$empty' for the queue"
+          sctl status zde-bar.service || true
+          journalctl --user -u zde-bar.service --no-pager | tail -25; exit 1
+        fi
         XDG_RUNTIME_DIR=$mgr zde queue add something for the bar to count >/dev/null
-        counted() { [ "$(barq count)" = "1 0" ]; }
+        counted() { counts=$(barq count); [ "$counts" = "1 0" ]; }
         if ! waitfor 20 counted; then
-          echo "the queue has one item and the bar says '$(barq count)'"
+          echo "the queue has one item and the bar last read '$counts'"
           sctl status zde-bar.service || true
           journalctl --user -u zde-bar.service --no-pager | tail -25; exit 1
         fi
@@ -336,14 +353,72 @@ let
         [ "$(pickerq state)" = "closed" ] || {
           echo "the picker is open before anything asked for it: $(pickerq state)"; exit 1
         }
-        XDG_RUNTIME_DIR=$mgr zde desk switcher 2>&1 | tee /tmp/switcher.txt
-        # Nothing printed, which now means more than it used to: the shell has to
-        # acknowledge the event before the verb calls it shown, so an empty file
-        # here is the whole round trip - key, daemon, event, surface, token back.
+        # A key that asks for a surface, and hears back. Every one of these is
+        # the same round trip - verb, daemon, event, surface, token back - and
+        # the daemon gives the shell 200ms to send the token (internal/zded,
+        # ackWait) before deciding nothing drew anything and printing its list
+        # to what on a real session is a keybind's stdout. So silence is the
+        # pass, and the file holds whatever it printed instead.
+        #
+        # Asked once, that 200ms is a race written as an assertion. This VM is
+        # software-rendered and CI builds several of them at a time, so a Qt
+        # process that answers in a millisecond on a machine can miss the window
+        # with nothing whatever wrong with it - which is how four unrelated
+        # branches failed this file inside four minutes and passed either side.
+        #
+        # So it is asked again until it lands, inside a budget, and what is
+        # reported is what was seen rather than a cause: how many asks it took,
+        # and whether zded had a listener at all. That last is the whole
+        # difference between a shell that is not there and one that was merely
+        # late, and it is exactly what the old message ("a shell was listening
+        # and it printed the list anyway") asserted without ever asking.
+        #
+        # Asking again is safe by construction and deliberately so: show()
+        # acknowledges a surface that is already up (shell/Picker.qml,
+        # ActionPalette.qml, NotifCenter.qml), because a key pressed twice must
+        # not print either. That property is asserted on its own below.
+        #
+        # Twenty seconds, like every other wait on this shell drawing something
+        # (picker_open, palette_open, one_surface): what is waited on is one Qt
+        # process handling one event, not a unit starting. Named once and read
+        # by the message, so that changing the budget cannot leave the sentence
+        # claiming a number nobody waited.
+        ack_budget=20
+        acked() {
+          ack_out=$1; shift
+          ack_n=0
+          ack_end=$((SECONDS + ack_budget))
+          while :; do
+            ack_n=$((ack_n + 1))
+            XDG_RUNTIME_DIR=$mgr "$@" >"$ack_out" 2>&1 || true
+            if [ ! -s "$ack_out" ]; then
+              echo "$* was acknowledged, on ask $ack_n"
+              return 0
+            fi
+            [ "$SECONDS" -lt "$ack_end" ] || break
+            sleep 1
+          done
+          # "wrote something", not "printed its list": the other way this ends
+          # is the client's own five second deadline (internal/zded/client.go)
+          # expiring against a starved daemon, and that writes an error here
+          # rather than a list. Saying which is the reader's job, and the file
+          # below is what they read.
+          echo "$* wrote to a keybind's stdout on all $ack_n asks in ''${ack_budget}s, and with a shell acknowledging it writes nothing."
+          echo "what zded says about this session:"
+          XDG_RUNTIME_DIR=$mgr zde status 2>&1 || true
+          echo "and what the last ask wrote:"
+          cat "$ack_out"
+          journalctl --user -u zde-bar.service --no-pager | tail -25
+          return 1
+        }
+
+        # Nothing printed, which means more than it used to: the shell has to
+        # acknowledge the event before the verb calls it shown, so silence here
+        # is the whole round trip - key, daemon, event, surface, token back.
         # A shell that read the socket and drew nothing would print the list.
-        [ ! -s /tmp/switcher.txt ] || {
-          echo "a shell was listening and the switcher printed the list anyway:"
-          cat /tmp/switcher.txt; exit 1
+        acked /tmp/switcher.txt zde desk switcher || {
+          echo "Mod+Tab would have printed the desk list over the screen instead of opening the picker"
+          exit 1
         }
         # Exactly what it should be showing: desks rather than windows, one of
         # them, and the one we are on. A match on "open" alone would pass a
@@ -372,11 +447,21 @@ let
         }
         # On the screen, and named ours: the bar is on a layer too, so this looks
         # for the picker's own namespace rather than any surface at all.
-        nirimsg --json layers 2>&1 | tee /tmp/layers-picker.txt
-        grep -q '"namespace":"zde-picker"' /tmp/layers-picker.txt || {
+        #
+        # Waited for rather than asked once. pickerq state answers off
+        # picker.visible, a QML property set inside show(); the layer surface is
+        # what quickshell commits afterwards and what niri lists after that - so
+        # "open" is true before there is anything on a layer. On a machine that
+        # gap is one round trip; here it is a Qt process on llvmpipe against
+        # however many VMs the runner is building.
+        picker_layer() {
+          nirimsg --json layers >/tmp/layers-picker.txt 2>&1 &&
+            grep -q '"namespace":"zde-picker"' /tmp/layers-picker.txt
+        }
+        if ! waitfor 20 picker_layer; then
           echo "the picker says it is open and niri has no such layer:"
           cat /tmp/layers-picker.txt; exit 1
-        }
+        fi
         # And it has the keyboard, which is the half that makes it usable and the
         # half nothing else here would notice: driving it through IPC works just
         # as well with the keyboard never taken. niri prints the interactivity in
@@ -387,20 +472,26 @@ let
         # keyboard - which is also true when the grab is on the surface
         # underneath, the fault checked below - and it held here at all because
         # the bar happens to set no keyboardFocus.
-        layerof zde-picker | grep -q '"keyboard_interactivity":"Exclusive"' || {
+        # Waited for on its own, and not folded into the wait above, because the
+        # grab is not part of the surface arriving: a run of this test caught
+        # zde-picker on a layer reading "keyboard_interactivity":"None" and
+        # passed anyway, because the next line asked niri a second time and by
+        # then the grab had landed. Asked once, that is the same coin toss with
+        # nothing to say it happened.
+        picker_grabs() { layerof zde-picker | grep -q '"keyboard_interactivity":"Exclusive"'; }
+        if ! waitfor 20 picker_grabs; then
           echo "the picker is on screen without the keyboard, so no key would reach it:"
-          cat /tmp/layers-picker.txt; exit 1
-        }
+          nirimsg --json layers; exit 1
+        fi
 
         # Mod+Tab again, on a picker that is already up. Nothing about the
         # surface changes, so the handler that acknowledges the event never
         # fires unless show() says so itself - and without that the key waits
         # out its whole ack window, decides no shell drew anything, and prints
         # every desk to a keybind's stdout over whatever is on the screen.
-        XDG_RUNTIME_DIR=$mgr zde desk switcher 2>&1 | tee /tmp/switcher-again.txt
-        [ ! -s /tmp/switcher-again.txt ] || {
-          echo "the picker was already up and asking again printed the list anyway:"
-          cat /tmp/switcher-again.txt; exit 1
+        acked /tmp/switcher-again.txt zde desk switcher || {
+          echo "the picker was already up, and asking again would have printed the desk list over it"
+          exit 1
         }
         picker_open || {
           echo "asking again while it was up left the picker as: $(pickerq state)"; exit 1
@@ -418,10 +509,9 @@ let
         # keyboard, and the one before it is off the screen rather than merely
         # behind - which is also what stops two full-screen dims compositing
         # into a darker one.
-        XDG_RUNTIME_DIR=$mgr zde system notif-center 2>&1 | tee /tmp/center-over-picker.txt
-        [ ! -s /tmp/center-over-picker.txt ] || {
-          echo "a shell was listening and the center printed the history anyway:"
-          cat /tmp/center-over-picker.txt; exit 1
+        acked /tmp/center-over-picker.txt zde system notif-center || {
+          echo "Mod+n would have printed the notification history over the screen instead of opening the center"
+          exit 1
         }
         one_surface() {
           [ -z "$(layerof zde-picker)" ] && [ "$(grabbers)" = "1" ] &&
@@ -435,7 +525,17 @@ let
         # And back the other way, which is the same rule from the other side and
         # is how the picker comes to be up again for everything below: asking
         # for it takes the center off the screen rather than stacking under it.
-        XDG_RUNTIME_DIR=$mgr zde desk switcher >/dev/null
+        # Through acked rather than bare with its output thrown away, which is
+        # how this line used to be written and how a run of this test died with
+        # nothing to read: a `zde` that misses its own five second deadline
+        # against a busy daemon exits non-zero, set -e ends the script there,
+        # and the only trace is one line of stderr on the machine's console
+        # about a socket timing out. It is the same round trip as its
+        # neighbours and it gets the same treatment.
+        acked /tmp/switcher-over-center.txt zde desk switcher || {
+          echo "asking for the picker while the center was up never came back clean"
+          exit 1
+        }
         back_to_picker() {
           picker_open && [ -z "$(layerof zde-notif-center)" ] && [ "$(grabbers)" = "1" ]
         }
@@ -465,7 +565,10 @@ let
         # the keyboard, so the second press is one this surface can read.
         #
         # Reopened first, because dismissing closed it.
-        XDG_RUNTIME_DIR=$mgr zde desk switcher >/dev/null
+        acked /tmp/switcher-leader.txt zde desk switcher || {
+          echo "reopening the picker for the leader check never came back clean"
+          exit 1
+        }
         if ! waitfor 20 picker_open; then
           echo "the picker did not reopen for the leader check: $(pickerq state)"; exit 1
         fi
@@ -487,7 +590,10 @@ let
         fi
 
         # Then open it again for the half that does choose.
-        XDG_RUNTIME_DIR=$mgr zde desk switcher >/dev/null
+        acked /tmp/switcher-pick.txt zde desk switcher || {
+          echo "reopening the picker for the pick check never came back clean"
+          exit 1
+        }
         if ! waitfor 20 picker_open; then
           echo "the picker did not reopen: $(pickerq state)"; exit 1
         fi
@@ -555,12 +661,11 @@ let
           nirimsg windows; exit 1
         }
 
-        XDG_RUNTIME_DIR=$mgr zde window jump-to 2>&1 | tee /tmp/jump-shell.txt
         # Nothing printed: a shell drew it and said so, the same round trip the
         # desk switcher makes - key, daemon, event, surface, token back.
-        [ ! -s /tmp/jump-shell.txt ] || {
-          echo "a shell was listening and jump-to printed the list anyway:"
-          cat /tmp/jump-shell.txt; exit 1
+        acked /tmp/jump-shell.txt zde window jump-to || {
+          echo "Mod+w would have printed the window list over the screen instead of opening the picker"
+          exit 1
         }
         # Both windows, and the window picker rather than the desk one: the two
         # share a surface now, so a Mod+w that opened the desks would otherwise
@@ -571,11 +676,18 @@ let
           echo "the window picker never opened with the right contents: $(pickerq state)"
           journalctl --user -u zde-bar.service --no-pager | tail -20; exit 1
         fi
-        nirimsg --json layers 2>&1 | tee /tmp/layers-jump.txt
-        grep -q '"namespace":"zde-picker"' /tmp/layers-jump.txt || {
+        # Waited for, for the reason the desk picker's own layer check is: the
+        # state is a QML property and the surface is a commit niri has still to
+        # process, so "open" precedes "on a layer" by however long this machine
+        # takes to get a frame's worth of work done.
+        jumper_layer() {
+          nirimsg --json layers >/tmp/layers-jump.txt 2>&1 &&
+            grep -q '"namespace":"zde-picker"' /tmp/layers-jump.txt
+        }
+        if ! waitfor 20 jumper_layer; then
           echo "the window picker says it is open and niri has no such layer:"
           cat /tmp/layers-jump.txt; exit 1
-        }
+        fi
 
         # The window that is not the one already focused - the newest has it, and
         # this was read before the picker took the keyboard - so that what is
@@ -620,10 +732,9 @@ let
           XDG_RUNTIME_DIR=$mgr quickshell ipc --pid "$barpid" call palette "$@" 2>&1 |
             tr -d '\n' || true
         }
-        XDG_RUNTIME_DIR=$mgr zde palette 2>&1 | tee /tmp/palette.txt
-        [ ! -s /tmp/palette.txt ] || {
-          echo "a shell was listening and the palette printed the list anyway:"
-          cat /tmp/palette.txt; exit 1
+        acked /tmp/palette.txt zde palette || {
+          echo "Mod+semicolon would have printed every action over the screen instead of opening the palette"
+          exit 1
         }
         palette_open() { case "$(paletteq state)" in "open "*) return 0 ;; *) return 1 ;; esac; }
         if ! waitfor 20 palette_open; then
@@ -699,11 +810,85 @@ let
         if ! waitfor 30 zded_up; then
           echo "zded did not come back:"; sctl status zded.service || true; exit 1
         fi
-        recovered() { [ "$(barq count)" = "1 0" ]; }
-        if ! waitfor 30 recovered; then
-          echo "zded restarted and the bar never reconnected: '$(barq count)'"
-          journalctl --user -u zde-bar.service --no-pager | tail -25; exit 1
+        # Every answer the bar gave, in order, with the socket's state at that
+        # moment beside it. Three things this could not say before, in the order
+        # they cost somebody a diagnosis.
+        #
+        # The mechanism under test is the one thing the log could not see. The
+        # redial is a two second timer that sets connected and returns without
+        # writing anything (shell/shell.qml), so recovery is two ticks plus a
+        # round trip - and nothing anywhere records that an attempt was made. A
+        # bar halfway through retrying and a bar that has stopped retrying both
+        # answer 'unlinked'. The run of answers is as close to that mechanism as
+        # anything outside the process can stand.
+        #
+        # How much of the budget it actually got. barq is a `quickshell ipc`
+        # process per ask and waitfor sleeps a second between them, so a runner
+        # building four VMs at once may get five asks out of the budget rather
+        # than sixty - and a message quoting only the last value cannot tell a
+        # check that ran five times from one that ran sixty.
+        #
+        # And whether the socket was there at all when it asked. A restarting
+        # zded deletes the socket and recreates it, and an ask that lands in
+        # that window is not the bar failing to redial.
+        : > /tmp/recover.txt
+        recovered() {
+          if [ -S "$mgr/zde/zded.sock" ]; then sock_now=sock; else sock_now=nosock; fi
+          seen=$(barq count)
+          printf '%ss\t%s\t%s\n' "$SECONDS" "$sock_now" "$seen" >> /tmp/recover.txt
+          [ "$seen" = "1 0" ]
+        }
+        # Sixty rather than thirty, to match the neighbours that wait on a
+        # process doing something rather than on a file appearing: bar_layer,
+        # two_windows and foot_window all get sixty. zded_up above keeps thirty,
+        # because that is systemd starting a unit it already has on disk. Named
+        # once and read by the message below, so the budget and the sentence
+        # about it cannot drift apart.
+        recover_budget=60
+        if ! waitfor "$recover_budget" recovered; then
+          polls=$(wc -l < /tmp/recover.txt)
+          last=$(tail -1 /tmp/recover.txt | cut -f3)
+          echo "the bar was asked $polls times in ''${recover_budget}s and answered: $(cut -f3 /tmp/recover.txt | sort -u | paste -sd'|' -)"
+          cat /tmp/recover.txt
+          # Which of the three facts recovery is made of failed. One message
+          # blamed the socket for all three, and for two of them that sentence
+          # is false - it would send the next person after the wrong thing.
+          case "$last" in
+            unlinked)
+              # With 'sock' against every line above, the daemon is there and
+              # the bar is not reaching it, which is the redial and not the
+              # daemon. The first place to look is a redial that only gets one
+              # try: quickshell's Socket keeps the dead QLocalSocket when a
+              # connect fails and dials only when it has none (src/io/socket.cpp,
+              # onSocketError and setConnected), so an attempt that lands in the
+              # window where zded has deleted the socket and not yet made it
+              # again is the last attempt there will be.
+              echo "the bar's socket to zded never came back, so the redial is what to look at" ;;
+            unknown)
+              echo "the bar is connected and nothing it read parsed as a queue, which is the reply and not the socket" ;;
+            "0 0")
+              echo "the bar is connected and reading, and the queue it reads is empty: the item did not survive the restart, which is the journal and not the socket" ;;
+            *)
+              echo "the bar answered '$last', which is neither a count nor a state it has a word for" ;;
+          esac
+          # Whose fault it is, which the bar's own journal cannot say: from that
+          # side "the bar cannot reach a healthy daemon" and "nobody can reach
+          # the daemon" read identically. The `zde queue` below is the line that
+          # separates them - one CLI, one socket, one answer, no Qt in the way.
+          ls -la "$mgr/zde/" || true
+          sctl status zded.service || true
+          journalctl --user -u zded.service --no-pager | tail -25
+          journalctl --user -u zde-bar.service --no-pager | tail -25
+          echo "and what the socket answers a CLI:"
+          XDG_RUNTIME_DIR=$mgr zde queue || true
+          exit 1
         fi
+        # And on the way past, what it took to get here. A run that reconnects
+        # on its fortieth ask out of sixty seconds is one slower runner away
+        # from being the failure above, and nothing else in the log would say
+        # so - which is the whole complaint about the check this replaced.
+        echo "the bar reconnected on ask $(wc -l < /tmp/recover.txt):"
+        cat /tmp/recover.txt
 
         XDG_RUNTIME_DIR=$mgr zde queue 2>&1 | tee /tmp/bar-queue.txt
         grep -q 'something for the bar to count' /tmp/bar-queue.txt
@@ -831,6 +1016,33 @@ let
           echo "switching to vshop did not try to start the app it declares:"
           cat /tmp/zded-live.log; exit 1
         }
+        # And it said so where somebody would see it, which is the half a log
+        # cannot do: what a switch could not start arrives like anything else
+        # that arrives, so it waits on the queue in the mode this session is in
+        # (docs/verify.md, section 5 - work here, and no manifest on this
+        # machine declares an attn policy).
+        #
+        # The property, not the sentence: the arrival names the desk, names the
+        # app, says it did not start, and comes from the desktop rather than
+        # from an app - the sender column is otherwise a claim an app makes
+        # about itself, and this is the one arrival zde sends itself.
+        launch_said() { zde queue >/tmp/q-launch.txt 2>&1 && grep -q 'did not start' /tmp/q-launch.txt; }
+        waitfor 20 launch_said || {
+          echo "the switch could not start the desk's app and told nobody:"
+          cat /tmp/q-launch.txt /tmp/zded-live.log; exit 1
+        }
+        awk -F'\t' '$4=="zde" && $5 ~ /vshop/ && $5 ~ /absent-app@vshop/ && $5 ~ /did not start/ { found=1 }
+             END { exit !found }' /tmp/q-launch.txt || {
+          echo "the launch failure reached the queue without saying which desk, which app, or who from:"
+          cat /tmp/q-launch.txt; exit 1
+        }
+        # Finished here, because the queue section further down is about the
+        # items it adds itself: it checks their order and that the queue empties
+        # when they are done. Nothing else in this run adds one - the snapshot
+        # below rewrites this manifest without its apps, deliberately
+        # (internal/manifest, FromMap), so every later switch to vshop starts
+        # nothing and has nothing to report.
+        zde queue done "$(grep 'did not start' /tmp/q-launch.txt | cut -f1)" >/dev/null
 
         # And the desk's pin reached niri as a window rule. This is the file the
         # generated config includes and zded is the only thing that writes
@@ -914,10 +1126,12 @@ let
         # this script ever gets - a daemon answering, a compositor it can see,
         # the notification name taken, a manifest that parses - so nothing may
         # fail and the exit status has to be zero. The units are inactive here
-        # (this zded was started by hand) and no machine anywhere has zcr yet,
-        # which is exactly why those are warnings: neither is a session
-        # somebody cannot work in, and a command that exits non-zero on every
-        # machine is one nobody reads the output of.
+        # (this zded was started by hand) and no shell is listening, which is
+        # exactly why those two are warnings: neither is a session somebody
+        # cannot work in, and a command that exits non-zero on every machine is
+        # one nobody reads the output of. Nothing is warned about the desks yet
+        # - the directory doctor reads is still empty at this point, and the
+        # desk that names an app zinc has not got is written further down.
         if ! zde doctor >/tmp/doctor.txt 2>&1; then
           echo "doctor failed a check on a session that is working:"
           cat /tmp/doctor.txt; exit 1
@@ -935,6 +1149,54 @@ let
         # this asserts doctor is the thing that would notice if it stopped.
         grep -q '/etc/pam.d/swaylock' /tmp/doctor.txt || {
           echo "doctor does not say what the screen lock would authenticate against:"
+          cat /tmp/doctor.txt; exit 1
+        }
+        # Which resolver judged the desks, on the one machine in CI that has
+        # both halves: zcr is on this PATH, and zde.apps names a terminal, a
+        # lock and a help.
+        #
+        # In the directory doctor itself reads, which is not the one zded was
+        # given above: that check goes to the disk rather than through the
+        # daemon (internal/doctor, probeDesks), so a desk in /tmp/desks would
+        # leave the line below an all-clear about an empty directory - true, and
+        # about nothing.
+        mkdir -p ~/.config/zde/desks
+        printf 'name: doctor-probe
+    monitors:
+      winit: { workspaces: [code] }
+    apps:
+      - { app: absent-app }
+    '       > ~/.config/zde/desks/doctor-probe.yaml
+        # Still a warning and not a failure: a desk naming an app nobody has
+        # defined is the ordinary young machine (docs/delivery.md, layer 2), and
+        # doctor's exit status has to keep meaning "something was promised and
+        # is not here".
+        if ! zde doctor >/tmp/doctor-desks.txt 2>&1; then
+          echo "a desk naming an app zinc has not got made doctor fail:"
+          cat /tmp/doctor-desks.txt; exit 1
+        fi
+        # `absent-app` is a zinc app name, and zde.apps has never heard of it
+        # and never would - the two are different namespaces that the docs
+        # happen to spell alike. So the verdict has to be zcr's own refusal
+        # about that name. Judged against zde.apps this line would be right here
+        # by accident, and wrong on every machine that keeps its apps in zinc,
+        # which is the machine zde is for.
+        grep -qE '^warn +desk apps +doctor-probe names absent-app.*asked of zcr' /tmp/doctor-desks.txt || {
+          echo "doctor did not judge the desk's app with the resolver a launch uses:"
+          cat /tmp/doctor-desks.txt; exit 1
+        }
+        grep -q 'no app "absent-app" defined' /tmp/doctor-desks.txt || {
+          echo "doctor did not carry zcr's own answer about the name:"
+          cat /tmp/doctor-desks.txt; exit 1
+        }
+        rm -f ~/.config/zde/desks/doctor-probe.yaml
+        # logind, which is what the four power verbs are. Warn or ok and never
+        # fail - a session with no logind still works, and the exit status above
+        # has to keep meaning something - but the line has to be there: "the
+        # power menu refuses everything on this machine" is a sentence about
+        # polkit or a bus, and it is invisible until somebody presses the key.
+        grep -qE '^(ok|warn) +logind ' /tmp/doctor.txt || {
+          echo "doctor says nothing about logind, so nothing says whether this session may power off:"
           cat /tmp/doctor.txt; exit 1
         }
 

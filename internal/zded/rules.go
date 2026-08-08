@@ -86,7 +86,17 @@ func writeRules(path, content string) error {
 		return nil
 	}
 	if old, err := os.ReadFile(path); err == nil && string(old) == content {
-		return nil
+		// The bytes are right and the mode may not be. A machine that has been
+		// running zde since before this was written has a 0644 dynamic.kdl
+		// holding exactly what would be written now, so this early return is the
+		// only path it ever takes and a tightening below it never arrives.
+		//
+		// Zde's own file, so its mode is zde's to set: the header says not to
+		// edit it and every byte in it is rewritten from the manifests. That is
+		// the difference between this and a desk manifest, which is somebody's
+		// own file and keeps whatever mode they gave it (internal/manifest,
+		// Save).
+		return os.Chmod(path, 0o600)
 	}
 	// The directory as well, because nothing else makes it. niri's config
 	// directory exists on a machine somebody has configured niri on by hand, and
@@ -94,7 +104,14 @@ func writeRules(path, content string) error {
 	// config into the store and includes this path from it, so the first startup
 	// on a fresh account found no ~/.config/niri to write into, said so once on
 	// stderr, and every pinned app then opened wherever niri felt like putting
-	// it. 0755 like the journal's: it is config, and nothing secret is in it.
+	// it. 0755 is what a directory gets from a plain mkdir, before the umask
+	// takes its share, and it is used only when zde is the one creating the
+	// directory: MkdirAll leaves one that is already there exactly as it found
+	// it, and nothing here narrows it afterwards. That restraint is the point.
+	// This is niri's config directory and not zde's - what else the person
+	// keeps under it is theirs - so the privacy of the rules is carried by the
+	// file's own 0600 below, which travels with the file into places a
+	// directory's mode does not reach.
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -113,7 +130,12 @@ func writeRules(path, content string) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
+	// 0600, which os.CreateTemp already gives it: only niri reads this, and niri
+	// is the person's own compositor. What is in it is a line per pinned app
+	// naming the desk it opens on, and one of those desks can be a private one -
+	// which zde keeps out of the picker, so it should not be publishing the name
+	// in a file next door either (docs/vision.md, section 3).
+	if err := os.Chmod(tmp.Name(), 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp.Name(), path)

@@ -238,7 +238,10 @@ var registry = map[string]Entry{
 	// switch is a niri native). The rest routes through zde.
 	"system.lock":  {Group: "system", Desc: "lock the screen", Spawn: []string{"zde", "system", "lock"}, written: true},
 	"system.quiet": {Group: "system", Desc: "toggle quiet (do not disturb)", Spawn: []string{"zde", "system", "quiet"}, written: true},
-	"system.power": {Group: "system", Desc: "the power menu", Spawn: []string{"zde", "system", "power"}},
+	// power is one surface and five verbs, and the lock among them is the same
+	// locker the key above runs: the row spawns `zde system lock` rather than
+	// growing a second idea of what locks this screen (internal/zded, powerRun).
+	"system.power": {Group: "system", Desc: "the power menu: lock, log out, suspend, reboot, power off", Spawn: []string{"zde", "system", "power"}, written: true},
 	// connections: the wifi networks and the link you are on. The description
 	// promised bluetooth too, and a cheatsheet line is a promise a person reads
 	// before pressing the key - pairing is a conversation of its own with its
@@ -261,6 +264,13 @@ var registry = map[string]Entry{
 	"system.brightness-dn": {Group: "system", Desc: "brightness down", Spawn: []string{"brightnessctl", "set", "5%-"}, Repeat: true, WhenLocked: true, written: true},
 	"system.layout-switch": {Group: "system", Desc: "switch keyboard layout (language)", Native: "switch-layout \"next\""},
 	"system.notif-center":  {Group: "system", Desc: "the notification center", Spawn: []string{"zde", "system", "notif-center"}, written: true},
+	// The other half of a popup, and the reason there can be one at all. A
+	// notification popup appears without taking the keyboard - five layer
+	// surfaces already fight over that grab - so its buttons are clickable
+	// whenever it is up and pressable only after somebody asks. This is the
+	// asking, and it is a key rather than a gesture because a grab nobody
+	// requested is the thing being avoided.
+	"system.notif-reach": {Group: "system", Desc: "put the keyboard on the newest notification popup", Spawn: []string{"zde", "system", "notif-reach"}, written: true},
 	// doctor is a screen of text and there is nothing yet to show one: a bind
 	// spawns a process whose stdout goes to niri's log, so a chord for this
 	// would be a key that answers into a file nobody is reading. Registered

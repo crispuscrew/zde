@@ -29,6 +29,7 @@ func main() {
 	socket := flag.String("socket", "", "listen here instead of $XDG_RUNTIME_DIR/zde/zded.sock")
 	jrnPath := flag.String("journal", "", "journal path (default $XDG_STATE_HOME/zde/journal.jsonl)")
 	desksDir := flag.String("desks", "", "desk manifests (default $XDG_CONFIG_HOME/zde/desks)")
+	histPath := flag.String("history", "", "notification snapshot (default $XDG_STATE_HOME/zde/history.json)")
 	flag.Parse()
 	if flag.NArg() != 0 {
 		fatal(fmt.Errorf("unexpected argument %q", flag.Arg(0)))
@@ -47,13 +48,16 @@ func main() {
 	if *desksDir == "" {
 		*desksDir = manifest.DefaultDir()
 	}
+	if *histPath == "" {
+		*histPath = attn.DefaultSnapshotPath()
+	}
 
 	// The signal has to reach the listener, or a stale socket outlives the
 	// daemon and the next zded refuses to start.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	if err := run(ctx, *socket, *jrnPath, *desksDir, attn.Serve, clip.Tool{}); err != nil {
+	if err := run(ctx, *socket, *jrnPath, *desksDir, *histPath, attn.Serve, clip.Tool{}); err != nil {
 		fatal(err)
 	}
 }
@@ -84,7 +88,14 @@ type notifier func(sink attn.Sink, version string) (*attn.Server, error)
 // switches desks. Taking the name is bounded too (internal/attn, Serve), which
 // is what makes it safe for this to be the thing the main goroutine sits in
 // while the socket is served from another.
-func run(ctx context.Context, socket, jrnPath, desksDir string, notify notifier, clipboard zded.Clipboard) error {
+func run(ctx context.Context, socket, jrnPath, desksDir, histPath string, notify notifier, clipboard zded.Clipboard) error {
+	// Cancelled by the caller's signal, and by anything below that ends the
+	// daemon on its own: the goroutine writing the notification history has to
+	// be told either way, or a zded that stopped because its listener failed
+	// would sit here waiting for a snapshot nobody asked for (see the wait at
+	// the end).
+	ctx, stopSaving := context.WithCancel(ctx)
+	defer stopSaving()
 	jrn, err := journal.Open(jrnPath)
 	if err != nil {
 		return fmt.Errorf("journal: %w", err)
@@ -95,6 +106,13 @@ func run(ctx context.Context, socket, jrnPath, desksDir string, notify notifier,
 	}
 
 	srv := zded.New(version, jrn, compositor{}, manifest.Dir(desksDir))
+	// What the last session was interrupted by, put back before anything can
+	// arrive on top of it (internal/attn, snapshot.go). Never fatal: the
+	// notification center starting empty is where a first login starts, and it
+	// is not worth a session over (internal/zded, LoadHistory).
+	if err := srv.LoadHistory(histPath); err != nil {
+		fmt.Fprintf(os.Stderr, "zded: notification history: %v\n", err)
+	}
 	srv.UseClipboard(clipboard)
 	if err := srv.Listen(socket); err != nil {
 		return err
@@ -118,6 +136,12 @@ func run(ctx context.Context, socket, jrnPath, desksDir string, notify notifier,
 	// Answering keybinds, from here on and before anything touches a bus.
 	serving := make(chan error, 1)
 	go func() { serving <- srv.Serve() }()
+
+	// And the history written down while the session runs, so a zded that is
+	// killed rather than asked to stop costs the last couple of minutes and not
+	// the whole day (internal/zded, KeepHistory).
+	saved := make(chan struct{})
+	go func() { srv.KeepHistory(ctx, histPath); close(saved) }()
 
 	// Keep the names true while the session runs, rather than only when
 	// someone asks. This is also what makes zded worth having running: a
@@ -144,7 +168,28 @@ func run(ctx context.Context, socket, jrnPath, desksDir string, notify notifier,
 		fmt.Fprintln(os.Stderr, "zded: notifications: listening")
 	}
 
-	return <-serving
+	err = <-serving
+	// And the tiers, before this process goes.
+	//
+	// Close is already called from the goroutine above, but that one races the
+	// exit: closing the listener is what makes Serve return, so run could be
+	// back in main with the tiers still being stopped. Called again here, on the
+	// goroutine that is actually leaving, so the wait inside it is a wait this
+	// process does. Close is idempotent and bounded (internal/zded, stopRuns).
+	//
+	// On every way out and not only the signal: a Serve that returned an error
+	// ends the daemon just as thoroughly, and a tier is a subprocess in a
+	// process group the session's own signal cannot reach - so nothing else
+	// would ever stop it.
+	srv.Close()
+	// Then the last snapshot, waited for rather than left to a goroutine the
+	// process is about to exit out from under. A logout is the ordinary way a
+	// session ends, so it must not be the ordinary way the last arrivals are
+	// lost. After the tiers rather than before, so that the writing is the last
+	// thing this process does and takes in whatever arrived while they died.
+	stopSaving()
+	<-saved
+	return err
 }
 
 // subscribe opens an event stream. The connection is not shared with the

@@ -109,6 +109,16 @@ on_exit:  []
 - Entering the desk starts these, once, behind the switch rather than in front
   of it - `zcr run <app>@<instance> --exec` per app, and a second entry is
   refused by zinc rather than tracked here.
+- `policies.attn` is the mode entering the desk puts the session in: work, focus
+  or quiet, the three of [`vision.md`](vision.md) principle 3. The desk borrows
+  it - what was in force is written down and comes back when you leave for
+  another desk - so a desk for concentrating does not silence the rest of the
+  day. Declaring nothing is not declaring work: a desk with no opinion leaves
+  the mode where it is, which is most desks. A mode set by hand while you stand
+  there ends the loan; it is yours, it follows you off the desk, and the desk
+  takes the mode again the next time you enter it. Only a desk switch applies
+  it, so a desk you arrive on another way keeps the mode you came with.
+  `policies.zen` is parsed and read by nobody: zen is 0.2's security set.
 - `app_id` is what the window calls itself, which is not what zinc calls the
   app: `app: browser` opens a window that says `org.mozilla.firefox`. Given it,
   the pin above becomes a niri window rule in `dynamic.kdl` and the window opens

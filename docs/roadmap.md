@@ -16,8 +16,41 @@ attribution; asks 5-6 land with their consumers.
 - ask MVP: popup + panel, provider/local tiers, escalate.
 - clip: the clipboard history, with the sensitive-hint and TTL invariants.
 
-Every line of that has landed, and a desk now starts what its manifest declares
-and pins each app to the workspace it named.
+Every line of that has landed, and a desk now starts what its manifest declares,
+pins each app to the workspace it named, and puts the session in the attn mode
+it asks for. Four things arrived beside the
+list rather than in it: the connections surface (`Mod+Shift+c`), which is 0.4's
+wifi TUI in the shape the shell wanted; the palette (`Mod+semicolon`), which is
+0.2's and came early because a good part of the cheatsheet is still silent and
+a palette is what says which part; bluetooth, as `zde system bluetooth`
+with nothing on a screen; and the power menu (`Mod+Shift+x`), which belongs
+here rather than in the laptop profile it was filed under - logging out of this
+desktop meant opening a terminal, which is not a thing to ship a phase on. It
+is lock, log out, suspend, reboot and power off, the three that end something
+asking first and saying what is about to be lost - the windows that close, the
+arrivals the queue never got, anybody else logged in. The lock is the same
+locker `zde system lock` runs, and the rest is logind's, so a refusal - an
+inhibitor holding sleep, a polkit that will not take the verb from this session
+- comes back as a refusal in words rather than as a key that did nothing.
+
+The popup has landed since, and it is what turns the "actions" capability from a
+claim about reach into one about immediacy as well. A notification appears where
+you are looking, with the summary, the body and every button its sender
+declared, and takes itself away after a few seconds. It takes no keyboard when
+it arrives: every other surface the shell draws over the bar shares one
+exclusive grab, and it took a fix to keep them to one at a time, so one more
+that grabbed on every arrival - at the choice of any app on the session bus -
+would be the worst offender on the machine. The number of them is deliberately
+not written here: it is a count several branches are each adding to, and a
+sentence that has to be renumbered is a sentence that ends up wrong. Its buttons are clickable the whole time it is up, and `Mod+Ctrl+n` is
+the one deliberate key that hands it the keyboard, which it then holds only
+while a finger is on it. Two things decide whether a card appears at all, and
+they are kept apart because they are different people's decisions: the session's
+mode (quiet shows nothing, focus shows what the sender called urgent, work shows
+everything) and the desk's own `private: true`, which is popups off in every
+mode ([`vision.md`](vision.md), section 3). The history keeps the lot whichever
+way both answer, because that is principle 3 and a mode or a desk that changed
+what is recorded would be deciding what happened.
 
 The clipboard is in that list rather than in 0.2 because it was moved here. Two
 reasons, and the second is the one that decides it: `Mod+v` is a key people
@@ -29,26 +62,53 @@ read at all, and every entry expires by being overwritten rather than by being
 hidden; both of those decide what the daemon may hold, and a design that held
 everything first would have to be taken apart to get them.
 
-Three things arrived beside the list rather than in it: the connections surface (`Mod+Shift+c`), which is 0.4's
-wifi TUI in the shape the shell wanted; the palette (`Mod+semicolon`), which is
-0.2's and came early because a good part of the cheatsheet is still silent and
-a palette is what says which part; and bluetooth, as `zde system bluetooth`
-with nothing on a screen.
-
 Where those lines stop short is what is left of the phase, and none of it
 blocks 0.2:
 
-- a desk's own attn policy. `policies.attn` in a manifest is read by nobody, so
-  the mode is the session's and not the desk's, and the per-desk display
-  policies [`vision.md`](vision.md) gives attn are one mode wide.
-- a popup. The "actions" capability is claimed and every action a sender
-  declares is offered in the center, up to the nine a digit can reach, with the
-  rest counted and said rather than dropped quietly - but the offer is behind
-  `Mod+n` rather than in front of you. It is a claim about reach and not about
-  immediacy, and nothing in 0.1 makes it both.
-- history dies with the daemon: a ring of 200 in memory, because the journal
-  fsyncs per line and this is history that is stale by the next login. The queue
-  is the half that survives.
+- the rest of what a manifest declares. `policies.attn` is read now, and beside
+  it `policies.zen`, `background: pause` and `on_enter`/`on_exit` are still
+  parsed and consulted by nobody. Zen belongs to 0.2's security set and pausing
+  to 0.3's resources, so what is left here is the two hooks.
+- the popup is unproven in CI. The smoke test boots a real niri and counts which
+  layer surfaces hold the keyboard, which is exactly the assertion this wants -
+  but it stops the shell before it starts the session bus a notification needs,
+  so proving the card appears without a grab is by hand for now
+  ([`verify.md`](verify.md), section 5).
+- history survives the daemon in part. It is a ring of 30 per sender in memory,
+  for at most 12 named senders plus the nameless ring a person's own entries
+  use, and the newest 40 of it - across all of them, not 40 from each - are
+  written to a file of their own beside the journal, bodies cut to 400
+  characters, 0600, rewritten every two minutes and on the way out. So "what did
+  I miss" answers across a reboot instead of starting every login blank. A file
+  of its own rather than the journal, which is appended to on every arrival and
+  rewritten only when a daemon starts, so whatever goes in it is carried until
+  the next login (internal/attn, PerSenderMax). What a restart still costs is
+  the rest of every ring, the rest of every long body, and the actions: nothing
+  can be pressed on a row whose app was on the last session's bus, and the
+  center says so rather than offering buttons that go nowhere. What arrived on a
+  desk declared `private: true` never reaches that file - which is a claim about
+  that file and not about the whole disk, because the journal still records the
+  summary and the sender of anything the mode queued, though no longer the body.
+- one loud app no longer answers the question for everybody. A ring each means
+  a download posting a hundred progress updates spends its own thirty and
+  nobody else's, and a notification carrying `replaces_id` is written over the
+  record it supersedes instead of landing beside it, so that download is one
+  row. Names are bounded too, at 12, and the ring that goes when a thirteenth
+  turns up is the cheapest to lose rather than the least recently used - so an
+  app that varies what it calls itself evicts its own one-record rings instead
+  of your real senders, and what it costs to displace a sender is what it costs
+  to out-hold it. What none of that does is say who sent anything: the name is
+  still the sender's own claim, and only attribution by channel changes that
+  ([`vision.md`](vision.md), principle 6 and ask 4), which waits on something in
+  zde reading `zcr bus`.
+- a replacement spends a revision of the history it did not need to. The bus
+  side closes the old notification before the new one arrives, so the record is
+  marked dismissed and the revision counter moves, and then the arrival removes
+  that record anyway (internal/attn, Replace). It costs one revision per
+  replace, which at worst has the snapshot writer write the file once more than
+  it had to on its two-minute clock. Written down rather than fixed: the fix is
+  a second path through the sink for a close that is only half of a replace, and
+  that is not obviously smaller than the problem.
 - ask has no tier until a machine names one, and the panel does not carry the
   previous turns as context.
 - the clipboard's sensitive hint is a claim the source makes, and nothing in
@@ -62,6 +122,24 @@ blocks 0.2:
 - nothing is sandboxed until somebody defines an app. Layer 2 is provisioned by
   hand ([`delivery.md`](delivery.md)), so a manifest can name an app that does
   not exist and the launch is a line in zded's log.
+- ask has no tier until a machine names one. The panel carries the previous
+  turns now - stdin holds the conversation, a JSON object a line, and the role
+  is a field rather than a prefix so that nothing in an answer can arrive as
+  something a person said - but a conversation is capped at 64 KiB and the cap
+  is a refusal: past it the panel says to start a fresh one (`ctrl+n`) rather
+  than dropping the oldest turns to fit. Whether 64 KiB and the two minute
+  deadline are the right pair is for a real tier to say.
+- nothing is sandboxed until somebody defines an app. Layer 2 is still
+  provisioned by hand ([`delivery.md`](delivery.md)), so a manifest can still
+  name an app this machine has no way to start. What has gone is the silence:
+  `zde doctor` names the desk and the app before anybody switches to it (asking
+  zcr, which is the resolver a launch uses, and saying on the line which of the
+  two answered, since `zde.apps` holds the keys' logical names and not zinc app
+  names at all), and a launch that fails as a desk is entered arrives as a
+  notification - one for the whole switch, naming what did not start and why,
+  rather than a line in a log nobody reads while they are working. A switch
+  back to a desk that is already up says nothing at all: zinc refusing to start
+  a second copy of something running is not a launch that failed.
 
 ## 0.2 - Daily driver
 
@@ -109,12 +187,14 @@ blocks 0.2:
 - film desk: PipeWire limiter, luma-clamp shader, end-of-film sleep, ambient
   side monitors.
 - gaming desk: gamescope, auto-Passthrough + never-release set, replay.
-- laptop profile: battery/brightness/power, single-monitor degradation,
-  workspace placement re-applied on dock/undock. The wifi and bluetooth halves
-  came early and in different shapes - wifi as a shell surface on
-  `Mod+Shift+c`, bluetooth as `zde system bluetooth` with no surface at all -
-  so what is left here is folding bluetooth into that surface and the rest of
-  what a laptop is.
+- laptop profile: battery/brightness, single-monitor degradation, workspace
+  placement re-applied on dock/undock. Three halves of this came early and in
+  different shapes - wifi as a shell surface on `Mod+Shift+c`, bluetooth as
+  `zde system bluetooth` with no surface at all, and the power menu on
+  `Mod+Shift+x`, which moved into 0.1 because a desktop you cannot log out of
+  is not one you can use - so what is left here is folding bluetooth into that
+  surface, the lid and the battery thresholds, and the rest of what a laptop
+  is.
 
 Delivery ([`delivery.md`](delivery.md)): the flake skeleton exists; the home
 module grows with each 0.1 component; ISO and `install.sh` after 0.1 is
@@ -164,23 +244,47 @@ turned "when someone has hardware" into something anyone can do this evening.
   nothing focused at all, so a press spends itself putting focus back on a
   window instead of going anywhere. There are six such surfaces now - the
   picker, the notification center, the connections list, the palette, the ask
-  window and the clipboard history - each taking the keyboard only while it is
-  visible, so the thing
-  to try is a nav key the instant after each one closes
+  window, the power menu and the clipboard history - each taking the keyboard
+  only while it is visible, so the thing to try is a nav key the instant after
+  each one closes
   ([`verify.md`](verify.md), a day of work). Not settled here: driving a real
   key into a nested compositor did not work well enough to trust the answer.
-- attn actions, with "actions" claimed and every declared one offered in the
-  center: whether a claim about reach is read by real senders as a claim about
-  immediacy. The buttons are behind `Mod+n` because there is no popup, and an
-  app that changes what it sends the moment it sees the capability is the case
-  nobody has met yet.
+  The notification popup is one more surface and the one that answers this
+  differently: it takes no keyboard at all until `Mod+Ctrl+n`, and then gives it
+  back after ten seconds without a keypress. So the thing to try on that one is
+  the opposite - notifications arriving while you type, and whether a single
+  keystroke ever goes anywhere but the window you were in.
+- a desk's attn policy, in use. The desk borrows the mode and gives it back
+  when you leave, and a mode set by hand ends the loan: it follows you off the
+  desk, and the desk takes the mode again the next time you enter it. The other
+  order - the hand-set mode ending when you walk away - was rejected because it
+  makes `Mod+q` mean two things depending on which desk you pressed it on, but
+  which one a person expects is a question for a week of use. The other half to
+  feel for: the policy rides on a desk switch, so a desk reached without one
+  (niri's own workspace keys, the overview, `desk.move-workspace-to`) keeps the
+  mode you arrived with until the next switch settles it.
+- attn actions, with "actions" claimed, every declared one offered in the center,
+  and now a popup that carries them the moment something arrives. What is left is
+  what only real senders answer: whether a mail client's archive and delete are
+  the right two buttons to have on a card that lasts five seconds, and whether
+  anybody reaches for `Mod+Ctrl+n` rather than clicking - it is the one key here
+  that exists because a surface deliberately refuses to grab the keyboard, so if
+  nobody presses it the answer is a different way to hand over the keys, not a
+  popup that grabs. Five seconds and fifteen for the urgent are guesses;
+  three cards, and a second arrival from one sender replacing that sender's card,
+  are the bounds a build bot is the test of.
 - the join verdict: NetworkManager can take longer to refuse a wrong password
   than the IPC deadline allows, so the surface stops waiting and watches the
   link instead. Pushing the verdict as an event is the fix and is not built;
   whether it is needed is a wrong password on real hardware.
 - ask against a real tier: whether an answer arriving piece by piece reads
   well, and whether two minutes is the right cap once a local model that thinks
-  before it speaks sits behind `local`.
+  before it speaks sits behind `local`. The panel now puts the conversation in
+  front of the question, which makes both halves of that sharper: a model that
+  reprocesses its context each turn gets slower as the panel fills, so the two
+  minutes and the 64 KiB a conversation may reach are one decision and want
+  measuring together. The other half is whether a tier somebody writes reads the
+  frame at all, or answers only the last line and calls it a conversation.
 - nav latency, by hand on real hardware rather than by arithmetic: one Mod+j
   spawns a `zde`, and behind it zded asks niri for the focused window, moves
   it, asks again, and on a rotation re-reads the map and the focused name a

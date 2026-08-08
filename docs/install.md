@@ -207,9 +207,18 @@ nothing happening. An instance goes in the same argv - `zcr run browser@work
 
 A desk manifest starts its own apps: entering the desk runs each one it
 declares, and zinc refuses a second launch of something already up, so
-switching back and forth does not pile up browsers. The launches happen behind
-the switch, so the desk is in front of you before they arrive, and a failure
-goes to `journalctl --user -u zded` rather than taking the switch down with it.
+switching back and forth does not pile up browsers - and does not complain
+about it either, because an app that is already running is the state the switch
+was asking for. The launches happen behind the switch, so the desk is in front
+of you before they arrive, and a failure never takes the switch down with it:
+it arrives as a notification instead, one for the whole switch, saying which
+apps did not start and what the runner said about them. `journalctl --user -u
+zded` has every one of them whole, and `zde doctor` says which of your desks
+name an app this machine cannot start before you go there at all - asking zcr,
+since a manifest's `app:` is a zinc app name and not one of the logical names
+`zde.apps` holds. Each of those lines ends with which of the two answered,
+because on a machine with no zcr the only map left is the wrong one and a
+warning off it can be about nothing at all.
 Where a window lands is the pin, if the manifest also says what the window
 calls itself:
 
@@ -259,11 +268,14 @@ It will. In descending order of how much it hurts:
   a session where `Mod+Tab` prints a list instead of drawing a picker), who has
   the notification name when it is not zded, whether zinc is on this machine at
   all, whether the units a login starts are up, which manifests it could not
-  read, and whether the screen lock could accept a password - which is the one
-  worth running before you need it, since a locker with no PAM service takes the
-  screen and then refuses every password. `warn` is a session you can work in
-  and `fail` is not, so the exit status counts only the failures. Paste the
-  whole thing into a bug report.
+  read, which of your desks name an app nothing here can start (and which
+  resolver said so - zcr where there is one, `zde.apps` otherwise), whether the
+  screen lock could accept a password, and whether logind would let this session
+  log out, suspend, reboot or power off. The last two are the ones worth running
+  before you need them: a locker with no PAM service takes the screen and then
+  refuses every password, and a power key that polkit refuses is one that does
+  nothing at all. `warn` is a session you can work in and `fail` is not, so the
+  exit status counts only the failures. Paste the whole thing into a bug report.
 
   `zde status` is the same daemon answering a narrower question: what it is
   doing now - the desk you are on, how many things are queued, and whether the
