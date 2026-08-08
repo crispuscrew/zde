@@ -193,10 +193,10 @@ type Server struct {
 	spawn func(argv []string) error
 
 	notifier Notifier
-	// history is what has arrived, whatever the mode did about it. Bounded, and
-	// in memory rather than in the journal: see attn.HistoryMax. The short end
-	// of it is written to a file of its own, which written keeps track of
-	// (history.go).
+	// history is what has arrived, whatever the mode did about it. A bounded
+	// ring per sender, and in memory rather than in the journal: see
+	// attn.PerSenderMax. The short end of it is written to a file of its own,
+	// which written keeps track of (history.go).
 	history attn.History
 	written written
 
@@ -1384,15 +1384,35 @@ func (s *Server) Arrived(n attn.Notification) (uint64, error) {
 		}
 		rec.ID = id
 	}
+	// A replacement lands on top of the record it supersedes rather than beside
+	// it. replaces_id is a sender saying this is the same notification with
+	// something new to say, and appending was what turned one download into a
+	// hundred rows of history (internal/attn, Replace).
+	var gone []uint64
+	if n.Replaces != 0 {
+		gone = s.history.Replace(n.Replaces, rec)
+	} else {
+		gone = s.history.Add(rec)
+	}
 	// What the history pushed out is what nothing can reach any more: it cannot
 	// be listed, dismissed or invoked, so the bus side is told to stop holding
 	// the sender's names for it. Without this, the one table in the system with
 	// no bound would grow by one for every notification the session ever
 	// received - and the modes made that worse, because a notification a mode
 	// keeps off the queue is one nobody can finish, so nothing else prunes it.
-	if gone := s.history.Add(rec); gone != 0 {
+	//
+	// Every one of them, not the first. One arrival can push a record out of
+	// its own sender's ring and, when the name is a new one, take a whole other
+	// sender's ring with it (internal/attn, SendersMax) - so a loop that
+	// stopped at one id would leave the rest of that ring remembered here for
+	// the life of the session, which is the leak this call exists to stop.
+	if len(gone) > 0 {
+		// Read once and outside the loop: watcher takes the daemon's lock, and
+		// every method on what it answers puts a message on the session bus.
 		if w := s.watcher(); w != nil {
-			w.Forget(gone)
+			for _, id := range gone {
+				w.Forget(id)
+			}
 		}
 	}
 	return rec.ID, nil

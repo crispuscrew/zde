@@ -44,18 +44,46 @@ blocks 0.2:
   rest counted and said rather than dropped quietly - but the offer is behind
   `Mod+n` rather than in front of you. It is a claim about reach and not about
   immediacy, and nothing in 0.1 makes it both.
-- history survives the daemon in part. The ring of 200 is memory, and the newest
-  40 of it are written to a file of their own beside the journal - bodies cut to
-  400 characters, 0600, rewritten every two minutes and on the way out - so
-  "what did I miss" answers across a reboot instead of starting every login
-  blank. Not the journal, which fsyncs per line and would grow without bound for
-  the sake of bodies (internal/attn, HistoryMax). What a restart still costs is
-  the rest of the ring, the rest of every long body, and the actions: nothing
+- history survives the daemon in part. It is a ring of 30 per sender in memory,
+  for at most 12 named senders plus the nameless ring a person's own entries
+  use, and the newest 40 of it - across all of them, not 40 from each - are
+  written to a file of their own beside the journal, bodies cut to 400
+  characters, 0600, rewritten every two minutes and on the way out. So "what did
+  I miss" answers across a reboot instead of starting every login blank. A file
+  of its own rather than the journal, which is appended to on every arrival and
+  rewritten only when a daemon starts, so whatever goes in it is carried until
+  the next login (internal/attn, PerSenderMax). What a restart still costs is
+  the rest of every ring, the rest of every long body, and the actions: nothing
   can be pressed on a row whose app was on the last session's bus, and the
   center says so rather than offering buttons that go nowhere. What arrived on a
   desk declared `private: true` never reaches that file - which is a claim about
   that file and not about the whole disk, because the journal still records the
   summary and the sender of anything the mode queued, though no longer the body.
+- one loud app no longer answers the question for everybody. A ring each means
+  a download posting a hundred progress updates spends its own thirty and
+  nobody else's, and a notification carrying `replaces_id` is written over the
+  record it supersedes instead of landing beside it, so that download is one
+  row. Names are bounded too, at 12, and the ring that goes when a thirteenth
+  turns up is the cheapest to lose rather than the least recently used - so an
+  app that varies what it calls itself evicts its own one-record rings instead
+  of your real senders, and what it costs to displace a sender is what it costs
+  to out-hold it. What none of that does is say who sent anything: the name is
+  still the sender's own claim, and only attribution by channel changes that
+  ([`vision.md`](vision.md), principle 6 and ask 4), which waits on something in
+  zde reading `zcr bus`.
+- a replacement spends a revision of the history it did not need to. The bus
+  side closes the old notification before the new one arrives, so the record is
+  marked dismissed and the revision counter moves, and then the arrival removes
+  that record anyway (internal/attn, Replace). It costs one revision per
+  replace, which at worst has the snapshot writer write the file once more than
+  it had to on its two-minute clock. Written down rather than fixed: the fix is
+  a second path through the sink for a close that is only half of a replace, and
+  that is not obviously smaller than the problem.
+- ask has no tier until a machine names one, and the panel does not carry the
+  previous turns as context.
+- nothing is sandboxed until somebody defines an app. Layer 2 is provisioned by
+  hand ([`delivery.md`](delivery.md)), so a manifest can name an app that does
+  not exist and the launch is a line in zded's log.
 - ask has no tier until a machine names one. The panel carries the previous
   turns now - stdin holds the conversation, a JSON object a line, and the role
   is a field rather than a prefix so that nothing in an answer can arrive as

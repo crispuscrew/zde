@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/godbus/dbus/v5"
 )
@@ -193,6 +194,77 @@ func TestNotifyReplacesTakesTheOldOneOff(t *testing.T) {
 	}
 	if len(sink.closed) != 1 || sink.closed[0] != uint64(first) {
 		t.Errorf("closed %v, want the item it replaced", sink.closed)
+	}
+}
+
+// The arrival says which item it supersedes, and not the number the sender
+// used for it.
+//
+// That number is the sender's own name for a thing and it could name anybody's;
+// which item it stood for is what this side worked out, after checking whose it
+// was. The history needs the fact rather than the claim, because it is what
+// keeps one download to one row instead of a hundred (history.go, Replace).
+func TestNotifyNamesTheItemItReplaces(t *testing.T) {
+	sink := &fakeSink{}
+	n := notifier(sink)
+	first, derr := n.Notify(peer, "curl", 0, "", "downloading 1%", "", nil, nil, -1)
+	if derr != nil {
+		t.Fatal(derr)
+	}
+	if _, derr := n.Notify(peer, "curl", first, "", "downloading 2%", "", nil, nil, -1); derr != nil {
+		t.Fatal(derr)
+	}
+	// A stranger's replaces_id names nothing of this sender's, so it supersedes
+	// nothing - the same scoping that stops it closing somebody else's.
+	if _, derr := n.Notify(dbus.Sender(":1.99"), "impostor", first, "", "yours now", "", nil, nil, -1); derr != nil {
+		t.Fatal(derr)
+	}
+	if len(sink.got) != 3 {
+		t.Fatalf("sink got %+v", sink.got)
+	}
+	if sink.got[0].Replaces != 0 {
+		t.Errorf("the first arrival says it replaces %d, and there was nothing to replace", sink.got[0].Replaces)
+	}
+	if sink.got[1].Replaces != uint64(first) {
+		t.Errorf("the second says it replaces %d, want the item the first became (%d)", sink.got[1].Replaces, first)
+	}
+	if sink.got[2].Replaces != 0 {
+		t.Errorf("a stranger's replaces_id claimed item %d", sink.got[2].Replaces)
+	}
+}
+
+// The buttons are bounded like everything else a sender controls, and they
+// were not: both halves of an action went through oneLine, so nine of them was
+// 24 KB a record against a body of 16 KB, and every memory figure in this
+// package was describing a smaller number than the one that could be held.
+//
+// A long label is cut, because a label is read. A long key is not kept at all,
+// because the key is what goes back to the sender: a shortened one is a key
+// that app never declared, so pressing the button would do nothing and say it
+// had done something. Counted either way, which is what lets the surface admit
+// there is an action it cannot reach.
+func TestAnActionsTextIsBounded(t *testing.T) {
+	sink := &fakeSink{}
+	long := strings.Repeat("é", actionTextMax*3)
+	if _, derr := notifier(sink).Notify(peer, "mail", 0, "", "Ilya: about the invoice", "", []string{
+		"reply", long,
+		long, "Archive",
+		"delete", "Delete",
+	}, nil, -1); derr != nil {
+		t.Fatal(derr)
+	}
+	n := sink.got[0]
+	if len(n.Actions) != 2 {
+		t.Fatalf("kept %+v, want the two whose keys can be sent back", n.Actions)
+	}
+	if got := utf8.RuneCountInString(n.Actions[0].Label); got != actionTextMax {
+		t.Errorf("the label is %d characters, want it cut to %d - counted in characters, or a button in Cyrillic is cut to a quarter of one", got, actionTextMax)
+	}
+	if n.Actions[1].Key != "delete" {
+		t.Errorf("the second kept action is %+v, want the one after the long key: it should be skipped, not swallow what follows", n.Actions[1])
+	}
+	if n.Extra != 1 {
+		t.Errorf("Extra = %d, want 1: the action with the unsendable key is out of reach, and the surface says so rather than showing fewer than the app offered", n.Extra)
 	}
 }
 

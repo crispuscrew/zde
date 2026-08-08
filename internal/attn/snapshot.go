@@ -4,15 +4,15 @@ package attn
 //
 // A file of its own, and deliberately not the journal. The journal fsyncs per
 // line and grows until it is compacted, so it is the wrong place for thousands
-// of characters of attacker-controlled body (see HistoryMax); this file is
+// of characters of attacker-controlled body (see PerSenderMax); this file is
 // bounded, written whole, and renamed over the old one, so what it costs is the
 // same whether it is written once or every two minutes.
 //
 // What it holds is the short answer to "what did I miss", not the long one. The
-// ring in memory is the session's whole record; this is the front of the newest
-// few of it, kept so that a reboot - or a rebuild that restarts zded, which is
-// the common case - does not start the morning with an empty notification
-// center.
+// rings in memory are the session's whole record; this is the front of the
+// newest few of them, kept so that a reboot - or a rebuild that restarts zded,
+// which is the common case - does not start the morning with an empty
+// notification center.
 
 import (
 	"encoding/json"
@@ -26,14 +26,16 @@ import (
 
 // snapshotMax is how many records reach the file.
 //
-// Forty, against the ring's two hundred, because the two answer different
-// questions. Inside a session "what did I miss" reaches back over a day of
-// arrivals, and the ring is sized for that. Across a restart the question is
-// narrower - what was happening when the session ended - and that is the last
-// hour or two on any machine that receives notifications at all. Forty is about
-// two screenfuls of the notification center, which draws twenty-odd rows on a
-// 1080p panel, so it is more than the surface shows at once and less than a
-// person would ever scroll back through after a reboot.
+// Forty, against the rings' three hundred and ninety, because the two answer
+// different questions. Inside a session "what did I miss" reaches back over a
+// day of arrivals, and the rings are sized for that. Across a restart the
+// question is narrower - what was happening when the session ended - and that
+// is the last hour or two on any machine that receives notifications at all.
+// Forty is a screenful of the notification center and a third: it draws 31 rows
+// on a 1080p panel (shell/NotifCenter.qml - a 26-pixel row and a 2-pixel gap,
+// in a panel bounded at the screen height less 80 with a 96-pixel footer). So
+// it is more than the surface shows at once and less than a person would ever
+// scroll back through after a reboot.
 //
 // It is also the number the arithmetic below is done with, and the two move
 // together: doubling this doubles the file.
@@ -41,16 +43,22 @@ const snapshotMax = 40
 
 // snapshotBodyMax is how much of a body reaches the file.
 //
-// The arithmetic, done the way HistoryMax's is. A record at its limit is
-// summaryMax (300 characters) plus this (400) plus a sender name, itself
-// bounded at 300 by oneLine: a thousand characters, which in an alphabet that
-// costs four bytes a character is 4 KB, plus about 150 bytes of field names, a
-// timestamp and a desk. Forty of those is under 200 KB written whole, and a few
-// kilobytes in a session made of real notifications. The same forty records
-// with the ring's 4000-character body would be 700 KB, and the whole ring at
-// its limit is the 3 MB HistoryMax counts.
+// The arithmetic, done the way SendersMax's is, and with one term that count
+// does not have. A record at its limit is summaryMax (300 characters) plus this
+// (400) plus a sender name, itself bounded at 300 by oneLine: a thousand
+// characters. In memory that is 4 KB in the widest alphabet, but this one is
+// counted in JSON, where encoding/json writes `<`, `>` and `&` as six-byte
+// escapes - and every one of those thousand characters is an app's own text, so
+// a thousand of them is the case to count: 6 KB, plus about 150 bytes of field
+// names, a timestamp and a desk. No term for the actions, and that is not an
+// omission - Snapshot drops them, for its own reasons, so the file is the one
+// count in this package that never had to carry them. Forty of those is under
+// 250 KB written whole, and a few kilobytes in a session made of real
+// notifications. The same forty records with the rings' 4000-character body
+// would be over a megabyte, and every ring full at its limit is the 9 MB
+// SendersMax counts.
 //
-// 400 rather than the ring's 4000 because the bodies are what make a history
+// 400 rather than the rings' 4000 because the bodies are what make a history
 // large, so the bodies are the part that mostly stays in RAM. What 400
 // characters buy is recognition: enough to know which message this was and
 // whether it still matters, which is all a record is for once the session that
@@ -64,7 +72,7 @@ const snapshotBodyMax = 400
 
 // snapshotBytesMax is the most of the file that is worth reading at all.
 //
-// Forty records at their limit is under 200 KB, so a megabyte is several times
+// Forty records at their limit is under 250 KB, so a megabyte is four times
 // anything this zde could have written. A file past that is not a snapshot -
 // it is a mistake, or somebody's idea of one - and reading it into the daemon's
 // memory before finding out is exactly the failure the bounds above exist to
@@ -111,9 +119,16 @@ func DefaultSnapshotPath() string {
 // snapshotMax records that may be written at all, oldest first, with their
 // bodies cut to snapshotBodyMax.
 //
-// Oldest first because that is the order the ring is in, so Restore puts them
-// back without reversing anything and a person reading the file sees the
-// morning above the afternoon.
+// The newest across every sender, and not the newest of each. The file answers
+// the same question the center does, so it is filled the same way the center
+// is read (history.go, newestFirst) - the rings are a bound on what one app
+// can hold, and a file that took every ring's newest would be the whole
+// history, 390 records against these forty, holding a morning of one app
+// rather than the last hour of the session.
+//
+// Oldest first because that is the order the history is read back in, so
+// Restore puts them back without reversing anything and a person reading the
+// file sees the morning above the afternoon.
 //
 // Two things do not come with them. A record that arrived on a private desk is
 // left out entirely, which is the invariant this whole file is written around:
@@ -130,8 +145,11 @@ func (h *History) Snapshot() []Record {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	out := make([]Record, 0, snapshotMax)
-	for i := len(h.records) - 1; i >= 0 && len(out) < snapshotMax; i-- {
-		r := h.records[i]
+	for _, e := range h.newestFirst() {
+		if len(out) >= snapshotMax {
+			break
+		}
+		r := e.rec
 		if r.Private {
 			continue
 		}
