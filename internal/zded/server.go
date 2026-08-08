@@ -34,6 +34,7 @@ import (
 	"github.com/crispuscrew/zde/internal/journal"
 	"github.com/crispuscrew/zde/internal/link"
 	"github.com/crispuscrew/zde/internal/manifest"
+	"github.com/crispuscrew/zde/internal/power"
 	"github.com/crispuscrew/zde/internal/zinc"
 )
 
@@ -229,6 +230,20 @@ type Server struct {
 	// holding belongs to nobody.
 	bluetoothGone uint64
 	openBluetooth func() (Bluetooth, error)
+
+	// logind, for the power menu (power.go). Opened on first use and kept, like
+	// the two above, and for the third time for the same reason: a machine that
+	// has none is a state rather than a daemon that will not start. openPower is
+	// a field so a test can drive a log out without ending the machine it runs
+	// on.
+	powerMu   sync.Mutex
+	logind    power.Manager
+	openPower func() (power.Manager, error)
+	// What the last dial said when there was no logind to reach, and when it
+	// said it. Somebody leaning on the power key is not a poll, but it is
+	// enough dials to be worth not making (power.go, noLogindFor).
+	noLogind   error
+	noLogindAt time.Time
 
 	// The tier runs in flight (ask.go). A run is a subprocess in a process group
 	// of its own, deliberately, so that stopping it stops what it started - and
@@ -600,6 +615,19 @@ func (s *Server) Dispatch(req Request) Response {
 			return Response{Error: "net.connections takes no arguments"}
 		}
 		return s.connections()
+	case "system.power":
+		// One verb, two arities, for the reason window.jump-to has two: the
+		// menu and the choice are the same question - which one - asked twice,
+		// and with no surface to ask it of, the name printed by the first form
+		// is what the second one takes.
+		switch len(req.Args) {
+		case 0:
+			return s.powerMenu()
+		case 1:
+			return s.powerRun(req.Args[0])
+		default:
+			return Response{Error: "system.power takes one action name, or none to open the menu"}
+		}
 	case "net.status":
 		if len(req.Args) != 0 {
 			return Response{Error: "net.status takes no arguments"}

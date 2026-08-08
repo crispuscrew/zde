@@ -234,7 +234,10 @@ var registry = map[string]Entry{
 	// switch is a niri native). The rest routes through zde.
 	"system.lock":  {Group: "system", Desc: "lock the screen", Spawn: []string{"zde", "system", "lock"}, written: true},
 	"system.quiet": {Group: "system", Desc: "toggle quiet (do not disturb)", Spawn: []string{"zde", "system", "quiet"}, written: true},
-	"system.power": {Group: "system", Desc: "the power menu", Spawn: []string{"zde", "system", "power"}},
+	// power is one surface and five verbs, and the lock among them is the same
+	// locker the key above runs: the row spawns `zde system lock` rather than
+	// growing a second idea of what locks this screen (internal/zded, powerRun).
+	"system.power": {Group: "system", Desc: "the power menu: lock, log out, suspend, reboot, power off", Spawn: []string{"zde", "system", "power"}, written: true},
 	// connections: the wifi networks and the link you are on. The description
 	// promised bluetooth too, and a cheatsheet line is a promise a person reads
 	// before pressing the key - pairing is a conversation of its own with its

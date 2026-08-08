@@ -181,6 +181,11 @@ func wireServer(t *testing.T) (*Server, *theMachine) {
 		windows: []Window{{ID: 1, AppID: "term", Title: "a shell", Workspace: "vshop.DP-1.code"}},
 	}, nil)
 	withLink(s, nil, link.ErrNoManager)
+	// And logind, which is the seam the comment below said would arrive with the
+	// power menu. `system.power` is dispatched with no arguments and reaches the
+	// system bus through it, so without this the scan asks the machine running
+	// the tests what its logind would let it do.
+	withLogind(s, &fakeLogind{}, nil)
 	// The two fields that start a program. Nothing dispatched with no arguments
 	// reaches either today - desk.switch wants a desk name and palette.run wants
 	// an action - so these are here for the method that does: `zcr run` on a zde
@@ -238,14 +243,12 @@ type theMachine struct {
 //   - What starts a program, which is s.launch and s.spawn, above.
 //
 // What this deliberately is not is a fake with answers in it. Those belong
-// beside the code that has an interface to fake, and the logind one cannot be
-// written here at all: internal/power and the openPower field it hangs off are
-// the power menu branch's, so anything shaped like them on this branch would be
-// a second idea of logind rather than the one the daemon uses. So this makes the
-// absence loud instead, and when the two branches meet the whole of the fix is
-// `withLogind(s, &fakeLogind{}, nil)` beside the withLink above, out of that
-// branch's own power_test.go. Checked by merging them: red without that line,
-// green with it, and this machine's bus never dialled either way.
+// beside the code that has an interface to fake, and when the power menu landed
+// its logind seam arrived with it: `withLogind(s, &fakeLogind{}, nil)` sits
+// beside the withLink above, out of that branch's own power_test.go. This was
+// written before it existed, and made the absence loud rather than guessing at
+// the shape of it - which is what caught `system.power` dialling the system bus
+// of whatever machine ran the tests.
 //
 // Which is the shape of it for every surface method after that one. A fake where
 // there is a seam, and this underneath, failing on the one nobody thought about.

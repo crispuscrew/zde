@@ -54,6 +54,18 @@ func run(args []string) error {
 			return fmt.Errorf("nothing to lock the screen with: %w", err)
 		}
 		return nil
+	case len(args) == 2 && args[0] == "system" && args[1] == "power":
+		return powerMenu("")
+	case len(args) == 3 && args[0] == "system" && args[1] == "power":
+		// The name from the list, handed straight back - the same two arities
+		// the window picker has, and for the same reason: with no surface to
+		// ask, what the first form printed is what the second one takes.
+		//
+		// Nothing asks again here. The menu is where a person is told what a
+		// reboot is about to cost and answers for it; from a terminal the
+		// answer is having typed the word, which is the same bargain
+		// `zde system bluetooth confirm ID yes` makes.
+		return powerMenu(args[2])
 	case len(args) == 2 && args[0] == "system" && args[1] == "quiet":
 		// Mod+q. A toggle rather than a mode name, because the key is for the
 		// moment somebody needs silence now: one press in, one press out.
@@ -1115,6 +1127,73 @@ func palette() error {
 	return nil
 }
 
+// powerMenu opens the power menu, or runs one row of it.
+//
+// The same bargain as the desk switcher: with a shell listening this prints
+// nothing and a surface appears, and without one it prints the menu, so that
+// Mod+Shift+x does something on a session whose shell has died - which is one
+// of the sessions somebody most wants to log out of.
+//
+// Printed rather than tab separated, unlike every list in this CLI, because
+// this is not a list of ids to cut a column out of: it is five rows and the
+// half worth reading is underneath each one - what it is about to cost, and
+// what would stop it. The name is still first, so `zde system power reboot` is
+// what the row says.
+func powerMenu(what string) error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	if what != "" {
+		var said string
+		if err := c.Call("system.power", &said, what); err != nil {
+			return err
+		}
+		// In the present tense, because logind answers when it has taken the
+		// request: the machine goes some moments after this line.
+		fmt.Println(said)
+		return nil
+	}
+	var menu zded.Power
+	if err := c.Call("system.power", &menu); err != nil {
+		return err
+	}
+	if menu.Shown {
+		return nil
+	}
+	for _, ch := range menu.Choices {
+		// The mark is the queue's, in the one character both surfaces use: "!"
+		// is the row the menu asks twice about, which is also the row with
+		// something under it worth reading.
+		fmt.Printf("%-9s %s  %s\n", ch.Name, asksFirst(ch), ch.Desc)
+		if ch.Why != "" {
+			fmt.Println(powerIndent + ch.Why)
+		}
+		for _, cost := range ch.Costs {
+			fmt.Println(powerIndent + cost)
+		}
+	}
+	return nil
+}
+
+// powerIndent lines the continuations up under the description, the way the
+// bluetooth readout does: what a row costs belongs to that row, and a line
+// starting in column one reads as another choice.
+//
+// Thirteen, counted off the format above rather than guessed: `%-9s` is nine,
+// then a space, then the one-character mark, then two more spaces, so the
+// description starts at column fourteen and a continuation has thirteen to
+// fill.
+const powerIndent = "             "
+
+func asksFirst(ch zded.PowerChoice) string {
+	if ch.Confirm {
+		return "!"
+	}
+	return "."
+}
+
 func security(n link.Network) string {
 	if n.Secure {
 		return "secure"
@@ -1407,6 +1486,20 @@ func usage() {
   zde desk switcher      open the picker; prints the list when no shell is up
   zde app launch NAME    run what this machine calls that (Mod+t, Mod+e)
   zde system lock        lock the screen (Mod+Ctrl+semicolon)
+  zde system power       the power menu (Mod+Shift+x): lock, log out, suspend,
+                         reboot, power off. Prints the five when no shell is
+                         up, each with what it is about to cost underneath -
+                         the windows that close, what the notification center
+                         is holding that the queue never got, anybody else
+                         logged in here, and whatever is holding a suspend off
+  zde system power NAME  run one of them, by the name in column one. The menu
+                         is where the three that end things are asked about;
+                         typing the word here is the answer, the same bargain
+                         zde system bluetooth confirm makes. The lock runs the
+                         same locker zde system lock does, and the other four
+                         are logind's - so a refusal, an inhibitor holding
+                         sleep or a second person logged in, comes back as a
+                         refusal and not as silence
   zde system connections open the connections widget (Mod+Shift+c); prints the
                          link and what is in range when no shell is up -
                          signal, security, note, network - and says so plainly

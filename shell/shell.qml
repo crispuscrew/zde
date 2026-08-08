@@ -268,6 +268,8 @@ ShellRoot {
                     center.note = msg.error;
                 else if (palette.running)
                     palette.ran(msg.error);
+                else if (powerMenu.running)
+                    powerMenu.ran(msg.error);
                 return;
             }
             // Replies to our own subscribe arrive here too; only the lines
@@ -278,6 +280,12 @@ ShellRoot {
                 // surface to appear on rather than a parser that drops it.
                 if (palette.running)
                     palette.ran("");
+                // And the power menu, which waits for the same reason and
+                // needs it more: logind refuses a suspend an inhibitor is
+                // holding, and a surface that had already closed would make
+                // that indistinguishable from a machine that slept.
+                if (powerMenu.running)
+                    powerMenu.ran("");
                 return;
             }
             if (msg.event.kind === "picker")
@@ -294,6 +302,8 @@ ShellRoot {
                 root.openAsk(msg.event, true);
             else if (msg.event.kind === "palette")
                 root.openPalette(msg.event);
+            else if (msg.event.kind === "power")
+                root.openPower(msg.event);
         }
     }
 
@@ -437,6 +447,24 @@ ShellRoot {
                     key: a.key ?? "",
                     live: a.live === true,
                     why: a.why ?? ""
+                })), ev.token ?? "");
+    }
+
+    // The five things that end a session or a machine. What each one is about
+    // to cost comes with the event and is not worked out here: how many windows
+    // close, what the notification center is holding that the queue never got,
+    // who else is logged in and what is holding sleep are all facts this shell
+    // has no way to reach (docs/vision.md, section 2 - a thin adapter with zero
+    // logic inside).
+    function openPower(ev) {
+        root.present(powerMenu, ev);
+        powerMenu.show((ev.choices ?? []).map(c => ({
+                    name: c.name,
+                    label: c.label ?? c.name,
+                    desc: c.desc ?? "",
+                    confirm: c.confirm === true,
+                    costs: c.costs ?? [],
+                    why: c.why ?? ""
                 })), ev.token ?? "");
     }
 
@@ -812,6 +840,31 @@ ShellRoot {
         })
     }
 
+    PowerMenu {
+        id: powerMenu
+
+        // The shell decides nothing here either: which locker this machine has
+        // and whether logind will take a suspend are zded's answers, on the
+        // same socket everything else uses. The surface is left up until one
+        // comes back - see the parser above - because a refusal is the thing
+        // this menu exists to be able to show.
+        onChosen: name => {
+            if (!stream.connected) {
+                powerMenu.ran("no connection to zded");
+                return;
+            }
+            root.send({
+                method: "system.power",
+                args: [name]
+            });
+        }
+        onDismissed: powerMenu.hide()
+        onShown: token => root.send({
+            method: "shown",
+            args: [token]
+        })
+    }
+
     // How a test can ask the bar what it is showing, rather than only whether
     // it is running: `qs -p <config> ipc call queue count`. A bar that never
     // read the queue and a bar reading it correctly look identical from the
@@ -899,6 +952,56 @@ ShellRoot {
 
         function dismiss(): string {
             palette.dismissed();
+            return "closed";
+        }
+    }
+
+    // The power menu, over the same IPC and for the same reason the palette is
+    // reachable that way: a machine with no input devices cannot press y, and
+    // the second question is the whole design of this surface.
+    IpcHandler {
+        target: "power"
+
+        // What it is showing: how many rows it was handed, and which one is
+        // waiting for a y - a dash where none is, so the answer has the same
+        // shape either way and a test is not comparing against a trailing
+        // space.
+        function state(): string {
+            if (!powerMenu.visible)
+                return "closed";
+            const waiting = powerMenu.asking === "" ? "-" : powerMenu.asking;
+            return "open " + powerMenu.rows.length + " " + waiting;
+        }
+
+        // Through choose(), not straight to chosen(): the gate that makes a
+        // reboot ask before it happens is the whole design, and a hatch that
+        // went round it would leave the one thing worth proving untouched.
+        // "asks" is that gate holding.
+        function choose(name: string): string {
+            if (!powerMenu.visible)
+                return "closed";
+            const i = powerMenu.rows.findIndex(r => r.name === name);
+            if (i < 0)
+                return "no such row";
+            powerMenu.choose(i);
+            if (powerMenu.asking !== "")
+                return "asks";
+            return powerMenu.running ? "ran" : "nothing";
+        }
+
+        // The y. Refused when nothing asked, because a confirmation that can be
+        // sent before the question is not a confirmation.
+        function confirm(): string {
+            if (!powerMenu.visible)
+                return "closed";
+            if (powerMenu.asking === "")
+                return "nothing asked";
+            powerMenu.confirm();
+            return powerMenu.running ? "ran" : "nothing";
+        }
+
+        function dismiss(): string {
+            powerMenu.dismissed();
             return "closed";
         }
     }
