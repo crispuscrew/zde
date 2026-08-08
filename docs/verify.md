@@ -7,7 +7,9 @@ the model, and the smoke test ([`nix/tests/smoke.nix`](../nix/tests/smoke.nix))
 boots a NixOS host in QEMU and drives a real niri through the desks, the queue,
 a notification and the centre that reads it back, a desk starting what its
 manifest declares, and the bar saying it has no microphone and no
-NetworkManager to ask. What it boots has no GPU, no keyboard, one virtual
+NetworkManager to ask. What it does not do is restart zded, so the half of the
+history that now survives one (section 5) has never been proved by anything but
+the go tests. What it boots has no GPU, no keyboard, one virtual
 screen and nobody looking at it - and no microphone, no access point and no
 bluetooth adapter, which is why it can only check that those read as absent.
 Everything below is what that leaves over.
@@ -361,9 +363,8 @@ ones are the point of zded holding the bus name.
     hand - not a warning per desk. A partial list of faults reads exactly like a
     complete one, which is the failure this is arranged against.
 - **A day's worth of arrivals.** History is a ring of 200, in memory: the 201st
-  drops the oldest, and restarting zded empties it. The queue is the half that
-  survives, because it is what you still owe. Whether 200 is a day or an hour
-  is a question about your machine and not about the number.
+  drops the oldest. Whether 200 is a day or an hour is a question about your
+  machine and not about the number.
 - **Who can read what you were sent.** One line: `ls -l
   ~/.local/state/zde/journal.jsonl` says `-rw-------`. It has to say that on a
   machine that has been running an earlier zde too, because the mode is set on
@@ -380,6 +381,57 @@ ones are the point of zded holding the bus name.
   upgrading from an earlier zde, which wrote the whole message down, `grep` for
   one you remember before you upgrade and again afterwards: the first `zded`
   start on the new build rewrites the file without them.
+- **What a restart keeps.** `systemctl --user restart zded`, then `Mod+n`. The
+  newest 40 records are still there and each says so on its own row - `waiting ·
+  earlier`, because the time column is a clock with no date on it. Bodies are
+  cut to 400 characters and a row that was cut says that too, under the list,
+  rather than ending mid-sentence. Gone: the rest of the ring, the rest of every
+  long body, and the actions - a digit on a restored row answers with why there
+  is nothing left to press instead of sending a keypress to a bus nobody is on.
+  The file is `~/.local/state/zde/history.json`, and it should be `0600`
+  (`ls -l`), because it is notification bodies and nothing else.
+- **And what a crash keeps.** The snapshot is written every two minutes and
+  again on the way out, so do it the rude way as well: `pkill -9 zded`,
+  `systemctl --user start zded`, `Mod+n`. What it costs should be the last
+  couple of minutes of arrivals, not the day. This is the number to report if it
+  feels wrong on a machine that receives a lot.
+- **A private desk keeps its arrivals out of the snapshot.** The invariant worth
+  trying to break. Add `private: true` to one of the manifests above, stand on
+  that desk, send yourself a notification, and restart zded: it is in `Mod+n`
+  before the restart and gone after it, and `grep` for its text in
+  `history.json` finds nothing.
+
+  Out of the snapshot, and not off the disk, which would be a wider claim than
+  anything here earns: a notification the mode queues writes its body to the
+  journal as well, so the same `grep` finds it in `j.jsonl`. That file is the
+  queue's and getting the bodies out of it is its own change. What this section
+  is about is `history.json`, and about that the claim is exact.
+
+  Three ways to try to break it, all of which should end with nothing written.
+  Break the same manifest with a typo - a desk whose manifest will not parse is
+  treated as private too, because a typo must not be how a desk stops being one,
+  and `zde status` names the file. Copy the manifest to a second filename and
+  leave `private:` out of the copy: two files naming one desk would otherwise
+  settle the flag by which filename sorts first, so both are refused while the
+  pair is there. And `zde desk snapshot` of a private desk should write a
+  manifest that still says `private: true`, because that file is the one zde
+  itself could have used to un-declare the desk.
+- **What the doubt costs, said out loud.** On a machine that declares a private
+  desk, an arrival zde cannot place on any desk is kept in memory and nothing
+  else - it could have come in on the private one, and there is no finding out
+  afterwards. That is a session before any desk has been named, or a niri
+  nothing can read. `zde status` grows an `unplaced` line counting them and the
+  daemon says so once in `journalctl --user -u zded`, which is the difference
+  between a rule and a history that quietly will not fill up. On the ordinary
+  machine, which declares no private desk, the line never appears and nothing is
+  refused.
+- **What marking a desk private does not do.** It is a statement about what
+  happens from now on, and it does not retract what is already in the file: a
+  record carries the answer that was true when it arrived. Removing what is
+  there is removing it - `systemctl --user stop zded`, delete
+  `~/.local/state/zde/history.json`, start it again. In that order, because
+  until the daemon goes those records are still in its memory and the next write
+  puts them back.
 - Two terminals, two `notify-send`s: neither can close or replace the other's.
   Closing from the wrong one should leave the item where it is:
 
@@ -693,7 +745,7 @@ Not bugs, do not report them:
   | `Mod+Shift+j`/`k` (move window) | `Mod+Shift+t`, `Mod+Shift+e` (launch-at) |
   | `Mod+r` (regulars), `Mod+u` (queue jump) | `Mod+p`, `Mod+Shift+p`, `Mod+Ctrl+p` (media) |
   | `Mod+t` (terminal) | `Mod+m` (modes), `Mod+Shift+n` (net observer) |
-  | `Mod+n` (the notification centre), `Mod+q` (quiet) | `Mod+c` (calendar), `Mod+Shift+w` (wallpapers) |
+  | `Mod+n` (the notification centre, with the newest of it kept across a zded restart), `Mod+q` (quiet) | `Mod+c` (calendar), `Mod+Shift+w` (wallpapers) |
   | `Mod+semicolon` (the palette) | `Mod+Shift+x` (power) |
   | `Mod+a` (one question), `Mod+Shift+a` (a conversation), once a tier is set | `XF86AudioPlay`/`Next`/`Prev` (the media target) |
   | `Mod+Shift+c` (wifi, and the link you are on) | `Mod+e`, until `zde.apps.editor` names one (below) |
@@ -768,9 +820,11 @@ Not bugs, do not report them:
   a default would be zde choosing somebody's cloud for them - so a question
   asked on a fresh install comes back with the option to set instead of an
   answer (section 8).
-- **Persistence**: it is a live image. The journal, the queue and anything you
-  configure are gone on reboot, and the notification history goes with the
-  daemon rather than with the disk.
+- **Persistence across boots**: it is a live image, so the disk keeps nothing.
+  The journal, the queue, the notification snapshot and anything you configure
+  are gone at the next boot. Within one boot they are real: a `systemctl --user
+  restart zded` comes back with the queue and with the newest 40 of the history,
+  which is what section 5 is asking you to try.
 
 ## What to do with what you find
 
