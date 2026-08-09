@@ -113,8 +113,6 @@ blocks 0.2:
   it had to on its two-minute clock. Written down rather than fixed: the fix is
   a second path through the sink for a close that is only half of a replace, and
   that is not obviously smaller than the problem.
-- ask has no tier until a machine names one, and the panel does not carry the
-  previous turns as context.
 - the clipboard's sensitive hint is a claim the source makes, and nothing in
   Wayland makes it. zde honours `x-kde-passwordManagerHint` by never reading an
   offer that carries it, which is everything zde can do about it and nothing at
@@ -123,9 +121,6 @@ blocks 0.2:
   a second question to the compositor, since wl-paste answers what is offered
   and what it holds on two connections rather than one, and closing that gap
   means speaking the data-control protocol here (internal/clip/wl.go).
-- nothing is sandboxed until somebody defines an app. Layer 2 is provisioned by
-  hand ([`delivery.md`](delivery.md)), so a manifest can name an app that does
-  not exist and the launch is a line in zded's log.
 - ask has no tier until a machine names one. The panel carries the previous
   turns now - stdin holds the conversation, a JSON object a line, and the role
   is a field rather than a prefix so that nothing in an answer can arrive as
