@@ -2,6 +2,7 @@ package zded
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -32,8 +33,14 @@ func TestPlacementRules(t *testing.T) {
 
 	// The rule niri needs: what to match, and where it goes. The workspace is
 	// the zde name, because that is what the workspace is actually called.
+	//
+	// Two backslashes before each dot, because there are two escapings here and
+	// they undo in the other order: KDL's parser reads `\\` and hands niri one
+	// backslash, and niri's regex reads `\.` and matches one dot. One backslash
+	// in the file is `\.` to KDL, which is not one of its escapes, and niri
+	// refuses the whole config - dynamic.kdl included, and the binds with it.
 	for _, want := range []string{
-		`match app-id="^org\.mozilla\.firefox$"`,
+		`match app-id="^org\\.mozilla\\.firefox$"`,
 		`open-on-output "DP-1"`,
 		`open-on-workspace "vshop.DP-1.web"`,
 	} {
@@ -52,6 +59,125 @@ func TestPlacementRules(t *testing.T) {
 	// writing half of one would place windows nobody asked to place.
 	if strings.Contains(got, "nvim") || strings.Contains(got, `app-id="^chat$"`) {
 		t.Errorf("wrote a rule for an app that has no app id or no pin:\n%s", got)
+	}
+}
+
+// hostile is a desk holding one app whose id carries every character the two
+// escapings disagree about. It is built here rather than parsed from YAML on
+// purpose: manifest.Parse refuses a quote, a backslash and a newline in an
+// app_id, and a test that can only reach this through the guard is a test of
+// the guard. The two are meant to be independent (internal/manifest, the app_id
+// check), so this is the one that holds up the escaping's end.
+func hostile() map[string]*manifest.Desk {
+	return map[string]*manifest.Desk{"vshop": {
+		Name:     "vshop",
+		Monitors: map[string]manifest.Monitor{"DP-1": {Workspaces: []string{"web"}}},
+		Apps: []manifest.App{{
+			App:       "browser",
+			AppID:     "a\"b\\\nc.d+e",
+			Monitor:   "DP-1",
+			Workspace: "web",
+		}},
+	}}
+}
+
+// The two escapings, composed, byte for byte.
+//
+// Read the want right to left, which is the order the two parsers undo it in.
+// niri wants the regex `^a"b\\` + newline + `c\.d\+e$`: a literal backslash is
+// `\\` to a regex, and a literal dot is `\.`. KDL then has to carry that regex
+// as a string, and to KDL every one of those backslashes is a character that
+// has to be escaped in its turn - so each doubles again - while the quote
+// becomes `\"` and the newline becomes `\n`.
+//
+// The failure this pins is not a wrong match. It is niri refusing the file, and
+// dynamic.kdl is included by the config that carries the binds: a machine that
+// pins one app with a dot in its id gets no keybinds at all.
+func TestPlacementRulesEscapeForKDLAsWellAsForTheRegex(t *testing.T) {
+	got := placementRules(hostile())
+	want := `    match app-id="^a\"b\\\\\nc\\.d\\+e$"` + "\n"
+	if !strings.Contains(got, want) {
+		t.Errorf("rules are missing\n%s\ngot:\n%s", want, got)
+	}
+	// And said the same way niri's parser says it, over the whole file rather
+	// than over one line somebody thought of. Every backslash has to begin an
+	// escape KDL knows; `\\` is one of them and swallows the character after
+	// it. `\.` and `\+` - which is exactly what QuoteMeta leaves behind - are
+	// not, and either costs the whole config.
+	const kdlEscapes = `"/\bfnrtu`
+	for i := 0; i < len(got); i++ {
+		if got[i] != '\\' {
+			continue
+		}
+		if i+1 >= len(got) || !strings.ContainsRune(kdlEscapes, rune(got[i+1])) {
+			t.Fatalf("an escape KDL cannot read (%q) survived into the rules:\n%s", got[i:min(i+3, len(got))], got)
+		}
+		i++ // an escaped backslash: the second one starts nothing
+	}
+}
+
+func TestKDLStringEscapesWhatKDLEscapesAndNothingElse(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		// The common case: nothing to do, and nothing done.
+		{"firefox", `"firefox"`},
+		// What QuoteMeta hands it. The backslash it added for the regex is the
+		// whole of this bug.
+		{`^org\.mozilla\.firefox$`, `"^org\\.mozilla\\.firefox$"`},
+		{`a"b`, `"a\"b"`},
+		{"a\nb", `"a\nb"`},
+		{"a\rb", `"a\rb"`},
+		{"a\tb", `"a\tb"`},
+		{"a\bb", `"a\bb"`},
+		{"a\fb", `"a\fb"`},
+		// C0 and DEL have no letter of their own. Braced hex is the only form
+		// KDL 1.0 takes: the bare four-hex-digit one is a parse error.
+		{"a\x00b", `"a\u{0}b"`},
+		{"a\x1bb", `"a\u{1b}b"`},
+		{"a\x7fb", `"a\u{7f}b"`},
+		// Not ASCII and not a problem: KDL is UTF-8, so this goes through whole
+		// rather than as escapes nobody can read.
+		{"кофе", `"кофе"`},
+		// A byte that is not UTF-8 at all. It cannot be copied through - niri
+		// would refuse the file it is in - so it becomes the replacement rune.
+		{"a\xffb", "\"a�b\""},
+	} {
+		if got := kdlString(c.in); got != c.want {
+			t.Errorf("kdlString(%q) = %s, want %s", c.in, got, c.want)
+		}
+	}
+}
+
+// The check that was missing, and the only one that settles it: niri's own
+// parser, on the bytes zded writes.
+//
+// Everything above asserts a shape somebody worked out. This asks the program
+// that has to read it - and the bug it is here for is one where the shape
+// looked right to two readers and to `regexp.QuoteMeta`'s documentation, and
+// was refused by the parser.
+//
+// It skips without niri, which is a real cost: a skipped test proves nothing
+// and says so quietly. Two things pay for it. niri is in the devShell CI runs
+// go test inside (flake.nix), so the skip does not fire there; and the VM smoke
+// test runs `niri validate` against a real generated config with no skip in it
+// at all (nix/tests/smoke.nix). This one is the fast copy, next to the code, on
+// the machine where the mistake gets made.
+func TestPlacementRulesAreAConfigNiriAccepts(t *testing.T) {
+	bin, err := exec.LookPath("niri")
+	if err != nil {
+		t.Skip("no niri on PATH: nix/tests/smoke.nix is the copy of this that cannot skip")
+	}
+	// Both: the app id somebody will really pin, and the one nothing sane will.
+	rules := placementRules(hostile()) + placementRules(desks(t,
+		"name: haven\nmonitors: { DP-1: { workspaces: [web] } }\n"+
+			"apps: [{ app: browser, app_id: org.mozilla.firefox, monitor: DP-1, workspace: web }]\n"))
+	path := filepath.Join(t.TempDir(), "dynamic.kdl")
+	if err := os.WriteFile(path, []byte(rules), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command(bin, "validate", "-c", path).CombinedOutput()
+	if err != nil {
+		t.Errorf("niri will not load the rules zded writes, so the config that includes them is refused "+
+			"and the machine has no binds:\n%s\nrules:\n%s", out, rules)
 	}
 }
 
