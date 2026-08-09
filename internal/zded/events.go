@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/crispuscrew/zde/internal/attn"
+	"github.com/crispuscrew/zde/internal/clip"
 	"github.com/crispuscrew/zde/internal/link"
 )
 
@@ -63,6 +64,10 @@ type Event struct {
 	// already worked out (power.go): a confirmation that had to ask before it
 	// could say what is being lost would fill in under somebody's finger.
 	Choices []PowerChoice `json:"choices,omitempty"`
+	// Clips is the clipboard history's rows: a preview of each entry and never
+	// the entry itself, so what was copied stays in the daemon until somebody
+	// picks a row (internal/clip, PreviewMax).
+	Clips []clip.Row `json:"clips,omitempty"`
 	// The connections surface's two: the wifi networks it lists, and the link
 	// as it stands, so it can say what you are on without asking a second
 	// question (net.go).
@@ -156,6 +161,12 @@ const (
 // empty surface holding the keyboard.
 const EventPalette = "palette"
 
+// EventClip asks it to show the clipboard history: what was copied, newest
+// first, with a preview of each. A kind of its own for the reason EventWindows
+// is one - a shell that has never heard of it draws nothing, where one reading
+// another surface's event would draw an empty thing holding the keyboard.
+const EventClip = "clip"
+
 // MethodShown is how a listener says it did the thing: the token from the
 // event it acted on. Unsolicited ones are ignored, so this cannot be used to
 // make a key report success that never happened.
@@ -212,6 +223,13 @@ type sink struct {
 	// running - and this is what makes that a property of the protocol rather
 	// than a habit of the only two callers there happen to be.
 	asking atomic.Bool
+	// putting is whether a clipboard write asked for on this connection is still
+	// happening. One at a time, and for a plainer reason than asking's: the read
+	// loop used to be the thing that serialized these, so answering them off it
+	// without this would let one connection queue as many wl-copy processes as it
+	// can write lines - and two writes racing for the selection is two answers
+	// about which entry is on the clipboard.
+	putting atomic.Bool
 }
 
 // gateOf is the lock, made once. Every path to it goes through here, so no

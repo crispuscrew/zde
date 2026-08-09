@@ -23,6 +23,7 @@ import (
 	"github.com/crispuscrew/zde/internal/apps"
 	"github.com/crispuscrew/zde/internal/attn"
 	"github.com/crispuscrew/zde/internal/bt"
+	"github.com/crispuscrew/zde/internal/clip"
 	"github.com/crispuscrew/zde/internal/doctor"
 	"github.com/crispuscrew/zde/internal/journal"
 	"github.com/crispuscrew/zde/internal/keymap"
@@ -110,6 +111,15 @@ func run(args []string) error {
 		// argument refused a name copied off the row above it - and blamed the
 		// person for mistyping it.
 		return call("palette.run", strings.Join(args[1:], " "))
+	case len(args) == 2 && args[0] == "clip" && args[1] == "history":
+		return clipHistory()
+	case len(args) == 3 && args[0] == "clip" && args[1] == "history":
+		// The id from the list, spent as it is read - the two arities the window
+		// picker has, and for the same reason: with no shell to ask, what the
+		// first form printed is what the second one takes.
+		return call("clip.history", args[2])
+	case len(args) == 2 && args[0] == "clip" && args[1] == "clear":
+		return clipClear()
 	case len(args) == 2 && args[0] == "app" && args[1] == "list":
 		return appList()
 	case len(args) == 2 && args[0] == "desk" && args[1] == "switcher":
@@ -1128,6 +1138,87 @@ func connections() error {
 	return nil
 }
 
+// clipHistory asks for the clipboard history (Mod+v). The same bargain as the
+// desk switcher: with a shell listening this prints nothing and a surface
+// appears, and without one it prints the rows, so the key does something on a
+// session whose shell has died - and so that an entry can be put back from a
+// terminal at all.
+//
+// The whole of an entry is never printed, only the preview zded sends (up to
+// clip.PreviewMax characters of it): the text stays in the daemon until somebody
+// asks for it by id, so what a list can put into a terminal's scrollback is
+// bounded by the preview and not by what was copied.
+//
+// Said exactly, because the loop below does print every row. For anything short
+// - a password, a token, a one-line address - the preview is the whole entry, so
+// this is fifty previews on a screen and not fifty whole clipboard entries.
+// Worth knowing before running it in front of somebody: this path is reached
+// whenever the shell does not acknowledge within ackWait, which is a slow shell
+// as well as a dead one, and `zde clip clear` is the answer if it happens where
+// it should not have.
+func clipHistory() error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	var h zded.Clips
+	if err := c.Call("clip.history", &h); err != nil {
+		return err
+	}
+	if h.Shown {
+		return nil
+	}
+	if len(h.Entries) == 0 {
+		// Not an error, and not silence. A fresh session, or one where
+		// everything has expired, and a key that printed nothing would be
+		// indistinguishable from one that failed.
+		//
+		// And the other reason a history is empty, which is the one worth doing
+		// something about: nothing is watching the clipboard at all. The two
+		// look identical from a keyboard, so the daemon says which it is.
+		if h.Why != "" {
+			fmt.Println("nothing is watching the clipboard: " + h.Why)
+			return nil
+		}
+		fmt.Println("nothing copied recently: entries last " + clip.TTL.String())
+		return nil
+	}
+	// id, when, what it is, and the text - tab separated, the id in column one
+	// because it is what goes back to `zde clip history ID`, and the only field
+	// that can be long last. A row that is not text says why instead of showing
+	// content it does not have.
+	for _, e := range h.Entries {
+		said := e.Preview
+		if e.Kind != clip.KindText {
+			said = e.Why
+		}
+		fmt.Printf("%d\t%s\t%s\t%s\n", e.ID, e.At.Format("15:04"), e.Kind, said)
+	}
+	return nil
+}
+
+// clipClear forgets the history now rather than in fifteen minutes, and says
+// how much went: "it did something" and "there was nothing there" are different
+// answers, and this is a verb somebody runs before handing over a screen.
+func clipClear() error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	var gone int
+	if err := c.Call("clip.clear", &gone); err != nil {
+		return err
+	}
+	if gone == 1 {
+		fmt.Println("forgot 1 entry")
+		return nil
+	}
+	fmt.Printf("forgot %d entries\n", gone)
+	return nil
+}
+
 // palette asks for the palette. The same bargain as the desk switcher: with a
 // shell listening this prints nothing, and without one it prints the list, so
 // that the key does something on a session whose shell has died - and so that
@@ -1600,6 +1691,14 @@ func usage() {
                          as long as the answer takes, so all four of these read
                          it from stdin when it is piped in instead:
                          zde ask local < the-question
+  zde clip history [ID]  what was copied recently (Mod+v); prints the rows when
+                         no shell is up - id, when, what it is, and the text -
+                         and with an id puts that entry back on the clipboard.
+                         Text only, in memory only, and every entry expires:
+                         nothing an app marked as a secret is ever recorded, and
+                         an image or a file is a row saying so rather than
+                         content
+  zde clip clear         forget the history now rather than when it expires
   zde keys               the whole keymap, one key per line (Mod+slash opens
                          this in a terminal)
   zde palette [NAME]     every action by name (Mod+semicolon); prints the list

@@ -14,6 +14,7 @@ attribution; asks 5-6 land with their consumers.
 - keymap: generated niri binds (Normal only) + generated cheatsheet.
 - shell MVP: bar (mode, queue, mic, clock), picker, notification center.
 - ask MVP: popup + panel, provider/local tiers, escalate.
+- clip: the clipboard history, with the sensitive-hint and TTL invariants.
 
 Every line of that has landed, and a desk now starts what its manifest declares,
 pins each app to the workspace it named, and puts the session in the attn mode
@@ -50,6 +51,16 @@ everything) and the desk's own `private: true`, which is popups off in every
 mode ([`vision.md`](vision.md), section 3). The history keeps the lot whichever
 way both answer, because that is principle 3 and a mode or a desk that changed
 what is recorded would be deciding what happened.
+
+The clipboard is in that list rather than in 0.2 because it was moved here. Two
+reasons, and the second is the one that decides it: `Mod+v` is a key people
+press out of habit on any desktop, so it is the most expensive of the silent
+ones to leave for later - and the two rules that make this zde's rather than
+wl-clip-persist's are much cheaper to hold from the first line than to add to a
+history that already exists. An entry an application marks as a secret is never
+read at all, and every entry expires by being overwritten rather than by being
+hidden; both of those decide what the daemon may hold, and a design that held
+everything first would have to be taken apart to get them.
 
 Where those lines stop short is what is left of the phase, and none of it
 blocks 0.2:
@@ -100,6 +111,14 @@ blocks 0.2:
   that is not obviously smaller than the problem.
 - ask has no tier until a machine names one, and the panel does not carry the
   previous turns as context.
+- the clipboard's sensitive hint is a claim the source makes, and nothing in
+  Wayland makes it. zde honours `x-kde-passwordManagerHint` by never reading an
+  offer that carries it, which is everything zde can do about it and nothing at
+  all about a password manager that does not send it - `pass` types instead of
+  copying for exactly that reason (vision.md, principle 5). The check also costs
+  a second question to the compositor, since wl-paste answers what is offered
+  and what it holds on two connections rather than one, and closing that gap
+  means speaking the data-control protocol here (internal/clip/wl.go).
 - nothing is sandboxed until somebody defines an app. Layer 2 is provisioned by
   hand ([`delivery.md`](delivery.md)), so a manifest can name an app that does
   not exist and the launch is a line in zded's log.
@@ -124,8 +143,9 @@ blocks 0.2:
 
 ## 0.2 - Daily driver
 
-- pass: derivation + pepper + counters, trusted window, type-out.
-- clipboard history with sensitive-hint + TTL invariant.
+- pass: derivation + pepper + counters, trusted window, type-out. The other lane
+  of the two-lane secrets (vision.md, principle 5); the clipboard's lane moved
+  into 0.1 and is above.
 - capture: shots, replay clip, send-to.
 - media/audio: target (pick/next/pin) + bar widget, mixer widget, device
   switch, mic OSD.
@@ -224,8 +244,9 @@ turned "when someone has hardware" into something anyone can do this evening.
   nothing focused at all, so a press spends itself putting focus back on a
   window instead of going anywhere. There are six such surfaces now - the
   picker, the notification center, the connections list, the palette, the ask
-  window and the power menu - each taking the keyboard only while it is visible,
-  so the thing to try is a nav key the instant after each one closes
+  window, the power menu and the clipboard history - each taking the keyboard
+  only while it is visible, so the thing to try is a nav key the instant after
+  each one closes
   ([`verify.md`](verify.md), a day of work). Not settled here: driving a real
   key into a nested compositor did not work well enough to trust the answer.
   The notification popup is one more surface and the one that answers this

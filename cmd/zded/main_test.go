@@ -43,7 +43,12 @@ func TestKeybindsAreAnsweredWhileTheSessionBusIsStuck(t *testing.T) {
 				close(taking)
 				<-stuck
 				return nil, errors.New("session bus: no answer")
-			})
+			},
+			// No clipboard. The real one spawns wl-paste against whatever
+			// Wayland session is running, so a test of the startup order would
+			// otherwise put whatever the person running it had copied into a
+			// daemon - and leave a watcher behind holding this process's stderr.
+			nil)
 	}()
 	<-taking // inside the bus, and staying there
 
@@ -139,7 +144,10 @@ func TestATierIsStoppedBeforeTheDaemonProcessGoes(t *testing.T) {
 			filepath.Join(dir, "history.json"),
 			func(attn.Sink, string) (*attn.Server, error) {
 				return nil, errors.New("no bus in a test")
-			})
+			},
+			// No clipboard, for the reason the other one gives: the real tool
+			// spawns wl-paste against whatever Wayland session is running.
+			nil)
 	}()
 
 	c, err := dialWithin(t, socket, 5*time.Second)

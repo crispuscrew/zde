@@ -270,6 +270,8 @@ ShellRoot {
                     palette.ran(msg.error);
                 else if (powerMenu.running)
                     powerMenu.ran(msg.error);
+                else if (clips.running)
+                    clips.ran(msg.error);
                 else if (attnPopup.visible)
                     attnPopup.note = msg.error;
                 return;
@@ -288,6 +290,11 @@ ShellRoot {
                 // that indistinguishable from a machine that slept.
                 if (powerMenu.running)
                     powerMenu.ran("");
+                // And the clipboard, which waits for the same reason: an entry
+                // can expire between the list being drawn and Enter being
+                // pressed, and only this surface can explain that refusal.
+                if (clips.running)
+                    clips.ran("");
                 return;
             }
             if (msg.event.kind === "picker")
@@ -306,6 +313,8 @@ ShellRoot {
                 root.openPalette(msg.event);
             else if (msg.event.kind === "power")
                 root.openPower(msg.event);
+            else if (msg.event.kind === "clip")
+                root.openClips(msg.event);
             else if (msg.event.kind === "attn.popup")
                 root.showPopup(msg.event);
             else if (msg.event.kind === "attn.reach")
@@ -438,6 +447,28 @@ ShellRoot {
         if (!attnPopup.reached)
             attnPopup.screen = root.screenFor(ev);
         attnPopup.arrived(list[0]);
+    }
+
+    // What was copied recently, newest first. The rows carry a preview and not
+    // the entry: the text stays in zded until a row is picked, so what crosses
+    // into this process is a couple of hundred characters a row and never the
+    // history itself (internal/clip, PreviewMax).
+    //
+    // And what does cross is dropped when the surface closes (ClipHistory.qml,
+    // hide), which is the honest version of "nothing here to expire". There is
+    // no TTL in this process, so previews kept here would outlive zded's - fifty
+    // of them, for the rest of the session. A surface that only stops drawing
+    // them is a surface that still has them.
+    function openClips(ev) {
+        root.present(clips, ev);
+        clips.show((ev.clips ?? []).map(c => ({
+                    id: c.id,
+                    preview: c.preview ?? "",
+                    cut: c.cut === true,
+                    kind: c.kind ?? "text",
+                    why: c.why ?? "",
+                    at: c.at
+                })), ev.token ?? "");
     }
 
     // Mod+Ctrl+n: the one deliberate act that puts the keyboard on a popup, and
@@ -625,6 +656,32 @@ ShellRoot {
         })
         onDismissed: center.hide()
 
+        onShown: token => root.send({
+            method: "shown",
+            args: [token]
+        })
+    }
+
+    ClipHistory {
+        id: clips
+
+        // The id of the entry, and nothing else: which entry that is and what
+        // putting it back means are zded's (docs/vision.md, section 2). The
+        // surface is left up until the answer comes, the way the palette is -
+        // an entry can expire between this list being drawn and Enter being
+        // pressed, and that refusal is the one thing only this surface can
+        // explain.
+        onChosen: entry => {
+            if (!stream.connected) {
+                clips.ran("no connection to zded");
+                return;
+            }
+            root.send({
+                method: "clip.history",
+                args: [entry]
+            });
+        }
+        onDismissed: clips.hide()
         onShown: token => root.send({
             method: "shown",
             args: [token]

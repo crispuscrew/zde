@@ -701,9 +701,9 @@ show up in use.
   the worry that a layer surface holding focus reads to niri as nothing focused
   at all - so a nav key pressed just after one closes would spend itself putting
   focus back on a window. Every key that draws one: `Mod+Tab` and `Mod+w` for
-  the picker, `Mod+n`, `Mod+Shift+c`, `Mod+semicolon`, `Mod+Shift+x` for the
-  power menu, and `Mod+a` or `Mod+Shift+a` for ask. Open each, close it with
-  Escape, and press `Mod+j`
+  the picker, `Mod+n`, `Mod+Shift+c`, `Mod+semicolon`, `Mod+v`, `Mod+Shift+x`
+  for the power menu, and `Mod+a` or `Mod+Shift+a` for ask. Open each, close it
+  with Escape, and press `Mod+j`
   immediately: if the first press goes nowhere, that is the thing, and it wants
   `keyboardFocus` on demand rather than exclusive. One surface behaving
   differently from the rest is worth as much as all of them behaving badly.
@@ -922,6 +922,102 @@ actually gets.
   on a terminal. A version that quietly answered there instead would be one verb
   doing two different things depending on what happens to be running.
 
+## 9. The clipboard history
+
+`Mod+v`. Two of its rules are the reason it is zde's and not wl-clip-persist's,
+and neither can be proved by CI: one needs a real password manager and the other
+needs a real clock. Everything else here is a minute.
+
+The daemon watches the clipboard through `wl-paste --watch`, so all of this
+needs `wl-clipboard` installed - layer 1 does that (`nix/home.nix`). If it is
+not there, `zde clip history` says so in one line instead of showing an empty
+list, and that is the first thing to check if nothing below works.
+
+- **The round trip.** Copy three different things from three windows, press
+  `Mod+v`, type a few letters of one of them, Enter, and paste. What you chose
+  is what arrives. The filter matches what is on the row and only that: the
+  whole of an entry stays in zded and never reaches the shell, so a word that is
+  past the end of the preview will not find it.
+- **The loop.** Pick a row that is not the newest, then press `Mod+v` again.
+  The list must be the same list in the same order: putting an entry back is a
+  clipboard change like any other, and zde recording its own would reorder the
+  history every time somebody used it.
+- **The sensitive hint, with a real password manager.** This is the one that
+  matters. KeePassXC is the usual one: copy a password out of it, then `Mod+v`.
+  The password must not be there, and neither must a blank row where it would
+  be - nothing about it is recorded, because zde asks what the offer is made of
+  before it asks for any of it. Then check the daemon has never seen it either,
+  with the memory check below.
+
+  Without a password manager to hand, `wl-copy` produces the real shape by
+  itself. `--sensitive` offers `x-kde-passwordManagerHint` *beside* the text
+  types, which is exactly what a manager that still wants pasting to work does:
+
+  ```sh
+  wl-copy --sensitive hunter2
+  wl-paste --list-types   # text/plain and x-kde-passwordManagerHint together
+  zde clip history        # hunter2 must not be in it, and neither must a blank row
+  ```
+
+  That is the whole shape and not half of it, so the only thing left for a real
+  manager to prove is that it spells the hint the way everything else does. If
+  the `wl-copy` on the machine is older than 2.3.0 it has no `--sensitive`; then
+  fall back to `wl-copy --type x-kde-passwordManagerHint hunter2`, which offers
+  the hint and nothing else and proves only that the check reads the type list.
+
+  Worth knowing while doing it: `wl-paste --watch` sets `CLIPBOARD_STATE`, and
+  one of the values it defines is `sensitive`. Up to wl-clipboard 2.2.1 that
+  value was never produced, and this document used to say so as a permanent
+  fact. It is not one. 2.3.0, which is what the flake pins, "only sets it to
+  `sensitive` when it encounters `x-kde-passwordManagerHint` among the MIME
+  types" - the same type zde checks. zde still asks the offer rather than the
+  variable, because the variable is silently absent on older wl-clipboard and
+  would fail open there; `internal/clip/wl.go` has the argument in full.
+- **The TTL, on a real clock.** Copy something distinctive, wait out
+  `clip.TTL` (fifteen minutes, `internal/clip`), and press `Mod+v`. It is gone.
+  Then the half that is the actual promise: it is gone from the daemon's memory
+  and not only from the list.
+
+  Copy the marker below rather than a word, and copy it with the tail past the
+  200-character preview bound (`clip.PreviewMax`). That matters: pressing
+  `Mod+v` hands a preview of every row to the shell and puts one in the JSON
+  zded wrote, and the wipe cannot reach either of those. Grep for a marker no
+  preview can contain and the answer means what it says.
+
+  ```sh
+  printf 'x%.0s' $(seq 250) > /tmp/zde-marker; printf 'ZDE-TTL-MARKER\n' >> /tmp/zde-marker
+  wl-copy < /tmp/zde-marker
+  pid=$(systemctl --user show -p MainPID --value zded.service)
+  gcore -o /tmp/zded-live $pid && strings /tmp/zded-live.$pid | grep -c ZDE-TTL-MARKER
+  # press Mod+v, look at the row, close it - then wait out the fifteen minutes
+  gcore -o /tmp/zded-gone $pid && strings /tmp/zded-gone.$pid | grep -c ZDE-TTL-MARKER
+  ```
+
+  Non-zero for the first, zero for the second. Do both halves in one sitting: a
+  zero that was zero all along proves nothing. Delete the cores and the marker
+  file afterwards - one of those cores has your clipboard in it, which is the
+  whole reason this is worth checking.
+
+  What a stray non-zero on the second core is not, necessarily: a `[]byte` that
+  grew while being read leaves its old copy in the heap until the collector
+  reuses that memory, and zded's wipe reaches the entry rather than every buffer
+  that ever held a prefix of it. 250 bytes fits the read buffer without growing
+  it, so this particular check should be clean - but one that is not is a thing
+  to look at rather than a promise broken.
+- **An image, and a huge paste.** `Mod+Print` takes a screenshot and niri puts
+  it on the clipboard; `Mod+v` should then show a row saying `image/png` is not
+  text and that the history keeps text only, dimmed, with Enter doing nothing
+  and saying why. The same for something enormous: `yes | head -c 200000 |
+  wl-copy` is a row saying it was more than 64 KiB. Neither is content, and
+  neither can be put back - half a file put back on the clipboard would be data
+  loss that looks like a paste that worked.
+- **`zde clip clear`**, which is the TTL by hand for the moment before somebody
+  else looks at your screen. It says how many entries went.
+- **A day of it.** Fifty entries and fifteen minutes are both guesses. Whether
+  the list is ever full, and whether things expire while you still wanted them,
+  are the two numbers only use can settle - and they are one line each in
+  `internal/clip`.
+
 ## Expected to be missing
 
 Not bugs, do not report them:
@@ -929,10 +1025,10 @@ Not bugs, do not report them:
 - **The rest of the shell**: the bar and six surfaces over it - the picker
   (desks on `Mod+Tab`, windows on `Mod+w`, one surface for both), the
   notification centre, the connections list, the palette, the ask window, the
-  power menu, and the notification popup, which is the only one that is not
-  opened by a key. There is no mixer, no media panel, no clipboard and no
-  calendar; a notification is the one thing that puts itself in front of you.
-  The launcher on `Mod+g` is zinc's, not zde's.
+  power menu, the clipboard history, and the notification popup, which is the
+  only one that is not opened by a key. There is no mixer, no media panel and
+  no calendar; a notification is the one thing that puts itself in front of
+  you. The launcher on `Mod+g` is zinc's, not zde's.
 - **Part of the cheatsheet.** A bind whose command is not written yet prints
   usage to a stderr nobody reads, so the key is silent and so is the machine.
   `Mod+semicolon` says which ones those are on the machine in front of you,
@@ -942,7 +1038,7 @@ Not bugs, do not report them:
   | Works | Silent |
   |---|---|
   | `Mod+Tab` (the desk picker), `Mod+w` (the window one) | `Mod+Shift+Escape` (panic), `Mod+Shift+z` (zen) |
-  | `Mod+j`/`k` and the arrows (nav) | `Mod+v`, `Mod+Shift+v` (clip, pass) |
+  | `Mod+j`/`k` and the arrows (nav) | `Mod+Shift+v` (pass) |
   | `Mod+Shift+j`/`k` (move window) | `Mod+Shift+t`, `Mod+Shift+e` (launch-at) |
   | `Mod+r` (regulars), `Mod+u` (queue jump) | `Mod+p`, `Mod+Shift+p`, `Mod+Ctrl+p` (media) |
   | `Mod+t` (terminal) | `Mod+m` (modes), `Mod+Shift+n` (net observer) |
@@ -951,6 +1047,7 @@ Not bugs, do not report them:
   | `Mod+semicolon` (the palette), `Mod+Shift+x` (the power menu) | |
   | `Mod+a` (one question), `Mod+Shift+a` (a conversation), once a tier is set | `XF86AudioPlay`/`Next`/`Prev` (the media target) |
   | `Mod+Shift+c` (wifi, and the link you are on) | `Mod+e`, until `zde.apps.editor` names one (below) |
+  | `Mod+v` (the clipboard history) | |
   | `Mod+g` (zinc's launcher), `Mod+Ctrl+semicolon` (lock) | |
   | `Mod+slash` (the keymap, in a pager) | |
   | `Mod+Print`, `Mod+Shift+s`, `Mod+Ctrl+w` (screenshots) | |
@@ -959,7 +1056,8 @@ Not bugs, do not report them:
   | `Mod+b`, `Mod+Shift+b` (brightness, on a machine with a backlight) | |
   | `zde status`, `doctor`, `keys`, `palette`, `ask`, `attn`, `queue`/`add`/`done` | `zde net observe\|app-cut\|kill` |
   | `zde app list\|launch`, `window jump-to`, `workspace next\|prev`, `nav down\|up` | `zde desk panic\|zen\|block`, which are not verbs at all |
-  | `zde net status\|connect\|disconnect\|forget` | `zde clip`, `pass`, `media`, `mode` |
+  | `zde net status\|connect\|disconnect\|forget` | `zde pass`, `media`, `mode` |
+  | `zde clip history [ID]`, `zde clip clear` | |
   | `zde system lock\|quiet\|notif-center\|notif-reach\|connections\|bluetooth\|power` | `zde system calendar\|wallpapers` |
   | every other `zde desk` verb: `list`, `switch`, `switcher`, `next`/`prev`/`last`, `apps`, `snapshot`, `reconcile`, `queue-jump`, `regulars`, `move-window`, `move-window-to`, `move-workspace-to` | a manifest's `policies.zen`, `background: pause`, `on_enter`/`on_exit`, all parsed and read by nobody |
   | a manifest's `policies.attn`: entering the desk puts the session in the mode it declares | |
@@ -1027,6 +1125,9 @@ Not bugs, do not report them:
   are gone at the next boot. Within one boot they are real: a `systemctl --user
   restart zded` comes back with the queue and with the newest 40 of the history,
   which is what section 5 is asking you to try.
+  The clipboard history goes with the daemon too, and that one is on purpose
+  everywhere and not only on a live image: a clipboard history on disk is a
+  wallet (`internal/clip`).
 
 ## What to do with what you find
 

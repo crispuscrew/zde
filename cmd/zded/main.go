@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/crispuscrew/zde/internal/attn"
+	"github.com/crispuscrew/zde/internal/clip"
 	"github.com/crispuscrew/zde/internal/desk"
 	"github.com/crispuscrew/zde/internal/journal"
 	"github.com/crispuscrew/zde/internal/manifest"
@@ -56,7 +57,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	if err := run(ctx, *socket, *jrnPath, *desksDir, *histPath, attn.Serve); err != nil {
+	if err := run(ctx, *socket, *jrnPath, *desksDir, *histPath, attn.Serve, clip.Tool{}); err != nil {
 		fatal(err)
 	}
 }
@@ -66,6 +67,11 @@ func main() {
 // the order things are brought up in, and the way to test an order is to hand it
 // something that will not come up.
 type notifier func(sink attn.Sink, version string) (*attn.Server, error)
+
+// The clipboard is a parameter for a sharper version of the same reason. It
+// spawns wl-paste against whatever Wayland session the machine has, so a test
+// of this file that took the real one would sit there recording the developer's
+// own clipboard - which it did, once, before this was a parameter.
 
 // run is the daemon from a bound socket to the last connection answered.
 //
@@ -82,7 +88,7 @@ type notifier func(sink attn.Sink, version string) (*attn.Server, error)
 // switches desks. Taking the name is bounded too (internal/attn, Serve), which
 // is what makes it safe for this to be the thing the main goroutine sits in
 // while the socket is served from another.
-func run(ctx context.Context, socket, jrnPath, desksDir, histPath string, notify notifier) error {
+func run(ctx context.Context, socket, jrnPath, desksDir, histPath string, notify notifier, clipboard zded.Clipboard) error {
 	// Cancelled by the caller's signal, and by anything below that ends the
 	// daemon on its own: the goroutine writing the notification history has to
 	// be told either way, or a zded that stopped because its listener failed
@@ -90,7 +96,6 @@ func run(ctx context.Context, socket, jrnPath, desksDir, histPath string, notify
 	// the end).
 	ctx, stopSaving := context.WithCancel(ctx)
 	defer stopSaving()
-
 	jrn, err := journal.Open(jrnPath)
 	if err != nil {
 		return fmt.Errorf("journal: %w", err)
@@ -108,6 +113,7 @@ func run(ctx context.Context, socket, jrnPath, desksDir, histPath string, notify
 	if err := srv.LoadHistory(histPath); err != nil {
 		fmt.Fprintf(os.Stderr, "zded: notification history: %v\n", err)
 	}
+	srv.UseClipboard(clipboard)
 	if err := srv.Listen(socket); err != nil {
 		return err
 	}
@@ -141,6 +147,12 @@ func run(ctx context.Context, socket, jrnPath, desksDir, histPath string, notify
 	// someone asks. This is also what makes zded worth having running: a
 	// workspace is adopted the moment something is in it.
 	go srv.Watch(ctx, subscribe)
+
+	// And the clipboard, on a goroutine of its own for the same reason: it
+	// spawns wl-paste and waits on a session that may have neither the program
+	// nor a compositor that supports it, and none of that is allowed to be
+	// between a keypress and the socket that answers it (internal/zded/clip.go).
+	go srv.WatchClipboard(ctx)
 
 	// The session's notification server, if this session has a bus and nobody
 	// else has taken the name. Not fatal either way: zded runs the desks
