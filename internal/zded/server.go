@@ -210,6 +210,11 @@ type Server struct {
 	startPump sync.Once
 	popupStop chan struct{}
 	stopPump  sync.Once
+	// saidQueueFull keeps the queue's ceiling to one line a session. The thing
+	// that reaches it is a flood, so a message per arrival would be the flood
+	// again in the log - and the state it describes is visible in `zde queue`
+	// for as long as it lasts, which is where somebody would look anyway.
+	saidQueueFull sync.Once
 
 	// The clipboard side (clip.go). clips is what was copied - bounded, in
 	// memory, and expiring on its own, for the reasons internal/clip gives at
@@ -1462,11 +1467,30 @@ func (s *Server) Arrived(n attn.Notification) (uint64, error) {
 			From:   rec.From,
 			Urgent: rec.Urgent,
 		})
-		if err != nil {
+		switch {
+		case err == nil:
+			rec.ID, rec.Queued = it.ID, true
+		case errors.Is(err, journal.ErrQueueFull):
+			// Not a failure of the arrival. The queue has a ceiling now
+			// (internal/journal, queueMax) and this session is at it, which is
+			// a statement about how much is already waiting and not about this
+			// notification: it is recorded, it draws its popup, and it takes an
+			// id below exactly as one a mode kept off the queue does. What it
+			// does not get is a place in a list of a thousand things nobody is
+			// going to read.
+			s.saidQueueFull.Do(func() {
+				log.Printf("zded: %v. What arrives from now on is shown and recorded, "+
+					"and not added to it", err)
+			})
+		default:
 			return 0, err
 		}
-		rec.ID, rec.Queued = it.ID, true
-	} else {
+	}
+	// The id, for everything the mode did not queue and for what the queue had
+	// no room for. An arrival with no id is one the sending app cannot close
+	// and the notification center cannot dismiss, so this is not optional
+	// (internal/journal, ClaimID).
+	if !rec.Queued {
 		id, err := s.jrn.ClaimID()
 		if err != nil {
 			return 0, err
