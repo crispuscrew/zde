@@ -17,6 +17,13 @@
 //
 // No text field. Filtering is the palette's job (0.2), and a picker you drive
 // with the arrows, j/k, or a digit needs no focused input to lose.
+//
+// Every Text in this file sets textFormat: Text.PlainText, including the ones
+// that only draw a literal. Qt Quick's default is AutoText, which renders a
+// string that looks like markup as StyledText, and StyledText fetches an
+// <img src="http://..."> over the network - out of a process that is holding a
+// layer surface and a keyboard grab. internal/zded/qml_test.go refuses a Text
+// with no format, and carries the whole of why.
 pragma ComponentBehavior: Bound
 
 import QtQuick
@@ -219,6 +226,7 @@ PanelWindow {
             color: "#7a7f8a"
             font.pixelSize: 11
             font.family: "monospace"
+            textFormat: Text.PlainText
         }
 
         Column {
@@ -266,6 +274,7 @@ PanelWindow {
                         color: "#c9ccd4"
                         font.pixelSize: 13
                         font.family: "monospace"
+                        textFormat: Text.PlainText
                     }
 
                     // The note: where you are for a desk, where the window is
@@ -282,6 +291,7 @@ PanelWindow {
                         color: "#7a7f8a"
                         font.pixelSize: 12
                         font.family: "monospace"
+                        textFormat: Text.PlainText
                     }
                 }
             }

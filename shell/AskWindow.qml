@@ -27,6 +27,13 @@
 // because nothing makes one. The turns go back down the socket with each
 // question rather than being held by the daemon, so the only copy of a
 // conversation is the one on this screen.
+//
+// Every Text in this file sets textFormat: Text.PlainText, including the ones
+// that only draw a literal. Qt Quick's default is AutoText, which renders a
+// string that looks like markup as StyledText, and StyledText fetches an
+// <img src="http://..."> over the network - out of a process that is holding a
+// layer surface and a keyboard grab. internal/zded/qml_test.go refuses a Text
+// with no format, and carries the whole of why.
 pragma ComponentBehavior: Bound
 
 import QtQuick
@@ -341,6 +348,7 @@ PanelWindow {
             color: ask.tier === "provider" ? "#7a7f8a" : "#c9ccd4"
             font.pixelSize: 12
             font.family: "monospace"
+            textFormat: Text.PlainText
         }
 
         TextInput {
@@ -418,6 +426,7 @@ PanelWindow {
                 color: "#c9ccd4"
                 font.pixelSize: 13
                 font.family: "monospace"
+                textFormat: Text.PlainText
             }
         }
 
@@ -437,6 +446,7 @@ PanelWindow {
             color: "#e5484d"
             font.pixelSize: 12
             font.family: "monospace"
+            textFormat: Text.PlainText
         }
 
         // What else this window does, said on the window. The tier keys are the
@@ -454,6 +464,7 @@ PanelWindow {
             color: "#7a7f8a"
             font.pixelSize: 11
             font.family: "monospace"
+            textFormat: Text.PlainText
         }
     }
 }

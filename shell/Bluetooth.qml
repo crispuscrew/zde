@@ -22,6 +22,13 @@
 // only keyboard is the one being paired is not possible here, and would not be
 // on any surface that takes the keyboard: that one is `zde system bluetooth`
 // from a terminal, or the device's own side.
+//
+// Every Text in this file sets textFormat: Text.PlainText, including the ones
+// that only draw a literal. Qt Quick's default is AutoText, which renders a
+// string that looks like markup as StyledText, and StyledText fetches an
+// <img src="http://..."> over the network - out of a process that is holding a
+// layer surface and a keyboard grab. internal/zded/qml_test.go refuses a Text
+// with no format, and carries the whole of why.
 pragma ComponentBehavior: Bound
 
 import QtQuick
