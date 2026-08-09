@@ -183,6 +183,15 @@
             # (internal/link/fakebus_test.go). Without this on PATH those tests
             # skip, and the skip says so.
             pkgs.dbus
+            # niri, for the same reason: internal/zded hands the window rules it
+            # writes to `niri validate`, because the shape of a KDL string is
+            # not a thing to assert from memory - the escaping bug this was
+            # written for looked correct to everyone who read it and was refused
+            # by the parser. Without this the test skips and CI proves nothing.
+            # It costs the download and no build: nix/zde-config.nix already
+            # runs niri's parser over the generated binds, so this closure is
+            # one `nix flake check` builds anyway.
+            pkgs.niri
           ];
         };
       });

@@ -181,10 +181,22 @@ func (d *Desk) check() error {
 			return fmt.Errorf("manifest %q: app %q: instance %q is not a name: lowercase letters, digits and "+
 				"dashes, because it becomes part of a path", d.Name, app.App, app.Instance)
 		}
-		// It becomes a string in a KDL file the compositor parses. A quote or a
-		// backslash from a hand-edited manifest would end the string early and
-		// take niri's whole config down with it - including the binds - which
-		// is a worse day than a window in the wrong place.
+		// It becomes a string in a KDL file the compositor parses, and the
+		// writer escapes it for that (internal/zded, kdlString) - so this is no
+		// longer the thing that stops a quote from ending the string early and
+		// taking niri's whole config down. It stays for two reasons that
+		// outlive that one.
+		//
+		// It answers here, where the mistake is. A hand-edited manifest with a
+		// stray quote in an app id gets a message naming the file, the app and
+		// the field; escaped instead, it becomes a window rule that quietly
+		// never matches anything, and the symptom is a window in the wrong
+		// place three days later.
+		//
+		// And it is the second of two independent things, which is the point of
+		// there being two. The escaping is a function deep in the writer that
+		// looked obviously correct while it was wrong; this is a guard at the
+		// boundary where the value arrives. Neither is load-bearing alone.
 		if strings.ContainsAny(app.AppID, "\"\\\n\r") {
 			return fmt.Errorf("manifest %q: app %q: app_id %q contains a quote, a backslash or a newline, "+
 				"and it becomes a string in the compositor's config", d.Name, app.App, app.AppID)
