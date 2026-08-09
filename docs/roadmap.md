@@ -42,13 +42,14 @@ exclusive grab, and it took a fix to keep them to one at a time, so one more
 that grabbed on every arrival - at the choice of any app on the session bus -
 would be the worst offender on the machine. The number of them is deliberately
 not written here: it is a count several branches are each adding to, and a
-sentence that has to be renumbered is a sentence that ends up wrong. Its buttons are clickable the whole time it is up, and `Mod+Ctrl+n` is
-the one deliberate key that hands it the keyboard, which it then holds only
-while a finger is on it. Two things decide whether a card appears at all, and
-they are kept apart because they are different people's decisions: the session's
-mode (quiet shows nothing, focus shows what the sender called urgent, work shows
-everything) and the desk's own `private: true`, which is popups off in every
-mode ([`vision.md`](vision.md), section 3). The history keeps the lot whichever
+sentence that has to be renumbered is a sentence that ends up wrong. Its buttons
+are clickable the whole time it is up, and `Mod+Ctrl+n` is the one deliberate
+key that hands it the keyboard, which it then holds only while a finger is on
+it. Two things decide whether a card appears at all, and they are kept apart
+because they are different people's decisions: the session's mode (quiet shows
+nothing, focus shows what the sender called urgent, work shows everything) and
+the desk's own `private: true`, which is popups off in every mode
+([`vision.md`](vision.md), section 3). The history keeps the lot whichever
 way both answer, because that is principle 3 and a mode or a desk that changed
 what is recorded would be deciding what happened.
 
@@ -75,14 +76,18 @@ blocks 0.2:
   so proving the card appears without a grab is by hand for now
   ([`verify.md`](verify.md), section 5).
 - history survives the daemon in part. It is a ring of 30 per sender in memory,
-  for at most 12 named senders plus the nameless ring a person's own entries
-  use, and the newest 40 of it - across all of them, not 40 from each - are
-  written to a file of their own beside the journal, bodies cut to 400
-  characters, 0600, rewritten every two minutes and on the way out. So "what did
-  I miss" answers across a reboot instead of starting every login blank. A file
-  of its own rather than the journal, which is appended to on every arrival and
-  rewritten only when a daemon starts, so whatever goes in it is carried until
-  the next login (internal/attn, PerSenderMax). What a restart still costs is
+  for at most 12 named senders plus a nameless ring, and the newest 40 of it -
+  across all of them, not 40 from each - are written to a file of their own
+  beside the journal, bodies cut to 400 characters, 0600, rewritten every two
+  minutes and on the way out. Nothing live lands in the nameless one: the bus
+  fills in a name for a sender that gives none, zde's own notification sends as
+  `zde`, and `zde queue add` writes the journal and not the history, so what is
+  in it is a restored row whose sender field was empty (internal/attn,
+  `nobody`). What the file buys is "what did I miss" answering across a reboot
+  instead of starting every login blank. A file of its own rather than the
+  journal, which is appended to on every arrival and rewritten only when a
+  daemon starts, so whatever goes in it is carried until the next login
+  (internal/attn, PerSenderMax). What a restart still costs is
   the rest of every ring, the rest of every long body, and the actions: nothing
   can be pressed on a row whose app was on the last session's bus, and the
   center says so rather than offering buttons that go nowhere. What arrived on a
@@ -109,8 +114,6 @@ blocks 0.2:
   it had to on its two-minute clock. Written down rather than fixed: the fix is
   a second path through the sink for a close that is only half of a replace, and
   that is not obviously smaller than the problem.
-- ask has no tier until a machine names one, and the panel does not carry the
-  previous turns as context.
 - the clipboard's sensitive hint is a claim the source makes, and nothing in
   Wayland makes it. zde honours `x-kde-passwordManagerHint` by never reading an
   offer that carries it, which is everything zde can do about it and nothing at
@@ -119,9 +122,6 @@ blocks 0.2:
   a second question to the compositor, since wl-paste answers what is offered
   and what it holds on two connections rather than one, and closing that gap
   means speaking the data-control protocol here (internal/clip/wl.go).
-- nothing is sandboxed until somebody defines an app. Layer 2 is provisioned by
-  hand ([`delivery.md`](delivery.md)), so a manifest can name an app that does
-  not exist and the launch is a line in zded's log.
 - ask has no tier until a machine names one. The panel carries the previous
   turns now - stdin holds the conversation, a JSON object a line, and the role
   is a field rather than a prefix so that nothing in an answer can arrive as
@@ -232,23 +232,29 @@ turned "when someone has hardware" into something anyone can do this evening.
   the regulars and adoption still names into the desk you are on, so this verb
   is the only way the band comes into being - and being a rename in either
   direction, it is also how work leaves a band that would otherwise only fill
-  up. What is left of the item is the shape of it in use: whether promoting a
-  workspace is the thing people reach for, or whether they want to name an
-  empty one and fill it afterwards, which this refuses because an empty
-  workspace is never adopted and so has no name to move.
+  up. Both of those verbs are the CLI's and nothing else: neither is in the
+  keymap registry, so neither has a chord or a palette row, and the answer to
+  "how do I make my regulars" is `zde desk move-workspace-to regulars` typed in
+  a terminal. That is the part to decide rather than to note, and it is a
+  decision about which keys exist ([`model.md`](model.md), section 6). What is
+  left of the item is the shape of it in use: whether promoting a workspace is
+  the thing people reach for, or whether they want to name an empty one and fill
+  it afterwards, which this refuses because an empty workspace is never adopted
+  and so has no name to move.
 - a single unreadable file in the desks directory taking every manifest with
   it: answered, by failing one file at a time. The loader returns what it read
   and what it could not, `zde doctor` names the files it could not, and the
   rest of the desks are declared.
 - nav with a layer-shell surface up: one holding keyboard focus reads as
   nothing focused at all, so a press spends itself putting focus back on a
-  window instead of going anywhere. There are six such surfaces now - the
-  picker, the notification center, the connections list, the palette, the ask
-  window, the power menu and the clipboard history - each taking the keyboard
-  only while it is visible, so the thing to try is a nav key the instant after
-  each one closes
-  ([`verify.md`](verify.md), a day of work). Not settled here: driving a real
-  key into a nested compositor did not work well enough to trust the answer.
+  window instead of going anywhere. Such a surface is the picker, the
+  notification center, the connections list, the palette, the ask window, the
+  power menu and the clipboard history - named rather than counted, for the
+  reason 0.1 gives about the popup, and each of them takes the keyboard only
+  while it is visible, so the thing to try is a nav key the instant after each
+  one closes ([`verify.md`](verify.md), a day of work). Not settled here:
+  driving a real key into a nested compositor did not work well enough to trust
+  the answer.
   The notification popup is one more surface and the one that answers this
   differently: it takes no keyboard at all until `Mod+Ctrl+n`, and then gives it
   back after ten seconds without a keypress. So the thing to try on that one is

@@ -265,11 +265,13 @@ var registry = map[string]Entry{
 	"system.layout-switch": {Group: "system", Desc: "switch keyboard layout (language)", Native: "switch-layout \"next\""},
 	"system.notif-center":  {Group: "system", Desc: "the notification center", Spawn: []string{"zde", "system", "notif-center"}, written: true},
 	// The other half of a popup, and the reason there can be one at all. A
-	// notification popup appears without taking the keyboard - five layer
-	// surfaces already fight over that grab - so its buttons are clickable
-	// whenever it is up and pressable only after somebody asks. This is the
-	// asking, and it is a key rather than a gesture because a grab nobody
-	// requested is the thing being avoided.
+	// notification popup appears without taking the keyboard - every other
+	// surface the shell draws over the bar already fights over that grab, and a
+	// surface that took it at the choice of any app on the session bus would be
+	// the worst of them - so its buttons are clickable whenever it is up and
+	// pressable only after somebody asks. This is the asking, and it is a key
+	// rather than a gesture because a grab nobody requested is the thing being
+	// avoided.
 	"system.notif-reach": {Group: "system", Desc: "put the keyboard on the newest notification popup", Spawn: []string{"zde", "system", "notif-reach"}, written: true},
 	// doctor is a screen of text and there is nothing yet to show one: a bind
 	// spawns a process whose stdout goes to niri's log, so a chord for this

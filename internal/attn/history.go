@@ -43,14 +43,15 @@ import (
 // and renamed over the old one, so it costs the same whether it is written once
 // or every two minutes, and a hundred arrivals a minute do not make it larger.
 //
-// What this comment used to claim, and what is not true, is that the journal
-// does not carry bodies. It carries the whole body of everything the mode
-// queues, fsynced, and has since long before this branch (internal/journal,
-// Queue) - and the queue it replays into is not bounded the way these rings
-// are. So the shape argument above is the reason the history goes in a file of
-// its own; it is not a reason to believe a notification body is only ever in
-// one place on the disk. It is not, the queue's copy is a separate change, and
-// stating it the other way here was the comment flattering the code.
+// The journal does not carry bodies, and that is worth saying beside the shape
+// argument rather than instead of it. A queue item is the id, the desk, the
+// sender, the urgency and the one-line summary, and nothing else: the body was
+// dropped from it because a file that is fsynced per arrival and rewritten only
+// at Open is where a message would stay for the session and past it
+// (internal/journal, Item). So the two files divide by what they are for and not
+// only by how they are written, and the disk holds a notification body in one
+// place - the snapshot, bounded, 0600, and never for an arrival on a desk that
+// declared private.
 const PerSenderMax = 30
 
 // SendersMax is how many senders hold a ring of their own at once. When a
@@ -104,10 +105,22 @@ const SendersMax = 12
 // No app can land here. A notification off the bus that gives no name, or a
 // name of "-", is recorded under the bus's own name for its connection instead
 // (notify.go, claim), and the bus hands that out rather than letting the peer
-// choose it. So an empty From is never an app's doing: it is zde's own, or a
-// person's, or a row off a snapshot file written before something had a name.
-// Losing those to make room for an app's twelfth invented name is the one
-// eviction nobody could defend.
+// choose it.
+//
+// Nothing else in the tree reaches it either, and it is worth being exact about
+// that rather than generous. zde's own notifications are not nameless: the one
+// path that sends one sends as "zde" (internal/zded, launchFrom). Nor is a
+// person's own reminder, because `zde queue add` writes the journal and never
+// this - the queue and the history are two records, and only an arrival makes
+// both (internal/zded, queueAdd against Arrived). What is actually here is a row
+// off a snapshot file whose sender field is empty: one an older zde wrote before
+// the name was filled in, or one somebody edited, since ReadSnapshot bounds that
+// field without insisting on it (snapshot.go).
+//
+// So this ring is small and it is history rather than this session, which is the
+// reason it is exempt and not a reason to trim it: losing what a restart brought
+// back to make room for an app's twelfth invented name is the one eviction
+// nobody could defend.
 const nobody = ""
 
 // Record is one arrival, as the notification center reads it back. It is what
