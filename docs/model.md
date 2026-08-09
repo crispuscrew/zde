@@ -136,13 +136,30 @@ Modes gate which actions are live. Not everything here is written, and not
 everything written here has a chord. The keymap registry is the part that has a
 key or a reason to be reachable by name, and that is what `palette.open` lists,
 marking each row runnable or not on the build in front of you. The rest are the
-CLI's: `zde desk switch`, `desk snapshot`, `desk reconcile`,
-`desk move-workspace-to`, `ask local` and `attn <mode>` all work today with no
-row in any surface. A missing palette row means no key, not no verb.
+CLI's: `zde desk switch`, `desk snapshot`, `desk reconcile`, `desk
+move-window-to`, `desk move-workspace-to`, `ask local` and `attn <mode>` all
+work today with no row in any surface. A missing palette row means no key, not
+no verb.
+
+It does not promise a verb either, and two rows below have neither. `pause` is a
+desk action nothing implements - the manifest key `background: pause` is parsed
+and acts on nothing (section 5), and that is the whole of the word in this tree.
+`guest <name>` is in no registry, no daemon handler and no CLI: it is design and
+has never been anything else. Both stay in the table because this is the map and
+not the changelog, and neither is reachable from anywhere today.
+
+The two that are reachable only from a terminal are worth naming, because the
+gap has a cost rather than being tidy. `desk move-workspace-to` is the only way
+the regulars band comes into being at all ([`roadmap.md`](roadmap.md)), and
+`desk move-window-to` is how one window leaves it; both work, neither has a key
+or a palette row, so the answer to "how do I make my regulars" is currently
+"open a terminal". Whether that should be a chord, a palette row, or a CLI verb
+on purpose is a decision about which keys exist, and it belongs in the keymap
+rather than in a note here.
 
 | Group | Actions |
 |---|---|
-| desk | `switcher`, `nav-down`/`nav-up` (focus stacked window, else rotate desk), `switch <name>`, `next`, `prev`, `last`, `queue-jump`, `regulars`, `move-window-next`, `move-window-prev`, `move-window-to-desk <name>`, `move-workspace-to-desk <name>` (the whole workspace changes hands: how the regulars are made, and how work leaves them), `snapshot`, `reconcile`, `pause`, `panic`, `block`, `guest <name>`, `zen` |
+| desk | `switcher`, `nav-down`/`nav-up` (focus stacked window, else rotate desk), `switch <name>`, `next`, `prev`, `last`, `queue-jump`, `regulars`, `move-window-next`, `move-window-prev`, `move-window-to <name>`, `move-workspace-to <name>` (the whole workspace changes hands: how the regulars are made, and how work leaves them), `snapshot`, `reconcile`, `pause`, `panic`, `block`, `guest <name>`, `zen` |
 | monitor | `focus <dir>`, `move-window <dir>`, `move-workspace <dir>` |
 | workspace | `next`/`prev` (band-clamped), `overview` |
 | window | `focus <dir>`, `move <dir>`, `resize`, `preset-width`, `consume`/`expel`, `float`, `fullscreen`, `close`, `capture-block`, `jump-to` (pick any open window and go to where it is; travels the hierarchy, and rearranges nothing) |

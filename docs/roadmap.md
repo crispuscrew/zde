@@ -232,7 +232,12 @@ turned "when someone has hardware" into something anyone can do this evening.
   the regulars and adoption still names into the desk you are on, so this verb
   is the only way the band comes into being - and being a rename in either
   direction, it is also how work leaves a band that would otherwise only fill
-  up. What is left of the item is the shape of it in use: whether promoting a
+  up. Both of those verbs are the CLI's and nothing else: neither is in the
+  keymap registry, so neither has a chord or a palette row, and the answer to
+  "how do I make my regulars" is `zde desk move-workspace-to regulars` typed in
+  a terminal. That is the part to decide rather than to note, and it is a
+  decision about which keys exist ([`model.md`](model.md), section 6). What is
+  left of the item is the shape of it in use: whether promoting a
   workspace is the thing people reach for, or whether they want to name an
   empty one and fill it afterwards, which this refuses because an empty
   workspace is never adopted and so has no name to move.
