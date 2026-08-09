@@ -42,9 +42,10 @@ exclusive grab, and it took a fix to keep them to one at a time, so one more
 that grabbed on every arrival - at the choice of any app on the session bus -
 would be the worst offender on the machine. The number of them is deliberately
 not written here: it is a count several branches are each adding to, and a
-sentence that has to be renumbered is a sentence that ends up wrong. Its buttons are clickable the whole time it is up, and `Mod+Ctrl+n` is
-the one deliberate key that hands it the keyboard, which it then holds only
-while a finger is on it. Two things decide whether a card appears at all, and
+sentence that has to be renumbered is a sentence that ends up wrong. Its buttons
+are clickable the whole time it is up, and `Mod+Ctrl+n` is the one deliberate
+key that hands it the keyboard, which it then holds only while a finger is on
+it. Two things decide whether a card appears at all, and
 they are kept apart because they are different people's decisions: the session's
 mode (quiet shows nothing, focus shows what the sender called urgent, work shows
 everything) and the desk's own `private: true`, which is popups off in every
@@ -241,10 +242,11 @@ turned "when someone has hardware" into something anyone can do this evening.
   rest of the desks are declared.
 - nav with a layer-shell surface up: one holding keyboard focus reads as
   nothing focused at all, so a press spends itself putting focus back on a
-  window instead of going anywhere. There are six such surfaces now - the
-  picker, the notification center, the connections list, the palette, the ask
-  window, the power menu and the clipboard history - each taking the keyboard
-  only while it is visible, so the thing to try is a nav key the instant after
+  window instead of going anywhere. Such a surface is the picker, the
+  notification center, the connections list, the palette, the ask window, the
+  power menu and the clipboard history - named rather than counted, for the
+  reason 0.1 gives about the popup, and each of them takes the keyboard only
+  while it is visible, so the thing to try is a nav key the instant after
   each one closes
   ([`verify.md`](verify.md), a day of work). Not settled here: driving a real
   key into a nested compositor did not work well enough to trust the answer.

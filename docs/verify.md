@@ -1023,11 +1023,13 @@ list, and that is the first thing to check if nothing below works.
 
 Not bugs, do not report them:
 
-- **The rest of the shell**: the bar and six surfaces over it - the picker
-  (desks on `Mod+Tab`, windows on `Mod+w`, one surface for both), the
-  notification centre, the connections list, the palette, the ask window, the
-  power menu, the clipboard history, and the notification popup, which is the
-  only one that is not opened by a key. There is no mixer, no media panel and
+- **The rest of the shell**: the bar, and over it the picker (desks on
+  `Mod+Tab`, windows on `Mod+w`, one surface for both), the notification centre,
+  the connections list, the palette, the ask window, the power menu, the
+  clipboard history, and the notification popup, which is the only one that is
+  not opened by a key. That is the whole list, and it is a list rather than a
+  count because a count is a sentence that has to be renumbered by whatever
+  lands next. There is no mixer, no media panel and
   no calendar; a notification is the one thing that puts itself in front of
   you. The launcher on `Mod+g` is zinc's, not zde's.
 - **Part of the cheatsheet.** A bind whose command is not written yet prints
