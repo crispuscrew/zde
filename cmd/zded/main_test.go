@@ -175,6 +175,81 @@ func TestATierIsStoppedBeforeTheDaemonProcessGoes(t *testing.T) {
 	}
 }
 
+// A daemon that is stuck before it serves still answers a signal.
+//
+// This is the general defect behind the FIFO one. signal.NotifyContext turns
+// SIGTERM into a cancelled context, and a cancelled context is a stop only
+// where somebody is reading it - and run reads it for the first time after the
+// journal, the notification history, the desk manifests and niri's placement
+// rules have all been opened. A signal arriving during any of that used to be
+// swallowed: the process stayed, `systemctl --user stop zded` hung with it, and
+// SIGKILL was the only thing left.
+//
+// Run rather than start is what is faked here, because the whole point is that
+// the stuck thing is something no cancel can reach: a real one is an open on a
+// path that is not a plain file, or a disk that has stopped answering.
+func TestASignalStopsADaemonThatIsStuckBeforeItServes(t *testing.T) {
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	stuck := make(chan error) // nothing is ever sent: run never returns
+
+	stop()
+	// Answered on a deadline of its own, because the failure being tested for
+	// is a wait with no end to it: without the grace this call does not return
+	// a wrong answer, it returns no answer, and a test that only asserted on
+	// the answer would be a CI job sitting there rather than a red one.
+	type outcome struct {
+		err     error
+		stopped bool
+	}
+	got := make(chan outcome, 1)
+	go func() {
+		err, stopped := awaitStop(ctx, stuck, 100*time.Millisecond)
+		got <- outcome{err, stopped}
+	}()
+	select {
+	case o := <-got:
+		if o.stopped {
+			t.Fatalf("awaitStop claims the daemon left, and it is still in its own startup (err %v)", o.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("awaitStop did not give up on a daemon that is never going to answer, which is the hang zded shipped with")
+	}
+}
+
+// And the stop that is only slow is waited for.
+//
+// The grace exists because the tidy exit takes real time - the tiers are
+// killed and waited on, then the last notification snapshot is written - and a
+// watchdog that fired through that would trade a daemon that will not stop for
+// one that loses the last arrivals of every session.
+func TestATidyStopIsWaitedForRatherThanCutShort(t *testing.T) {
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	done := make(chan error, 1)
+	go func() {
+		time.Sleep(50 * time.Millisecond) // the tiers going, the snapshot written
+		done <- nil
+	}()
+
+	stop()
+	if err, stopped := awaitStop(ctx, done, 10*time.Second); !stopped || err != nil {
+		t.Fatalf("awaitStop = (%v, %v), want a clean finish", err, stopped)
+	}
+}
+
+// A failure that ends the daemon on its own is still the caller's to report,
+// signal or no signal.
+func TestAnErrorFromRunComesBack(t *testing.T) {
+	want := errors.New("the listener would not bind")
+	done := make(chan error, 1)
+	done <- want
+	err, stopped := awaitStop(context.Background(), done, time.Second)
+	if !stopped || !errors.Is(err, want) {
+		t.Fatalf("awaitStop = (%v, %v), want the error run returned", err, stopped)
+	}
+}
+
 // tierPid is where the tier said it was, once it has said it.
 func tierPid(t *testing.T, path string) int {
 	t.Helper()
