@@ -1103,3 +1103,103 @@ func TestAPanelQuestionOfNothingButSpaceOpensNoPanel(t *testing.T) {
 		t.Errorf("nothing was asked and a panel was opened anyway: %q", rec.String())
 	}
 }
+
+// One at a time per connection was the bound, and connections are free.
+//
+// Measured on a running zded before asksMax existed: 60 connections, one
+// ask.run each, took the daemon from no children and 7 descriptors to 60
+// children and 247 descriptors, and they were reaped at askTimeout - so the
+// ceiling was N subprocesses for two minutes and N was the caller's to pick. A
+// local tier is a model that can be holding a GPU.
+//
+// The load is what a caller can do, and the assertion is the count the daemon
+// will hold at once: the tiers here read the question and never answer, so
+// nothing releases a place except the cap being reached.
+func TestOnlySoManyTiersRunAtOnce(t *testing.T) {
+	dir := t.TempDir()
+	writeTiers(t, map[string][]string{TierLocal: fakeTier("linger", filepath.Join(dir, "tier"))})
+	s := New("test", nil, &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code"}, nil)
+	path := serve(t, s)
+
+	// Five times the cap, each on a connection of its own, which is the whole
+	// point: sink.asking has nothing to say about any of this.
+	const tries = asksMax * 5
+	asking, refused := 0, 0
+	for i := 0; i < tries; i++ {
+		c, err := DialPath(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		if err := c.Call(MethodAskRun, nil, TierLocal, "hold on to a gpu"); err != nil {
+			if !strings.Contains(err.Error(), "already running") {
+				t.Fatalf("ask %d was refused with %v", i, err)
+			}
+			refused++
+			continue
+		}
+		asking++
+	}
+	if asking != asksMax || refused != tries-asksMax {
+		t.Errorf("%d tiers started and %d were refused, want %d and %d", asking, refused, asksMax, tries-asksMax)
+	}
+	if n := s.asking(); n != asksMax {
+		t.Errorf("the daemon is running %d tiers at once, want the cap of %d", n, asksMax)
+	}
+}
+
+// And a run whose connection has gone stops, rather than waiting out its
+// timeout.
+//
+// The pump only learns a client has left when it next tries to write to it, so a
+// tier that is quiet - loading a model, thinking, wedged - was never noticed at
+// all. Measured before this: 60 connections closed, 60 tiers still running, and
+// they went at askTimeout, which is two minutes. Closing the window is also how
+// a person changes their mind about a question, so this is what makes that free
+// rather than something the machine pays for the next two minutes.
+func TestClosingTheConnectionStopsTheTier(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "tier")
+	writeTiers(t, map[string][]string{TierLocal: fakeTier("linger", pidFile)})
+	s := New("test", nil, &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code"}, nil)
+	path := serve(t, s)
+
+	c, err := DialPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Call(MethodAskRun, nil, TierLocal, "something quiet and long"); err != nil {
+		t.Fatalf("ask.run: %v", err)
+	}
+	// The tier writes down where it is as its first act, so this is the test
+	// knowing there is something to stop rather than racing exec.
+	pid := tierPid(t, pidFile)
+	if syscall.Kill(pid, 0) != nil {
+		t.Fatal("the tier was not running before the connection was closed")
+	}
+
+	start := time.Now()
+	c.Close()
+	gone := func() bool { return syscall.Kill(pid, 0) != nil }
+	for i := 0; i < 500 && !gone(); i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	took := time.Since(start)
+	if !gone() {
+		syscall.Kill(pid, syscall.SIGKILL)
+		t.Fatalf("the connection closed and the tier (pid %d) was still running %v later; without this it goes at askTimeout, which is %v",
+			pid, took, askTimeout)
+	}
+	if took > 2*time.Second {
+		t.Errorf("the tier took %v to notice its connection had gone", took)
+	}
+
+	// And the place it held is free again, which is what keeps the cap from
+	// being something a caller can fill and walk away from.
+	for i := 0; i < 200 && s.asking() != 0; i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := s.asking(); n != 0 {
+		t.Errorf("the run ended and the daemon still counts %d tiers running", n)
+	}
+}

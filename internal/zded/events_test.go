@@ -439,3 +439,110 @@ type stubNotifier struct{}
 func (stubNotifier) Dismissed(uint64)            {}
 func (stubNotifier) Invoke(uint64, string) error { return nil }
 func (stubNotifier) Forget(uint64)               {}
+
+// A keypress costs one sendWait however many listeners have stopped reading,
+// which is the promise sendWait was written to make and did not keep.
+//
+// It bounded one listener; the walk was a line, so the keypress cost that times
+// however many there were, and how many there are is not this daemon's to
+// decide. Measured on a running zded before this changed: 100 connections that
+// subscribed and stopped reading made one attn.center take 20.03 seconds, which
+// is 100 x sendWait to the millisecond, and 200 of them made it 40.07. It did
+// not decay either - a sink whose gate is held answers errSinkBusy, which keeps
+// it - so every keypress for the rest of the session cost the same.
+//
+// The load here is the worst a caller can now arrange: every place a listener
+// may hold, all but one of them wedged.
+func TestBroadcastCostsOneSendWaitWithEveryListenerWedged(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
+	for i := 0; i < listenersMax-1; i++ {
+		s.listen(&sink{w: &blocker{}})
+	}
+	// And one that reads perfectly well, which is the shell.
+	rec := &recorder{}
+	s.listen(&sink{w: rec})
+
+	start := time.Now()
+	sent := s.broadcast(Event{Kind: EventPicker})
+	took := time.Since(start)
+
+	// Walked one at a time this is (listenersMax-1) x sendWait, which is three
+	// seconds. Generous against the one send it should be, and nowhere near it.
+	if took > sendWait+500*time.Millisecond {
+		t.Errorf("a broadcast with %d wedged listeners took %v, want about one sendWait of %v",
+			listenersMax-1, took, sendWait)
+	}
+	// And the shell is not behind them: it got the event, and it is the only
+	// one counted as having taken it.
+	if sent != 1 {
+		t.Errorf("sent = %d, want the one listener that reads", sent)
+	}
+	if rec.String() == "" {
+		t.Error("the listener that reads got nothing while the wedged ones were being written to")
+	}
+}
+
+// And how many there may be is bounded, over the socket, the way somebody with
+// a socket would find out.
+//
+// Twice the cap all ask to listen. The cap's worth are listening, the rest are
+// told why in a sentence, and `zde status` reports the count rather than the
+// boolean that used to say a shell was fine because something was subscribed.
+func TestOnlySoManyConnectionsMayListen(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code"}, nil)
+	path := serve(t, s)
+
+	kept, refused := 0, 0
+	var last *Client
+	for i := 0; i < listenersMax*2; i++ {
+		c, err := DialPath(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		last = c
+		if err := c.Call(MethodEvents, nil); err != nil {
+			if !strings.Contains(err.Error(), "already listening") {
+				t.Fatalf("connection %d was refused with %v", i, err)
+			}
+			refused++
+			continue
+		}
+		kept++
+	}
+	if kept != listenersMax || refused != listenersMax {
+		t.Errorf("%d connections listening and %d refused, want %d and %d", kept, refused, listenersMax, listenersMax)
+	}
+	if n := s.listeners(); n != listenersMax {
+		t.Errorf("listeners = %d, want the cap of %d", n, listenersMax)
+	}
+
+	// A connection refused as a listener is still a connection, and it is the
+	// one somebody would ask what is going on.
+	var st Status
+	if err := last.Call("status", &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.Listeners != listenersMax {
+		t.Errorf("status says %d listeners, want %d", st.Listeners, listenersMax)
+	}
+	if !st.Shell {
+		t.Error("something is listening and status says nothing is")
+	}
+}
+
+// Asking twice is listening once, including at the cap: a shell that resends
+// `events` on the connection it already listens on must not be told there is no
+// room for it.
+func TestListeningTwiceOnOneConnectionIsStillOnePlace(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
+	k := &sink{w: &recorder{}}
+	for i := 0; i < listenersMax+4; i++ {
+		if !s.listen(k) {
+			t.Fatalf("the same connection was refused on its %d%s ask", i+1, "th")
+		}
+	}
+	if n := s.listeners(); n != 1 {
+		t.Errorf("listeners = %d after one connection asked %d times", n, listenersMax+4)
+	}
+}

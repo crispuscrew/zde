@@ -322,7 +322,15 @@ func status() error {
 	// second machine to look them up on. Always printed, including the boring
 	// answers: "shell      no" is the whole diagnosis for a session where
 	// Mod+Tab prints a list, and an absent line explains nothing.
-	fmt.Printf("shell      %s\n", yesno(st.Shell))
+	// And how many, once it is more than the one a session has. "yes" used to
+	// be the whole answer, and under a flood of connections that subscribe and
+	// never read it was a true sentence about the wrong connection: the picker
+	// never appeared and status said a shell was listening.
+	shell := yesno(st.Shell)
+	if st.Listeners > 1 {
+		shell = fmt.Sprintf("%s (%d listening)", shell, st.Listeners)
+	}
+	fmt.Printf("shell      %s\n", shell)
 	fmt.Printf("notify     %s\n", yesno(st.Notifications))
 	// Layer 2: whether the session can run a sandboxed app at all. It is the
 	// whole diagnosis for a desk whose apps do nothing, and it is a fact about
