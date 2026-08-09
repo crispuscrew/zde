@@ -249,6 +249,36 @@ func TestARecordWithNoSenderKeepsARingNoAppCanEvict(t *testing.T) {
 	}
 }
 
+// The other half of reserving the desktop's own name (notify.go, SelfFrom): a
+// name no app can take must also be a ring no app can spend.
+//
+// The eviction rule is cheapest-ring-first, and what zde says about itself is
+// as cheap as a ring gets - one record saying a desk could not start three of
+// its apps. So without the exemption, twelve invented names were enough to
+// throw the desktop's own message out of the history, which is a way of
+// silencing it that costs twelve notifications and no privilege at all.
+func TestInventedNamesCannotEvictWhatTheDesktopSaid(t *testing.T) {
+	var h History
+	h.Add(Record{ID: 1, From: SelfFrom, Text: "desk vshop: 3 apps did not start"})
+	// Twice the bound, in names an app made up, each holding one record - the
+	// cheapest ring on the machine every time.
+	for s := 1; s <= SendersMax*2; s++ {
+		h.Add(Record{ID: uint64(100 + s), From: "invented name " + strconv.Itoa(s), Text: "hello"})
+	}
+	if _, found := h.Find(1); !found {
+		t.Error("what zde said about a desk went, to make room for an app's invented names")
+	}
+	// And it costs an app nothing either: the exempt ring is not counted, so
+	// twelve names still fit beside it.
+	names := map[string]bool{}
+	for _, r := range h.Recent() {
+		names[r.From] = true
+	}
+	if len(names) != SendersMax+1 {
+		t.Errorf("the history holds %d senders, want %d and zde's own: the exemption cost an app its place", len(names), SendersMax)
+	}
+}
+
 // replaces_id is a sender saying this is the same notification with something
 // new to say - a download at 2% rather than at 1%. Appending was the root of
 // the noise: a hundred progress updates left a hundred records, ninety-nine of

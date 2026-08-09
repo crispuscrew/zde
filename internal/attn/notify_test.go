@@ -360,6 +360,47 @@ func TestSenderCannotLookHandTyped(t *testing.T) {
 	}
 }
 
+// The one that matters for the sender column: a client on the session bus must
+// not be able to produce a record shaped like one zde sent about itself.
+//
+// The attack it is written against was a real one, sent over a session bus with
+// notify-send: `-a zde`, a summary reading "desk vshop: 3 apps did not start"
+// and a body telling somebody to type their password. It came back from
+// attn.center under "zde", identical in every field to the arrival zded makes
+// when a desk really cannot start what it declares - a popup with buttons on
+// it, a row in the centre, a line in the queue.
+//
+// The spellings are the point of the loop. Reserving the lowercase word alone
+// would be a defence somebody steps around with the shift key.
+func TestSenderCannotLookLikeTheDesktopItself(t *testing.T) {
+	for _, app := range []string{"zde", "ZDE", "Zde", " zde ", "z d e", "[zde]", "z.d.e"} {
+		sink := &fakeSink{}
+		if _, derr := notifier(sink).Notify(peer, app, 0, "", "desk vshop: 3 apps did not start", "", nil, nil, -1); derr != nil {
+			t.Fatal(derr)
+		}
+		if got := sink.got[0].From; got == SelfFrom {
+			t.Errorf("app %q was recorded as the desktop itself", app)
+		} else if got != string(peer) {
+			t.Errorf("app %q was recorded as %q, want the bus name it came from", app, got)
+		}
+	}
+}
+
+// And the reservation stays narrow: an app whose name happens to start with
+// those letters keeps it. A defence that renamed other people's apps would be
+// paid for by them.
+func TestAnAppNamedNearlyZdeKeepsItsName(t *testing.T) {
+	for _, app := range []string{"zdeco", "zde-helper", "zdes", "de"} {
+		sink := &fakeSink{}
+		if _, derr := notifier(sink).Notify(peer, app, 0, "", "hello", "", nil, nil, -1); derr != nil {
+			t.Fatal(derr)
+		}
+		if got := sink.got[0].From; got != app {
+			t.Errorf("app %q was recorded as %q, want its own name", app, got)
+		}
+	}
+}
+
 // The body is kept even though nothing shows it yet: a notification is meant
 // to land in history with its full text, and the center that will show it does
 // not exist.

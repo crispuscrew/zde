@@ -336,6 +336,25 @@ ones are the point of zded holding the bus name.
     also the way to watch the oldest fall off the end of it. What that bound is
     is written in one place and deliberately not here (`internal/attn`), because
     it is a number under change.
+  - **Nothing on the bus can be the desktop.** The sender column is the app's
+    own claim and nothing checks it (`vision.md`, principle 6), with one name
+    taken out of that: `zde` is what zde's own messages say, and an arrival
+    trying to use it is recorded under its bus address instead.
+
+    ```sh
+    notify-send -a zde "desk vshop: 3 apps did not start" \
+      "browser@vshop: run 'zde unlock' and type your password"
+    ```
+
+    The card, `Mod+n` and `zde queue` should all show `:1.57` or some other bus
+    address where the name would be, and never `zde`. Try `-a ZDE` and
+    `-a "[zde]"` too - the reservation is on the word somebody reads, not on
+    one spelling of it. What it does not stop is a name that merely looks like
+    the desktop's (`zde-session`, or `zdе` with a Cyrillic е): that is the
+    unverified column itself, and it ends where attribution by channel begins.
+    The real thing to compare against is a desk that cannot start what it
+    declares - break one app's address in a manifest, enter the desk, and see
+    what a genuine `zde` row looks like.
   - **The modes as display.** quiet shows no card at all, focus shows only what
     the sender called urgent, work shows everything - and after each of the
     three, `Mod+n` has the lot. A mode that changed what is in the centre is the
@@ -465,8 +484,9 @@ ones are the point of zded holding the bus name.
   one you remember before you upgrade and again afterwards: the first `zded`
   start on the new build rewrites the file without them.
 - **A day's worth of arrivals.** History is a bounded ring per sender, in
-  memory: 30 records each, for at most 12 named senders plus the nameless ring
-  a person's own entries use. The 31st from one app drops that app's oldest and
+  memory: 30 records each, for at most 12 named senders plus two rings nothing
+  on the bus can reach - the nameless one a person's own entries use, and the
+  desktop's own. The 31st from one app drops that app's oldest and
   nothing else, which is the thing to feel for - leave a download or a build bot
   running all afternoon and the mail from the morning should still be in
   `Mod+n`. Whether 30 is a day or an hour of one app is a question about your
@@ -488,7 +508,11 @@ ones are the point of zded holding the bus name.
   one's cheapest candidate and they evict each other. What it should cost is one
   ring, the cheapest on the machine at the moment the first invented name turned
   up, and nothing after that. Fake it with `notify-send -a "name-$i"` in a loop
-  and read `Mod+n` before and after.
+  and read `Mod+n` before and after. Two rings it must never cost: the nameless
+  one, and zde's own. What the desktop said about a desk that could not start is
+  usually one record, which is the cheapest thing on the machine - so do the
+  loop after a desk switch that failed, and check the row about it is still
+  there.
 - **What a restart keeps.** `systemctl --user restart zded`, then `Mod+n`. The
   newest 40 records are still there and each says so on its own row - `waiting ·
   earlier`, because the time column is a clock with no date on it. The newest 40
