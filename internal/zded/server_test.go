@@ -1,11 +1,14 @@
 package zded
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -2869,5 +2872,141 @@ func TestSwitchStartsTheDesksApps(t *testing.T) {
 	case a := <-started:
 		t.Errorf("re-entering the desk you are on started %s again", a)
 	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// A request line is bounded, and the bound is what stops this socket being an
+// allocator anything on this machine can drive.
+//
+// Measured on a running zded before it existed: four connections each pushing
+// 200 MB with no newline in them took RSS from 8 MB to 2856 MB, roughly twice
+// the bytes sent, and none of it came back when the connections closed. The
+// daemon answered `zde status` instantly throughout, so the one diagnostic a
+// person would run said it was fine.
+//
+// What is asserted is the bound under load rather than the constant: 128 MiB
+// arrives with no newline in it, and what the daemon may allocate reading that
+// is what four capped lines cost rather than what 128 MiB costs. The refusal is
+// asserted too, because a caller that sent something impossible is owed a
+// sentence saying so.
+func TestAnEndlessRequestLineIsRefusedRatherThanHeld(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
+	path := serve(t, s)
+
+	// Four connections and 32 MiB each, which is 32 times the cap apiece.
+	const conns = 4
+	const each = 32 << 20
+
+	var wrote sync.WaitGroup
+	said := make(chan string, conns)
+	for i := 0; i < conns; i++ {
+		c, err := net.Dial("unix", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		wrote.Add(1)
+		go func() {
+			defer wrote.Done()
+			// No newline anywhere in it, which is the whole of the attack:
+			// nothing here is a request, so nothing ever finishes being read.
+			chunk := bytes.Repeat([]byte("a"), 1<<20)
+			for sent := 0; sent < each; sent += len(chunk) {
+				if _, err := c.Write(chunk); err != nil {
+					return
+				}
+			}
+		}()
+		go func() {
+			line, err := bufio.NewReader(c).ReadString('\n')
+			if err != nil {
+				said <- ""
+				return
+			}
+			said <- line
+		}()
+	}
+
+	// Counted from before the writing, so everything the reading allocates is
+	// inside it. TotalAlloc rather than a heap reading: what is bounded is what
+	// the daemon may take to read this at all, and a heap reading is an answer
+	// about when the collector last ran.
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+
+	done := make(chan struct{})
+	go func() { wrote.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(60 * time.Second):
+		t.Fatal("the writers were still writing a minute later, so nothing refused them")
+	}
+	runtime.ReadMemStats(&after)
+
+	// The arithmetic: a scanner doubling from 4 KiB to requestMax allocates
+	// about 2 MiB over one connection's life, so four of them is about 8 MiB.
+	// Uncapped, the same 128 MiB costs about twice itself - every fragment is
+	// copied into the line and the line is copied again each time it grows - so
+	// 256 MiB, which is the shape measured at 2856 MB for 1400 MB sent.
+	grew := after.TotalAlloc - before.TotalAlloc
+	if grew > 64<<20 {
+		t.Errorf("%d MiB arrived with no newline in it and the daemon allocated %d MiB reading it, past the 64 MiB four capped lines could cost",
+			(conns*each)>>20, grew>>20)
+	}
+
+	for i := 0; i < conns; i++ {
+		select {
+		case line := <-said:
+			if !strings.Contains(line, "longer than") {
+				t.Errorf("a connection that sent %d MiB with no newline in it was answered %q", each>>20, strings.TrimSpace(line))
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatal("a connection sent 32 MiB with no newline in it and the daemon is still reading")
+		}
+	}
+}
+
+// And the largest thing a legitimate caller sends still fits, which is the other
+// half of choosing the number. An ask.run carries a whole conversation, bounded
+// at askContextMax as the tier reads it - and the Go client writes it with
+// json.Marshal, whose HTML escaping turns "<" into six bytes. A conversation of
+// nothing but those is the worst case anybody honest can produce, and it has to
+// be answered rather than refused for its length.
+func TestTheLargestConversationACallerMaySendFitsInOneRequest(t *testing.T) {
+	writeTiers(t, map[string][]string{})
+	s := New("test", nil, &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code"}, nil)
+	path := serve(t, s)
+
+	// A bare question is handed to the tier as itself, with no frame and no
+	// turns (ask.go, askDoc), so this is exactly askContextMax of document.
+	question := strings.Repeat("<", askContextMax)
+	line, err := json.Marshal(Request{Method: MethodAskRun, Args: []string{TierLocal, question}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The arithmetic requestMax was chosen by, as a measurement rather than a
+	// claim in a comment: six bytes on the wire for every byte of conversation.
+	if len(line)+1 > requestMax {
+		t.Fatalf("the largest conversation a caller may send is %d KiB on the wire, past requestMax of %d KiB",
+			(len(line)+1)>>10, requestMax>>10)
+	}
+
+	c, err := DialPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	err = c.Call(MethodAskRun, nil, TierLocal, question)
+	if err == nil {
+		t.Fatal("there is no local tier and the ask was accepted anyway")
+	}
+	// Refused for the tier it has not got, which is the daemon having read the
+	// whole request. Refused for its length would be the bound eating a caller
+	// doing nothing wrong.
+	if strings.Contains(err.Error(), "longer than") {
+		t.Errorf("the largest legitimate conversation was refused for its length: %v", err)
+	}
+	if !strings.Contains(err.Error(), "no local tier") {
+		t.Errorf("the answer was %v, want the missing tier", err)
 	}
 }
