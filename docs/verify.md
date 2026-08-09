@@ -445,9 +445,6 @@ ones are the point of zded holding the bus name.
     check should collapse to one `not known:` line naming the command to run by
     hand - not a warning per desk. A partial list of faults reads exactly like a
     complete one, which is the failure this is arranged against.
-- **A day's worth of arrivals.** History is a ring of 200, in memory: the 201st
-  drops the oldest. Whether 200 is a day or an hour is a question about your
-  machine and not about the number.
 - **Who can read what you were sent.** One line: `ls -l
   ~/.local/state/zde/journal.jsonl` says `-rw-------`. It has to say that on a
   machine that has been running an earlier zde too, because the mode is set on
@@ -465,8 +462,9 @@ ones are the point of zded holding the bus name.
   one you remember before you upgrade and again afterwards: the first `zded`
   start on the new build rewrites the file without them.
 - **A day's worth of arrivals.** History is a bounded ring per sender, in
-  memory: 30 records each, for at most 12 named senders plus the nameless ring
-  a person's own entries use. The 31st from one app drops that app's oldest and
+  memory: 30 records each, for at most 12 named senders plus a nameless ring
+  that only a restored row with no sender in it can land in - nothing this
+  session receives is nameless. The 31st from one app drops that app's oldest and
   nothing else, which is the thing to feel for - leave a download or a build bot
   running all afternoon and the mail from the morning should still be in
   `Mod+n`. Whether 30 is a day or an hour of one app is a question about your
@@ -511,11 +509,14 @@ ones are the point of zded holding the bus name.
   before the restart and gone after it, and `grep` for its text in
   `history.json` finds nothing.
 
-  Out of the snapshot, and not off the disk, which would be a wider claim than
-  anything here earns: a notification the mode queues writes its body to the
-  journal as well, so the same `grep` finds it in `j.jsonl`. That file is the
-  queue's and getting the bodies out of it is its own change. What this section
-  is about is `history.json`, and about that the claim is exact.
+  Out of the snapshot, which is the claim this check settles, and worth keeping
+  apart from the journal's. A notification the mode queued leaves a line in
+  `journal.jsonl` on every desk, private or not, carrying the summary, the
+  sender and the desk - so `grep` for the summary finds it there and `grep` for
+  the message finds nothing anywhere, which is the earlier check ("and what the
+  file holds") and not this one. What this section is about is `history.json`,
+  and about that the claim is exact: nothing that arrived on a private desk is
+  written to it.
 
   Three ways to try to break it, all of which should end with nothing written.
   Break the same manifest with a typo - a desk whose manifest will not parse is

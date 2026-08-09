@@ -75,12 +75,16 @@ blocks 0.2:
   so proving the card appears without a grab is by hand for now
   ([`verify.md`](verify.md), section 5).
 - history survives the daemon in part. It is a ring of 30 per sender in memory,
-  for at most 12 named senders plus the nameless ring a person's own entries
-  use, and the newest 40 of it - across all of them, not 40 from each - are
-  written to a file of their own beside the journal, bodies cut to 400
-  characters, 0600, rewritten every two minutes and on the way out. So "what did
-  I miss" answers across a reboot instead of starting every login blank. A file
-  of its own rather than the journal, which is appended to on every arrival and
+  for at most 12 named senders plus a nameless ring, and the newest 40 of it -
+  across all of them, not 40 from each - are written to a file of their own
+  beside the journal, bodies cut to 400 characters, 0600, rewritten every two
+  minutes and on the way out. Nothing live lands in the nameless one: the bus
+  fills in a name for a sender that gives none, zde's own notification sends as
+  `zde`, and `zde queue add` writes the journal and not the history, so what is
+  in it is a restored row whose sender field was empty (internal/attn,
+  `nobody`). What the file buys is "what did I miss" answering across a reboot
+  instead of starting every login blank. A file of its own rather than the
+  journal, which is appended to on every arrival and
   rewritten only when a daemon starts, so whatever goes in it is carried until
   the next login (internal/attn, PerSenderMax). What a restart still costs is
   the rest of every ring, the rest of every long body, and the actions: nothing

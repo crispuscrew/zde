@@ -213,18 +213,21 @@ func TestAnEvictedSenderLosesItsWholeRingAndEveryIdComesBack(t *testing.T) {
 
 // An empty From is never an app's doing: one that sends no name is recorded
 // under the bus's own name for its connection instead (notify.go, claim), and
-// the bus hands that out rather than letting the peer pick it. So the nameless
-// ring is zde's own and a person's own, and losing it to make room for an
-// app's invented names is the one eviction nobody could defend.
+// the bus hands that out rather than letting the peer pick it. Nothing live
+// reaches this ring at all - zde's own notification sends as "zde", and `zde
+// queue add` writes the journal and not the history - so what is in it came off
+// a snapshot file with an empty sender field, and losing what a restart brought
+// back to make room for an app's invented names is the one eviction nobody
+// could defend (see nobody).
 func TestARecordWithNoSenderKeepsARingNoAppCanEvict(t *testing.T) {
 	var h History
-	h.Add(Record{ID: 1, Text: "a person typed this"})
+	h.Add(Record{ID: 1, Text: "restored, with nothing saying who sent it"})
 	// The whole of the bound, in names an app made up.
 	for s := 1; s <= SendersMax; s++ {
 		h.Add(Record{ID: uint64(100 + s), From: "invented name " + strconv.Itoa(s), Text: "hello"})
 	}
 	// Nor is it counted against the bound: an app has as many names here as it
-	// would have had if nobody had ever typed anything.
+	// would have had if no such row had ever come back.
 	if seen := h.Recent(); len(seen) != SendersMax+1 {
 		t.Errorf("the history holds %d records, want %d senders and the nameless one: the nameless ring cost an app its place", len(seen), SendersMax)
 	}

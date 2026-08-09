@@ -1431,10 +1431,13 @@ func (s *Server) Arrived(n attn.Notification) (uint64, error) {
 		// overlooked: declaring a desk private now does not retract what is
 		// already in the file. The flag records what was true when the record
 		// arrived, and marking a desk private is a statement about what happens
-		// from here. A retraction would also be a promise this cannot keep - it
-		// cannot reach a snapshot a backup has already copied, and on this
-		// branch the body of anything the mode queued is in the journal as well
-		// - so it would clean one file and read as a promise about the disk.
+		// from here. A retraction would also be a promise this cannot keep: it
+		// cannot reach a snapshot a backup has already copied, so it would clean
+		// one file and read as a promise about the disk. The summary and the
+		// sender of anything the mode queued are still in the journal either
+		// way, which a retraction would not touch and is not trying to - what
+		// stays out of that file is the body, and it stays out for every desk
+		// rather than for the private ones (internal/journal, Item).
 		// What removes what is already there is removing it: stop zded, delete
 		// ~/.local/state/zde/history.json, start it again. In that order,
 		// because the records are still in the daemon's memory until it goes,
