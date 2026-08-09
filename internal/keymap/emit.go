@@ -29,6 +29,12 @@ func (b Bind) props() string {
 	if b.Entry.WhenLocked {
 		p += " allow-when-locked=true"
 	}
+	// niri's default is true, so this is the difference between a bind zde owns
+	// and one the focused application can swallow by binding a Wayland global
+	// nothing gates (registry.go, Unsuppressible).
+	if b.Entry.Unsuppressible {
+		p += " allow-inhibiting=false"
+	}
 	return p
 }
 

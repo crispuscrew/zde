@@ -151,6 +151,13 @@ binds:
   # fingers expect - and Mod+Tab then l is the one to actually use: it is a menu
   # that says what it does rather than a chord to remember.
   - { action: system.lock, key: Mod+Ctrl+semicolon }
+  # The key that takes the keyboard back. An app can grab every zde bind by
+  # binding one Wayland global (internal/keymap/registry.go, Unsuppressible);
+  # this turns that grab off and a second press hands the keys over again.
+  # Escape is the get-me-out family, and plain Mod+Escape is left free because
+  # the panic sequence above is spelled for it - Ctrl is what the keymap
+  # already uses for the third chord in a cluster (Ctrl+m, Ctrl+n, Ctrl+p).
+  - { action: system.shortcut-grab, key: Mod+Ctrl+Escape }
 
   # net. The observer widget (Shift+n) does the cutting; net.observe is live.
   - { action: net.observe, key: Mod+Shift+n }

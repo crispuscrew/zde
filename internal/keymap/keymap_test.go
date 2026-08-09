@@ -14,6 +14,7 @@ binds:
   - { action: app.launch terminal, key: Mod+t }
   - { action: app.launch-at editor, key: Mod+Shift+e }
   - { action: media.play-pause, key: XF86AudioPlay }
+  - { action: desk.panic, key: Mod+Shift+Escape }
 `
 
 func TestEmitKDL(t *testing.T) {
@@ -22,7 +23,8 @@ func TestEmitKDL(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Holding a key repeats where that is the interaction (focus, resize) and
-	// nowhere else; the lock screen sees the media key and nothing else.
+	// nowhere else; the lock screen sees the media key and nothing else; and
+	// panic is the one an application cannot take off you.
 	want := `// ` + header + `
 binds {
     Mod+Tab repeat=false { spawn "zde" "desk" "switcher"; }
@@ -32,6 +34,7 @@ binds {
     Mod+t repeat=false { spawn "zde" "app" "launch" "terminal"; }
     Mod+Shift+e repeat=false { spawn "zde" "app" "launch-at" "editor"; }
     XF86AudioPlay repeat=false allow-when-locked=true { spawn "zde" "media" "play-pause"; }
+    Mod+Shift+Escape repeat=false allow-inhibiting=false { spawn "zde" "desk" "panic"; }
 }
 `
 	if got := EmitKDL(km); got != want {
@@ -252,8 +255,86 @@ func TestOnlyTheNativesNiriTakesOverIPCAreMarked(t *testing.T) {
 	}
 	// The count, so that a native quietly disappearing does not leave this
 	// passing over a shorter list than the one it was written for.
-	if natives != 22 {
-		t.Errorf("the registry has %d natives and this list was written for 22", natives)
+	if natives != 23 {
+		t.Errorf("the registry has %d natives and this list was written for 23", natives)
+	}
+}
+
+// The keys a focused application cannot take, and the reason each one is on the
+// list. Enumerated here rather than derived, because it is a security decision
+// and not a property of anything in the registry: every entry looks the same to
+// Go, and the difference between `desk.panic` and `desk.zen` is a judgement
+// about what has to work while something on the screen is hostile.
+//
+// The other half of it matters as much. A bind on this list is a chord no
+// application can ever receive, and zwp_keyboard_shortcuts_inhibit exists for
+// the applications with a real claim on one - a VM, a nested compositor, a
+// remote desktop. So the list failing in the "not listed and marked" direction
+// is a bug too: somebody widened the set without writing down what it costs.
+//
+// If this fails for a bind somebody has just marked, the question to answer is
+// whether a person who cannot press it is unsafe or merely inconvenienced. Only
+// the first belongs here.
+func TestTheKeysAnAppCannotSuppress(t *testing.T) {
+	why := map[string]string{
+		"desk.panic":           "vision principle 2 names panic; it is the key for when the screen is wrong",
+		"desk.block":           "panic one notch harder - a hard lock - and the same reflex",
+		"system.lock":          "vision principle 2 names lock; a screen that will not lock is a lost machine",
+		"system.shortcut-grab": "the key that ends a grab, which a grab must not be able to eat",
+		"modes.menu":           "vision principle 2 names mode exit, and leaving a mode is opening the picker",
+		"modes.window":         "or entering another mode, so the whole group is the exit",
+		"modes.kb-mouse":       "same",
+		"modes.one-hand":       "same",
+		"modes.passthrough":    "the mode that hands the keyboard over on purpose, so the way back must hold",
+	}
+	for id, e := range registry {
+		reason, listed := why[id]
+		switch {
+		case listed && !e.Unsuppressible:
+			t.Errorf("%s is suppressible, and an app that grabs the keyboard takes it: %s", id, reason)
+		case !listed && e.Unsuppressible:
+			t.Errorf("%s is marked unsuppressible and no reason is written down: it is now a chord no app can ever have", id)
+		}
+	}
+	for id := range why {
+		if _, ok := registry[id]; !ok {
+			t.Errorf("%s is listed here and is not in the registry", id)
+		}
+	}
+
+	// And the property reaches the config, which is the only place it does
+	// anything. niri's default is true, so a bind that says nothing is one the
+	// focused surface swallows.
+	km, err := Load("../../common/keymap/keymap.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kdl := EmitKDL(km)
+	protected := 0
+	for _, b := range km.Binds {
+		line := ""
+		for _, l := range strings.Split(kdl, "\n") {
+			if strings.HasPrefix(l, "    "+b.Key+" ") {
+				line = l
+			}
+		}
+		if line == "" {
+			t.Fatalf("%s (%s) is missing from the generated binds", b.Key, b.Action)
+		}
+		got := strings.Contains(line, "allow-inhibiting=false")
+		if got != b.Entry.Unsuppressible {
+			t.Errorf("%s (%s): allow-inhibiting=false is %v and the registry says %v: %s",
+				b.Key, b.Action, got, b.Entry.Unsuppressible, line)
+		}
+		if got {
+			protected++
+		}
+	}
+	// The shipped keymap binds four of them - panic, lock, the mode picker and
+	// the way back - and a count here is what notices the day one loses its
+	// chord, which is the same thing as losing the protection.
+	if protected != 4 {
+		t.Errorf("%d shipped binds are unsuppressible, and panic, lock, the mode picker and the escape are four", protected)
 	}
 }
 

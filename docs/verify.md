@@ -1018,6 +1018,68 @@ list, and that is the first thing to check if nothing below works.
   are the two numbers only use can settle - and they are one line each in
   `internal/clip`.
 
+## 10. The keys an application cannot take
+
+niri grabs zde's binds at the compositor, which is what stops a container
+shadowing or watching them. There is one hole in that, and it is the reason
+this section exists. `zwp_keyboard_shortcuts_inhibit_manager_v1` is the single
+sensitive Wayland global niri 26.04 does not gate on the security context every
+zinc app is launched behind: thirteen others vanish for a sandboxed client -
+screencopy, both data-control protocols, the virtual keyboard and pointer,
+layer-shell - and that one stays. niri then activates a new inhibitor the moment
+it is asked, with no dialog and nobody consulted; there is a FIXME in its source
+saying the confirmation is the missing part. While that surface has the
+keyboard, every zde bind that has not said otherwise is handed to it instead of
+being acted on.
+
+Four say otherwise, and only four: panic (`Mod+Shift+Escape`), lock
+(`Mod+Ctrl+semicolon`), the mode picker (`Mod+m`), and `Mod+Ctrl+Escape`, which
+turns the grab off and gives the rest back. Every other key on this machine is
+one a focused app can take. That is the trade rather than an oversight - a bind
+no app can receive is also a chord no VM, no nested compositor and no remote
+desktop will ever be able to use - and where the line belongs is exactly what
+only a session settles.
+
+CI cannot help here. The smoke test proves the property is in the config and
+that niri's own parser accepts it; nothing in a VM with no input devices grabs a
+keyboard.
+
+First find something that grabs, roughly in order of what you are likely to
+have:
+
+- a browser, fullscreen, on a page that calls `navigator.keyboard.lock()` -
+  that API is this protocol on Wayland,
+- a VM viewer: `virt-viewer`, `gnome-boxes`, `remmina`, `looking-glass-client`,
+- a nested compositor, or an RDP/VNC client in its own full-screen mode.
+
+Then, with it focused and grabbing:
+
+- **The ordinary keys are gone, and that is correct.** `Mod+j`, `Mod+t`,
+  `Mod+v`, `Mod+semicolon` do nothing in zde and arrive in the app instead. If
+  they still work, that app is not really grabbing and nothing below means
+  anything - find another one first.
+- **`Mod+Ctrl+semicolon` still locks**, and the password still unlocks. This is
+  the one that matters most: it is the difference between walking away from a
+  machine and not being able to.
+- **`Mod+Shift+Escape` and `Mod+m` still reach niri.** Both spawn commands
+  nobody has written yet (below), so there is nothing to see on screen - what
+  there is to see is that niri ran them rather than handing the key over. Press
+  each one, drop the grab, and read `journalctl --user -u niri --since '2 min
+  ago'`: the usage text those commands print to a stderr no keypress has is the
+  proof the bind fired. No lines, and the app took the key.
+- **`Mod+Ctrl+Escape` gives everything back.** Press it, then `Mod+j`: the desk
+  moves. Press it again and the app has the keyboard once more. Do both halves
+  in one sitting - a key that only turns things off is half a toggle, and half
+  a toggle is worse than none on a key you reach for in a hurry.
+- **Nothing is taken while you are elsewhere.** Focus another window and check
+  an ordinary key. The inhibitor follows keyboard focus, so an app in the
+  background must cost you nothing at all.
+
+And the one worth going out of your way for, because it is the real shape of
+this rather than an app you chose to hand the keyboard to: **a zinc container
+doing it**. Any app in any desk can bind that global, and the one you did not
+launch on purpose is the one this protects against.
+
 ## Expected to be missing
 
 Not bugs, do not report them:
@@ -1049,6 +1111,7 @@ Not bugs, do not report them:
   | `Mod+Shift+c` (wifi, and the link you are on) | `Mod+e`, until `zde.apps.editor` names one (below) |
   | `Mod+v` (the clipboard history) | |
   | `Mod+g` (zinc's launcher), `Mod+Ctrl+semicolon` (lock) | |
+  | `Mod+Ctrl+Escape` (takes the keyboard back off an app that grabbed it; niri's own action, so it works whatever zde has written) | |
   | `Mod+slash` (the keymap, in a pager) | |
   | `Mod+Print`, `Mod+Shift+s`, `Mod+Ctrl+w` (screenshots) | |
   | `Mod+Shift+Tab` (last desk) | |

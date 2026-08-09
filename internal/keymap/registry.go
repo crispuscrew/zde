@@ -27,6 +27,37 @@ type Entry struct {
 	// lock screen is a way around it.
 	WhenLocked bool
 
+	// Unsuppressible writes allow-inhibiting=false, which is what keeps a bind
+	// working while the focused application is holding a keyboard-shortcuts
+	// inhibitor.
+	//
+	// The hole it closes is niri's. zwp_keyboard_shortcuts_inhibit_manager_v1
+	// is the one sensitive global niri 26.04 does not gate on the security
+	// context every zinc app arrives through: in src/niri.rs the layer shell,
+	// the session lock, screencopy, both data-control protocols, the virtual
+	// keyboard and pointer and eight more are built with a
+	// client_is_unrestricted filter, and KeyboardShortcutsInhibitState::new is
+	// built without one. A new inhibitor is then activated on the spot, with no
+	// dialog and nobody asked - niri's own FIXME in src/handlers/mod.rs says the
+	// confirmation is missing. While that surface has the keyboard, niri
+	// forwards rather than acts on every bind whose allow-inhibiting is true
+	// (src/input/mod.rs, should_intercept_key), and true is what a bind gets
+	// when it says nothing (niri-config/src/binds.rs). So one Wayland global,
+	// bound by any container, takes every key on this machine.
+	//
+	// Deliberately not the whole keymap. A bind marked here is a chord no
+	// application can ever receive, and that protocol exists for the ones that
+	// have a real claim on a chord: a VM, a nested compositor, a remote desktop,
+	// a browser holding the keyboard lock. So the set is the exceptions
+	// docs/vision.md, principle 2 already names - panic, lock, mode exit - plus
+	// the key that hands the rest back, and each entry below says beside itself
+	// why it is in. Everything else is a key an app may take, which is the
+	// trade, and it is not free in either direction.
+	//
+	// The set is enumerated in TestTheKeysAnAppCannotSuppress, so widening it
+	// takes two edits and a reason written down.
+	Unsuppressible bool
+
 	// written says somebody has written the command this action spawns. Most of
 	// the keymap has none: the bind spawns `zde`, which does not know that verb,
 	// prints usage to a stderr no keypress has and exits - a key that does
@@ -114,9 +145,14 @@ var registry = map[string]Entry{
 	"desk.move-window-prev": {Group: "desk", Desc: "move the window to the previous desk", Spawn: []string{"zde", "desk", "move-window", "prev"}, written: true},
 	"desk.queue-jump":       {Group: "desk", Desc: "jump to the queue's top item", Spawn: []string{"zde", "desk", "queue-jump"}, written: true},
 	"desk.regulars":         {Group: "desk", Desc: "go to the regulars (shared singletons: comms, music, personal browser)", Spawn: []string{"zde", "desk", "regulars"}, written: true},
-	"desk.panic":            {Group: "desk", Desc: "panic: decoy desk, mute, silence", Spawn: []string{"zde", "desk", "panic"}},
-	"desk.block":            {Group: "desk", Desc: "block: hard lock, no notifications or capture leak", Spawn: []string{"zde", "desk", "block"}},
-	"desk.zen":              {Group: "desk", Desc: "toggle zen (content only)", Spawn: []string{"zde", "desk", "zen"}},
+	// panic and block are Unsuppressible because they are the two keys whose
+	// whole job is to work when something on the screen is wrong. panic is the
+	// vision's first named exception; block is the same reflex one notch harder
+	// (a hard lock), so it goes in beside it rather than waiting for the day it
+	// gets a chord - unbound, it costs nothing now and is already right then.
+	"desk.panic": {Group: "desk", Desc: "panic: decoy desk, mute, silence", Spawn: []string{"zde", "desk", "panic"}, Unsuppressible: true},
+	"desk.block": {Group: "desk", Desc: "block: hard lock, no notifications or capture leak", Spawn: []string{"zde", "desk", "block"}, Unsuppressible: true},
+	"desk.zen":   {Group: "desk", Desc: "toggle zen (content only)", Spawn: []string{"zde", "desk", "zen"}},
 
 	// monitor: niri natives. The window axis owns h/l, so monitors get their
 	// own pair of chords (keymap.yaml).
@@ -228,16 +264,49 @@ var registry = map[string]Entry{
 	// modes: not wired yet - the mode mechanism is a verify item
 	// (docs/roadmap.md). menu is the entry point (pick a mode); the rest are
 	// what it invokes. Registered so it just works once the daemon lands.
-	"modes.menu":        {Group: "modes", Desc: "open the mode picker (Window / Kb-mouse / One-hand / Passthrough)", Spawn: []string{"zde", "mode", "menu"}},
-	"modes.window":      {Group: "modes", Desc: "enter Window mode", Spawn: []string{"zde", "mode", "window"}},
-	"modes.kb-mouse":    {Group: "modes", Desc: "enter Keyboard-mouse mode", Spawn: []string{"zde", "mode", "kb-mouse"}},
-	"modes.one-hand":    {Group: "modes", Desc: "enter One-hand mode", Spawn: []string{"zde", "mode", "one-hand"}},
-	"modes.passthrough": {Group: "modes", Desc: "enter Passthrough mode", Spawn: []string{"zde", "mode", "passthrough"}},
+	//
+	// All five are Unsuppressible, and that is the vision's third exception -
+	// mode exit - read the only way it can be. There is no exit action: leaving
+	// a mode is opening the picker or entering another one, so the exception is
+	// either this whole group or nothing. Passthrough is the case that decides
+	// it. It is the mode that hands the keyboard to the application on purpose,
+	// which makes the way back out the one key in the group that must not be
+	// takeable by the thing it was handed to. Only modes.menu has a chord today,
+	// so the cost of the other four is a chord nobody can lose.
+	"modes.menu":        {Group: "modes", Desc: "open the mode picker (Window / Kb-mouse / One-hand / Passthrough)", Spawn: []string{"zde", "mode", "menu"}, Unsuppressible: true},
+	"modes.window":      {Group: "modes", Desc: "enter Window mode", Spawn: []string{"zde", "mode", "window"}, Unsuppressible: true},
+	"modes.kb-mouse":    {Group: "modes", Desc: "enter Keyboard-mouse mode", Spawn: []string{"zde", "mode", "kb-mouse"}, Unsuppressible: true},
+	"modes.one-hand":    {Group: "modes", Desc: "enter One-hand mode", Spawn: []string{"zde", "mode", "one-hand"}, Unsuppressible: true},
+	"modes.passthrough": {Group: "modes", Desc: "enter Passthrough mode", Spawn: []string{"zde", "mode", "passthrough"}, Unsuppressible: true},
 
 	// system: raw tools until zde grows its own (brightnessctl now; layout
 	// switch is a niri native). The rest routes through zde.
-	"system.lock":  {Group: "system", Desc: "lock the screen", Spawn: []string{"zde", "system", "lock"}, written: true},
+	//
+	// lock is the vision's second named exception, and the one whose failure is
+	// worst: a screen that will not lock is a machine somebody walks up to.
+	//
+	// It is the dedicated chord that carries this, not Mod+Tab-then-l. That
+	// route is the one the keymap tells people to use and it goes through
+	// desk.switcher, which is left suppressible on purpose: it is also the
+	// desk picker, one of the most-pressed keys on the board, and a chord no
+	// application may ever have. Lock stays reachable while a grab is on
+	// because this bind exists, so the awkward chord is the one that has to
+	// work and the frequent one does not.
+	"system.lock":  {Group: "system", Desc: "lock the screen", Spawn: []string{"zde", "system", "lock"}, written: true, Unsuppressible: true},
 	"system.quiet": {Group: "system", Desc: "toggle quiet (do not disturb)", Spawn: []string{"zde", "system", "quiet"}, written: true},
+	// The way back, and the general answer the named exceptions are not: it
+	// turns the focused surface's inhibitor off, so every other zde key works
+	// again, and a second press hands them back. Without it the protected set is
+	// a list somebody has to have guessed right, and an app that grabs the
+	// keyboard costs you the whole keymap until you kill it or switch VT.
+	//
+	// Unsuppressible for the obvious reason - a key that undoes a grab is
+	// useless if the grab takes it - and niri agrees hard enough to enforce it:
+	// its parser sets allow_inhibiting=false on this action whatever the config
+	// says (niri-config/src/binds.rs, "the toggle-inhibit action must always be
+	// uninhibitable"). Written here anyway, because the property being niri's
+	// job is not a thing zde should have to remember it is relying on.
+	"system.shortcut-grab": {Group: "system", Desc: "toggle the focused app's keyboard grab: take zde's keys back from it, or hand them over", Native: "toggle-keyboard-shortcuts-inhibit", Unsuppressible: true, performs: true},
 	// power is one surface and five verbs, and the lock among them is the same
 	// locker the key above runs: the row spawns `zde system lock` rather than
 	// growing a second idea of what locks this screen (internal/zded, powerRun).
