@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -441,5 +442,49 @@ func TestTheLastSnapshotIsWrittenBeforeTheDaemonStops(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), "the build failed") {
 		t.Errorf("the snapshot is %s, want what had arrived by the time it stopped", raw)
+	}
+}
+
+// A queue at its ceiling still lands the notification.
+//
+// The queue is bounded now (internal/journal, QueueMax), and the bound has to
+// be a statement about the queue and not about arrivals: what a full queue
+// refuses is a place in the list, and everything else a notification gets - the
+// record, the popup, and the id its sender addresses it by - it still gets.
+// Getting this wrong would mean a flood that fills the queue also silences the
+// machine, which is a worse failure than the one the cap is for, and it is the
+// difference between an error from the journal and this particular one.
+func TestAFullQueueStillRecordsAndNumbersWhatArrives(t *testing.T) {
+	s, _ := historyServer(t, "work.DP-1.code", map[string]string{"work": openDesk})
+	for i := 0; i < journal.QueueMax; i++ {
+		if _, err := s.Arrived(attn.Notification{From: "ci", Text: "build " + strconv.Itoa(i)}); err != nil {
+			t.Fatalf("filling the queue at %d: %v", i, err)
+		}
+	}
+	if n := len(s.jrn.Waiting()); n != journal.QueueMax {
+		t.Fatalf("%d waiting, want the cap of %d", n, journal.QueueMax)
+	}
+
+	id, err := s.Arrived(attn.Notification{From: "mail", Text: "your results are in"})
+	if err != nil {
+		t.Fatalf("a full queue refused the arrival itself: %v", err)
+	}
+	if id == 0 {
+		t.Error("the arrival got no id, so its sender cannot close it and the center cannot dismiss it")
+	}
+	if n := len(s.jrn.Waiting()); n != journal.QueueMax {
+		t.Errorf("%d waiting, want the cap to hold at %d", n, journal.QueueMax)
+	}
+	var found bool
+	for _, r := range s.history.Recent() {
+		if r.ID == id && r.Text == "your results are in" {
+			found = true
+			if r.Queued {
+				t.Error("the record says it is on the queue, and it is not")
+			}
+		}
+	}
+	if !found {
+		t.Error("a full queue lost the notification: it is in neither the queue nor the history")
 	}
 }

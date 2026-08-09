@@ -18,6 +18,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+
+	"github.com/crispuscrew/zde/internal/plainfile"
 )
 
 // Apps is what layer 1 writes: a logical name to an argv.
@@ -32,18 +34,50 @@ func DefaultPath() string { return Path("apps.json") }
 // Path is a file in zde's config directory. There are two name-to-argv maps
 // there now - the apps, and ask's tiers (internal/zded, ask.go) - and where
 // zde's config lives should be one answer rather than a copy per reader.
+//
+// Through os.UserHomeDir rather than os.Getenv("HOME"), and with somewhere to
+// go when it fails. The old fallback joined an empty string, which is a
+// relative path: a zde started with no HOME read `.config/zde/apps.json` out of
+// whatever directory it happened to be started in, and `zde app launch` execs
+// what that file names. A relative path is the wrong kind of answer to "where
+// does this machine keep its config", and every other reader in zde already
+// says so (internal/journal, DefaultPath; internal/manifest, DefaultDir).
 func Path(name string) string {
 	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
 		return filepath.Join(dir, "zde", name)
 	}
-	return filepath.Join(os.Getenv("HOME"), ".config", "zde", name)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(os.TempDir(), "zde", name)
+	}
+	return filepath.Join(home, ".config", "zde", name)
 }
+
+// bytesMax bounds what is read here.
+//
+// This file is a few dozen names against a few dozen argvs: the generated one
+// on a full install is under a kilobyte (nix/home.nix writes it from
+// zde.apps). 256 KiB is hundreds of times the largest anybody could mean, and
+// small enough that something which arrived at this path by accident - a log, a
+// download, a core file - is refused rather than parsed into a map of things to
+// exec.
+const bytesMax = 256 << 10
 
 // Load reads the map. A missing file is not an error here: it is a machine
 // where nothing is configured, and the caller says that better than this can
 // because it knows which name was asked for.
+//
+// Read through internal/plainfile, which is the care this file was missing and
+// the journal already took. What comes back is exec'd, by the CLI with
+// syscall.Exec and by the daemon when it runs an ask tier (internal/zded,
+// askTier), so "whatever is at that path" is the wrong amount of trust for it
+// even at the same uid: a FIFO here stopped `zde app launch` dead, and a file
+// belonging to another account is not one this session should be taking a
+// command line out of. Symlinks are followed on purpose - home-manager writes
+// this file as a link into the nix store, so refusing one would refuse the
+// ordinary install (internal/plainfile, Open).
 func Load(path string) (Apps, error) {
-	data, err := os.ReadFile(path)
+	data, err := plainfile.Read(path, bytesMax)
 	if os.IsNotExist(err) {
 		return Apps{}, nil
 	}

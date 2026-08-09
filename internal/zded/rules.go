@@ -10,6 +10,7 @@ import (
 
 	"github.com/crispuscrew/zde/internal/desk"
 	"github.com/crispuscrew/zde/internal/manifest"
+	"github.com/crispuscrew/zde/internal/plainfile"
 )
 
 // dynamic.kdl is the seam a running zded writes through (niri/config.kdl): the
@@ -161,7 +162,18 @@ func writeRules(path, content string) error {
 	if path == "" {
 		return nil
 	}
-	if old, err := os.ReadFile(path); err == nil && string(old) == content {
+	// Bounded, and through internal/plainfile: this read runs at startup with
+	// the socket already bound and nothing yet answering it, so a FIFO at
+	// dynamic.kdl - which is a path in the person's own config directory, seeded
+	// by an activation script that leaves it alone afterwards - used to stop the
+	// daemon between binding and serving, which is the worst moment there is.
+	// Anything that is not the file this wrote falls through to the rewrite
+	// below, which replaces it, and that is the right answer for a path whose
+	// header says zde owns every byte of it.
+	//
+	// The ceiling is generous rather than tight: this file is a window rule per
+	// pinned app, a few hundred bytes each, so a megabyte is thousands of them.
+	if old, err := plainfile.Read(path, 1<<20); err == nil && string(old) == content {
 		// The bytes are right and the mode may not be. A machine that has been
 		// running zde since before this was written has a 0644 dynamic.kdl
 		// holding exactly what would be written now, so this early return is the
@@ -200,6 +212,16 @@ func writeRules(path, content string) error {
 	}
 	defer os.Remove(tmp.Name())
 	if _, err := tmp.WriteString(content); err != nil {
+		tmp.Close()
+		return err
+	}
+	// On the disk before the rename, not merely in the page cache. Without it
+	// the rename can land while the content has not, and what niri reads after
+	// a power cut is a file of the right name and zero length - which it
+	// refuses, and it refuses the whole config with it. The same fsync
+	// internal/manifest's writeNew and internal/journal's compaction do, so the
+	// three places zde renames a file into place now agree.
+	if err := tmp.Sync(); err != nil {
 		tmp.Close()
 		return err
 	}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/crispuscrew/zde/internal/attn"
 	"github.com/crispuscrew/zde/internal/clip"
@@ -57,8 +58,74 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	if err := run(ctx, *socket, *jrnPath, *desksDir, *histPath, attn.Serve, clip.Tool{}); err != nil {
+	// run on its own goroutine so that a signal is answered by this one.
+	//
+	// It used to be called here, and a cancelled context is only a stop if
+	// somebody is watching it: run does its whole startup - the journal, the
+	// notification history, the desk manifests, niri's placement rules - before
+	// it reaches the first line that looks at ctx, so a SIGTERM arriving during
+	// any of that was turned into a cancel nobody read. The process stayed.
+	// Measured with a FIFO at the journal path: SIGTERM and SIGINT both
+	// swallowed, and only SIGKILL ended it - which is also what
+	// `systemctl --user stop zded` ran into.
+	done := make(chan error, 1)
+	go func() { done <- run(ctx, *socket, *jrnPath, *desksDir, *histPath, attn.Serve, clip.Tool{}) }()
+
+	err, stopped := awaitStop(ctx, done, stopGrace)
+	if !stopped {
+		// Left rather than waited on. Whatever it is stuck in is something no
+		// cancel reaches, so the alternatives are this or a daemon that cannot
+		// be stopped, and the second one is how an account loses its desktop
+		// until somebody finds a shell and a SIGKILL.
+		//
+		// The socket file is not removed on the way out, and that is not a leak
+		// worth staying for: Listen dials a socket it finds before it removes
+		// one, so a stale file left by this exit costs the next zded a connect
+		// that nobody answers (internal/zded, Listen).
+		fmt.Fprintf(os.Stderr, "zded: told to stop and still starting %v later, so it is leaving "+
+			"unfinished. Something at one of its paths is not a plain file it can read: the journal, "+
+			"the notification history, a desk manifest, or niri's dynamic.kdl\n", stopGrace)
+		os.Exit(1)
+	}
+	if err != nil {
 		fatal(err)
+	}
+}
+
+// stopGrace is how long the daemon has to leave after it has been asked to.
+//
+// Long enough for the tidy exit, which is the whole point of having a grace
+// rather than exiting on the signal: run stops the tiers it started and waits
+// up to two seconds for their process groups to go (internal/zded,
+// askStopWait), and then writes the last notification snapshot, which is a file
+// write on whatever disk the person has. Five seconds covers both with room,
+// and anything longer than that is not a slow stop - it is a stop that is not
+// happening.
+const stopGrace = 5 * time.Second
+
+// awaitStop waits for the daemon to finish, and says whether it did.
+//
+// Two waits and not one. Before the stop is asked for there is no deadline at
+// all: a daemon that has been up for six hours is not late. After it, there is,
+// because the promise a stop makes is that the process goes - and every way of
+// keeping that promise cooperatively runs through code that has to be looking
+// at the context, which is exactly what the thing being guarded against is not
+// doing.
+//
+// Its own function because the decision is testable and main is not.
+func awaitStop(ctx context.Context, done <-chan error, grace time.Duration) (err error, stopped bool) {
+	select {
+	case err := <-done:
+		return err, true
+	case <-ctx.Done():
+	}
+	t := time.NewTimer(grace)
+	defer t.Stop()
+	select {
+	case err := <-done:
+		return err, true
+	case <-t.C:
+		return nil, false
 	}
 }
 
