@@ -21,6 +21,13 @@
 // cost of the clash would be paid by whoever wrote the first one, looking for
 // the reason somewhere other than here. Links is what it holds anyway: wifi,
 // wired, and bluetooth once that section folds in.
+//
+// Every Text in this file sets textFormat: Text.PlainText, including the ones
+// that only draw a literal. Qt Quick's default is AutoText, which renders a
+// string that looks like markup as StyledText, and StyledText fetches an
+// <img src="http://..."> over the network - out of a process that is holding a
+// layer surface and a keyboard grab. internal/zded/qml_test.go refuses a Text
+// with no format, and carries the whole of why.
 pragma ComponentBehavior: Bound
 
 import QtQuick
@@ -286,6 +293,7 @@ PanelWindow {
             color: "#c9ccd4"
             font.pixelSize: 13
             font.family: "monospace"
+            textFormat: Text.PlainText
         }
 
         // What zded said about the last attempt, or the password prompt in the
@@ -307,6 +315,7 @@ PanelWindow {
             color: "#7a7f8a"
             font.pixelSize: 12
             font.family: "monospace"
+            textFormat: Text.PlainText
         }
 
         Text {
@@ -324,6 +333,7 @@ PanelWindow {
             color: "#c9ccd4"
             font.pixelSize: 12
             font.family: "monospace"
+            textFormat: Text.PlainText
         }
 
         // The password. Never echoed, never kept: emptied on send, on Escape,
@@ -355,6 +365,7 @@ PanelWindow {
             color: "#7a7f8a"
             font.pixelSize: 11
             font.family: "monospace"
+            textFormat: Text.PlainText
         }
 
         // Nothing to list: a machine with no radio, no NetworkManager, or a
@@ -377,6 +388,7 @@ PanelWindow {
             color: "#7a7f8a"
             font.pixelSize: 12
             font.family: "monospace"
+            textFormat: Text.PlainText
         }
 
         Column {
@@ -422,6 +434,7 @@ PanelWindow {
                         color: "#c9ccd4"
                         font.pixelSize: 13
                         font.family: "monospace"
+                        textFormat: Text.PlainText
                     }
 
                     // The signal, and what joining it will cost: nothing at
@@ -440,6 +453,7 @@ PanelWindow {
                         color: "#7a7f8a"
                         font.pixelSize: 12
                         font.family: "monospace"
+                        textFormat: Text.PlainText
                     }
                 }
             }

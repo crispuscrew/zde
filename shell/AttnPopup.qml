@@ -35,6 +35,13 @@
 // anything: every one of them is in the history and on the queue by the time
 // this hears about it, which is principle 3 - display policy, never data policy
 // (docs/vision.md). What this drops is a glance, not a record.
+//
+// Every Text in this file sets textFormat: Text.PlainText, including the ones
+// that only draw a literal. Qt Quick's default is AutoText, which renders a
+// string that looks like markup as StyledText, and StyledText fetches an
+// <img src="http://..."> over the network - out of a process that is holding a
+// layer surface and a keyboard grab. internal/zded/qml_test.go refuses a Text
+// with no format, and carries the whole of why.
 pragma ComponentBehavior: Bound
 
 import QtQuick
@@ -424,6 +431,7 @@ PanelWindow {
                         color: card.modelData.urgent ? "#e5484d" : "#7a7f8a"
                         font.pixelSize: 11
                         font.family: "monospace"
+                        textFormat: Text.PlainText
                     }
 
                     Text {
@@ -440,6 +448,7 @@ PanelWindow {
                         color: "#c9ccd4"
                         font.pixelSize: 13
                         font.family: "monospace"
+                        textFormat: Text.PlainText
                     }
 
                     // The body, on one line here. What was kept has its line
@@ -460,6 +469,7 @@ PanelWindow {
                         color: "#9aa0ac"
                         font.pixelSize: 11
                         font.family: "monospace"
+                        textFormat: Text.PlainText
                     }
 
                     // The buttons, which are the point. Every action the sender
@@ -506,6 +516,7 @@ PanelWindow {
                                     color: "#c9ccd4"
                                     font.pixelSize: 11
                                     font.family: "monospace"
+                                    textFormat: Text.PlainText
                                 }
                             }
                         }
@@ -524,6 +535,7 @@ PanelWindow {
                         color: "#7a7f8a"
                         font.pixelSize: 11
                         font.family: "monospace"
+                        textFormat: Text.PlainText
                     }
                 }
             }
@@ -550,6 +562,7 @@ PanelWindow {
             color: popup.note !== "" ? "#e5a23d" : "#7a7f8a"
             font.pixelSize: 11
             font.family: "monospace"
+            textFormat: Text.PlainText
         }
     }
 }
