@@ -17,6 +17,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	"golang.org/x/sys/unix"
 
@@ -523,9 +524,12 @@ func askRun(c *zded.Client, tier, question string) error {
 		if ev.Kind != zded.EventAskText {
 			continue
 		}
-		if ev.Text != "" {
-			fmt.Print(ev.Text)
-			ended = strings.HasSuffix(ev.Text, "\n")
+		// Filtered first and then asked about, so that a piece which was
+		// nothing but control characters is a piece that printed nothing - and
+		// does not leave this thinking it ended a line it never wrote.
+		if said := plain(ev.Text); said != "" {
+			fmt.Print(said)
+			ended = strings.HasSuffix(said, "\n")
 		}
 		if !ev.Done {
 			continue
@@ -667,8 +671,25 @@ func queueList() error {
 	// the only field that can be long, so a reader splitting on tabs has every
 	// column it wants before it. A dash is "nothing here", which for the
 	// sender means a person typed it.
+	//
+	// Filtered on the way out as well as on the way in, which is the one place
+	// in this command where that is worth the line. `zde queue add` refuses a
+	// control character and a notification's summary is cleaned before it is
+	// queued (internal/zded, checkQueueText; internal/attn, oneLine), so
+	// everything this session put on the queue is already printable - but the
+	// queue outlives the session, and what it is replayed from is a file of
+	// JSON lines. A line put there by hand is checked for an id and a text and
+	// nothing else (internal/journal, apply), so the promise that a queue item
+	// is one printable line was a promise the write path kept alone.
+	//
+	// Writing that file takes this user's own uid, so this is not a way in; it
+	// is the difference between a promise the code keeps and one it only makes.
+	// Kept here rather than at the replay because this is what the promise is
+	// about: every reader of the queue is line-based and column-based, and this
+	// is the reader that is a terminal.
 	for _, it := range q {
-		fmt.Printf("%d\t%s\t%s\t%s\t%s\n", it.ID, urgentMark(it.Urgent), dash(it.Desk), dash(it.From), it.Text)
+		fmt.Printf("%d\t%s\t%s\t%s\t%s\n",
+			it.ID, urgentMark(it.Urgent), dash(attn.Line(it.Desk)), dash(attn.Line(it.From)), attn.Line(it.Text))
 	}
 	return nil
 }
@@ -1031,6 +1052,44 @@ func dash(s string) string {
 		return "-"
 	}
 	return s
+}
+
+// plain is a piece of somebody else's text on its way to this terminal: what a
+// terminal reads as an instruction taken out, and everything else left exactly
+// as it was written.
+//
+// It exists for the tier's answer (see askRun), which is the one thing this
+// command prints that arrives as a stream from a program somebody else wrote.
+// zded hands those bytes over as the tier produced them and counts them against
+// its own cap while it does (internal/zded, pump); filtering there would mean a
+// cap counting a different number of bytes than the tier sent, on the path that
+// is already doing the delicate part - holding back a character whose last byte
+// has not arrived. Here there is no bookkeeping to disturb, and here is also the
+// only place that knows what it is writing into. If a second surface ever needs
+// the same protection, this moves to the daemon and both get it.
+//
+// Not the filter the notification path uses, and the difference is the job.
+// That one reflows: it folds runs of whitespace and cuts at a bound, because it
+// is making a row. This is an answer to a question, and an answer has
+// paragraphs and indented code in it - so the shape stays and only what a
+// terminal would act on goes. Tabs and newlines are shape. A carriage return is
+// not: it is how a line is drawn over with another one, which is a way of
+// hiding what was printed rather than of writing anything.
+//
+// The zero-width joiner survives, for the reason internal/attn keeps it: it is
+// unprintable by every test Go has, and a family emoji without it is three
+// people.
+func plain(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n' || r == '\t' || r == '‍':
+			return r
+		case unicode.IsPrint(r):
+			return r
+		default:
+			return -1
+		}
+	}, s)
 }
 
 // call is a verb with nothing to print: it worked, or it says why not.

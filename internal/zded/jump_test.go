@@ -142,6 +142,45 @@ func TestJumpListIsInAStableOrder(t *testing.T) {
 	}
 }
 
+// A window title is the one field in this list written by the thing being
+// listed, and `zde window jump-to` prints it to a terminal when no shell is up.
+// So a title is somebody else's text arriving at a screen, the same as a
+// notification's summary, and it gets the same filter at the same moment: on
+// the way in, once, for both readers.
+//
+// The three things it must survive are the three a title can do: clear the
+// terminal or move the cursor (ESC), split one row into two (a newline), and
+// reorder what is drawn around it (a bidi override).
+func TestAWindowTitleCannotDriveTheTerminalItIsPrintedOn(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{
+		m:       twoDesks(),
+		focused: "vshop.DP-1.code",
+		windows: []Window{{
+			ID:        7,
+			Title:     "invoice\x1b[2J\x1b[1;1H\n99\tnothing to see‮gnp.eciovni",
+			AppID:     "nvim\x07",
+			Workspace: "vshop.DP-1.code",
+		}},
+	}, nil)
+
+	var j Jump
+	json.Unmarshal(s.Dispatch(Request{Method: "window.jump-to"}).Ok, &j)
+	if len(j.Windows) != 1 {
+		t.Fatalf("windows = %+v, want the one", j.Windows)
+	}
+	got := j.Windows[0]
+	for _, bad := range []string{"\x1b", "\n", "\t", "‮", "\x07"} {
+		if strings.Contains(got.Title+got.AppID, bad) {
+			t.Errorf("title %q and app id %q still carry %q, which the terminal printing them acts on", got.Title, got.AppID, bad)
+		}
+	}
+	// And what the title said is still readable: the filter is not a refusal,
+	// because a window whose row is blank is a window nobody can pick.
+	if !strings.Contains(got.Title, "invoice") || !strings.HasPrefix(got.AppID, "nvim") {
+		t.Errorf("title = %q, app id = %q, want what they said with only the instructions gone", got.Title, got.AppID)
+	}
+}
+
 // Choosing goes to that window. The id it left focused is the whole assertion:
 // counting windows, or checking that something is focused, passes just as well
 // when the jump lands on the wrong one.

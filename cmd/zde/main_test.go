@@ -394,6 +394,80 @@ func TestAskOneshotWithAQuestionStillAnswersOnTheTerminal(t *testing.T) {
 	}
 }
 
+// A tier is a program somebody else wrote, and what it says is forwarded to
+// this terminal as it arrives. So an answer is the one thing this command
+// prints that is written by another program while a person watches, and a
+// terminal reads some of what a program can write as instructions rather than
+// as text.
+//
+// The answer still has to arrive whole and in its own shape - paragraphs,
+// indented code - which is why this is not the filter the notification path
+// uses. Only what a terminal acts on goes.
+func TestATiersAnswerCannotDriveTheTerminalItIsPrintedOn(t *testing.T) {
+	fakeDaemon(t, func(req zded.Request) []string {
+		return tierAnswers("Lima\x1b[2J\x1b]0;you have mail\x07\n\tprint(\"hi\")\n")
+	})
+
+	said, err := onStdout(t, func() error {
+		return run([]string{"ask", "oneshot", "what", "is", "the", "capital", "of", "peru"})
+	})
+	if err != nil {
+		t.Fatalf("zde ask oneshot: %v", err)
+	}
+	for _, bad := range []string{"\x1b", "\x07"} {
+		if strings.Contains(said, bad) {
+			t.Errorf("the answer printed %q, which still carries %q", said, bad)
+		}
+	}
+	// The shape of the answer is the tier's: the newline it ended a line with,
+	// and the tab that indents a line of code, are what it wrote.
+	if !strings.Contains(said, "Lima") || !strings.Contains(said, "\n\tprint(\"hi\")\n") {
+		t.Errorf("the answer printed %q, want what the tier said with only the instructions gone", said)
+	}
+}
+
+// The queue promises one printable line an item, and until now it promised it
+// only on the way in: `zde queue add` refuses a control character, and every
+// notification is cleaned before it is queued, but the queue is replayed from a
+// file of JSON lines and the replay asks only for an id and some text.
+//
+// A hand-written line is this user's own doing, so this is not a way in. It is
+// the difference between a promise the code keeps and one it only makes - and
+// this is the reader of the queue that is a terminal.
+func TestTheQueuePrintsOneLineAnItemWhateverTheJournalHolds(t *testing.T) {
+	fakeDaemon(t, func(req zded.Request) []string {
+		if req.Method != "queue.list" {
+			return []string{`{"error":"` + req.Method + ` is not what a queue listing asks"}`}
+		}
+		item, err := json.Marshal([]map[string]any{{
+			"id":   4,
+			"text": "call the bank\x1b[2J\n5\t.\t-\t-\tnothing is waiting",
+			"from": "mail\tmail",
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return []string{`{"ok":` + string(item) + `}`}
+	})
+
+	said, err := onStdout(t, func() error { return run([]string{"queue"}) })
+	if err != nil {
+		t.Fatalf("zde queue: %v", err)
+	}
+	if lines := strings.Count(strings.TrimSuffix(said, "\n"), "\n"); lines != 0 {
+		t.Errorf("one item printed %d lines:\n%q", lines+1, said)
+	}
+	if fields := strings.Count(said, "\t"); fields != 4 {
+		t.Errorf("one item printed %d tabs, want the four between its five columns:\n%q", fields, said)
+	}
+	if strings.Contains(said, "\x1b") {
+		t.Errorf("the queue printed %q, which still carries an escape", said)
+	}
+	if !strings.Contains(said, "call the bank") {
+		t.Errorf("the queue printed %q, and the item is still what it says", said)
+	}
+}
+
 // No shell means no panel, and a question that reached no panel was not asked.
 // It has to say so: the one thing it must not do is quietly run the tier
 // instead, because then the verb answers on a terminal or in a window depending

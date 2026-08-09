@@ -676,6 +676,26 @@ func urgency(hints map[string]dbus.Variant) byte {
 	return b
 }
 
+// Line is foreign text on its way to a row somebody reads: one printable line,
+// bounded the way a summary is.
+//
+// Exported because the notification path is not the only one that takes a
+// string from something else and puts it in front of a person, and it was the
+// only one that had a filter. A window title is set by the application
+// (internal/zded, jump.go); an inhibitor's reason is written by whatever ran
+// systemd-inhibit (power.go); a workspace name in a conflict line is niri's
+// (server.go, reconcile). All of them end up in a terminal, where ESC is not a
+// character but the start of an instruction, and in a one-line row, where a
+// newline is a second row with nothing in column one.
+//
+// One function rather than one per package, because this is a filter with
+// corners in it - the zero-width joiner that has to survive, the space left
+// where something was dropped - and four copies of a filter is three of them
+// drifting. What it is not is a filter for everything: text that keeps its own
+// shape, an answer with paragraphs and indented code in it, is a different job
+// and is done where it is printed (cmd/zde, plain).
+func Line(s string) string { return oneLine(s) }
+
 // oneLine makes anything an app sends fit one line of the queue.
 //
 // Normalised rather than refused, which is the opposite of what `zde queue

@@ -225,6 +225,35 @@ func TestSuspendAsksTwiceOnlyWhenSomethingIsHoldingSleep(t *testing.T) {
 	}
 }
 
+// An inhibitor's two strings are written by whoever ran systemd-inhibit, which
+// is any account on this machine, and the line built out of them is drawn on
+// the power menu and printed to a terminal when no shell is up. So they are
+// somebody else's text on its way to a screen, and they are filtered like it.
+//
+// The cost line is the worst place in zde to lose this: it is read at the
+// moment somebody is deciding whether to end their session, which is exactly
+// when a cleared screen or a forged extra row is worth something to somebody.
+func TestAnInhibitorCannotWriteToTheScreenItIsExplainedOn(t *testing.T) {
+	s, l, _ := powerServer(t)
+	l.state = power.State{Blocks: []power.Block{{
+		What: "sleep",
+		Who:  "chromium\x1b[2J",
+		Why:  "Playing audio\n.   suspend  nothing is holding this off",
+	}}}
+
+	said := strings.Join(choice(t, menu(t, s), "suspend").Costs, "\n")
+	for _, bad := range []string{"\x1b", "\n."} {
+		if strings.Contains(said, bad) {
+			t.Errorf("the cost line is %q, and it still carries %q", said, bad)
+		}
+	}
+	// Still says what is holding sleep, because a line that dropped the name
+	// would trade one silence for another.
+	if !strings.Contains(said, "chromium") || !strings.Contains(said, "Playing audio") {
+		t.Errorf("the cost line is %q, want what is holding it and why", said)
+	}
+}
+
 // A machine with nothing to ask still gets the menu, with the lock working and
 // the reason on the four rows that need logind. The alternative is a key that
 // draws nothing, which is the silent key this whole surface exists to be the

@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/crispuscrew/zde/internal/attn"
 	"github.com/crispuscrew/zde/internal/desk"
 )
 
@@ -30,9 +31,54 @@ type Jump struct {
 	Windows []Window `json:"windows"`
 }
 
+// windows is what is open, in the shape a surface may draw and a terminal may
+// print.
+//
+// Everything goes through here rather than through the compositor directly,
+// because a window's title is the one field in this list that the thing being
+// listed writes for itself. niri hands it over as it came off the wire - raw
+// JSON, whatever the application set - and both readers of this list are places
+// where that matters: the CLI prints it to a terminal, where ESC is not a
+// character but the start of an instruction, and the picker draws it as one row
+// among many, where a newline is a row that overlaps the one below.
+//
+// A window title is a thing an application chooses, and an application is
+// exactly what a sandboxed one is (docs/vision.md, principle 7). So this is the
+// same filter the notification path runs on everything an app sends, at the
+// same moment: where the value enters zde rather than where each of two
+// consumers happens to draw it (internal/attn, Line).
+//
+// The app id goes through it too. It is meant to be a desktop-file name, so a
+// control character in one is already a lie about what it is - and it is set by
+// the same process that set the title.
+//
+// The workspace name as well, which is a smaller risk and a cheaper line than
+// arguing about it: nothing an app can call names a workspace, but a name zde
+// did not mint is a name zde did not check either (desk.ParseName is what
+// checks the ones it owns), and this column is printed beside the other two.
+// Cleaning it changes nothing about a name the model owns - those are letters,
+// digits, dots and dashes - so what it can only do is spoil a lie.
+//
+// Written through rather than copied: Windows answers with a list built for
+// this call - the daemon's builds it out of two niri replies (cmd/zded), and
+// the test double hands back a copy of its own - so there is nothing else
+// holding the slice this edits.
+func (s *Server) windows() ([]Window, error) {
+	windows, err := s.niri.Windows()
+	if err != nil {
+		return nil, err
+	}
+	for i := range windows {
+		windows[i].Title = attn.Line(windows[i].Title)
+		windows[i].AppID = attn.Line(windows[i].AppID)
+		windows[i].Workspace = attn.Line(windows[i].Workspace)
+	}
+	return windows, nil
+}
+
 // jumpTo opens the window picker, or says that nothing could open it.
 func (s *Server) jumpTo() Response {
-	windows, err := s.niri.Windows()
+	windows, err := s.windows()
 	if err != nil {
 		return Response{Error: err.Error()}
 	}
@@ -105,7 +151,9 @@ func (s *Server) focusWindow(arg string) Response {
 	if err != nil {
 		return Response{Error: "window.jump-to wants the id from the list, not " + strconv.Quote(arg)}
 	}
-	windows, err := s.niri.Windows()
+	// The same list the picker was drawn from, cleaned the same way: this one
+	// answers with the workspace it landed on, and the CLI prints that line.
+	windows, err := s.windows()
 	if err != nil {
 		return Response{Error: err.Error()}
 	}
