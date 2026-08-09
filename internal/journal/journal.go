@@ -23,6 +23,7 @@ import (
 	"syscall"
 
 	"github.com/crispuscrew/zde/internal/desk"
+	"github.com/crispuscrew/zde/internal/plainfile"
 )
 
 // The modes this file keeps for itself: readable by the person it belongs to
@@ -68,6 +69,56 @@ const (
 // running daemon means rewriting the file every zded is appending to, and that
 // is a change to make on purpose rather than as a footnote to the modes.
 const compactAt = 1000
+
+// QueueMax is how many things may be waiting at once.
+//
+// The queue was the one thing in zde with no bound on it. Everything else that
+// grows with what arrives already has one and says why: the notification
+// history is a ring of PerSenderMax records for each of SendersMax senders, the
+// summary is cut at 300 characters, the body at 4000 (internal/attn). This was
+// not, and the shape of what that costs is worth writing down because it has
+// already happened once - a flood filled a 16 GB tmpfs and took every shell on
+// the machine with it.
+//
+// The arithmetic. One queued line is the summary and the sender at their
+// ceiling, which is 300 characters each and up to four bytes a character in the
+// alphabet somebody writes in, plus the id, the desk and the JSON around them:
+// about 2.5 KB at the very worst, and around 130 bytes for the ordinary line an
+// ordinary program sends. Measured on a live daemon at 1065 arrivals a second,
+// which is 2.6 MB/s of fsynced appends at the worst case. Nothing shortened it:
+// compaction runs at Open and keeps everything still waiting, so a 49 MB
+// journal of queued entries compacted to 49 MB.
+//
+// A thousand is what that becomes: 2.5 MB of live queue at the ceiling, which
+// is what a compaction leaves behind and what `queue.list` marshals for the bar
+// every two seconds. It is also far more than a queue can be and still be one -
+// the point of the thing is what you still owe, and nobody owes a thousand.
+// Under the cap the file still grows while the session runs, because an arrival
+// past it spends an id and that is a line too (see ClaimID) - but at 27 bytes
+// rather than 2500, and those lines are exactly what compaction collapses to
+// one. So the bound this really buys is the one that was missing: after it, a
+// restart shortens the journal to something with a ceiling.
+//
+// Deliberately not enforced on replay. A journal written before this cap can
+// hold more, and refusing to load it would delete what somebody already owes to
+// enforce a number invented afterwards. It loads whole, and nothing new is
+// taken until it drains.
+const QueueMax = 1000
+
+// ErrQueueFull is the cap being reached, told apart from a journal that could
+// not be written.
+//
+// Its own error because the two want opposite answers. A write that failed
+// means the daemon cannot record anything and the arrival should fail; a full
+// queue means this session already has more waiting than it can act on, and the
+// notification still has to land - it is recorded, it draws its popup, and it
+// gets its id. Only its place in the queue is refused.
+// The text is the whole message rather than a label, because one of the two
+// callers hands it straight to a person: `zde queue add` on a full queue prints
+// this and nothing else, and "the queue is full" with no number and no way out
+// of it is the kind of refusal somebody has to go and read the source about.
+var ErrQueueFull = fmt.Errorf("%d things are already waiting, which is as many as the queue holds: "+
+	"`zde queue` is the list, and `zde queue done <id>` is how it gets shorter", QueueMax)
 
 // entry is one line of the journal.
 type entry struct {
@@ -343,7 +394,16 @@ func chmodRefused(path string, err error, owner, us int) error {
 }
 
 func (j *Journal) replay() error {
-	f, err := os.Open(j.path)
+	// The same refusal the write open below makes, and made here as well
+	// because this one happens first. O_NOFOLLOW on the write open was the
+	// whole defence, and it was reached only after this had already opened
+	// whatever was at the name and read it into the daemon's memory - so a
+	// symlink was half-followed and a FIFO was not refused at all: a plain
+	// os.Open of one waits in the kernel for a writer that never comes, with
+	// the whole of zded still ahead of it and no signal handling yet reached.
+	// One mkfifo and the session had no daemon, through every reboot
+	// (internal/plainfile).
+	f, err := plainfile.OpenNoFollow(j.path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -566,6 +626,19 @@ func (j *Journal) Queue(it Item) (Item, error) {
 	// same number, and the second thing to wait would finish the first.
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	// The newest is what gives way, and not the oldest.
+	//
+	// Something has to at the cap, and the two directions are not equally
+	// honest. The queue's promise is that what interrupted you is worth as much
+	// tomorrow morning as it was last night (see State.Queue), so dropping the
+	// oldest to make room would mean one chatty program could quietly erase
+	// every real thing you owed - which is the shape of failure principle 3 is
+	// about. Refusing the newest keeps every promise about what is already
+	// there, and it makes the flood the thing that is refused rather than the
+	// thing that wins.
+	if len(j.state.Queue) >= QueueMax {
+		return Item{}, ErrQueueFull
+	}
 	it.ID = j.lastID + 1
 	if err := j.recordLocked(entry{
 		Kind: kindQueued, ID: it.ID, Text: it.Text, Desk: it.Desk, From: it.From, Urgent: it.Urgent,

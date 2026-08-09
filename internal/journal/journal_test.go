@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/crispuscrew/zde/internal/desk"
 )
@@ -864,6 +866,47 @@ func TestASymlinkAtTheJournalItselfIsRefusedRatherThanFollowed(t *testing.T) {
 	}
 }
 
+// A FIFO where the journal should be is refused, and refused now.
+//
+// This is the shape of the bug rather than a variation on the one above. The
+// symlink was refused by the write open, which comes second; the read open
+// came first and was a plain os.Open, and a plain os.Open of a FIFO does not
+// fail - it waits in the kernel for a writer that is never coming. zded did
+// that with its listener unbound and its signal handling not yet reached, so
+// SIGTERM and SIGINT were both swallowed and only SIGKILL ended it: one
+// `mkfifo ~/.local/state/zde/journal.jsonl` and the account had no desktop,
+// through every reboot, with nothing in any log to say why.
+//
+// The deadline is not decoration. Without the fix this test does not fail, it
+// hangs - and a CI job that hangs is a regression nobody gets told about.
+func TestAFifoAtTheJournalIsRefusedRatherThanWaitedOn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "journal.jsonl")
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		j, err := Open(path)
+		if j != nil {
+			j.Close()
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("opened a FIFO as a journal")
+		}
+		if !strings.Contains(err.Error(), "named pipe") {
+			t.Errorf("error is %q, and somebody with an unexplained daemon needs it to name what is at that path", err)
+		}
+	case <-time.After(10 * time.Second):
+		// Leaked on purpose: it is blocked in the kernel with nothing to
+		// unblock it, and the test binary is on its way out.
+		t.Fatal("Open did not return in 10s, which is the hang zded shipped with")
+	}
+}
+
 // And the symlink that is allowed, which is why O_NOFOLLOW and not something
 // that walks the whole path.
 //
@@ -935,6 +978,75 @@ func TestTheOwnerOfAJournalIsReadOffTheOpenDescriptor(t *testing.T) {
 	f.Close()
 	if got := ownerOf(f); got != -1 {
 		t.Errorf("ownerOf = %d on a descriptor that cannot answer, want -1 so that it counts as somebody else's", got)
+	}
+}
+
+// The queue has a ceiling, and what is already waiting is what survives it.
+//
+// The one thing in zde that grew without a bound. Everything else that grows
+// with what arrives has one (internal/attn, PerSenderMax and bodyMax), and this
+// did not: a flood filled a 16 GB tmpfs once, and nothing shortened the file in
+// between - compaction keeps whatever is still waiting, so 49 MB of queued
+// entries compacted to 49 MB.
+//
+// Which end gives way is the half worth pinning. Dropping the oldest would let
+// one chatty program erase everything real a person owed; refusing the newest
+// keeps every promise about what is already there.
+func TestTheQueueHasACeilingAndTheOldestSurvivesIt(t *testing.T) {
+	j := open(t, filepath.Join(t.TempDir(), "journal.jsonl"))
+	first, err := j.Queue(Item{Text: "the one that has waited longest", Desk: "vshop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i < QueueMax; i++ {
+		if _, err := j.Queue(Item{Text: "item " + strconv.Itoa(i), Desk: "vshop"}); err != nil {
+			t.Fatalf("queueing %d of %d: %v", i, QueueMax, err)
+		}
+	}
+	if n := len(j.Waiting()); n != QueueMax {
+		t.Fatalf("%d waiting, want the cap of %d", n, QueueMax)
+	}
+
+	if _, err := j.Queue(Item{Text: "one too many", Desk: "vshop"}); !errors.Is(err, ErrQueueFull) {
+		t.Fatalf("Queue past the cap = %v, want ErrQueueFull", err)
+	}
+	q := j.Waiting()
+	if len(q) != QueueMax {
+		t.Errorf("%d waiting after a refusal, want the cap of %d", len(q), QueueMax)
+	}
+	if q[0].ID != first.ID {
+		t.Errorf("the oldest item is now %d, want %d: the flood pushed out what was owed", q[0].ID, first.ID)
+	}
+
+	// And finishing one makes room, so the cap is a ceiling and not a wall.
+	if err := j.Done(first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.Queue(Item{Text: "there is room now", Desk: "vshop"}); err != nil {
+		t.Errorf("the queue stayed shut after something was finished: %v", err)
+	}
+}
+
+// A journal written before the cap loads whole.
+//
+// Refusing to replay it, or trimming it on the way in, would delete what
+// somebody already owes to enforce a number invented afterwards. It comes back
+// over the cap and nothing new is taken until it drains.
+func TestAJournalLongerThanTheCapStillLoadsWhole(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "journal.jsonl")
+	var b strings.Builder
+	for i := 1; i <= QueueMax+50; i++ {
+		b.WriteString(`{"kind":"queued","id":` + strconv.Itoa(i) + `,"text":"owed"}` + "\n")
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	j := open(t, path)
+	if n := len(j.Waiting()); n != QueueMax+50 {
+		t.Errorf("%d waiting, want all %d that were written down", n, QueueMax+50)
+	}
+	if _, err := j.Queue(Item{Text: "not while that is outstanding"}); !errors.Is(err, ErrQueueFull) {
+		t.Errorf("Queue = %v, want ErrQueueFull while the queue is over its cap", err)
 	}
 }
 
