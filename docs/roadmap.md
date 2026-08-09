@@ -45,11 +45,11 @@ not written here: it is a count several branches are each adding to, and a
 sentence that has to be renumbered is a sentence that ends up wrong. Its buttons
 are clickable the whole time it is up, and `Mod+Ctrl+n` is the one deliberate
 key that hands it the keyboard, which it then holds only while a finger is on
-it. Two things decide whether a card appears at all, and
-they are kept apart because they are different people's decisions: the session's
-mode (quiet shows nothing, focus shows what the sender called urgent, work shows
-everything) and the desk's own `private: true`, which is popups off in every
-mode ([`vision.md`](vision.md), section 3). The history keeps the lot whichever
+it. Two things decide whether a card appears at all, and they are kept apart
+because they are different people's decisions: the session's mode (quiet shows
+nothing, focus shows what the sender called urgent, work shows everything) and
+the desk's own `private: true`, which is popups off in every mode
+([`vision.md`](vision.md), section 3). The history keeps the lot whichever
 way both answer, because that is principle 3 and a mode or a desk that changed
 what is recorded would be deciding what happened.
 
@@ -85,9 +85,9 @@ blocks 0.2:
   in it is a restored row whose sender field was empty (internal/attn,
   `nobody`). What the file buys is "what did I miss" answering across a reboot
   instead of starting every login blank. A file of its own rather than the
-  journal, which is appended to on every arrival and
-  rewritten only when a daemon starts, so whatever goes in it is carried until
-  the next login (internal/attn, PerSenderMax). What a restart still costs is
+  journal, which is appended to on every arrival and rewritten only when a
+  daemon starts, so whatever goes in it is carried until the next login
+  (internal/attn, PerSenderMax). What a restart still costs is
   the rest of every ring, the rest of every long body, and the actions: nothing
   can be pressed on a row whose app was on the last session's bus, and the
   center says so rather than offering buttons that go nowhere. What arrived on a
@@ -237,10 +237,10 @@ turned "when someone has hardware" into something anyone can do this evening.
   "how do I make my regulars" is `zde desk move-workspace-to regulars` typed in
   a terminal. That is the part to decide rather than to note, and it is a
   decision about which keys exist ([`model.md`](model.md), section 6). What is
-  left of the item is the shape of it in use: whether promoting a
-  workspace is the thing people reach for, or whether they want to name an
-  empty one and fill it afterwards, which this refuses because an empty
-  workspace is never adopted and so has no name to move.
+  left of the item is the shape of it in use: whether promoting a workspace is
+  the thing people reach for, or whether they want to name an empty one and fill
+  it afterwards, which this refuses because an empty workspace is never adopted
+  and so has no name to move.
 - a single unreadable file in the desks directory taking every manifest with
   it: answered, by failing one file at a time. The loader returns what it read
   and what it could not, `zde doctor` names the files it could not, and the
@@ -251,10 +251,10 @@ turned "when someone has hardware" into something anyone can do this evening.
   notification center, the connections list, the palette, the ask window, the
   power menu and the clipboard history - named rather than counted, for the
   reason 0.1 gives about the popup, and each of them takes the keyboard only
-  while it is visible, so the thing to try is a nav key the instant after
-  each one closes
-  ([`verify.md`](verify.md), a day of work). Not settled here: driving a real
-  key into a nested compositor did not work well enough to trust the answer.
+  while it is visible, so the thing to try is a nav key the instant after each
+  one closes ([`verify.md`](verify.md), a day of work). Not settled here:
+  driving a real key into a nested compositor did not work well enough to trust
+  the answer.
   The notification popup is one more surface and the one that answers this
   differently: it takes no keyboard at all until `Mod+Ctrl+n`, and then gives it
   back after ten seconds without a keypress. So the thing to try on that one is

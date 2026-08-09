@@ -464,9 +464,9 @@ ones are the point of zded holding the bus name.
 - **A day's worth of arrivals.** History is a bounded ring per sender, in
   memory: 30 records each, for at most 12 named senders plus a nameless ring
   that only a restored row with no sender in it can land in - nothing this
-  session receives is nameless. The 31st from one app drops that app's oldest and
-  nothing else, which is the thing to feel for - leave a download or a build bot
-  running all afternoon and the mail from the morning should still be in
+  session receives is nameless. The 31st from one app drops that app's oldest
+  and nothing else, which is the thing to feel for - leave a download or a build
+  bot running all afternoon and the mail from the morning should still be in
   `Mod+n`. Whether 30 is a day or an hour of one app is a question about your
   machine and not about the number.
 - **A thirteenth app that sends you something.** The names are bounded too,
@@ -1029,9 +1029,9 @@ Not bugs, do not report them:
   clipboard history, and the notification popup, which is the only one that is
   not opened by a key. That is the whole list, and it is a list rather than a
   count because a count is a sentence that has to be renumbered by whatever
-  lands next. There is no mixer, no media panel and
-  no calendar; a notification is the one thing that puts itself in front of
-  you. The launcher on `Mod+g` is zinc's, not zde's.
+  lands next. There is no mixer, no media panel and no calendar; a notification
+  is the one thing that puts itself in front of you. The launcher on `Mod+g` is
+  zinc's, not zde's.
 - **Part of the cheatsheet.** A bind whose command is not written yet prints
   usage to a stderr nobody reads, so the key is silent and so is the machine.
   `Mod+semicolon` says which ones those are on the machine in front of you,
