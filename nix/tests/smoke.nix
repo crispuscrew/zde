@@ -2099,6 +2099,35 @@ pkgs.testers.runNixOSTest {
       for shot in ("{ screenshot; }", "{ screenshot-screen; }", "{ screenshot-window; }"):
           assert shot in binds, f"no {shot} bind: {binds}"
 
+      # The keys a focused app cannot take. niri 26.04 hands
+      # zwp_keyboard_shortcuts_inhibit_manager_v1 to every client, sandboxed or
+      # not - it is the one sensitive global its security-context filter misses
+      # - and while such a surface has the keyboard it forwards rather than acts
+      # on every bind whose allow-inhibiting is true, which is niri's default.
+      # So this property is the whole of what keeps panic, lock, the mode picker
+      # and the key that ends the grab working, and the `niri validate` above is
+      # what makes these greps mean something: the property parsed, and it is
+      # not a string this file happens to find in a comment.
+      #
+      # Whether an app can really swallow the rest is by hand (docs/verify.md,
+      # section 10): this VM has no input devices and nothing in it grabs.
+      for chord in (
+          "Mod+Shift+Escape",     # panic
+          "Mod+Ctrl+semicolon",   # lock
+          "Mod+Ctrl+Escape",      # the grab toggle, which a grab must not eat
+          "Mod+m",                # the mode picker, which is how a mode is left
+      ):
+          line = [l for l in binds.splitlines() if l.strip().startswith(chord + " ")]
+          assert len(line) == 1, f"{chord} is not one bind in the config: {binds}"
+          assert "allow-inhibiting=false" in line[0], (
+              f"{chord} is a key an app can take off you: {line[0]}"
+          )
+      # And the mirror: an ordinary bind must not carry it, or every app that
+      # legitimately grabs the keyboard - a VM, a nested compositor - has been
+      # locked out of the whole keymap by a default nobody argued for.
+      nav = [l for l in binds.splitlines() if l.strip().startswith("Mod+j ")]
+      assert nav and "allow-inhibiting" not in nav[0], f"Mod+j is unsuppressible: {nav}"
+
       # The unit that starts the daemon with the session. Every check in this
       # file runs zded by hand, which is the one thing a person never does:
       # on a login it is niri that brings up graphical-session.target, and

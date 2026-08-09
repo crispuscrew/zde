@@ -216,6 +216,19 @@ turned "when someone has hardware" into something anyone can do this evening.
   second press itself. What a leader wants is something already holding the
   keyboard, which is worth remembering before the input layer is asked for
   anything else.
+- keymap, the shortcuts inhibitor: `zwp_keyboard_shortcuts_inhibit_manager_v1`
+  is the one sensitive global niri 26.04 hands to sandboxed clients too - every
+  other manager is built behind its security-context filter and that one is not
+  - and it activates a new inhibitor with no dialog, which niri's own source
+  calls a FIXME. So a focused container can take any zde bind that has not said
+  `allow-inhibiting=false`. Four say it: panic, lock, the mode picker, and the
+  `Mod+Ctrl+Escape` that ends a grab. What a session has to settle is whether
+  that is the right four ([`verify.md`](verify.md), section 10) - whether
+  anything you actually run grabs the keyboard at all, whether losing `Mod+j`
+  to it is tolerable or maddening, and whether the key that gives them back is
+  reachable enough for the moment you need it. Upstream may also close this: a
+  confirmation dialog, or the filter that every other global already has, would
+  make the whole question smaller.
 - niri config: `nav.*` shelling to zded per keypress feeling instant, and the
   config driving a real compositor. The smoke test settles the static half -
   niri's own parser accepts the tree, its includes resolve, and every emitted
