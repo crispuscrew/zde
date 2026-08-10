@@ -83,6 +83,13 @@ func TestADeskThatCannotStartAnAppSaysWhichOneAndWhy(t *testing.T) {
 	if got.Urgent {
 		t.Error("a desk that came up short interrupted a focus mode")
 	}
+	// And it is the desktop that said it, in the one name the sender column
+	// reserves. The whole message is "the thing that tried to start your apps is
+	// telling you it could not", so the column has to be the reserved name and
+	// not a second spelling of it (internal/attn, SelfFrom and claim).
+	if got.From != attn.SelfFrom {
+		t.Errorf("sender is %q, want the reserved name nothing on the bus can take", got.From)
+	}
 }
 
 // The noise bound. A desk that declares eight apps and can run none of them is

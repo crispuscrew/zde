@@ -57,7 +57,7 @@ const snapshotMax = 40
 // count in this package that never had to carry them. Forty of those is under
 // 250 KB written whole, and a few kilobytes in a session made of real
 // notifications. The same forty records with the rings' 4000-character body
-// would be over a megabyte, and every ring full at its limit is the 9 MB
+// would be over a megabyte, and every ring full at its limit is the 10 MB
 // SendersMax counts.
 //
 // 400 rather than the rings' 4000 because the bodies are what make a history
@@ -125,7 +125,7 @@ func DefaultSnapshotPath() string {
 // the same question the center does, so it is filled the same way the center
 // is read (history.go, newestFirst) - the rings are a bound on what one app
 // can hold, and a file that took every ring's newest would be the whole
-// history, 390 records against these forty, holding a morning of one app
+// history, 420 records against these forty, holding a morning of one app
 // rather than the last hour of the session.
 //
 // Oldest first because that is the order the history is read back in, so
@@ -240,6 +240,18 @@ func WriteSnapshot(path string, records []Record) error {
 // ones that cannot be addressed are dropped, and the two marks that say what a
 // restored record is are set here rather than read, so that a file cannot claim
 // its rows are live.
+//
+// One thing is not re-checked, and it is a choice rather than an oversight: a
+// row here may say it came from zde (notify.go, SelfFrom). The reservation is
+// about the bus, which is the surface a sandboxed app is given (docs/vision.md,
+// principle 7), and this file is 0600 in the session's own state directory - so
+// writing a row into it takes the person's own uid, which is the same thing
+// that could edit the journal, replace the binary, or send the notification
+// from a shell. What it would buy an editor is small in any case: the row comes
+// back marked restored, which every surface draws as a thing whose buttons are
+// gone with the session that received it. Rewriting the name instead would cost
+// something real - zde's own messages about a desk that could not start would
+// come back under a bus address that means nothing after a reboot.
 func ReadSnapshot(path string) ([]Record, error) {
 	// "Unreadable" above includes a path that is not a file at all, and that
 	// one had to be made true rather than assumed. A plain os.Open of a FIFO

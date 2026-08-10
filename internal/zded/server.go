@@ -1016,8 +1016,24 @@ func (s *Server) reconcile() Response {
 			out.Adopted = append(out.Adopted, a.Name.String())
 		}
 	}
+	// The one line in this answer whose subject is a name zde did not mint. A
+	// rename and an adoption both say a name the model built out of a desk, a
+	// connector and a slot (internal/desk, Name.String); this one says the name
+	// niri had, and `zde desk reconcile` prints it to a terminal.
+	//
+	// Safe today by accident rather than by rule, which is why the filter is
+	// here. Every conflict Rebuild can report is about a workspace whose name
+	// parsed, so the name is letters, digits, dots and dashes and can hold
+	// nothing (internal/desk, ParseName); the reasons are built out of parsed
+	// names too, or out of an error that formats niri's own strings with %q,
+	// which escapes what a terminal would act on. Both of those are decisions
+	// made two packages away for other purposes. The obvious next conflict to
+	// report is the one this code cannot report yet - a workspace whose name did
+	// not parse at all, which is the case a person most wants named - and
+	// whoever adds it should not also have to know that this line is printed
+	// raw (internal/attn, Line).
 	for _, c := range m.Conflicts() {
-		out.Conflict = append(out.Conflict, c.Workspace.Name+": "+c.Reason)
+		out.Conflict = append(out.Conflict, attn.Line(c.Workspace.Name)+": "+attn.Line(c.Reason))
 	}
 	return ok(out)
 }

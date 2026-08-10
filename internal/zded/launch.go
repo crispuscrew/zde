@@ -44,7 +44,13 @@ const launchesNamed = 4
 // launchFrom is what the notification says sent it. The sender column is
 // otherwise an app's own claim about itself (internal/attn, Notification.From),
 // and this is the one arrival where it is the desktop talking.
-const launchFrom = "zde"
+//
+// attn's own constant rather than the same word spelled twice. The name is
+// reserved on the way in from the bus, so that nothing an app sends can land in
+// this column (internal/attn, SelfFrom and claim) - and a reservation that
+// guarded one spelling while the sender used another would be a defence with
+// nothing behind it.
+const launchFrom = attn.SelfFrom
 
 // reasonMax is as much of one failure as belongs on one line of the body.
 //

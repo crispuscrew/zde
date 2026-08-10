@@ -462,8 +462,8 @@ PanelWindow {
             textFormat: Text.PlainText
         }
 
-        // A view and not a column, because the history holds up to 390 records -
-        // thirty from each of twelve senders and the nameless ring
+        // A view and not a column, because the history holds up to 420 records -
+        // thirty from each of twelve senders, the nameless ring and zde's own
         // (internal/attn, PerSenderMax) - and a screen holds 31 of them. A
         // column inside a clipped panel drew the ones that fit and hid the rest,
         // and j walked the highlight into the hidden part - where d dismissed a

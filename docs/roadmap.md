@@ -76,14 +76,18 @@ blocks 0.2:
   so proving the card appears without a grab is by hand for now
   ([`verify.md`](verify.md), section 5).
 - history survives the daemon in part. It is a ring of 30 per sender in memory,
-  for at most 12 named senders plus a nameless ring, and the newest 40 of it -
-  across all of them, not 40 from each - are written to a file of their own
-  beside the journal, bodies cut to 400 characters, 0600, rewritten every two
-  minutes and on the way out. Nothing live lands in the nameless one: the bus
-  fills in a name for a sender that gives none, zde's own notification sends as
-  `zde`, and `zde queue add` writes the journal and not the history, so what is
-  in it is a restored row whose sender field was empty (internal/attn,
-  `nobody`). What the file buys is "what did I miss" answering across a reboot
+  for at most 12 named senders plus two rings nothing on the bus can reach, a
+  nameless one and the desktop's own, and the newest 40 of it - across all of
+  them, not 40 from each - are written to a file of their own beside the
+  journal, bodies cut to 400 characters, 0600, rewritten every two minutes and
+  on the way out. Nothing live lands in the nameless one: the bus fills in a
+  name for a sender that gives none, and `zde queue add` writes the journal and
+  not the history, so what is in it is a restored row whose sender field was
+  empty (internal/attn, `nobody`). zde's own notification sends as `zde`, which
+  is reserved: a claim off the bus that reads as that word is recorded under the
+  bus address instead, and the desktop's ring is exempt from eviction, because
+  it holds one record and was otherwise the cheapest thing on the machine to
+  throw away. What the file buys is "what did I miss" answering across a reboot
   instead of starting every login blank. A file of its own rather than the
   journal, which is appended to on every arrival and rewritten only when a
   daemon starts, so whatever goes in it is carried until the next login
@@ -105,7 +109,13 @@ blocks 0.2:
   to out-hold it. What none of that does is say who sent anything: the name is
   still the sender's own claim, and only attribution by channel changes that
   ([`vision.md`](vision.md), principle 6 and ask 4), which waits on something in
-  zde reading `zcr bus`.
+  zde reading `zcr bus`. One name is out of the claim's reach in the meantime:
+  `zde` is what the desktop's own messages carry, and an arrival that asks for
+  it is recorded under its bus address instead - because "this desk could not
+  start browser@vshop" is a sentence whose whole weight is that the thing
+  telling you is the thing that tried (`internal/attn`, `SelfFrom`). It is a
+  reservation on the word and not on one spelling of it; what it does not cover
+  is a name that merely looks like it, which is the unverified column itself.
 - a replacement spends a revision of the history it did not need to. The bus
   side closes the old notification before the new one arrives, so the record is
   marked dismissed and the revision counter moves, and then the arrival removes

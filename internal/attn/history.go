@@ -69,12 +69,13 @@ const PerSenderMax = 30
 //
 // The arithmetic, done the way the ring's above is, and it is the whole of it:
 // every other count in this package (bodyMax, snapshotBodyMax) points here.
-// Twelve rings plus the nameless one (see nobody) is thirteen, at thirty
-// records each: 390 records. A record at its limit is a summary of summaryMax
+// Twelve rings plus the two nothing on the bus can reach - the nameless one
+// (see nobody) and the desktop's own (see SelfFrom) - is fourteen, at thirty
+// records each: 420 records. A record at its limit is a summary of summaryMax
 // (300), a body of bodyMax (4000), a sender name bounded at summaryMax too
 // (300), and actionsMax action pairs of actionTextMax each (9 x 160 = 1440):
 // 6040 characters, which in an alphabet that costs four bytes a character is
-// about 24 KB. So the ceiling is about 9 MB.
+// about 24 KB. So the ceiling is about 10 MB.
 //
 // Against 8 MB, which is what the flat ring of two hundred actually held once
 // its own action lists are counted - they were bounded only by summaryMax then,
@@ -122,6 +123,24 @@ const SendersMax = 12
 // back to make room for an app's twelfth invented name is the one eviction
 // nobody could defend.
 const nobody = ""
+
+// unevictable is the pair of rings the bound above never spends: the nameless
+// one, and the desktop's own (notify.go, SelfFrom).
+//
+// The same argument for both, and the reservation is what makes it an argument
+// rather than a preference: neither name can be reached from the bus, so
+// neither is a name an app can mint, so neither is part of the leak the bound
+// exists to stop. Leaving zde's own ring in the count was the bound working for
+// the attacker again, one level up from the eviction rule (see
+// dropExtraSenders): "this desk could not start three of its apps" holds one
+// record, which is the cheapest thing on the machine, so twelve invented names
+// threw the desktop's own message out of the history first. Being able to
+// silence what zde says about itself, by sending twelve notifications, is worth
+// more to somebody than the ring it costs to stop it.
+//
+// Two names and not a rule, because it is two names. A list is what a caller
+// can read and a predicate is what a caller has to trust.
+func unevictable(from string) bool { return from == nobody || from == SelfFrom }
 
 // Record is one arrival, as the notification center reads it back. It is what
 // the queue item cannot say on its own: when it happened, and whether the mode
@@ -456,20 +475,23 @@ func (h *History) ringFor(from string) *ring {
 // session of nine ordinary senders never reaches this bound at all - so the
 // case it has to be good at is the case that does reach it.
 //
-// nobody's ring is neither counted nor a candidate (see nobody).
+// The two rings nothing on the bus can reach are neither counted nor
+// candidates: the nameless one and the desktop's own (see unevictable).
 func (h *History) dropExtraSenders(arrived string) []uint64 {
 	var gone []uint64
 	for {
 		named := len(h.rings)
-		if _, ours := h.rings[nobody]; ours {
-			named--
+		for _, ours := range []string{nobody, SelfFrom} {
+			if _, held := h.rings[ours]; held {
+				named--
+			}
 		}
 		if named <= SendersMax {
 			return gone
 		}
 		cheapest, held, since, found := "", 0, int64(0), false
 		for from, r := range h.rings {
-			if from == nobody || from == arrived {
+			if unevictable(from) || from == arrived {
 				continue
 			}
 			// No two records share a seq, so the tie-break is total and the

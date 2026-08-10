@@ -47,6 +47,33 @@ const (
 // a sender says is the obvious thing to do.
 const DefaultAction = "default"
 
+// SelfFrom is what the desktop's own messages say sent them, and the one name
+// in that column no app can take: an arrival off the bus that claims it is
+// recorded under the bus's own name for its connection instead (see claim).
+//
+// Reserved because the column is otherwise a claim and nothing checks it
+// (docs/vision.md, principle 6 - a sender is a claim until it is known by the
+// socket it arrived on). That is defensible for one app impersonating another,
+// which is a lie about a peer; it is not defensible for the desktop's own name,
+// because the whole point of a notification that says "this desk could not
+// start browser@vshop" is that the thing telling you is the thing that tried.
+// Without the reservation, `notify-send -a zde` was that sentence exactly:
+// same column, same shape, same popup with buttons on it, and the session bus
+// is precisely the surface a sandboxed app is given (principle 7).
+//
+// What it buys, said plainly: an arrival cannot be this string, so this string
+// is the desktop. What it does not buy is a defence against a name that merely
+// looks like it - "zde-session", or "zdе" with a Cyrillic е - because that is
+// the general problem of an unverified column and it ends where attribution by
+// channel begins. What a person can rely on is narrower and worth knowing: an
+// impostor is drawn under its bus address (":1.57"), which no app name looks
+// like, on the popup, in the centre, in the queue and in `zde queue`.
+//
+// It is also a ring the history never evicts, for the same reason the nameless
+// one is not (history.go, nobody): a name that no app can mint is not a name an
+// app can push the count with.
+const SelfFrom = "zde"
+
 // actionsMax is how many of a notification's actions are kept, and it is the
 // number the notification center can offer with one keypress each (digits 1 to
 // 9). Bounded because the list comes from an app on the session bus and nothing
@@ -101,11 +128,12 @@ const summaryMax = 300
 // Still bounded, because the body is attacker-controlled and it is the largest
 // single thing that decides how big the history can get. The arithmetic: the
 // history holds a ring of PerSenderMax for each of SendersMax senders plus the
-// nameless one, so 390 records, and 390 x 4000 characters is 6.2 MB of body if
-// every record is at its limit and written in an alphabet that costs four bytes
-// a character - a few hundred kilobytes in any session made of real
+// two nothing on the bus can reach - the nameless one and the desktop's own -
+// so 420 records, and 420 x 4000 characters is 6.7 MB of body if every record
+// is at its limit and written in an alphabet that costs four bytes a
+// character - a few hundred kilobytes in any session made of real
 // notifications. SendersMax carries the whole count, which adds the summaries,
-// the sender names and the action lists to that and comes to about 9 MB.
+// the sender names and the action lists to that and comes to about 10 MB.
 //
 // Largest single thing, and only since the action lists were bounded. Nine
 // actions at summaryMax for both key and label was 24 KB a record against this
@@ -593,12 +621,40 @@ func (s *Server) lookup(k owned) (uint64, bool) {
 // gave one, and the bus's name for the connection when it did not - a dash in
 // the queue means a person typed it, so an app that sends nothing, or sends a
 // dash, must not land in that column looking hand-written.
+//
+// The desktop's own name is reserved the same way and for the same reason, one
+// step further on: a dash borrowed says a person typed this, and "zde"
+// borrowed says the session itself did (see SelfFrom). The bus's name for a
+// connection is what both fall back to, because the bus hands that out rather
+// than letting the peer choose it.
 func claim(app string, sender dbus.Sender) string {
 	app = oneLine(app)
-	if app == "" || app == "-" {
+	if app == "" || app == "-" || isSelf(app) {
 		return string(sender)
 	}
 	return app
+}
+
+// isSelf reports whether a claim would be read as the desktop's own name.
+//
+// Not a string equality, because the column is read by a person and not by a
+// parser: "ZDE", "[zde]" and "z d e" all arrive at the same word, and a
+// reservation that only caught the lowercase spelling would be one an attacker
+// steps around by pressing shift. Case is folded and everything that is not a
+// letter or a digit is dropped, so what is compared is the word somebody reads.
+//
+// It stays narrow on purpose. Only a claim that reduces to exactly this word is
+// taken away: an app called "zdeco", or "zde-helper", reduces to something else
+// and keeps its name. Refusing everything with those three letters in it would
+// be zde renaming other people's apps.
+func isSelf(app string) bool {
+	var b strings.Builder
+	for _, r := range app {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(unicode.ToLower(r))
+		}
+	}
+	return b.String() == SelfFrom
 }
 
 // urgency reads the spec's hint: 0 low, 1 normal, 2 critical.
@@ -619,6 +675,26 @@ func urgency(hints map[string]dbus.Variant) byte {
 	}
 	return b
 }
+
+// Line is foreign text on its way to a row somebody reads: one printable line,
+// bounded the way a summary is.
+//
+// Exported because the notification path is not the only one that takes a
+// string from something else and puts it in front of a person, and it was the
+// only one that had a filter. A window title is set by the application
+// (internal/zded, jump.go); an inhibitor's reason is written by whatever ran
+// systemd-inhibit (power.go); a workspace name in a conflict line is niri's
+// (server.go, reconcile). All of them end up in a terminal, where ESC is not a
+// character but the start of an instruction, and in a one-line row, where a
+// newline is a second row with nothing in column one.
+//
+// One function rather than one per package, because this is a filter with
+// corners in it - the zero-width joiner that has to survive, the space left
+// where something was dropped - and four copies of a filter is three of them
+// drifting. What it is not is a filter for everything: text that keeps its own
+// shape, an answer with paragraphs and indented code in it, is a different job
+// and is done where it is printed (cmd/zde, plain).
+func Line(s string) string { return oneLine(s) }
 
 // oneLine makes anything an app sends fit one line of the queue.
 //

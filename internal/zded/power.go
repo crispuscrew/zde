@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/crispuscrew/zde/internal/attn"
 	"github.com/crispuscrew/zde/internal/power"
 )
 
@@ -324,12 +325,17 @@ func inMemory(unqueued int) []string {
 // after logind has refused it. Both halves are worth reading: their work is
 // about to end, and logind will want an administrator's password that nothing
 // here can ask for (internal/power, Because).
+//
+// The name and the session id are logind's, which makes them the machine's
+// rather than an app's - and they are still put through the filter below, for
+// the reason the next function's are: what decides whether a line is safe to
+// print is where it is printed, not how respectable its source sounds.
 func others(st power.State) []string {
 	var out []string
 	for _, s := range st.Others() {
-		who := s.User
+		who := attn.Line(s.User)
 		if who == "" {
-			who = "session " + s.ID
+			who = "session " + attn.Line(s.ID)
 		}
 		out = append(out, who+" is logged in here as well")
 	}
@@ -339,16 +345,28 @@ func others(st power.State) []string {
 // held is what is holding this off, in the words the program gave logind. It is
 // the difference between a suspend that is refused for no visible reason and one
 // where a person can go and close the thing that is blocking it.
+//
+// In the program's words, and the program is any program: `systemd-inhibit
+// --who=... --why=...` takes two strings from whoever runs it, and every local
+// account can run it. So these two are the same kind of thing as a
+// notification's summary - somebody else's text, arriving to be shown - and
+// they get the same filter (internal/attn, Line). A cost line goes to the power
+// menu and, with no shell up, to a terminal, where `--why="$(printf
+// '\033[2J')"` would clear the screen the menu was on.
+//
+// Filtered here rather than in internal/power, which is the logind client and
+// has no business knowing where a string is going to be drawn. This is the
+// layer that builds the sentence.
 func held(st power.State, w power.What) []string {
 	var out []string
 	for _, b := range st.Blocking(w) {
-		who := b.Who
+		who := attn.Line(b.Who)
 		if who == "" {
 			who = "something on this machine"
 		}
 		line := who + " is holding it off"
-		if b.Why != "" {
-			line += ": " + b.Why
+		if why := attn.Line(b.Why); why != "" {
+			line += ": " + why
 		}
 		out = append(out, line)
 	}
