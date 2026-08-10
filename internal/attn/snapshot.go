@@ -22,6 +22,8 @@ import (
 	"os"
 	"path/filepath"
 	"unicode/utf8"
+
+	"github.com/crispuscrew/zde/internal/plainfile"
 )
 
 // snapshotMax is how many records reach the file.
@@ -251,7 +253,14 @@ func WriteSnapshot(path string, records []Record) error {
 // something real - zde's own messages about a desk that could not start would
 // come back under a bus address that means nothing after a reboot.
 func ReadSnapshot(path string) ([]Record, error) {
-	f, err := os.Open(path)
+	// "Unreadable" above includes a path that is not a file at all, and that
+	// one had to be made true rather than assumed. A plain os.Open of a FIFO
+	// does not fail - it waits in the kernel for a writer that never comes -
+	// and this runs at startup, before the daemon has a listener or has looked
+	// at a signal, so the sentence about none of it being a reason to stop was
+	// exactly wrong for the one case that stopped everything
+	// (internal/plainfile).
+	f, err := plainfile.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		// A first login, or a session that ended before it wrote one. Not a
 		// failure, and not worth a line on anybody's stderr.

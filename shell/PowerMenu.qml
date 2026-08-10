@@ -25,6 +25,13 @@
 // collide with. ActionPalette.qml carries the same scar - QtQuick has a Palette
 // of its own, and an imported module's type beats a file in the same directory,
 // so the surface silently became a set of colours.
+//
+// Every Text in this file sets textFormat: Text.PlainText, including the ones
+// that only draw a literal. Qt Quick's default is AutoText, which renders a
+// string that looks like markup as StyledText, and StyledText fetches an
+// <img src="http://..."> over the network - out of a process that is holding a
+// layer surface and a keyboard grab. internal/zded/qml_test.go refuses a Text
+// with no format, and carries the whole of why.
 pragma ComponentBehavior: Bound
 
 import QtQuick
@@ -369,6 +376,7 @@ PanelWindow {
                         color: (row.modelData.why ?? "") === "" ? "#c9ccd4" : "#6a6f7a"
                         font.pixelSize: 13
                         font.family: "monospace"
+                        textFormat: Text.PlainText
                     }
 
                     Text {
@@ -382,6 +390,7 @@ PanelWindow {
                         color: "#7a7f8a"
                         font.pixelSize: 12
                         font.family: "monospace"
+                        textFormat: Text.PlainText
                     }
 
                     // The mark the queue uses for the thing worth stopping at.
@@ -398,6 +407,7 @@ PanelWindow {
                         color: "#e5a23d"
                         font.pixelSize: 12
                         font.family: "monospace"
+                        textFormat: Text.PlainText
                     }
                 }
             }
@@ -433,6 +443,7 @@ PanelWindow {
                     }
                     font.pixelSize: 11
                     font.family: "monospace"
+                    textFormat: Text.PlainText
                 }
             }
         }
@@ -456,6 +467,7 @@ PanelWindow {
             color: menu.asking !== "" ? "#e5a23d" : "#7a7f8a"
             font.pixelSize: 11
             font.family: "monospace"
+            textFormat: Text.PlainText
         }
     }
 }

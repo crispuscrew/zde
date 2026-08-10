@@ -27,6 +27,13 @@
 // palette a second, shorter answer to the same question. Enter on one of those
 // does nothing and says why on the line below, which is the opposite of what
 // the key itself does.
+//
+// Every Text in this file sets textFormat: Text.PlainText, including the ones
+// that only draw a literal. Qt Quick's default is AutoText, which renders a
+// string that looks like markup as StyledText, and StyledText fetches an
+// <img src="http://..."> over the network - out of a process that is holding a
+// layer surface and a keyboard grab. internal/zded/qml_test.go refuses a Text
+// with no format, and carries the whole of why.
 pragma ComponentBehavior: Bound
 
 import QtQuick
@@ -293,6 +300,7 @@ PanelWindow {
                 color: "#5a5f6a"
                 font.pixelSize: 14
                 font.family: "monospace"
+                textFormat: Text.PlainText
             }
         }
 
@@ -323,6 +331,7 @@ PanelWindow {
             }
             font.pixelSize: 11
             font.family: "monospace"
+            textFormat: Text.PlainText
         }
 
         ListView {
@@ -372,6 +381,7 @@ PanelWindow {
                     color: row.modelData.live ? "#c9ccd4" : "#6a6f7a"
                     font.pixelSize: 13
                     font.family: "monospace"
+                    textFormat: Text.PlainText
                 }
 
                 Text {
@@ -385,6 +395,7 @@ PanelWindow {
                     color: row.modelData.live ? "#7a7f8a" : "#565b66"
                     font.pixelSize: 12
                     font.family: "monospace"
+                    textFormat: Text.PlainText
                 }
 
                 Text {
@@ -400,6 +411,7 @@ PanelWindow {
                     color: row.modelData.live ? "#7a7f8a" : "#565b66"
                     font.pixelSize: 12
                     font.family: "monospace"
+                    textFormat: Text.PlainText
                 }
             }
         }

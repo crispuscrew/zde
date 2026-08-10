@@ -464,9 +464,6 @@ ones are the point of zded holding the bus name.
     check should collapse to one `not known:` line naming the command to run by
     hand - not a warning per desk. A partial list of faults reads exactly like a
     complete one, which is the failure this is arranged against.
-- **A day's worth of arrivals.** History is a ring of 200, in memory: the 201st
-  drops the oldest. Whether 200 is a day or an hour is a question about your
-  machine and not about the number.
 - **Who can read what you were sent.** One line: `ls -l
   ~/.local/state/zde/journal.jsonl` says `-rw-------`. It has to say that on a
   machine that has been running an earlier zde too, because the mode is set on
@@ -485,10 +482,12 @@ ones are the point of zded holding the bus name.
   start on the new build rewrites the file without them.
 - **A day's worth of arrivals.** History is a bounded ring per sender, in
   memory: 30 records each, for at most 12 named senders plus two rings nothing
-  on the bus can reach - the nameless one a person's own entries use, and the
-  desktop's own. The 31st from one app drops that app's oldest and
-  nothing else, which is the thing to feel for - leave a download or a build bot
-  running all afternoon and the mail from the morning should still be in
+  on the bus can reach: a nameless one, which only a restored row with no sender
+  in it can land in, and the desktop's own, which is reserved so that a
+  notification cannot claim to be zde. The 31st from one app drops that app's
+  oldest and nothing else, which is the thing to feel for - leave a download or
+  a build bot running all afternoon and the mail from the morning should still
+  be in
   `Mod+n`. Whether 30 is a day or an hour of one app is a question about your
   machine and not about the number.
 - **A thirteenth app that sends you something.** The names are bounded too,
@@ -535,11 +534,14 @@ ones are the point of zded holding the bus name.
   before the restart and gone after it, and `grep` for its text in
   `history.json` finds nothing.
 
-  Out of the snapshot, and not off the disk, which would be a wider claim than
-  anything here earns: a notification the mode queues writes its body to the
-  journal as well, so the same `grep` finds it in `j.jsonl`. That file is the
-  queue's and getting the bodies out of it is its own change. What this section
-  is about is `history.json`, and about that the claim is exact.
+  Out of the snapshot, which is the claim this check settles, and worth keeping
+  apart from the journal's. A notification the mode queued leaves a line in
+  `journal.jsonl` on every desk, private or not, carrying the summary, the
+  sender and the desk - so `grep` for the summary finds it there and `grep` for
+  the message finds nothing anywhere, which is the earlier check ("and what the
+  file holds") and not this one. What this section is about is `history.json`,
+  and about that the claim is exact: nothing that arrived on a private desk is
+  written to it.
 
   Three ways to try to break it, all of which should end with nothing written.
   Break the same manifest with a typo - a desk whose manifest will not parse is
@@ -1042,17 +1044,81 @@ list, and that is the first thing to check if nothing below works.
   are the two numbers only use can settle - and they are one line each in
   `internal/clip`.
 
+## 10. The keys an application cannot take
+
+niri grabs zde's binds at the compositor, which is what stops a container
+shadowing or watching them. There is one hole in that, and it is the reason
+this section exists. `zwp_keyboard_shortcuts_inhibit_manager_v1` is the single
+sensitive Wayland global niri 26.04 does not gate on the security context every
+zinc app is launched behind: thirteen others vanish for a sandboxed client -
+screencopy, both data-control protocols, the virtual keyboard and pointer,
+layer-shell - and that one stays. niri then activates a new inhibitor the moment
+it is asked, with no dialog and nobody consulted; there is a FIXME in its source
+saying the confirmation is the missing part. While that surface has the
+keyboard, every zde bind that has not said otherwise is handed to it instead of
+being acted on.
+
+Four say otherwise, and only four: panic (`Mod+Shift+Escape`), lock
+(`Mod+Ctrl+semicolon`), the mode picker (`Mod+m`), and `Mod+Ctrl+Escape`, which
+turns the grab off and gives the rest back. Every other key on this machine is
+one a focused app can take. That is the trade rather than an oversight - a bind
+no app can receive is also a chord no VM, no nested compositor and no remote
+desktop will ever be able to use - and where the line belongs is exactly what
+only a session settles.
+
+CI cannot help here. The smoke test proves the property is in the config and
+that niri's own parser accepts it; nothing in a VM with no input devices grabs a
+keyboard.
+
+First find something that grabs, roughly in order of what you are likely to
+have:
+
+- a browser, fullscreen, on a page that calls `navigator.keyboard.lock()` -
+  that API is this protocol on Wayland,
+- a VM viewer: `virt-viewer`, `gnome-boxes`, `remmina`, `looking-glass-client`,
+- a nested compositor, or an RDP/VNC client in its own full-screen mode.
+
+Then, with it focused and grabbing:
+
+- **The ordinary keys are gone, and that is correct.** `Mod+j`, `Mod+t`,
+  `Mod+v`, `Mod+semicolon` do nothing in zde and arrive in the app instead. If
+  they still work, that app is not really grabbing and nothing below means
+  anything - find another one first.
+- **`Mod+Ctrl+semicolon` still locks**, and the password still unlocks. This is
+  the one that matters most: it is the difference between walking away from a
+  machine and not being able to.
+- **`Mod+Shift+Escape` and `Mod+m` still reach niri.** Both spawn commands
+  nobody has written yet (below), so there is nothing to see on screen - what
+  there is to see is that niri ran them rather than handing the key over. Press
+  each one, drop the grab, and read `journalctl --user -u niri --since '2 min
+  ago'`: the usage text those commands print to a stderr no keypress has is the
+  proof the bind fired. No lines, and the app took the key.
+- **`Mod+Ctrl+Escape` gives everything back.** Press it, then `Mod+j`: the desk
+  moves. Press it again and the app has the keyboard once more. Do both halves
+  in one sitting - a key that only turns things off is half a toggle, and half
+  a toggle is worse than none on a key you reach for in a hurry.
+- **Nothing is taken while you are elsewhere.** Focus another window and check
+  an ordinary key. The inhibitor follows keyboard focus, so an app in the
+  background must cost you nothing at all.
+
+And the one worth going out of your way for, because it is the real shape of
+this rather than an app you chose to hand the keyboard to: **a zinc container
+doing it**. Any app in any desk can bind that global, and the one you did not
+launch on purpose is the one this protects against.
+
 ## Expected to be missing
 
 Not bugs, do not report them:
 
-- **The rest of the shell**: the bar and six surfaces over it - the picker
-  (desks on `Mod+Tab`, windows on `Mod+w`, one surface for both), the
-  notification centre, the connections list, the palette, the ask window, the
-  power menu, the clipboard history, and the notification popup, which is the
-  only one that is not opened by a key. There is no mixer, no media panel and
-  no calendar; a notification is the one thing that puts itself in front of
-  you. The launcher on `Mod+g` is zinc's, not zde's.
+- **The rest of the shell**: the bar, and over it the picker (desks on
+  `Mod+Tab`, windows on `Mod+w`, one surface for both), the notification centre,
+  the connections list, the palette, the ask window, the power menu, the
+  clipboard history, and the notification popup, which is the only one that is
+  not opened by a key. That is the whole list, and it is a list rather than a
+  count because a count is a sentence that has to be renumbered by whatever
+  lands next. There is no mixer, no media panel and no calendar; a notification
+  is the one thing that puts itself in front of you. The launcher on `Mod+g` is
+  zinc's, not zde's.
 - **Part of the cheatsheet.** A bind whose command is not written yet prints
   usage to a stderr nobody reads, so the key is silent and so is the machine.
   `Mod+semicolon` says which ones those are on the machine in front of you,
@@ -1073,6 +1139,7 @@ Not bugs, do not report them:
   | `Mod+Shift+c` (wifi, and the link you are on) | `Mod+e`, until `zde.apps.editor` names one (below) |
   | `Mod+v` (the clipboard history) | |
   | `Mod+g` (zinc's launcher), `Mod+Ctrl+semicolon` (lock) | |
+  | `Mod+Ctrl+Escape` (takes the keyboard back off an app that grabbed it; niri's own action, so it works whatever zde has written) | |
   | `Mod+slash` (the keymap, in a pager) | |
   | `Mod+Print`, `Mod+Shift+s`, `Mod+Ctrl+w` (screenshots) | |
   | `Mod+Shift+Tab` (last desk) | |

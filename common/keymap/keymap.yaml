@@ -151,8 +151,19 @@ binds:
   # fingers expect - and Mod+Tab then l is the one to actually use: it is a menu
   # that says what it does rather than a chord to remember.
   - { action: system.lock, key: Mod+Ctrl+semicolon }
+  # The key that takes the keyboard back. An app can grab every zde bind by
+  # binding one Wayland global (internal/keymap/registry.go, Unsuppressible);
+  # this turns that grab off and a second press hands the keys over again.
+  # Escape is the get-me-out family, and plain Mod+Escape is left free because
+  # the panic sequence above is spelled for it - Ctrl is what the keymap
+  # already uses for the third chord in a cluster (Ctrl+m, Ctrl+n, Ctrl+p).
+  - { action: system.shortcut-grab, key: Mod+Ctrl+Escape }
 
-  # net. The observer widget (Shift+n) does the cutting; net.observe is live.
+  # net. The observer widget (Shift+n) is where the cutting is meant to happen.
+  # The key is bound and the widget is not written, so this is one of the silent
+  # ones: the registry marks it unwritten and `zde net observe` is not a verb the
+  # CLI has (internal/keymap/registry.go, cmd/zde). Mod+semicolon says so on the
+  # machine in front of you, which is the answer to trust over this comment.
   - { action: net.observe, key: Mod+Shift+n }
   # The two quick cuts you described are Mod+Tab-then-n / Mod+Shift+Tab-then-n -
   # leader sequences that need the input daemon (same as panic/block). Until

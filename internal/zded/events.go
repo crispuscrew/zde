@@ -214,6 +214,14 @@ type sink struct {
 	// the standard library whose zero value is already the answer to that.
 	made sync.Once
 	gate chan struct{}
+	// gone closes when the read loop on this connection has ended, which is how
+	// anything working on that connection's behalf finds out the client has left
+	// (see end, and ask.go's askRun). Made by the same Once as the gate and for
+	// the same reason.
+	gone chan struct{}
+	// ends is what closes it, once: end is deferred from the read loop, and
+	// closing a closed channel is a panic.
+	ends sync.Once
 	w    io.Writer
 	// asking is whether an answer is already on its way down this connection.
 	// One at a time, because an ask.text line carries no id of its own: two
@@ -235,8 +243,36 @@ type sink struct {
 // gateOf is the lock, made once. Every path to it goes through here, so no
 // caller can meet a nil channel and wait for ever on it.
 func (k *sink) gateOf() chan struct{} {
-	k.made.Do(func() { k.gate = make(chan struct{}, 1) })
+	k.channels()
 	return k.gate
+}
+
+// endedOf closes when this connection's read loop has ended. A sink that is not
+// a connection - a test's, or one nobody ever ends - simply never closes it,
+// which is the right answer for a caller that selects on it.
+func (k *sink) endedOf() chan struct{} {
+	k.channels()
+	return k.gone
+}
+
+// channels makes both, once. One Once for two channels rather than two, because
+// they are made at the same moment for the same reason and a second one would
+// only be a second thing to forget.
+func (k *sink) channels() {
+	k.made.Do(func() {
+		k.gate = make(chan struct{}, 1)
+		k.gone = make(chan struct{})
+	})
+}
+
+// end says the client has gone. Called from the read loop on its way out, which
+// is the only place that learns it: a connection is found to be closed by a read
+// failing, and everything else on this daemon working for that connection - a
+// tier that will run for two more minutes, most of all - is otherwise waiting on
+// a write it has not tried yet.
+func (k *sink) end() {
+	gone := k.endedOf()
+	k.ends.Do(func() { close(gone) })
 }
 
 // lockBefore takes the connection for one line, or gives up at the deadline and
@@ -329,15 +365,53 @@ func (k *sink) sendWithin(ev Event, wait time.Duration) error {
 	return err
 }
 
-// listen adds a connection to the listeners. Idempotent, so a client that asks
-// twice is listening once.
-func (s *Server) listen(k *sink) {
+// listenersMax is how many connections may be listening at once.
+//
+// sendWait bounds what one listener costs a broadcast, and until this existed
+// nothing bounded how many there were - so what a keypress cost was that times
+// a number anything running as the user could choose. Measured on a running
+// zded: 100 connections that subscribed and then stopped reading made one
+// attn.center take 20.03 seconds, and 200 of them made it 40.07. The walk is
+// concurrent now (see broadcast), so the population no longer sets the delay;
+// what it still sets is the fan-out, one goroutine per listener per keypress,
+// and the file descriptors and the sinks behind it. Both want a ceiling.
+//
+// The arithmetic. Exactly one thing subscribes today: the shell opens one
+// events connection for the session (shell/shell.qml, one `{"method":"events"}`
+// on the stream socket). The CLI never does - an ask.run's answer comes back on
+// the connection that asked it, without subscribing - so a session with a shell
+// and four terminals running verbs has one listener, not five. A shell being
+// restarted holds two for the moment before the daemon reads EOF on the old
+// one. Sixteen is that with room for surfaces nobody has written yet, and it is
+// more listeners than any session has had.
+//
+// At the cap a broadcast fans out to 16 goroutines and costs sendWait, which is
+// 200ms, whatever is wedged among them.
+//
+// A cap can be taken by somebody else, and that is the honest cost of it: 16
+// connections that subscribe first are 16 the shell cannot be. That is a
+// session with no surfaces rather than a session that hangs on every keypress,
+// it is bounded rather than renewable, and `zde status` now reports the count
+// rather than a boolean that says a shell is there because something is.
+const listenersMax = 16
+
+// listen adds a connection to the listeners and says whether it took. Idempotent,
+// so a client that asks twice is listening once - and asking twice at the cap is
+// still yes, because it is already one of them.
+func (s *Server) listen(k *sink) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.subs == nil {
 		s.subs = map[*sink]struct{}{}
 	}
+	if _, already := s.subs[k]; already {
+		return true
+	}
+	if len(s.subs) >= listenersMax {
+		return false
+	}
 	s.subs[k] = struct{}{}
+	return true
 }
 
 func (s *Server) unlisten(k *sink) {
@@ -364,6 +438,22 @@ func (s *Server) unlisten(k *sink) {
 // and happens to be receiving an answer is not a client to stop sending events
 // to for the rest of the session. It misses this one, and is not counted as
 // having taken it, which is the honest answer to "did anything draw it".
+//
+// The listeners are written to at once rather than one after another, and that
+// is what makes sendWait's promise true a second time. sendWait bounds what one
+// listener may cost a keypress; walked in a line, what the keypress actually
+// cost was that times however many listeners there were, and how many there are
+// is not this daemon's to decide. Measured before this changed: 100 connections
+// that subscribed and stopped reading made one attn.center take 20.03 seconds,
+// which is 100 x sendWait to the millisecond, and it did not decay - a sink
+// whose gate is held answers errSinkBusy, which keeps it, so every later
+// keypress cost the same 20 seconds without anyone re-subscribing. Concurrently
+// the walk costs sendWait whatever the population is, and a shell that is
+// reading perfectly well is no longer behind fifteen that are not.
+//
+// Nothing is shared across the goroutines but the count and the listener map,
+// and each says so: a sink is serialized by its own gate, and one connection is
+// never written to by two of these at once.
 func (s *Server) broadcast(ev Event) int {
 	s.mu.Lock()
 	subs := make([]*sink, 0, len(s.subs))
@@ -372,17 +462,23 @@ func (s *Server) broadcast(ev Event) int {
 	}
 	s.mu.Unlock()
 
-	sent := 0
+	var sent atomic.Int64
+	var wg sync.WaitGroup
+	wg.Add(len(subs))
 	for _, k := range subs {
-		switch err := k.send(ev); {
-		case err == nil:
-			sent++
-		case errors.Is(err, errSinkBusy):
-		default:
-			s.unlisten(k)
-		}
+		go func() {
+			defer wg.Done()
+			switch err := k.send(ev); {
+			case err == nil:
+				sent.Add(1)
+			case errors.Is(err, errSinkBusy):
+			default:
+				s.unlisten(k)
+			}
+		}()
 	}
-	return sent
+	wg.Wait()
+	return int(sent.Load())
 }
 
 // await registers a token and returns the channel that closes when somebody

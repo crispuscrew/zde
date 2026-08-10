@@ -25,6 +25,13 @@
 // verbs on a row and something to say back when one of them was not possible.
 // Sharing one surface would have meant a mode flag inside it, which is the
 // point where one surface becomes two badly.
+//
+// Every Text in this file sets textFormat: Text.PlainText, including the ones
+// that only draw a literal. Qt Quick's default is AutoText, which renders a
+// string that looks like markup as StyledText, and StyledText fetches an
+// <img src="http://..."> over the network - out of a process that is holding a
+// layer surface and a keyboard grab. internal/zded/qml_test.go refuses a Text
+// with no format, and carries the whole of why.
 pragma ComponentBehavior: Bound
 
 import QtQuick
@@ -325,6 +332,7 @@ PanelWindow {
             color: "#7a7f8a"
             font.pixelSize: 13
             font.family: "monospace"
+            textFormat: Text.PlainText
         }
 
         // The body of the row you are on, which is the half a one-line list
@@ -366,6 +374,7 @@ PanelWindow {
                 color: "#7a7f8a"
                 font.pixelSize: 12
                 font.family: "monospace"
+                textFormat: Text.PlainText
             }
 
             Text {
@@ -384,6 +393,7 @@ PanelWindow {
                 elide: Text.ElideRight
                 font.pixelSize: 12
                 font.family: "monospace"
+                textFormat: Text.PlainText
             }
         }
 
@@ -421,6 +431,7 @@ PanelWindow {
             color: "#c9ccd4"
             font.pixelSize: 12
             font.family: "monospace"
+            textFormat: Text.PlainText
         }
 
         Text {
@@ -433,6 +444,7 @@ PanelWindow {
             color: "#7a7f8a"
             font.pixelSize: 11
             font.family: "monospace"
+            textFormat: Text.PlainText
         }
 
         // Where you are in what arrived. The view scrolls now, so without this
@@ -447,6 +459,7 @@ PanelWindow {
             color: "#7a7f8a"
             font.pixelSize: 11
             font.family: "monospace"
+            textFormat: Text.PlainText
         }
 
         // A view and not a column, because the history holds up to 420 records -
@@ -516,6 +529,7 @@ PanelWindow {
                     color: row.modelData.dismissed ? "#7a7f8a" : (row.modelData.urgent ? "#e5484d" : "#c9ccd4")
                     font.pixelSize: 13
                     font.family: "monospace"
+                    textFormat: Text.PlainText
                 }
 
                 Text {
@@ -528,6 +542,7 @@ PanelWindow {
                     color: "#7a7f8a"
                     font.pixelSize: 12
                     font.family: "monospace"
+                    textFormat: Text.PlainText
                 }
             }
         }

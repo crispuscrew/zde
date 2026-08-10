@@ -12,7 +12,9 @@
 package manifest
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -22,6 +24,7 @@ import (
 
 	"github.com/crispuscrew/zde/internal/attn"
 	"github.com/crispuscrew/zde/internal/desk"
+	"github.com/crispuscrew/zde/internal/plainfile"
 )
 
 // Desk is one manifest.
@@ -97,6 +100,22 @@ func Parse(data []byte) (*Desk, error) {
 	dec.KnownFields(true) // a misspelled key is a mistake, not a comment
 	if err := dec.Decode(&d); err != nil {
 		return nil, fmt.Errorf("manifest: %w", err)
+	}
+	// And nothing after it. A YAML file may hold several documents separated by
+	// `---`, and this decoder reads one: a second desk written under the first
+	// was not a desk that failed to load, it was a desk that was never
+	// mentioned again. Somebody who wrote two and got one would have every
+	// reason to think zde had read both, because the file it refused to read
+	// half of is the file `zde status` reports no problem with.
+	//
+	// Refused rather than read, because one file is one desk everywhere else:
+	// LoadDir keys the map by desk name and reports a second file claiming a
+	// name as a problem, so a file holding two would be the one place that rule
+	// does not apply.
+	var rest yaml.Node
+	if err := dec.Decode(&rest); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("manifest %q: there is more than one document in this file, and a manifest is "+
+			"one desk: put the second after a `---` in a file of its own", d.Name)
 	}
 	if err := d.check(); err != nil {
 		return nil, err
@@ -181,10 +200,22 @@ func (d *Desk) check() error {
 			return fmt.Errorf("manifest %q: app %q: instance %q is not a name: lowercase letters, digits and "+
 				"dashes, because it becomes part of a path", d.Name, app.App, app.Instance)
 		}
-		// It becomes a string in a KDL file the compositor parses. A quote or a
-		// backslash from a hand-edited manifest would end the string early and
-		// take niri's whole config down with it - including the binds - which
-		// is a worse day than a window in the wrong place.
+		// It becomes a string in a KDL file the compositor parses, and the
+		// writer escapes it for that (internal/zded, kdlString) - so this is no
+		// longer the thing that stops a quote from ending the string early and
+		// taking niri's whole config down. It stays for two reasons that
+		// outlive that one.
+		//
+		// It answers here, where the mistake is. A hand-edited manifest with a
+		// stray quote in an app id gets a message naming the file, the app and
+		// the field; escaped instead, it becomes a window rule that quietly
+		// never matches anything, and the symptom is a window in the wrong
+		// place three days later.
+		//
+		// And it is the second of two independent things, which is the point of
+		// there being two. The escaping is a function deep in the writer that
+		// looked obviously correct while it was wrong; this is a guard at the
+		// boundary where the value arrives. Neither is load-bearing alone.
 		if strings.ContainsAny(app.AppID, "\"\\\n\r") {
 			return fmt.Errorf("manifest %q: app %q: app_id %q contains a quote, a backslash or a newline, "+
 				"and it becomes a string in the compositor's config", d.Name, app.App, app.AppID)
@@ -326,24 +357,96 @@ func (dir Dir) Save(d *Desk) (string, error) {
 		}
 	}
 	path := filepath.Join(string(dir), d.Name+".yaml")
-	if _, err := os.Stat(path); err == nil {
-		return "", fmt.Errorf("%s already exists: remove it to take a new snapshot of %q", path, d.Name)
-	}
 	out, err := yaml.Marshal(d)
 	if err != nil {
 		return "", err
 	}
 	header := "# Written by zde desk snapshot. Apps are not captured yet - add\n" +
 		"# them by hand (docs/model.md, section 5).\n"
-	if err := os.WriteFile(path, append([]byte(header), out...), 0o600); err != nil {
+	if err := writeNew(path, append([]byte(header), out...)); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return "", fmt.Errorf("%s already exists: remove it to take a new snapshot of %q", path, d.Name)
+		}
 		return "", err
 	}
 	return path, nil
 }
 
+// writeNew puts content at path, or refuses because something is already there.
+//
+// Through a temp file and a link, which is the shape internal/zded/rules.go
+// already uses for niri's dynamic config, and for the same reasons plus one.
+// What it replaces was a Stat and then an os.WriteFile, which got three things
+// wrong:
+//
+//   - The refusal was a Stat and the write was a separate call, so what it
+//     tested and what it wrote to were two different moments. Anything
+//     appearing at the name in between was written over.
+//   - os.WriteFile follows a symlink, including a dangling one, so a link at
+//     the name was a Stat that said "nothing there" followed by a create of
+//     whatever the link pointed at, somewhere else entirely.
+//   - It was neither atomic nor fsynced: a manifest half on the disk is a desk
+//     that will not load, and the machine losing power is exactly when
+//     somebody wants their arrangement written down.
+//
+// os.Link and not os.Rename, because refusing an existing file is this
+// function's contract and a rename would replace one. link(2) fails with EEXIST
+// and does it in the kernel, which is the same refusal with no window in it,
+// and it does not follow a symlink at the new name either.
+func writeNew(path string, content []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".manifest-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(content); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	// 0600, which os.CreateTemp already gives it, and the link carries over.
+	// Said out loud because it is a promise this file makes above.
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Link(tmp.Name(), path)
+}
+
+// bytesMax bounds one manifest, and manifestsMax bounds how many are read.
+//
+// The arithmetic, so that the numbers are checkable rather than round. A
+// manifest is a name, a monitor block per output, and an app block per app. The
+// largest desk anybody has described is a handful of outputs with a dozen
+// workspaces each and a dozen apps with a few mounts apiece, which is a couple
+// of kilobytes of YAML; 64 KiB is thirty times that. And a person navigates
+// desks by pressing a key per desk, so 256 of them is already more than the
+// keyboard can reach - the cap is not there to stop somebody with a lot of
+// desks, it is there so that a directory somebody pointed `-desks` at by
+// mistake is a message instead of a daemon reading a filesystem.
+//
+// Both are refusals with a name attached rather than a truncation, because
+// LoadDir already has somewhere to put those: they come back as Problems and
+// end up in `zde status`, in front of the person who can move the file.
+const (
+	bytesMax     = 64 << 10
+	manifestsMax = 256
+)
+
 // Load reads one manifest from a file.
+//
+// Bounded, and through internal/plainfile: this runs at startup and on every
+// reconcile, over a directory whose contents are whatever is in it, so a FIFO
+// named work.yaml used to stop zded dead - after the socket was bound and
+// before anything was answering it, which is the worst moment there is to stop.
 func Load(path string) (*Desk, error) {
-	data, err := os.ReadFile(path)
+	data, err := plainfile.Read(path, bytesMax)
 	if err != nil {
 		return nil, err
 	}
@@ -387,6 +490,15 @@ func LoadDir(dir string) (map[string]*Desk, []Problem, error) {
 			continue
 		}
 		path := filepath.Join(dir, e.Name())
+		if len(out)+len(problems) >= manifestsMax {
+			// Said once, about the directory, rather than once per file: a
+			// thousand lines in `zde status` is the same as no lines.
+			problems = append(problems, Problem{
+				Path: dir,
+				Err:  fmt.Errorf("more than %d manifests here, so the rest are not read", manifestsMax),
+			})
+			break
+		}
 		d, err := Load(path)
 		if err != nil {
 			problems = append(problems, Problem{Path: path, Err: err})

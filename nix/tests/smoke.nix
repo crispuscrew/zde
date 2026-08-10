@@ -73,11 +73,21 @@ let
         # A desk that does not exist yet, declared - with an app on it, which
         # nothing launches yet and which is still the half of a manifest that
         # says what the desk is for (docs/model.md, section 5).
+        #
+        # Dots in the app id, deliberately, and this is the only place the shape
+        # of that id is chosen. Nearly every real application id has one -
+        # org.mozilla.firefox, org.gnome.Nautilus - and a dot is two things at
+        # once where this ends up: a metacharacter to the regex niri matches
+        # with, and, once escaped for that, a backslash in a KDL string. This
+        # fixture was zde-pinned-probe until an escaping bug shipped through it,
+        # because an id with no metacharacter in it is the one shape that cannot
+        # fail, and the whole point of the assertions below is that a real niri
+        # reads what zded wrote.
         printf 'name: vshop
     monitors:
       winit: { workspaces: [code, notes] }
     apps:
-      - { app: absent-app, instance: vshop, app_id: zde-pinned-probe, monitor: winit, workspace: code }
+      - { app: absent-app, instance: vshop, app_id: zde.pinned.probe, monitor: winit, workspace: code }
     '       > /tmp/desks/vshop.yaml
 
         # niri, nested and headless. cage gives it a Wayland host; pixman and
@@ -1054,7 +1064,12 @@ let
           echo "the desk pins an app and niri was never told:"
           cat ~/.config/niri/dynamic.kdl; exit 1
         }
-        grep -q 'match app-id="\^zde-pinned-probe\$"' ~/.config/niri/dynamic.kdl || {
+        # Two backslashes before each dot, and -F because that is a claim about
+        # bytes rather than about a pattern. The dot is escaped once for niri's
+        # regex, and the backslash that escaped it is escaped again for the KDL
+        # string carrying that regex; one backslash here is `\.`, which is not a
+        # KDL escape, and the validate below would refuse the whole config.
+        grep -qF 'match app-id="^zde\\.pinned\\.probe$"' ~/.config/niri/dynamic.kdl || {
           echo "the rule does not match the app id the manifest names:"
           cat ~/.config/niri/dynamic.kdl; exit 1
         }
@@ -1072,16 +1087,16 @@ let
         # From another workspace on purpose. Opening it on the pinned one would
         # pass with no rule at all - that is where new windows go.
         nirimsg action focus-workspace vshop.winit.notes >/dev/null
-        foot --app-id=zde-pinned-probe -e sleep 120 >/tmp/pinned.log 2>&1 &
+        foot --app-id=zde.pinned.probe -e sleep 120 >/tmp/pinned.log 2>&1 &
         landed() {
           nirimsg --json windows |
-            tr ',' '\n' | grep -q '"app_id":"zde-pinned-probe"'
+            tr ',' '\n' | grep -qF '"app_id":"zde.pinned.probe"'
         }
         if ! waitfor 60 landed; then
           echo "the pinned window never opened:"; cat /tmp/pinned.log; exit 1
         fi
         pinned_ws=$(nirimsg --json windows | tr '{' '\n' |
-          grep '"app_id":"zde-pinned-probe"' | tr ',' '\n' |
+          grep -F '"app_id":"zde.pinned.probe"' | tr ',' '\n' |
           grep '"workspace_id"' | head -1 | tr -dc '0-9')
         want_ws=$(nirimsg --json workspaces | tr '{' '\n' |
           grep '"name":"vshop.winit.code"' | tr ',' '\n' |
@@ -1093,7 +1108,7 @@ let
         # Closed, because everything below was written for a strip with a known
         # set of windows on it.
         nirimsg action focus-window --id "$(nirimsg --json windows | tr '{' '\n' |
-          grep '"app_id":"zde-pinned-probe"' | tr ',' '\n' |
+          grep -F '"app_id":"zde.pinned.probe"' | tr ',' '\n' |
           grep '"id"' | head -1 | tr -dc '0-9')" >/dev/null
         nirimsg action close-window >/dev/null
         gone() { ! landed; }
@@ -2083,6 +2098,35 @@ pkgs.testers.runNixOSTest {
       binds = machine.succeed("cat /home/zde/.config/niri/binds.kdl")
       for shot in ("{ screenshot; }", "{ screenshot-screen; }", "{ screenshot-window; }"):
           assert shot in binds, f"no {shot} bind: {binds}"
+
+      # The keys a focused app cannot take. niri 26.04 hands
+      # zwp_keyboard_shortcuts_inhibit_manager_v1 to every client, sandboxed or
+      # not - it is the one sensitive global its security-context filter misses
+      # - and while such a surface has the keyboard it forwards rather than acts
+      # on every bind whose allow-inhibiting is true, which is niri's default.
+      # So this property is the whole of what keeps panic, lock, the mode picker
+      # and the key that ends the grab working, and the `niri validate` above is
+      # what makes these greps mean something: the property parsed, and it is
+      # not a string this file happens to find in a comment.
+      #
+      # Whether an app can really swallow the rest is by hand (docs/verify.md,
+      # section 10): this VM has no input devices and nothing in it grabs.
+      for chord in (
+          "Mod+Shift+Escape",     # panic
+          "Mod+Ctrl+semicolon",   # lock
+          "Mod+Ctrl+Escape",      # the grab toggle, which a grab must not eat
+          "Mod+m",                # the mode picker, which is how a mode is left
+      ):
+          line = [l for l in binds.splitlines() if l.strip().startswith(chord + " ")]
+          assert len(line) == 1, f"{chord} is not one bind in the config: {binds}"
+          assert "allow-inhibiting=false" in line[0], (
+              f"{chord} is a key an app can take off you: {line[0]}"
+          )
+      # And the mirror: an ordinary bind must not carry it, or every app that
+      # legitimately grabs the keyboard - a VM, a nested compositor - has been
+      # locked out of the whole keymap by a default nobody argued for.
+      nav = [l for l in binds.splitlines() if l.strip().startswith("Mod+j ")]
+      assert nav and "allow-inhibiting" not in nav[0], f"Mod+j is unsuppressible: {nav}"
 
       # The unit that starts the daemon with the session. Every check in this
       # file runs zded by hand, which is the one thing a person never does:

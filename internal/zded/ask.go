@@ -72,6 +72,34 @@ const MethodAskRun = "ask.run"
 // into a goroutine that was blocked in a read nothing would end.
 const askTimeout = 2 * time.Minute
 
+// asksMax is how many tiers may be running at once, across the whole daemon.
+//
+// sink.asking already allows one run per connection, and that is the bound that
+// turned out not to be one: connections are free. Measured on a running zded,
+// with a tier that reads the question and then holds on the way a model loading
+// weights does - 60 connections, one ask.run each:
+//
+//	before: children=0  fds=7
+//	after:  children=60 fds=247
+//
+// Sixty subprocesses and 240 file descriptors, four per run: the two ends of
+// stdout's pipe and the two of stderr's. They were reaped at askTimeout, so the
+// ceiling was N subprocesses for two minutes, and N was whatever the caller
+// felt like. A local tier is a model that can be holding a GPU.
+//
+// The arithmetic. One run at a time is what a GPU can actually do, so the
+// question is only how many a person can honestly have in flight. The panel
+// will not take a second question while one is running, and the CLI asks and
+// waits, so it is one per surface: the panel, plus a question typed in a
+// terminal, plus another terminal for somebody who works that way. Four is that
+// with one spare, and it is the point past which the fifth would be waiting on
+// hardware rather than on zde.
+//
+// At the cap the ceiling is 4 subprocesses and 16 descriptors for askTimeout,
+// against 60 and 240 measured. Past it the answer is a refusal that says what
+// to do, which is the same shape as a connection that asks twice.
+const asksMax = 4
+
 // askGrace is how long Wait may go on waiting after the tier has been told to
 // stop. With both pipes held here rather than by exec, all it guards is a
 // process that outlives its own group being killed, which is a stopped one or
@@ -309,6 +337,33 @@ func (s *Server) askSurface(kind, question string) Response {
 	}
 }
 
+// claimAsk takes one of the daemon's places to run a tier in, or says there is
+// none. Every claim is released by the run that took it, whichever way it ends.
+func (s *Server) claimAsk() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.asks >= asksMax {
+		return false
+	}
+	s.asks++
+	return true
+}
+
+func (s *Server) releaseAsk() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.asks--
+}
+
+// asking is how many tiers are running. For the tests, and for the same reason
+// listeners is there for them: a bound nobody can count is a bound nobody can
+// check.
+func (s *Server) asking() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.asks
+}
+
 // askRun runs the tier and streams what it says back to the one connection that
 // asked for it.
 //
@@ -393,6 +448,14 @@ func (s *Server) askRun(k *sink, args []string) {
 		return
 	}
 	defer k.asking.Store(false)
+	// And one at a time across the daemon, however many connections ask (see
+	// asksMax). After the per-connection claim rather than before, so that a
+	// connection asking twice hears which of the two it is doing wrong.
+	if !s.claimAsk() {
+		k.reply(Response{Error: fmt.Sprintf("%d tiers are already running, which is every one zded runs at once: wait for one to answer", asksMax)})
+		return
+	}
+	defer s.releaseAsk()
 	// Started, said first, so a client reading its connection in order never
 	// meets a piece of an answer before it has been told there is one coming.
 	k.reply(ok("asking"))
@@ -404,6 +467,24 @@ func (s *Server) askRun(k *sink, args []string) {
 	// reach it, so the only thing that can is this cancel, through cmd.Cancel.
 	ctx, cancel := context.WithTimeout(s.runCtx, askTimeout)
 	defer cancel()
+	// And the connection that asked is the other thing that ends a run. Without
+	// this, closing it stopped nothing: the pump only learns a client has gone
+	// when it next tries to write to it, so a tier that is quiet - loading a
+	// model, thinking, wedged - was never noticed at all and ran to askTimeout.
+	// Measured: 60 connections closed, and 60 tiers still running two minutes
+	// later. This is the case sink.end exists for, and closing the connection is
+	// now how a person stops a question they have changed their mind about.
+	//
+	// Cancelling is the whole of it, because cancel is wired to killGroup below,
+	// so the tier and everything it forked go the way the timeout would have
+	// sent them. The goroutine leaves with the run either way.
+	go func() {
+		select {
+		case <-k.endedOf():
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	// The question, and what came before it, and nothing else. A tier is a
 	// program that reads on stdin and answers on stdout: no arguments to quote,

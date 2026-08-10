@@ -29,6 +29,12 @@ func (b Bind) props() string {
 	if b.Entry.WhenLocked {
 		p += " allow-when-locked=true"
 	}
+	// niri's default is true, so this is the difference between a bind zde owns
+	// and one the focused application can swallow by binding a Wayland global
+	// nothing gates (registry.go, Unsuppressible).
+	if b.Entry.Unsuppressible {
+		p += " allow-inhibiting=false"
+	}
 	return p
 }
 
@@ -47,6 +53,15 @@ func (b Bind) node() string {
 	if b.Arg != "" {
 		argv = append(argv[:len(argv):len(argv)], b.Arg)
 	}
+	// Go's quoting, not KDL's, and they are not the same set: strconv.Quote
+	// writes \a, \v, \x41 and \U0001f600, none of which KDL knows, and KDL
+	// refuses the whole config over one of them. It holds here because nothing
+	// that reaches this can contain a character Go would spell that way - argv
+	// is the registry beside this file, which is source, and b.Arg is held to
+	// a lowercase name (keymap.go, nameArg). It stops holding the day a spawn
+	// argument comes from a manifest or from the compositor, and then this
+	// needs an escaper written for KDL (internal/zded, kdlString) rather than
+	// one borrowed from another language's string syntax.
 	quoted := make([]string, len(argv))
 	for i, a := range argv {
 		quoted[i] = strconv.Quote(a)

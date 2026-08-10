@@ -1,10 +1,13 @@
 package manifest
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/crispuscrew/zde/internal/desk"
 )
@@ -458,5 +461,163 @@ func TestParseRejectsAddressInAppField(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "instance: work") {
 		t.Fatalf("the error should show which halves go where, got: %v", err)
+	}
+}
+
+// A FIFO named like a manifest stops zded, so it must not stop this.
+//
+// The desks directory is read at startup and on every reconcile, and until this
+// it was read with a plain os.ReadFile. Opening a FIFO for reading waits in the
+// kernel for a writer that never comes, and the moment it happened at was after
+// the socket was bound and before anything was answering it - so every keybind
+// in the session connected into a backlog and got nothing back.
+//
+// The deadline is what makes this a test rather than a hang.
+func TestAFifoInTheDesksDirectoryIsAProblemAndNotAHang(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "vshop.yaml"), []byte(vshop), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(filepath.Join(dir, "trap.yaml"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	type answer struct {
+		desks    map[string]*Desk
+		problems []Problem
+	}
+	done := make(chan answer, 1)
+	go func() {
+		desks, problems, err := LoadDir(dir)
+		if err != nil {
+			t.Error(err)
+		}
+		done <- answer{desks, problems}
+	}()
+	select {
+	case got := <-done:
+		if _, ok := got.desks["vshop"]; !ok {
+			t.Error("one file that cannot be read took the desk next to it with it")
+		}
+		if len(got.problems) != 1 || !strings.Contains(got.problems[0].Err.Error(), "named pipe") {
+			t.Errorf("problems = %v, want one naming what is actually at that path", got.problems)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("LoadDir did not return in 10s, which is the startup hang")
+	}
+}
+
+// A file far too large to be a manifest is a problem, not a parse.
+//
+// A manifest that would otherwise load, padded with a comment past the line.
+// A file of rubbish would be refused by the parser with or without a ceiling,
+// so it would not hold the ceiling down.
+func TestAManifestPastTheCeilingIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	body := vshop + "\n# " + strings.Repeat("x", bytesMax) + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "huge.yaml"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, problems, err := LoadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(problems) != 1 || !strings.Contains(problems[0].Err.Error(), "larger than") {
+		t.Errorf("problems = %v, want the size named", problems)
+	}
+}
+
+// And a directory with more manifests than zde will read says so once.
+func TestTooManyManifestsIsOneMessageAndNotAThousand(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < manifestsMax+5; i++ {
+		name := fmt.Sprintf("desk-%03d", i)
+		body := strings.Replace(vshop, "name: vshop", "name: "+name, 1)
+		if err := os.WriteFile(filepath.Join(dir, name+".yaml"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	desks, problems, err := LoadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(desks) > manifestsMax {
+		t.Errorf("read %d manifests, and the cap is %d", len(desks), manifestsMax)
+	}
+	if len(problems) != 1 || !strings.Contains(problems[0].Err.Error(), "more than") {
+		t.Errorf("problems = %v, want one line about the directory", problems)
+	}
+}
+
+// A second document in one file is refused, not ignored.
+//
+// It used to be dropped in silence: the decoder reads one document, so somebody
+// who wrote two desks in a file got one desk and a `zde status` with nothing to
+// report. A desk missing for a reason nobody is told is the failure this
+// package exists to avoid.
+func TestASecondDocumentIsRefusedRatherThanIgnored(t *testing.T) {
+	two := vshop + "\n---\n" + strings.Replace(vshop, "name: vshop", "name: haven", 1)
+	_, err := Parse([]byte(two))
+	if err == nil {
+		t.Fatal("two desks in one file loaded as one, and the second is gone with no message")
+	}
+	if !strings.Contains(err.Error(), "more than one document") {
+		t.Errorf("error is %q, and it should say what to do about it", err)
+	}
+}
+
+// A snapshot does not write through a link somebody left at the name.
+//
+// The refusal used to be an os.Stat, which follows a symlink: a dangling one
+// looked like nothing was there, and the os.WriteFile that followed created the
+// far end - a file with the desk's mounts and its private flag in it, at a path
+// somebody else chose. The link stays where it is now, and nothing appears at
+// the other end of it.
+func TestSaveDoesNotWriteThroughADanglingLink(t *testing.T) {
+	dir := t.TempDir()
+	elsewhere := filepath.Join(t.TempDir(), "planted.yaml")
+	if err := os.Symlink(elsewhere, filepath.Join(dir, "vshop.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	d, err := Parse([]byte(vshop))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Dir(dir).Save(d); err == nil {
+		t.Error("saved over a symlink: the manifest went wherever the link pointed")
+	}
+	if _, err := os.Stat(elsewhere); err == nil {
+		t.Errorf("%s now exists, so the desk was written through the link", elsewhere)
+	}
+}
+
+// What Save leaves behind is one whole manifest and nothing else.
+//
+// The temp file and the link are what make that true, and it is the property
+// worth pinning: a manifest is written when somebody arranges a desk they want
+// back, which is the least convenient thing to have half of.
+func TestASavedManifestIsWholeAndLeavesNothingBehind(t *testing.T) {
+	dir := t.TempDir()
+	d, err := Parse([]byte(vshop))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := Dir(dir).Save(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := Load(path)
+	if err != nil {
+		t.Fatalf("what Save wrote does not load: %v", err)
+	}
+	if back.Name != d.Name || len(back.Monitors) != len(d.Monitors) {
+		t.Errorf("read back %+v, want %+v", back, d)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("the directory holds %d files, want only the manifest", len(entries))
 	}
 }

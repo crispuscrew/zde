@@ -17,6 +17,13 @@
 // The input mode (Normal, Window, Kb-mouse, One-hand, Passthrough) is a
 // different thing with the same name, and it is the one still not here: it
 // needs the input daemon, so it arrives with what owns it.
+//
+// Every Text in this file sets textFormat: Text.PlainText, including the ones
+// that only draw a literal. Qt Quick's default is AutoText, which renders a
+// string that looks like markup as StyledText, and StyledText fetches an
+// <img src="http://..."> over the network - out of a process that is holding a
+// layer surface and a keyboard grab. internal/zded/qml_test.go refuses a Text
+// with no format, and carries the whole of why.
 pragma ComponentBehavior: Bound
 
 import QtQuick
@@ -256,13 +263,24 @@ ShellRoot {
                 root.modeKnown = true;
                 return;
             }
-            // A refusal. Attributed to the center, which is the only
-            // surface here that asks for something that can fail while it
-            // is on the screen - and a refusal it swallowed would be a key
-            // that did nothing (docs/vision.md, principle 4). A refusal
-            // arriving from anything else while the center is up would land
-            // on it too, which is the price of a protocol with no request
-            // ids and is worth less than the silence.
+            // A refusal, attributed to whichever surface is up that could
+            // have earned one - a refusal swallowed is a key that did
+            // nothing (docs/vision.md, principle 4). One arriving from
+            // somewhere else lands on that surface too, which is the price
+            // of a protocol with no request ids and is worth less than the
+            // silence. The center is first because it is the one that holds
+            // the keyboard while it asks.
+            //
+            // Then the three that wait on an answer: the palette, the power
+            // menu and the clipboard. `running` is the precise claim among
+            // these - a run really is in flight - where the other two are
+            // only "up", so they go ahead of the loosest test here.
+            //
+            // The popup is last and is matched on visible rather than on
+            // reached, which is the case a keyboard-shaped guess would
+            // miss: its buttons are clickable without anybody ever asking
+            // for the keys, so a refusal owed to a mouse press had nowhere
+            // to land.
             if (msg.error !== undefined) {
                 if (center.visible)
                     center.note = msg.error;
@@ -1253,6 +1271,7 @@ ShellRoot {
                 color: root.urgent > 0 ? "#e5484d" : (root.linked && root.known ? "#c9ccd4" : "#7a7f8a")
                 font.pixelSize: 13
                 font.family: "monospace"
+                textFormat: Text.PlainText
             }
 
             // The attn mode, next to the queue it governs. Named rather than
@@ -1279,6 +1298,7 @@ ShellRoot {
                 color: root.mode === "work" ? "#7a7f8a" : "#e5a23d"
                 font.pixelSize: 13
                 font.family: "monospace"
+                textFormat: Text.PlainText
             }
 
             // The right-hand chain, from the clock leftwards: clock, battery,
@@ -1318,6 +1338,7 @@ ShellRoot {
                 color: micState.muted ? "#7a7f8a" : "#e5484d"
                 font.pixelSize: 13
                 font.family: "monospace"
+                textFormat: Text.PlainText
             }
 
             // The link, on the bar for the reason principle 4 gives: what a
@@ -1362,6 +1383,7 @@ ShellRoot {
                 color: netState.known && netState.kind !== "absent" ? "#c9ccd4" : "#7a7f8a"
                 font.pixelSize: 13
                 font.family: "monospace"
+                textFormat: Text.PlainText
             }
 
             // The battery, which is on the bar for the reason principle 4 gives:
@@ -1404,6 +1426,7 @@ ShellRoot {
                 color: !battery.charging && battery.pct <= 20 ? "#e5484d" : "#c9ccd4"
                 font.pixelSize: 13
                 font.family: "monospace"
+                textFormat: Text.PlainText
             }
 
             Text {
@@ -1416,6 +1439,7 @@ ShellRoot {
                 color: "#c9ccd4"
                 font.pixelSize: 13
                 font.family: "monospace"
+                textFormat: Text.PlainText
 
                 property var now: new Date()
                 text: Qt.formatDateTime(clock.now, "ddd d MMM  HH:mm")

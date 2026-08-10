@@ -23,6 +23,13 @@
 // an action nobody has written. An image or a file was not kept - the history
 // is text only - and a person who copied one is better served by a row saying
 // so than by a list that appears to have missed it.
+//
+// Every Text in this file sets textFormat: Text.PlainText, including the ones
+// that only draw a literal. Qt Quick's default is AutoText, which renders a
+// string that looks like markup as StyledText, and StyledText fetches an
+// <img src="http://..."> over the network - out of a process that is holding a
+// layer surface and a keyboard grab. internal/zded/qml_test.go refuses a Text
+// with no format, and carries the whole of why.
 pragma ComponentBehavior: Bound
 
 import QtQuick
@@ -287,6 +294,7 @@ PanelWindow {
                 color: "#5a5f6a"
                 font.pixelSize: 14
                 font.family: "monospace"
+                textFormat: Text.PlainText
             }
         }
 
@@ -320,6 +328,7 @@ PanelWindow {
             }
             font.pixelSize: 11
             font.family: "monospace"
+            textFormat: Text.PlainText
         }
 
         ListView {
@@ -378,6 +387,7 @@ PanelWindow {
                     color: row.putBack ? "#c9ccd4" : "#6a6f7a"
                     font.pixelSize: 13
                     font.family: "monospace"
+                    textFormat: Text.PlainText
                 }
 
                 // When it was copied, which is how two similar rows are told
@@ -393,6 +403,7 @@ PanelWindow {
                     color: "#7a7f8a"
                     font.pixelSize: 12
                     font.family: "monospace"
+                    textFormat: Text.PlainText
                 }
             }
         }

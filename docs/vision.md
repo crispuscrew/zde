@@ -138,7 +138,7 @@ guesses. Owns the kill switch and the per-app cut.
 6. Counters on the generated nft rules plus netns enumeration, for netview.
    **Landed in 0.9.0** as `zcr net`, which is what netview (0.3) reads.
 
-All seven are answered as of zinc 0.9.1. What is left is on this side.
+All six are answered as of zinc 0.9.1. What is left is on this side.
 
 ## 5. Scenario catalog
 

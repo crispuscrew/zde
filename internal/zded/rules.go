@@ -1,6 +1,7 @@
 package zded
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/crispuscrew/zde/internal/desk"
 	"github.com/crispuscrew/zde/internal/manifest"
+	"github.com/crispuscrew/zde/internal/plainfile"
 )
 
 // dynamic.kdl is the seam a running zded writes through (niri/config.kdl): the
@@ -64,15 +66,90 @@ func placementRules(desks map[string]*manifest.Desk) string {
 				continue // check() proved these parse; a new one cannot appear here
 			}
 			b.WriteString("\nwindow-rule {\n")
-			// Anchored and quoted: the manifest gives a literal app id and niri
-			// reads a regex, so an unescaped one would match more windows than
-			// the desk asked for - `.` alone matches every app there is.
-			b.WriteString("    match app-id=\"^" + regexp.QuoteMeta(app.AppID) + "$\"\n")
-			b.WriteString("    open-on-output \"" + app.Monitor + "\"\n")
-			b.WriteString("    open-on-workspace \"" + n.String() + "\"\n")
+			// Two escapings, inner first, and they are not the same escaping.
+			//
+			// niri reads this value as a regex, so the literal app id from the
+			// manifest is quoted for that: without it the desk's rule matches
+			// more windows than it asked for, and `.` alone matches every app
+			// there is. That is what QuoteMeta does, and it is why QuoteMeta
+			// alone reads as obviously right.
+			//
+			// It is not, because niri never sees those bytes directly. They
+			// arrive as a KDL quoted string, and KDL's escape set is nothing
+			// like a regex's - so the `\.` QuoteMeta produces for the dot in
+			// org.mozilla.firefox is an invalid KDL escape, niri refuses the
+			// whole config over it, and dynamic.kdl is included by the config
+			// that carries the binds. One pinned app with a dot in its id and
+			// the machine has no keyboard (kdlString, and the test that hands
+			// this to a real niri).
+			//
+			// So: quote for the regex, then quote that for KDL. The monitor
+			// and the workspace go through the same door although NewName
+			// above has already proved they are letters, digits and dashes -
+			// one function owns "a value becoming a KDL string" here, so a
+			// field added to this rule later is not a fresh thing to reason
+			// about.
+			b.WriteString("    match app-id=" + kdlString("^"+regexp.QuoteMeta(app.AppID)+"$") + "\n")
+			b.WriteString("    open-on-output " + kdlString(app.Monitor) + "\n")
+			b.WriteString("    open-on-workspace " + kdlString(n.String()) + "\n")
 			b.WriteString("}\n")
 		}
 	}
+	return b.String()
+}
+
+// kdlString renders s as a KDL quoted string, quotes included, for niri's
+// parser (KDL 1.0, which is what niri 26.04 reads).
+//
+// What KDL actually requires is small, and was read off niri's own parser
+// rather than guessed: inside a quoted string only `"` and `\` may not stand
+// for themselves, and the escapes it accepts after a backslash are exactly
+// `"`, `/`, `\`, `b`, `f`, `n`, `r`, `t` and `u{...}`. Anything else after a
+// backslash - `\.`, `\s`, `\-` - is "invalid escape char" and takes the file
+// down. Note what is *not* on that list: the four-hex-digit `u` form without
+// braces is refused, and the `\x41`, `\a` and `\v` that Go's strconv.Quote
+// would happily emit are not KDL escapes at all. So this is written out rather
+// than borrowed from strconv.
+//
+// Raw tabs, raw newlines and raw control bytes are all accepted by KDL inside
+// a quoted string, so escaping them is this function going past what it must.
+// It does it anyway: dynamic.kdl is a file somebody reads when they are asking
+// why a window went where it went, and one rule per line is the difference
+// between reading it and not.
+//
+// Ranged by rune, so a byte that is not valid UTF-8 becomes U+FFFD rather than
+// being copied through. KDL is UTF-8, and a file niri cannot decode is a file
+// niri refuses - the same failure this whole function exists to prevent.
+func kdlString(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '\\':
+			b.WriteString(`\\`)
+		case '"':
+			b.WriteString(`\"`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		case '\b':
+			b.WriteString(`\b`)
+		case '\f':
+			b.WriteString(`\f`)
+		default:
+			// The rest of C0 and DEL, which have no letter of their own. Braced
+			// hex is the only form KDL 1.0 takes.
+			if r < 0x20 || r == 0x7f {
+				fmt.Fprintf(&b, `\u{%x}`, r)
+				continue
+			}
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('"')
 	return b.String()
 }
 
@@ -85,7 +162,18 @@ func writeRules(path, content string) error {
 	if path == "" {
 		return nil
 	}
-	if old, err := os.ReadFile(path); err == nil && string(old) == content {
+	// Bounded, and through internal/plainfile: this read runs at startup with
+	// the socket already bound and nothing yet answering it, so a FIFO at
+	// dynamic.kdl - which is a path in the person's own config directory, seeded
+	// by an activation script that leaves it alone afterwards - used to stop the
+	// daemon between binding and serving, which is the worst moment there is.
+	// Anything that is not the file this wrote falls through to the rewrite
+	// below, which replaces it, and that is the right answer for a path whose
+	// header says zde owns every byte of it.
+	//
+	// The ceiling is generous rather than tight: this file is a window rule per
+	// pinned app, a few hundred bytes each, so a megabyte is thousands of them.
+	if old, err := plainfile.Read(path, 1<<20); err == nil && string(old) == content {
 		// The bytes are right and the mode may not be. A machine that has been
 		// running zde since before this was written has a 0644 dynamic.kdl
 		// holding exactly what would be written now, so this early return is the
@@ -124,6 +212,16 @@ func writeRules(path, content string) error {
 	}
 	defer os.Remove(tmp.Name())
 	if _, err := tmp.WriteString(content); err != nil {
+		tmp.Close()
+		return err
+	}
+	// On the disk before the rename, not merely in the page cache. Without it
+	// the rename can land while the content has not, and what niri reads after
+	// a power cut is a file of the right name and zero length - which it
+	// refuses, and it refuses the whole config with it. The same fsync
+	// internal/manifest's writeNew and internal/journal's compaction do, so the
+	// three places zde renames a file into place now agree.
+	if err := tmp.Sync(); err != nil {
 		tmp.Close()
 		return err
 	}

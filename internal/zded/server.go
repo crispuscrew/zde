@@ -134,6 +134,13 @@ type Status struct {
 	// list and nothing appears - and knowing that from the machine you are
 	// sitting at beats guessing at it (docs/install.md, when it breaks).
 	Shell bool `json:"shell"`
+	// Listeners is how many connections are listening, out of listenersMax.
+	// Shell alone was the whole answer and it was the wrong one under load: a
+	// session flooded with connections that subscribe and never read has a
+	// picker that never appears and a status that says a shell is there, which
+	// is the one diagnostic a person runs saying the thing is fine. One shell is
+	// one; a number climbing towards the cap is somebody else's process.
+	Listeners int `json:"listeners"`
 	// Notifications says whether zded took the bus name. Without it every
 	// notification the session receives goes to whoever did, or nowhere.
 	Notifications bool `json:"notifications"`
@@ -210,6 +217,11 @@ type Server struct {
 	startPump sync.Once
 	popupStop chan struct{}
 	stopPump  sync.Once
+	// saidQueueFull keeps the queue's ceiling to one line a session. The thing
+	// that reaches it is a flood, so a message per arrival would be the flood
+	// again in the log - and the state it describes is visible in `zde queue`
+	// for as long as it lasts, which is where somebody would look anyway.
+	saidQueueFull sync.Once
 
 	// The clipboard side (clip.go). clips is what was copied - bounded, in
 	// memory, and expiring on its own, for the reasons internal/clip gives at
@@ -297,9 +309,14 @@ type Server struct {
 	// no card for, only because nothing could say which desk they were on, on a
 	// machine that declares a private desk (history.go, couldNotPlace).
 	unplaced uint64
-	subs     map[*sink]struct{}
-	waiting  map[string]chan struct{}
-	tokens   uint64
+	// asks is how many tiers are running right now, which is the count asksMax
+	// is a ceiling on (ask.go, claimAsk). Separate from runs, which is a wait
+	// group and cannot be read: what Close needs is to know when they have all
+	// gone, and what a new run needs is to know how many there are.
+	asks    int
+	subs    map[*sink]struct{}
+	waiting map[string]chan struct{}
+	tokens  uint64
 }
 
 // askStopWait is how long Close waits for the tiers to go. They are sent a kill
@@ -491,6 +508,42 @@ func (s *Server) stopRuns() {
 	}
 }
 
+// requestMax is how long one request line may be. It is the socket's answer to
+// a caller that opens a connection and never sends a newline.
+//
+// Without it the read grows a buffer to hold whatever arrives, so the daemon is
+// an allocator anything on this machine can drive. Measured on a running zded:
+// four connections each pushing 200 MB with no newline in them took RSS from
+// 8 MB to 2856 MB, which is about twice the bytes sent - a grow allocates the
+// bigger buffer and copies, so both are live for the length of the copy - and
+// none of it came back when the connections closed. `zde status` answered
+// instantly throughout, so the one diagnostic a person would run said the
+// daemon was fine.
+//
+// The arithmetic, and it is set by the largest thing a legitimate caller sends,
+// which is an ask.run carrying a conversation:
+//
+//   - askContextMax bounds the document one run may read at 64 KiB (ask.go).
+//     Every argument of that request ends up in that document, so nothing a
+//     caller may usefully send is outside this number.
+//   - The request's framing is the smaller of the two. `{"method":"ask.run",
+//     "args":[]}` is 29 bytes and each argument costs a comma and two quotes,
+//     against 25 or 27 bytes of `{"who":...,"text":...}` per turn in the
+//     document. So framing never makes the request the bigger side.
+//   - The escaping can, and by a lot. askDoc encodes with HTML escaping off on
+//     purpose, so that a pasted patch is weighed at what it is. A caller has no
+//     such duty and the Go client has no such setting: Client.Call uses
+//     json.Marshal, which writes "<", ">" and "&" as six-byte \u escapes. A
+//     conversation made of those and nothing else is six times its own length
+//     on the wire, so 64 KiB of document is 384 KiB of request.
+//
+// So 384 KiB is the ceiling for a caller doing nothing wrong, and 1 MiB is that
+// with room to spare. It is also the number internal/journal already picked for
+// the same job on a replayed line (journal.go, replay), and one bound for "a
+// line zde will read" beats two. At the cap, the four connections above cost
+// 4 MiB of buffer rather than 2856 MB.
+const requestMax = 1 << 20
+
 func (s *Server) handle(conn net.Conn) {
 	defer conn.Close()
 	if err := allowPeer(conn); err != nil {
@@ -504,15 +557,24 @@ func (s *Server) handle(conn net.Conn) {
 	// line that is neither.
 	k := &sink{w: conn}
 	defer s.unlisten(k)
+	// And the run this connection started, if it started one, is told the
+	// connection has gone (ask.go, askRun). Deferred here because this is the
+	// one place that finds out: the read ends when the peer closes, and nothing
+	// else on the daemon notices a tier whose asker has left.
+	defer k.end()
 
-	r := bufio.NewReader(conn)
-	for {
-		line, err := r.ReadBytes('\n')
-		if err != nil {
-			return
-		}
+	// A scanner rather than a reader, for the cap: bufio.Scanner is what takes
+	// a maximum, and it is the same mechanism and the same ceiling the journal
+	// replays lines with. Started at 4 KiB, which is what bufio.NewReader
+	// allocated here before, so an ordinary request costs exactly what it used
+	// to and only a caller heading for the cap pays for the growth.
+	r := bufio.NewScanner(conn)
+	r.Buffer(make([]byte, 0, 4<<10), requestMax)
+	for r.Scan() {
 		var req Request
-		if err := json.Unmarshal(line, &req); err != nil {
+		// Valid until the next Scan, and json.Unmarshal copies what it keeps
+		// into the request's own strings, so nothing below outlives the buffer.
+		if err := json.Unmarshal(r.Bytes(), &req); err != nil {
 			k.reply(Response{Error: "malformed request"})
 			continue
 		}
@@ -524,7 +586,12 @@ func (s *Server) handle(conn net.Conn) {
 				k.reply(Response{Error: MethodEvents + " takes no arguments"})
 				continue
 			}
-			s.listen(k)
+			if !s.listen(k) {
+				k.reply(Response{Error: fmt.Sprintf(
+					"zded is already listening for %d connections, which is every one it keeps: close one before opening another",
+					listenersMax)})
+				continue
+			}
 			k.reply(ok("listening"))
 			continue
 		}
@@ -560,6 +627,18 @@ func (s *Server) handle(conn net.Conn) {
 			continue
 		}
 		k.reply(s.Dispatch(req))
+	}
+	// Why the reading stopped. An ordinary end is the peer closing, and there is
+	// nobody left to tell; a line past the cap is the one case where somebody is
+	// still there and owed a sentence, so it is said before the deferred Close
+	// ends the connection. Ended rather than resynchronised on purpose: what is
+	// still in the socket is the tail of something this daemon has already
+	// refused, and reading on would answer whatever happened to follow the next
+	// newline in it as though it were a request of its own.
+	if errors.Is(r.Err(), bufio.ErrTooLong) {
+		k.reply(Response{Error: fmt.Sprintf(
+			"that request is longer than %d KiB, which is more than any zde request carries: the largest is an ask.run at %d KiB of conversation",
+			requestMax>>10, askContextMax>>10)})
 	}
 }
 
@@ -1447,10 +1526,13 @@ func (s *Server) Arrived(n attn.Notification) (uint64, error) {
 		// overlooked: declaring a desk private now does not retract what is
 		// already in the file. The flag records what was true when the record
 		// arrived, and marking a desk private is a statement about what happens
-		// from here. A retraction would also be a promise this cannot keep - it
-		// cannot reach a snapshot a backup has already copied, and on this
-		// branch the body of anything the mode queued is in the journal as well
-		// - so it would clean one file and read as a promise about the disk.
+		// from here. A retraction would also be a promise this cannot keep: it
+		// cannot reach a snapshot a backup has already copied, so it would clean
+		// one file and read as a promise about the disk. The summary and the
+		// sender of anything the mode queued are still in the journal either
+		// way, which a retraction would not touch and is not trying to - what
+		// stays out of that file is the body, and it stays out for every desk
+		// rather than for the private ones (internal/journal, Item).
 		// What removes what is already there is removing it: stop zded, delete
 		// ~/.local/state/zde/history.json, start it again. In that order,
 		// because the records are still in the daemon's memory until it goes,
@@ -1478,11 +1560,30 @@ func (s *Server) Arrived(n attn.Notification) (uint64, error) {
 			From:   rec.From,
 			Urgent: rec.Urgent,
 		})
-		if err != nil {
+		switch {
+		case err == nil:
+			rec.ID, rec.Queued = it.ID, true
+		case errors.Is(err, journal.ErrQueueFull):
+			// Not a failure of the arrival. The queue has a ceiling now
+			// (internal/journal, queueMax) and this session is at it, which is
+			// a statement about how much is already waiting and not about this
+			// notification: it is recorded, it draws its popup, and it takes an
+			// id below exactly as one a mode kept off the queue does. What it
+			// does not get is a place in a list of a thousand things nobody is
+			// going to read.
+			s.saidQueueFull.Do(func() {
+				log.Printf("zded: %v. What arrives from now on is shown and recorded, "+
+					"and not added to it", err)
+			})
+		default:
 			return 0, err
 		}
-		rec.ID, rec.Queued = it.ID, true
-	} else {
+	}
+	// The id, for everything the mode did not queue and for what the queue had
+	// no room for. An arrival with no id is one the sending app cannot close
+	// and the notification center cannot dismiss, so this is not optional
+	// (internal/journal, ClaimID).
+	if !rec.Queued {
 		id, err := s.jrn.ClaimID()
 		if err != nil {
 			return 0, err
@@ -2065,7 +2166,8 @@ func (s *Server) status() Status {
 		st.Skipped = s.jrn.Skipped()
 		st.Queued = len(js.Queue)
 	}
-	st.Shell = s.listeners() > 0
+	st.Listeners = s.listeners()
+	st.Shell = st.Listeners > 0
 	st.Notifications = s.watcher() != nil
 	st.Mode = string(s.mode())
 	// Looked up per call rather than remembered from startup. PATH points at
