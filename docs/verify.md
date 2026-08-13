@@ -6,8 +6,9 @@ CI settles a lot: `nix flake check` evaluates both layers, the go tests pin
 the model, and the smoke test ([`nix/tests/smoke.nix`](../nix/tests/smoke.nix))
 boots a NixOS host in QEMU and drives a real niri through the desks, the queue,
 a notification and the centre that reads it back, a desk starting what its
-manifest declares, and the bar saying it has no microphone and no
-NetworkManager to ask. What it does not do is restart zded, so the half of the
+manifest declares, the state snapshot arriving where the session starts with
+nothing about a private desk in it, and the bar saying it has no microphone and
+no NetworkManager to ask. What it does not do is restart zded, so the half of the
 history that now survives one (section 5) has never been proved by anything but
 the go tests. What it boots has no GPU, no keyboard, one virtual
 screen and nobody looking at it - and no microphone, no access point and no
@@ -139,6 +140,12 @@ sudo journalctl -b -u greetd
 sudo journalctl -b _SYSTEMD_USER_UNIT=zded.service
 ```
 
+And `zde report`, from that shell as the session user, writes down everything
+those two cannot: the card, the driver bound to it, and whether niri ever
+reached a renderer. See **[When the screen is black](#when-the-screen-is-black)**
+below - the whole of that is worth reading before the machine you care about is
+the one that is dark.
+
 Then declare two desks, which is the same by-hand path a new user has:
 
 ```sh
@@ -166,7 +173,13 @@ its units are where systemd looks; it never logs anybody in.
 
 - The greeter appears on the console, and the password works.
 - niri starts on the real GPU rather than dropping back to a black screen.
-  This is the one to report with the machine's graphics chip attached.
+  This is the one to report with the machine's graphics chip attached, and the
+  next heading is what to do when it is the one that happens.
+- `/var/log/zde/<you>/` has a file in it, dated a few seconds after the login,
+  and `[graphics]` at the top of it says `answer probably yes`. That is the
+  state snapshot (`zde.debug`), and this is the boot to check it on: a file
+  that is not there on the login that worked will not be there on the login
+  that did not.
 - `zde status` says `compositor connected`. If it says anything about
   `NIRI_SOCKET`, zded started outside the session's environment, and that is
   the interesting half of the bug.
@@ -191,6 +204,115 @@ its units are where systemd looks; it never logs anybody in.
   where niri's `screenshot-path` default puts them, `~/Pictures/Screenshots`,
   and whether that directory gets created on a machine that has never had one
   is the part only a real session answers.
+
+### When the screen is black
+
+This is the failure the project is most afraid of and the one nothing here can
+walk you through while it is happening: there is no session, so there is no
+terminal, so there is nothing to ask. The answer is to have decided in advance
+that the machine will write down what it looked like, and then to read that
+from somewhere else.
+
+**Turn it on before you install, not after.** Two lines, one per layer, because
+the directory belongs to root and the session is what writes into it:
+
+```nix
+# configuration.nix - layer 0 makes /var/log/zde/<you>, 0700, yours
+zde.debug.enable = true;
+
+# the same flake's home-manager block - layer 1 writes one file per session
+home-manager.users.you.zde.debug.enable = true;
+```
+
+From then on, every session start leaves a file at
+
+```
+/var/log/zde/<you>/20260813T090405Z-0a1b2c3d.txt
+```
+
+UTC, then the first eight characters of the boot id. Eight files are kept, 64
+KiB each, 0600 and yours. It holds the graphics answer, the versions, the
+hardware and the whole of `zde doctor`; it holds no notification text, no
+clipboard, nothing from the queue, no window titles and nothing that names a
+desk declared `private: true`, and it says all of that in its own header,
+because the point of it is that you can send it to somebody.
+
+`zde report` writes one by hand at any time - from a terminal, or from
+Ctrl+Alt+F2 on a machine whose tty1 is black. That is the first thing to try,
+because a machine you can still log into on another VT is a machine that can
+still tell you everything.
+
+**Reading it from another machine.** Power the machine off, put the disk in
+something else - or boot the zde stick on it, which mounts nothing by itself -
+and mount the root filesystem. Not the ESP: everything below is on `/`.
+
+```sh
+lsblk -f                                   # find the root partition
+sudo cryptsetup open /dev/nvme0n1p2 root   # only if it is encrypted
+sudo mount /dev/nvme0n1p2 /mnt             # or /dev/mapper/root
+sudo ls -l /mnt/var/log/zde/*/             # newest last
+sudo less /mnt/var/log/zde/you/2026*.txt
+```
+
+The first section is the one to read:
+
+```
+[graphics]
+  answer     NO - niri came up and never reached a renderer. It says so itself, below.
+  device     /dev/dri/card0 (i915)
+  FELL BACK  failed to initialize renderer, falling back to primary gpu: software EGL renderers are skipped
+  FELL BACK  no allocator available for device /dev/dri/card0
+```
+
+Those two lines are the tell. niri skips software EGL on purpose, so a machine
+whose driver did not come up gets exactly this: a compositor that opens its
+Wayland and IPC sockets, answers every question, and never draws. Everything
+else on the machine looks healthy, which is what makes it the worst one.
+`answer probably yes` with a black screen is the opposite finding and just as
+useful: the renderer is not what broke, so look at the output, the cable and
+the backlight. `answer not known` names the reading that was missing.
+
+Read `[versions]` next. A `SKEW` line there means the machine was rebuilt and
+not rebooted, and that is the ordinary cause of a black screen after a switch -
+the kernel and the mesa running belong to the booted generation and everything
+started since belongs to the current one (`docs/update.md`: use `boot`, not
+`switch`, for a kernel or a mesa change).
+
+**Reading the mounted disk's journal**, which is the other half and is the
+incantation nobody remembers. `services.journald.storage` is `persistent` by
+default, so `/var/log/journal` on that disk holds every boot greetd and niri
+ever had:
+
+```sh
+sudo journalctl -D /mnt/var/log/journal --list-boots
+```
+
+That prints one boot per line, each with a 32-character id. The one you want is
+the row whose id **starts with the eight characters in the snapshot's
+filename** - that pairing is what the boot id is in the name for, and it beats
+matching on times, because the clock on a machine that will not boot is not a
+thing to trust.
+
+Copy the whole id off that row. `-b` takes the full thirty-two and refuses a
+prefix (`Failed to add match: Invalid argument`), which is the second thing
+that catches people out here:
+
+```sh
+boot=0a1b2c3d4e5f6789abcdef0123456789   # the full id from --list-boots
+sudo journalctl -D /mnt/var/log/journal -b $boot -u greetd
+sudo journalctl -D /mnt/var/log/journal -b $boot _SYSTEMD_USER_UNIT=niri.service
+sudo journalctl -D /mnt/var/log/journal -b $boot _SYSTEMD_USER_UNIT=zded.service
+```
+
+And `_SYSTEMD_USER_UNIT=` rather than `--user-unit`, which is the first thing
+that catches people out: `--user-unit` also filters on the uid of whoever is
+running journalctl, and on the rescue machine that is a different person
+entirely - so it matches nothing and looks exactly like a user unit that never
+ran.
+
+If `journalctl` refuses the directory outright, it is older than the systemd
+that wrote it. Boot the zde stick of the same release on the machine instead
+and read the disk from there, which is the version that is guaranteed to match.
 
 ## 2. The input layer
 

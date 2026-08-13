@@ -42,6 +42,32 @@ in
   options.zde = {
     enable = lib.mkEnableOption "the zde user environment";
 
+    debug.enable = lib.mkEnableOption "writing a state snapshot when the session starts" // {
+      description = ''
+        Write a state snapshot into /var/log/zde when the session starts.
+
+        The other half of `zde.debug.enable` in layer 0, which is what makes
+        somewhere to write it (nix/system.nix says why it takes both). This one
+        adds one unit, `zde-report.service`: a oneshot that runs `zde report`
+        after the session is up.
+
+        What it costs the session is nothing. It is pulled by
+        graphical-session.target and starts after it, so nothing waits on it,
+        and every probe inside it is bounded and answers "could not ask" rather
+        than hanging - which is the whole design, because the machine it runs on
+        is the one that is already wrong.
+
+        What it holds: whether niri reached a real renderer and on which device,
+        the versions, the hardware, and every check `zde doctor` makes. What it
+        never holds: notification text, clipboard content, the queue, window
+        titles, or anything naming a desk that declares `private: true`.
+
+        `zde report` writes one by hand at any time, from a terminal or from
+        Ctrl+Alt+F2, and it is the same file - so this option is about the boot
+        where nobody got the chance to type it.
+      '';
+    };
+
     niri.xkb = {
       layout = lib.mkOption {
         type = lib.types.str;
@@ -387,65 +413,110 @@ in
       pkgs.quickshell
     ];
 
-    # The daemon, started with the session. Every bind in the desk group is a
-    # `zde` that talks to it, so without this the session comes up and none of
-    # them answers.
-    #
-    # Hung off graphical-session.target rather than niri.service: niri is
-    # Before= that target and imports WAYLAND_DISPLAY and NIRI_SOCKET into the
-    # user manager on its way up, so a unit that waits for the target starts
-    # into an environment that can already find the compositor. PartOf takes it
-    # down with the session, which is what keeps a zded from an old session
-    # from holding the socket the next one wants.
-    systemd.user.services.zded = {
-      Unit = {
-        Description = "zde daemon: the journal, the desks, and the socket everything asks";
-        Documentation = "https://github.com/crispuscrew/zde";
-        PartOf = [ "graphical-session.target" ];
-        After = [ "graphical-session.target" ];
+    # One systemd.user.services block rather than an assignment per unit, which
+    # is what statix asks for once there are three of them - the same rule
+    # nix/system.nix already follows for its services block.
+    systemd.user.services = {
+      # The daemon, started with the session. Every bind in the desk group is a
+      # `zde` that talks to it, so without this the session comes up and none of
+      # them answers.
+      #
+      # Hung off graphical-session.target rather than niri.service: niri is
+      # Before= that target and imports WAYLAND_DISPLAY and NIRI_SOCKET into the
+      # user manager on its way up, so a unit that waits for the target starts
+      # into an environment that can already find the compositor. PartOf takes it
+      # down with the session, which is what keeps a zded from an old session
+      # from holding the socket the next one wants.
+      zded = {
+        Unit = {
+          Description = "zde daemon: the journal, the desks, and the socket everything asks";
+          Documentation = "https://github.com/crispuscrew/zde";
+          PartOf = [ "graphical-session.target" ];
+          After = [ "graphical-session.target" ];
+        };
+        Service = {
+          ExecStart = "${zdeTools}/bin/zded";
+          # It answers keys. A daemon that died on one bad reply and stayed dead
+          # would leave every desk key silent until the next login, and the
+          # journal it replays on the way back up is what makes restarting safe.
+          Restart = "on-failure";
+          RestartSec = 1;
+        };
+        Install.WantedBy = [ "graphical-session.target" ];
       };
-      Service = {
-        ExecStart = "${zdeTools}/bin/zded";
-        # It answers keys. A daemon that died on one bad reply and stayed dead
-        # would leave every desk key silent until the next login, and the
-        # journal it replays on the way back up is what makes restarting safe.
-        Restart = "on-failure";
-        RestartSec = 1;
-      };
-      Install.WantedBy = [ "graphical-session.target" ];
-    };
 
-    # The bar. Same shape as zded and for the same reasons, with one addition:
-    # it wants zded, because everything it has to say comes from there. It
-    # survives zded not being up - it says so on the bar instead, which is more
-    # use than an empty strip - but starting them in the wrong order would mean
-    # a bar that reads "not answering" for its first two seconds of every
-    # login.
-    systemd.user.services.zde-bar = {
-      Unit = {
-        Description = "the zde bar: the queue, and the clock";
-        Documentation = "https://github.com/crispuscrew/zde";
-        PartOf = [ "graphical-session.target" ];
-        After = [
-          "graphical-session.target"
-          "zded.service"
-        ];
-        Wants = [ "zded.service" ];
+      # The bar. Same shape as zded and for the same reasons, with one addition:
+      # it wants zded, because everything it has to say comes from there. It
+      # survives zded not being up - it says so on the bar instead, which is more
+      # use than an empty strip - but starting them in the wrong order would mean
+      # a bar that reads "not answering" for its first two seconds of every
+      # login.
+      zde-bar = {
+        Unit = {
+          Description = "the zde bar: the queue, and the clock";
+          Documentation = "https://github.com/crispuscrew/zde";
+          PartOf = [ "graphical-session.target" ];
+          After = [
+            "graphical-session.target"
+            "zded.service"
+          ];
+          Wants = [ "zded.service" ];
+        };
+        Service = {
+          ExecStart = "${pkgs.quickshell}/bin/quickshell -p ${zdeShell}/share/zde/shell/shell.qml";
+          # A bar is the one thing whose absence is obvious, so restarting it is
+          # never a surprise. One second, the same as zded, and not the three it
+          # was: systemd gives up after 5 starts inside 10 seconds, and at three
+          # seconds apart it can never see 5 in a window - so QML that fails
+          # identically every time would have restarted for ever instead of
+          # failing, leaving a runtime log directory behind on each try. Measured
+          # on a transient unit: 3s spacing was still restarting after 45
+          # seconds, 1s spacing gave up at 5.
+          Restart = "on-failure";
+          RestartSec = 1;
+        };
+        Install.WantedBy = [ "graphical-session.target" ];
       };
-      Service = {
-        ExecStart = "${pkgs.quickshell}/bin/quickshell -p ${zdeShell}/share/zde/shell/shell.qml";
-        # A bar is the one thing whose absence is obvious, so restarting it is
-        # never a surprise. One second, the same as zded, and not the three it
-        # was: systemd gives up after 5 starts inside 10 seconds, and at three
-        # seconds apart it can never see 5 in a window - so QML that fails
-        # identically every time would have restarted for ever instead of
-        # failing, leaving a runtime log directory behind on each try. Measured
-        # on a transient unit: 3s spacing was still restarting after 45
-        # seconds, 1s spacing gave up at 5.
-        Restart = "on-failure";
-        RestartSec = 1;
+
+      # The state snapshot, written once when the session starts (zde.debug).
+      #
+      # Its own unit and not a line in zded, for the reason the report is its own
+      # verb: zded is one of the things that can be what is wrong, and a snapshot
+      # taken by the daemon would go missing on exactly the session that needed
+      # it. A unit also means the attempt itself is in the journal, which is the
+      # answer when there is no file at all.
+      #
+      # Hung off graphical-session.target the way zded and the bar are, and After
+      # it rather than Before anything: a oneshot nothing waits on cannot delay a
+      # login, and this must never be the reason a desktop is slow to appear.
+      #
+      # That target is also the honest place for it. niri.service is BindsTo and
+      # Before graphical-session.target and it is Type=notify, so the target is
+      # reached the moment niri says it is ready - which is precisely the state
+      # the misleading failure is in: sockets open, nothing drawn. A niri that
+      # never gets that far leaves no session for any user unit to run in, and
+      # what answers there is greetd's journal (docs/verify.md, section 1).
+      #
+      # RemainAfterExit so `systemctl --user status zde-report` still says what
+      # happened after it has finished, rather than reading as a unit that was
+      # never started.
+      zde-report = lib.mkIf cfg.debug.enable {
+        Unit = {
+          Description = "zde state snapshot: what this machine looked like when the session started";
+          Documentation = "https://github.com/crispuscrew/zde";
+          PartOf = [ "graphical-session.target" ];
+          After = [ "graphical-session.target" ];
+        };
+        Service = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          ExecStart = "${zdeTools}/bin/zde report";
+          # No Restart. It is a snapshot of one moment, and a retry would either
+          # write a second file for the same boot or fail again for the same
+          # reason - and the reason is already a line in this unit's own log.
+        };
+        Install.WantedBy = [ "graphical-session.target" ];
       };
-      Install.WantedBy = [ "graphical-session.target" ];
     };
   };
 }

@@ -195,6 +195,60 @@ let
         # environment only after niri has put it there.
         XDG_RUNTIME_DIR=$mgr zde status 2>&1 | tee /tmp/unit-status.txt
         grep -qx 'compositor connected' /tmp/unit-status.txt
+
+        # The state snapshot, written by the unit the target pulled - which is
+        # exactly what a login does on a real machine (zde.debug, nix/home.nix).
+        # It is the one thing on this list written for a session that never
+        # comes up, so what is asserted is that it arrives on a machine with no
+        # GPU and is honest about it rather than failing.
+        report_written() { sctl is-active --quiet zde-report.service; }
+        if ! waitfor 60 report_written; then
+          echo "the session started and nothing wrote a state snapshot:"
+          sctl status zde-report.service || true
+          journalctl --user -u zde-report.service --no-pager | tail -20; exit 1
+        fi
+        snap=$(ls -1 /var/log/zde/zde/*.txt 2>/dev/null | tail -1 || true)
+        if [ -z "$snap" ]; then
+          echo "zde-report.service ran and left no file in /var/log/zde/zde:"
+          ls -la /var/log/zde /var/log/zde/zde 2>&1 || true
+          journalctl --user -u zde-report.service --no-pager | tail -20; exit 1
+        fi
+        echo "the session start wrote $snap"
+        # 0600 and this account's, which is the half of this that matters more
+        # than the feature: it is a file about somebody's machine, sitting on a
+        # disk, in a project written for people who mind about that.
+        mode=$(stat -c %a "$snap"); owner=$(stat -c %U "$snap")
+        [ "$mode" = 600 ] && [ "$owner" = zde ] || {
+          echo "the snapshot is mode $mode and belongs to $owner"; exit 1
+        }
+        for want in graphics versions hardware doctor; do
+          grep -qF "[$want]" "$snap" || {
+            echo "[$want] is missing from $snap:"; cat "$snap"; exit 1
+          }
+        done
+        # The graphics answer, which is the point of the exercise. This VM has
+        # no GPU and its niri is nested under cage rather than started as
+        # niri.service, so the two honest answers are "probably yes" - a
+        # compositor answering with outputs and nothing in a log saying it fell
+        # back - and "not known", which is what no niri.service log to read
+        # looks like. What it must never say is that this machine fell back,
+        # because it never went near a real card.
+        grep -qE '^  answer +(probably yes|not known)' "$snap" || {
+          echo "the graphics answer is not one this machine could honestly give:"
+          sed -n '/^\[graphics\]/,/^$/p' "$snap"; exit 1
+        }
+        # And it says which device the answer is about, on a machine that may
+        # have no card at all: "none" is a reading, a missing line is a bug.
+        grep -qE '^  device +' "$snap" || {
+          echo "the snapshot does not say which device the answer is about:"
+          sed -n '/^\[graphics\]/,/^$/p' "$snap"; exit 1
+        }
+        # The header, because somebody is going to paste this into a bug report
+        # and the two questions they will have - is it safe to send, what is
+        # missing from it - have to be answerable off the file itself.
+        grep -qF 'no notification text' "$snap" || {
+          echo "the snapshot does not say what it does not contain:"; head -30 "$snap"; exit 1
+        }
         # The bar is up and listening, so status has to say so. Waited for rather
         # than asked once: the target starts zded and the bar together, and Qt
         # takes a second or two to reach the socket, so a single question here
@@ -1215,6 +1269,68 @@ let
           cat /tmp/doctor.txt; exit 1
         }
 
+        # The state snapshot by hand, with two desks declared: an ordinary one
+        # and one that says private. This is the assertion the whole file is
+        # written around. A private desk is history only (docs/vision.md,
+        # section 3), and this file is meant to be carried off the machine, so
+        # neither the desk's name nor the app on it may be in it - naming the
+        # app and hiding the desk would be the same disclosure with a step in
+        # front of it.
+        printf 'name: report-open
+    monitors:
+      winit: { workspaces: [code] }
+    apps:
+      - { app: absent-app }
+    '       > ~/.config/zde/desks/report-open.yaml
+        printf 'name: report-secret
+    private: true
+    monitors:
+      winit: { workspaces: [code] }
+    apps:
+      - { app: absent-secret-app }
+    '       > ~/.config/zde/desks/report-secret.yaml
+        # Nine older files this package would recognise as its own, and one it
+        # would not. The bound has to hold, and it has to hold without deleting
+        # something somebody copied in here while debugging - which is the
+        # difference between a bound and a program that deletes things.
+        for i in 1 2 3 4 5 6 7 8 9; do
+          : > "/var/log/zde/zde/2020010''${i}T000000Z-deadbeef.txt"
+        done
+        : > /var/log/zde/zde/notes.txt
+        zde report > /tmp/report-path.txt 2>&1 || {
+          echo "zde report failed:"; cat /tmp/report-path.txt; exit 1
+        }
+        snap2=$(sed -n 's/^wrote //p' /tmp/report-path.txt)
+        [ -n "$snap2" ] && [ -f "$snap2" ] || {
+          echo "zde report wrote no file, and said:"; cat /tmp/report-path.txt; exit 1
+        }
+        for secret in report-secret absent-secret-app; do
+          if grep -qF "$secret" "$snap2"; then
+            echo "$secret is on a desk declared private and is in a file meant to leave this machine:"
+            sed -n '/^\[doctor\]/,$p' "$snap2"; exit 1
+          fi
+        done
+        # And the desk that declared nothing is still reported, or the redaction
+        # would be a way to silence the check by declaring everything private.
+        grep -qF 'report-open names absent-app' "$snap2" || {
+          echo "the desk that did not declare private was redacted too:"
+          sed -n '/^\[doctor\]/,$p' "$snap2"; exit 1
+        }
+        # A file that silently dropped lines is a file whose all-clear cannot be
+        # trusted, so the count survives even though the names do not.
+        grep -qF '1 app(s) on desks that declare private' "$snap2" || {
+          echo "nothing in the file says something was left out of it:"
+          sed -n '/^\[doctor\]/,$p' "$snap2"; exit 1
+        }
+        kept=$(ls -1 /var/log/zde/zde/ | grep -cE '^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}\.txt$')
+        [ "$kept" = 8 ] || {
+          echo "$kept snapshots are kept, against a bound of 8:"; ls -la /var/log/zde/zde; exit 1
+        }
+        test -f /var/log/zde/zde/notes.txt || {
+          echo "rotation deleted a file zde never wrote"; exit 1
+        }
+        rm -f ~/.config/zde/desks/report-open.yaml ~/.config/zde/desks/report-secret.yaml
+
         # Mod+t, which is `zde app launch terminal`. The one thing a desktop has
         # to be able to do: until this existed, a session could be entered and
         # nothing could be started from it, and the live image carried a bind of
@@ -1851,6 +1967,13 @@ pkgs.testers.runNixOSTest {
     # nix/test-host.nix evaluates that branch instead.
     zde.enable = true;
 
+    # The state snapshot, on, so that both halves of it are exercised on a real
+    # NixOS host: layer 0 making a directory per account, and the unit the
+    # session target pulls writing into it. A VM with no GPU is also the one
+    # machine in CI that can prove the graphics answer degrades honestly
+    # instead of guessing, which is the whole reason the file exists.
+    zde.debug.enable = true;
+
     # Only so that shell_interact and a manual login work when debugging this
     # test; most assertions below run as root.
     users.users.zde.password = "zde";
@@ -1885,6 +2008,9 @@ pkgs.testers.runNixOSTest {
       # It writes a file rather than exiting 0, so the test can see that it ran
       # rather than only that nothing complained.
       zde = {
+        # The other half of zde.debug above: this is what writes.
+        debug.enable = true;
+
         apps.lock = [ "${fakeLocker}/bin/swaylock" ];
 
         # One ask tier and only one: the provider. The other two stay unset on
@@ -1943,6 +2069,22 @@ pkgs.testers.runNixOSTest {
       machine.wait_until_succeeds("pgrep -f tuigreet")
       machine.succeed("test -x /run/current-system/sw/bin/niri-session")
       machine.succeed("test -f /run/current-system/sw/share/xdg-desktop-portal/niri-portals.conf")
+
+      # Layer 0's half of the state snapshot: a directory per account that could
+      # have a session, owned by it and 0700. Asserted here rather than only
+      # where the file lands, because these two fail in different ways - a rule
+      # tmpfiles refused leaves no directory and one line in a boot log, and the
+      # session that could not write into it is an hour later and looks like the
+      # writer's fault.
+      machine.succeed("test -d /var/log/zde/zde")
+      assert machine.succeed("stat -c '%U %a' /var/log/zde/zde").strip() == "zde 700"
+      # And one for the other account on this machine, which is what makes it a
+      # directory per account rather than one directory with a name in it.
+      machine.succeed("test -d /var/log/zde/intruder")
+      # Nothing in either yet: nobody has had a session (this test never logs in
+      # graphically), so a file here now would mean something writes one without
+      # a session to describe.
+      assert machine.succeed("ls -A /var/log/zde/zde").strip() == ""
 
       # Layer 2's tools arrived, and the contract zde leans on holds against the
       # real binary. `zcr where` is what zde asks rather than joining that path

@@ -76,6 +76,19 @@ type Desks struct {
 	Configured bool
 	// Unrunnable is one entry per app a desk names that nothing here can start.
 	Unrunnable []DeskApp
+	// Private is how many of the manifests declare `private: true`.
+	//
+	// A count and never the names, and it is here rather than being worked out
+	// again wherever it is wanted: the state snapshot leaves everything about
+	// those desks out of the file it writes (report.go, redactPrivate), and a
+	// count is the one thing it may still say - "there is a private desk here
+	// and this file says nothing about it" is what makes the rest of the report
+	// trustworthy rather than merely quiet.
+	//
+	// Nothing prints it in `zde doctor` itself. A terminal is somebody's own
+	// screen on their own machine, and the whole of this check is already in
+	// front of them there.
+	Private int
 }
 
 // The two things on a machine that can answer "is there anything to start under
@@ -144,6 +157,11 @@ type DeskApp struct {
 	Desk string
 	App  string
 	Err  error
+	// Private says the manifest this came from declares `private: true`, which
+	// is what keeps both names out of a file that leaves this machine
+	// (report.go, redactPrivate). `zde doctor` on a terminal ignores it: that
+	// screen is the person's own.
+	Private bool
 }
 
 // Unit is one systemd user unit as systemctl reports it.
@@ -280,6 +298,12 @@ func probeDesks(dir string) Desks {
 	names := make([]string, 0, len(desks))
 	for name := range desks {
 		names = append(names, name)
+		// Counted here, where the manifests are already in hand, rather than by
+		// whoever wants the number reading the directory a second time: two
+		// reads of a directory somebody may be editing are two answers.
+		if desks[name].Private {
+			d.Private++
+		}
 	}
 	sort.Strings(names)
 	// One answer per name for the whole directory. Asking zcr is a process, so
@@ -306,12 +330,17 @@ func probeDesks(dir string) Desks {
 					// about a machine whose resolver went quiet partway through.
 					// Dropped rather than printed, because a partial list of
 					// faults reads exactly like a complete one.
-					return Desks{Dir: dir, Resolver: d.Resolver, Err: broken}
+					// The private count is carried through, because it is not
+					// part of the partial list being thrown away: it is a fact
+					// about the directory that was read whole.
+					return Desks{Dir: dir, Resolver: d.Resolver, Err: broken, Private: d.Private}
 				}
 				answered[app.App] = refused
 			}
 			if refused != nil {
-				d.Unrunnable = append(d.Unrunnable, DeskApp{Desk: name, App: app.App, Err: refused})
+				d.Unrunnable = append(d.Unrunnable, DeskApp{
+					Desk: name, App: app.App, Err: refused, Private: desks[name].Private,
+				})
 			}
 		}
 	}

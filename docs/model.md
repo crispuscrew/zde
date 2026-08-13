@@ -172,7 +172,7 @@ rather than in a note here.
 | audio | `vol-up`, `vol-down`, `mute`, `app-vol`, `sink-switch`, `app-sink`, `mic-mute` |
 | net | `observe`, `kill` (global toggle, loud bar state), `app-cut <app>` |
 | modes | `menu` (pick a mode), `normal`, `window`, `kb-mouse`, `one-hand`, `passthrough` |
-| system | `lock`, `lock-preset` (switch BEFORE lock), `power`, `quiet` (toggle), `attn <mode>` (work / focus / quiet by name; the CLI has it, no key is free for it), `connections` (wifi, and the link you are on; `forget` drops a saved network), `bluetooth` (the radio, what is around it, and pairing; no key of its own, since a second chord for half of one surface is a key to remember for no reason), `calendar`, `wallpapers`, `brightness-up`/`brightness-dn`, `help`, `notif-center`, `doctor`, `update`, `layout-switch` (native) |
+| system | `lock`, `lock-preset` (switch BEFORE lock), `power`, `quiet` (toggle), `attn <mode>` (work / focus / quiet by name; the CLI has it, no key is free for it), `connections` (wifi, and the link you are on; `forget` drops a saved network), `bluetooth` (the radio, what is around it, and pairing; no key of its own, since a second chord for half of one surface is a key to remember for no reason), `calendar`, `wallpapers`, `brightness-up`/`brightness-dn`, `help`, `notif-center`, `doctor`, `report` (write the state snapshot down for a session that will not come up; needs `zde.debug`, and no key of its own - the day it is wanted there is nobody at the keyboard), `update`, `layout-switch` (native) |
 
 Launch placement: manifest pin first; else adoption (focused workspace,
 current scroll position, active desk); guest mode restricts launching to the

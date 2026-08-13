@@ -162,16 +162,19 @@ func TestLiveActionsAreTheOnesZdeKnows(t *testing.T) {
 		if len(a.Spawn) == 0 || a.Spawn[0] != "zde" {
 			continue // niri's own, or somebody else's program
 		}
-		// The doctor is the one live verb that does its work in this process
-		// rather than over the socket, so running it here would go and ask
-		// systemd and podman about a machine no test is about.
+		// The doctor and the state snapshot are the two live verbs that do their
+		// work in this process rather than over the socket, so running them here
+		// would go and ask systemd, podman, the journal and this machine's
+		// graphics about a machine no test is about - and the second one would
+		// write a file while doing it.
 		//
 		// Skipped by the argv and not by the action's name, which is the whole
 		// point of the difference: keyed on the name, this exempted whatever
-		// that row spawned, on the one row whose reason for existing is being
-		// reachable only by name. Change the argv and it is checked like the
+		// that row spawned, on the rows whose reason for existing is being
+		// reachable only by name. Change the argv and they are checked like the
 		// rest.
-		if strings.Join(a.Spawn, " ") == "zde doctor" {
+		switch strings.Join(a.Spawn, " ") {
+		case "zde doctor", "zde report":
 			continue
 		}
 		checked++

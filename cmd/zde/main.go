@@ -187,6 +187,8 @@ func run(args []string) error {
 		return status()
 	case "doctor":
 		return runDoctor()
+	case "report":
+		return runReport()
 	case "desk list":
 		return deskList()
 	default:
@@ -381,6 +383,50 @@ func runDoctor() error {
 	if n := report.Failed(); n > 0 {
 		return fmt.Errorf("zde doctor: %d of %d checks failed", n, len(report))
 	}
+	return nil
+}
+
+// version is this build of zde, set at link time by the derivation that builds
+// it (nix/zde.nix passes -X main.version to every subPackage). A `go build`
+// with no ldflags says "dev" rather than claiming a release it is not, which is
+// the same bargain cmd/zded makes.
+var version = "dev"
+
+// runReport writes the state snapshot: what this machine looked like, for
+// somebody who will read it off a disk that will not boot (internal/doctor,
+// report.go).
+//
+// A verb of its own and not a mode of `zde doctor`, and the three differences
+// are the argument. What doctor produces is a screen of verdicts for somebody
+// sitting in front of a working session; this produces a file of readings for
+// somebody with no session at all, days later, on another machine. Doctor's
+// exit status is a verdict - non-zero when a check failed - and this one's must
+// not be, because the unit that writes it at login would then go `failed` on
+// exactly the machines it exists for, putting a red herring in `systemctl
+// --failed` on the morning somebody is already debugging a black screen. And a
+// flag on doctor would have to mean "print differently and also write a file
+// and also stop meaning what the exit status meant", which is two commands
+// wearing one name.
+//
+// What it does not do is gather twice: the whole of doctor is a section of the
+// file, judged off one Gather (internal/doctor, WriteReport).
+//
+// It prints the report when it could not write one, which is the shape every
+// surface-backed verb in this file already has - `zde desk switcher` prints the
+// list when no shell is up. A machine with nowhere to write is a machine where
+// somebody typed this into a terminal, and the answer is still the answer.
+func runReport() error {
+	path, text, err := doctor.WriteReport(doctor.Self{Zde: version})
+	if err == nil {
+		fmt.Println("wrote", path)
+		return nil
+	}
+	fmt.Print(text)
+	// Not an error the process exits on. There is nothing wrong with the report
+	// - it is above - and a non-zero exit here would make the one command that
+	// still works on a broken machine look like another thing that is broken.
+	fmt.Fprintf(os.Stderr, "\nno file written: %s\n"+
+		"%s belongs to root and is made by layer 0 when zde.debug is on (nix/system.nix).\n", err, doctor.ReportDir)
 	return nil
 }
 
@@ -1668,6 +1714,15 @@ func usage() {
                          whether the screen lock could accept a password.
                          Non-zero when something failed, so it is worth piping
                          into a bug report
+  zde report             write down what this machine looks like: the graphics
+                         device and whether niri ever reached a renderer on it,
+                         the versions, the hardware, and the whole of doctor.
+                         It lands in /var/log/zde, 0600, one file per boot, for
+                         the failure nothing else survives - a black screen with
+                         no terminal to ask anything from. Needs zde.debug on;
+                         with nowhere to write it prints the report instead.
+                         No notification text, no clipboard, no queue, no window
+                         titles, and nothing about a desk declared private
   zde desk list          the desks that exist right now
   zde desk switcher      open the picker; prints the list when no shell is up
   zde app launch NAME    run what this machine calls that (Mod+t, Mod+e)
