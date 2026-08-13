@@ -183,6 +183,50 @@ func (st State) Blocking(w What) []Block {
 	return out
 }
 
+// HoldsIdle reports whether this inhibitor is holding the session's idle timers
+// off - logind's "idle", which is not one of the verbs Stands answers about.
+//
+// Deliberately a second question and not a fifth What. An idle inhibitor
+// refuses nothing: a suspend somebody asks for by hand goes straight past one
+// (power_test, an idle inhibitor is not in the way of a power action). What it
+// does instead is stop the session ever reaching the state that would blank,
+// suspend or lock it without being asked - which is a fact about a screen
+// rather than about a key, and so is drawn on the bar rather than costed into
+// the power menu.
+func (b Block) HoldsIdle() bool {
+	for _, part := range strings.Split(b.What, ":") {
+		if part == "idle" {
+			return true
+		}
+	}
+	return false
+}
+
+// HoldingIdle is everything logind can see holding the session's idle timers
+// off right now.
+//
+// "logind can see" is the whole of the caveat and it is a large one. On a
+// Wayland session this is not the only way to hold a screen awake and it is not
+// the usual one: zwp_idle_inhibit_manager_v1 goes to the compositor and stops
+// there, niri keeps the answer in a field nothing reads out (no IPC request, no
+// event, and its org.freedesktop.ScreenSaver has Inhibit with no getter), and
+// nothing about it ever reaches this bus. Measured, not assumed: a client
+// holding a Wayland inhibitor on a mapped surface moves nothing in
+// ListInhibitors (docs/verify.md, section 11).
+//
+// So this is half a mechanism, and whatever draws it has to say which half.
+// Anything here is true; nothing here is not the same as nothing holding the
+// screen awake.
+func (st State) HoldingIdle() []Block {
+	var out []Block
+	for _, b := range st.Blocks {
+		if b.HoldsIdle() {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
 // Manager is the little of logind that zde needs. An interface for the reason
 // link.Manager is one: the daemon has to be testable without a system bus, and
 // on a machine where the thing behind it is allowed to be missing.

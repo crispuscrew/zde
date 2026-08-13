@@ -919,6 +919,100 @@ ShellRoot {
 
     // ---- end of the network ---------------------------------------------
 
+    // ---- the idle hold ----------------------------------------------------
+    //
+    // Whether something is stopping this session going idle, which on a machine
+    // that blanks or locks on its own is whether that is going to happen
+    // (docs/vision.md, principle 4).
+    //
+    // Read once at the root, like the mic and the battery, because the strip
+    // draws it and the IPC reports it and two readings would eventually
+    // disagree. Unlike the mic it cannot come from a Quickshell service: this
+    // one is logind's inhibitor table, so it arrives down the zded socket
+    // already decided (internal/zded/idle.go), which is the rule the whole shell
+    // is built on.
+    //
+    // What it is honest about is the half it cannot see. logind's table is the
+    // smaller half of holding a screen awake on Wayland; the Wayland protocol
+    // itself, zwp_idle_inhibit_manager_v1, stops inside the compositor, and niri
+    // 26.04 offers no way to read it back. So `held` here means "logind says
+    // something is", and an empty list never means "nothing is". The word on the
+    // strip is chosen to claim only the first of those, and the full statement
+    // of the gap is in `zde doctor` and docs/verify.md, section 11, where there
+    // is room to say it properly.
+    QtObject {
+        id: idleState
+
+        // Whether zded answered and logind could say. The same bargain netState
+        // makes: a machine that has lost its system bus must not read the same
+        // as one where nothing is holding the screen.
+        property bool known: false
+        // How many holders logind named. A count and not a bool, because the
+        // IPC reports it and a test that could not tell one holder from three
+        // would pass on a widget that had stopped counting.
+        property int holds: 0
+    }
+
+    // Its own connection, and a single-question one. The bar's parser reads
+    // every reply as a queue listing and the network's is a FIFO matching
+    // answers to joins; this asks one thing and nothing else ever, so every
+    // reply it gets is the answer to that thing and it needs neither.
+    Dialer {
+        id: idleLink
+
+        path: Quickshell.env("XDG_RUNTIME_DIR") + "/zde/zded.sock"
+
+        onConnectedChanged: {
+            if (idleLink.connected)
+                idleLink.write(JSON.stringify({
+                    method: "system.idle"
+                }) + "\n");
+            else
+                idleState.known = false;
+        }
+
+        onHeard: line => {
+            let res = null;
+            try {
+                res = JSON.parse(line);
+            } catch (e) {
+                idleState.known = false;
+                return;
+            }
+            // zded answering is not logind answering. `known` is the daemon's
+            // own word about whether the question reached logind at all, and a
+            // reply that carries false is a machine that cannot say - which is
+            // the one state this widget must not draw as "nothing is holding
+            // it".
+            if (!res || res.error !== undefined || !res.ok || !res.ok.known) {
+                idleState.known = false;
+                return;
+            }
+            idleState.holds = (res.ok.holds ?? []).length;
+            idleState.known = true;
+        }
+    }
+
+    Timer {
+        // Five seconds, the network's clock rather than the bar's two: an
+        // inhibitor is taken when an app starts a download or a call, not
+        // several times a minute, and this is a system bus round trip on the
+        // other end.
+        interval: 5000
+        running: true
+        repeat: true
+        triggeredOnStart: true
+        onTriggered: {
+            if (!idleLink.connected)
+                return;
+            idleLink.write(JSON.stringify({
+                method: "system.idle"
+            }) + "\n");
+        }
+    }
+
+    // ---- end of the idle hold ---------------------------------------------
+
     AskWindow {
         id: askWindow
 
@@ -1196,6 +1290,24 @@ ShellRoot {
             return netState.kind;
         }
 
+        // What the bar makes of the idle hold. Three words, and the first of
+        // them is the one that matters: "unknown" is zded or logind not
+        // answering, "none" is logind answering that its own table is empty.
+        // Those are not the same fact and the strip hides for both, so a test
+        // that could not tell them apart would pass on a widget wired to
+        // nothing at all - which is exactly how this one would fail, since the
+        // machine it runs on has no inhibitor to find.
+        //
+        // "none" and not "nothing is holding the screen awake": what is empty
+        // is logind's table, and the Wayland half of the mechanism is invisible
+        // from here (see the idle hold section above). The narrow word is the
+        // honest one.
+        function idle(): string {
+            if (!idleState.known)
+                return "unknown";
+            return idleState.holds === 0 ? "none" : "held " + idleState.holds;
+        }
+
         // Height and reserved space, as the panel came up. Not the same claim
         // as "the compositor honoured it" - proving that means measuring a
         // window with the bar and without it, which the smoke test does not do
@@ -1302,17 +1414,20 @@ ShellRoot {
             }
 
             // The right-hand chain, from the clock leftwards: clock, battery,
-            // link, mic. Each item anchors to the left edge of the one before
-            // it, and two of the four can be zero-width - a desktop has no
-            // battery and a machine with no sound card has no mic - so the
-            // order has to read the same with any of them missing.
+            // link, mic, idle hold. Each item anchors to the left edge of the
+            // one before it, and three of the five can be zero-width - a desktop
+            // has no battery, a machine with no sound card has no mic, and the
+            // idle hold is empty whenever nothing logind can see is holding one
+            // - so the order has to read the same with any of them missing.
             //
-            // The mic is last because it is the only one here that comes and
-            // goes. Anchored between the link and the battery it would push
-            // both of them sideways every time somebody joined a call, and a
-            // bar that moves while you are reading it is precisely what a
-            // keyboard-first strip should not do. At the end it grows leftwards
-            // into empty bar and nothing else moves.
+            // The two that come and go are at the end, in that order. Anchored
+            // between the link and the battery either of them would push both
+            // sideways every time somebody joined a call, and a bar that moves
+            // while you are reading it is precisely what a keyboard-first strip
+            // should not do. Out here they grow leftwards into empty bar: the
+            // mic keeps a fixed position against the furniture whatever the idle
+            // hold is doing, and the idle hold, being outermost and the rarer of
+            // the two, is the only thing that ever moves.
 
             // The mic, on the bar for the reason principle 4 gives and W16 asks
             // for: whether the room is being heard is not something to find out
@@ -1336,6 +1451,45 @@ ShellRoot {
                 // interrupting yourself over. Muted is the opposite of that, so
                 // it is said quietly.
                 color: micState.muted ? "#7a7f8a" : "#e5484d"
+                font.pixelSize: 13
+                font.family: "monospace"
+                textFormat: Text.PlainText
+            }
+
+            // The idle hold, outermost of the right-hand chain. Whether the
+            // screen is going to do what it does when you walk away is the same
+            // shape of fact as whether the room is being heard, and principle 4
+            // puts both on the strip.
+            //
+            // Outside the mic rather than inside it, which is the whole reason
+            // it is here and not next to the link. Two of these words come and
+            // go now, and the one that comes and goes most often is the mic - so
+            // the mic keeps the position it already had against the furniture,
+            // and this one takes all of the movement by growing leftwards into
+            // empty bar. The margin closes when the mic is not drawn, so the gap
+            // to the link reads the same either way.
+            //
+            // Empty unless logind names a holder. A machine that cannot answer
+            // draws nothing rather than guessing, the way the mic does - and
+            // here that silence is doing more work than usual, because an empty
+            // strip is also what a machine with a Wayland inhibitor nobody can
+            // see looks like. The word claims only what logind said; `zde
+            // doctor` is where the rest of the sentence lives.
+            Text {
+                id: idleHold
+
+                anchors.right: mic.left
+                anchors.rightMargin: mic.visible ? 14 : 0
+                anchors.verticalCenter: parent.verticalCenter
+                visible: idleHold.text !== ""
+
+                text: idleState.known && idleState.holds > 0 ? "idle held" : ""
+                // The amber the attn mode uses for the two modes that are
+                // holding things back, and for the same reason: this is
+                // something held off rather than something to interrupt
+                // yourself over, and the red on this bar is kept for the
+                // latter.
+                color: "#e5a23d"
                 font.pixelSize: 13
                 font.family: "monospace"
                 textFormat: Text.PlainText

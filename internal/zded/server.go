@@ -762,6 +762,15 @@ func (s *Server) Dispatch(req Request) Response {
 		default:
 			return Response{Error: "system.power takes one action name, or none to open the menu"}
 		}
+	case "system.idle":
+		// No arity, unlike system.power: there is nothing to do about an idle
+		// hold from here. zde cannot drop somebody else's inhibitor and would
+		// not want a key that did - this is a reading, and the thing to do about
+		// it is to go and close what is holding it.
+		if len(req.Args) != 0 {
+			return Response{Error: "system.idle takes no arguments"}
+		}
+		return s.idleHold()
 	case "net.status":
 		if len(req.Args) != 0 {
 			return Response{Error: "net.status takes no arguments"}

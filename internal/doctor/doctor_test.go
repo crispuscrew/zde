@@ -98,7 +98,7 @@ func TestHealthySessionSaysSoOnEveryLine(t *testing.T) {
 func TestTheReportIsTheSameShapeEveryTime(t *testing.T) {
 	want := []string{
 		"zded", "compositor", "shell", "notify", "zinc", "podman",
-		"unit", "unit", "manifests", "desk apps", "locker", "logind", "journal",
+		"unit", "unit", "manifests", "desk apps", "locker", "logind", "idle", "journal",
 	}
 	var got []string
 	for _, c := range Judge(healthy()) {
@@ -724,6 +724,116 @@ func TestNoLogindIsOneWarningSayingNoneOfTheFourWouldWork(t *testing.T) {
 // strength of a dial that timed out. Every other check in this package has this
 // middle state and this one is where it is worth most: it is read by somebody
 // deciding whether the power menu is worth pressing.
+// The line this check exists to word carefully.
+//
+// An empty inhibitor table is a true statement about logind and a false one
+// about the machine: the Wayland protocol never reaches that bus, so a clean
+// line here is not a promise the screen will lock. If the caveat goes, somebody
+// reads "nothing is holding this session awake" and believes it about a session
+// where a container is holding an inhibitor nothing can see.
+func TestACleanIdleLineSaysWhatItCouldNotSee(t *testing.T) {
+	c := only(t, Judge(healthy()), "idle")
+	if c.Level != OK {
+		t.Fatalf("idle = %s, want ok on a machine holding nothing", c)
+	}
+	if !strings.Contains(c.Detail, "logind") {
+		t.Errorf("idle = %s, want it to name whose table was empty", c)
+	}
+	// The half it cannot see, named as the protocol so it can be looked up, and
+	// with the reason niri cannot be asked.
+	for _, want := range []string{"zwp_idle_inhibit_manager_v1", "invisible", "visible rather than focused"} {
+		if !strings.Contains(c.Detail, want) {
+			t.Errorf("idle = %s, want it to carry %q", c, want)
+		}
+	}
+	// And it must not be the sentence a person would take away as a promise.
+	if strings.Contains(c.Detail, "nothing is holding this session awake") {
+		t.Errorf("idle = %s, and it can only speak for logind", c)
+	}
+}
+
+// A holder is named, because the point of the line is that somebody can go and
+// close the thing that is doing it.
+func TestAnIdleHolderIsNamedWithWhatItCosts(t *testing.T) {
+	s := healthy()
+	s.Power.Holds = []Hold{{Who: "steam", Why: "Playing a game"}}
+	r := Judge(s)
+	found := named(r, "idle")
+	if len(found) != 2 {
+		t.Fatalf("want the holder and the caveat, got %d:\n%s", len(found), r)
+	}
+	if found[0].Level != Warn {
+		t.Errorf("idle = %s, want a warning", found[0])
+	}
+	if !strings.Contains(found[0].Detail, "steam") || !strings.Contains(found[0].Detail, "Playing a game") {
+		t.Errorf("idle = %s, want the holder and the reason it gave", found[0])
+	}
+	// The consequence and not only the reading, which is what every line here
+	// owes somebody trying to find out what is wrong.
+	if !strings.Contains(found[0].Detail, "idle") {
+		t.Errorf("idle = %s, want what it costs", found[0])
+	}
+	// And the list is not claimed to be complete, because it cannot be.
+	if !strings.Contains(found[1].Detail, "more than logind can see") {
+		t.Errorf("idle = %s, want the list qualified", found[1])
+	}
+	// A held screen is still a session somebody can work in.
+	if r.Failed() != 0 {
+		t.Errorf("an idle hold failed a check:\n%s", r)
+	}
+}
+
+// A holder's own words reach a terminal, and `systemd-inhibit --why=...` takes
+// them from whoever runs it. The report is piped into bug reports and read in a
+// terminal, so an escape here rewrites the screen it is printed on.
+func TestAnIdleHoldersOwnWordsCannotDriveTheReport(t *testing.T) {
+	s := healthy()
+	s.Power.Holds = []Hold{{Who: "steam\x1b[2J", Why: "one\ntwo"}}
+	c := named(Judge(s), "idle")[0]
+	if strings.ContainsAny(c.Detail, "\x1b\n\r") {
+		t.Errorf("idle = %q, and a holder chose part of it", c.Detail)
+	}
+}
+
+// The three ways this question goes unanswered, none of which may read as an
+// empty table. A logind that timed out saying "nothing is holding your screen"
+// is doctor inventing an all-clear.
+func TestAnUnaskedIdleQuestionIsNeverAnAllClear(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		with func(*Session)
+		want string
+	}{{
+		name: "no logind on the bus",
+		with: func(s *Session) { s.Power = Logind{Absent: true} },
+		want: "never asked",
+	}, {
+		name: "logind could not be reached",
+		with: func(s *Session) { s.Power = Logind{Err: errors.New("the bus did not answer")} },
+		want: "not known",
+	}, {
+		name: "logind refused the listing",
+		with: func(s *Session) { s.Power.HoldsErr = errors.New("connection closed") },
+		want: "systemd-inhibit --list",
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := healthy()
+			tc.with(&s)
+			c := only(t, Judge(s), "idle")
+			if c.Level != Warn {
+				t.Errorf("idle = %s, want a warning", c)
+			}
+			if !strings.Contains(c.Detail, tc.want) {
+				t.Errorf("idle = %s, want %q", c, tc.want)
+			}
+			// The one thing none of these may say.
+			if c.Level == OK {
+				t.Errorf("idle = %s, and the question was never answered", c)
+			}
+		})
+	}
+}
+
 func TestALogindThatCouldNotBeAskedIsNotAMachineThatCannotBeToldToGo(t *testing.T) {
 	s := healthy()
 	s.Power = Logind{Err: errors.New("the bus did not finish connecting within 2s")}

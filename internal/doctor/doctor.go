@@ -106,6 +106,7 @@ func Judge(s Session) Report {
 	r = append(r, deskApps(s)...)
 	r = append(r, locker(s))
 	r = append(r, logind(s)...)
+	r = append(r, idle(s)...)
 	r = append(r, journal(s))
 	return r
 }
@@ -401,6 +402,75 @@ func logind(s Session) []Check {
 		return []Check{{OK, "logind", "session " + l.Session + " is what a log out would end, and suspend, " +
 			"reboot and power off are this session's to use - what a power menu asks for, on a build that has one"}}
 	}
+	return out
+}
+
+// unseen is the half of this question nothing on this machine can answer, said
+// wherever the answer is drawn.
+//
+// It is spelled out rather than summarised because the summary is the mistake:
+// "nothing is holding your screen awake" is what somebody will take away from a
+// clean line here, and that is a claim about two mechanisms when only one of
+// them was asked. The other one is the more likely of the two to be in use and
+// the easier of the two for an app to reach.
+const unseen = "a Wayland app holding zwp_idle_inhibit_manager_v1 never reaches logind and is invisible to " +
+	"every interface zde has: niri hands that global to sandboxed clients unfiltered, honours it while the " +
+	"surface is merely visible rather than focused, and exposes no way to read it back (docs/roadmap.md, the " +
+	"idle inhibitor; docs/verify.md, section 11)"
+
+// idle is whether anything is holding this session's idle timers off, which is
+// whether a screen that would blank, suspend or lock on its own is going to.
+//
+// It is the check most at risk of being read as more than it is, so what it can
+// see is on every line it prints. logind's inhibitor table is the whole of the
+// source, and on a Wayland session that is the smaller half of the mechanism -
+// see unseen, and internal/zded/idle.go for the measurement behind it.
+//
+// A warning and not a failure. A held idle timer is a session somebody can
+// still work in, and on a machine with nothing configured to act on idle it
+// costs nothing at all; what it is worth is that it be visible before somebody
+// walks away from the machine rather than after.
+func idle(s Session) []Check {
+	l := s.Power
+	switch {
+	case l.Absent:
+		return []Check{{Warn, "idle", "nothing owns " + logindName +
+			", so whether something is holding this session awake was never asked - and " + unseen}}
+	case l.Err != nil:
+		// Deliberately not "nothing is holding it". The logind check above has
+		// already given the reason at length, so this one says only what it
+		// means for this question and stops.
+		return []Check{{Warn, "idle", "not known: logind could not be asked, so whether something is " +
+			"holding this session awake is unanswered - and " + unseen}}
+	case l.HoldsErr != nil:
+		return []Check{{Warn, "idle", "logind would not list its inhibitors: " + l.HoldsErr.Error() +
+			" - so this is unanswered, and `systemd-inhibit --list` puts the same question by hand"}}
+	case len(l.Holds) == 0:
+		// The line this whole check exists to word carefully. An empty table is
+		// a true statement about logind and not about the machine.
+		return []Check{{OK, "idle", "logind has nothing holding this session awake - though " + unseen}}
+	}
+	var out []Check
+	for _, h := range l.Holds {
+		// Somebody else's text, on its way to a terminal: the same filter a
+		// notification's summary gets, for the same reason (internal/attn, Line;
+		// internal/zded/power.go, held). `--why="$(printf '\033[2J')"` would
+		// otherwise clear the report it is printed in.
+		who := attn.Line(h.Who)
+		if who == "" {
+			who = "something on this machine"
+		}
+		line := who + " is holding this session awake"
+		if why := attn.Line(h.Why); why != "" {
+			line += ": " + why
+		}
+		out = append(out, Check{Warn, "idle", line +
+			" - so nothing that acts on this session going idle will fire until it lets go"})
+	}
+	// Last, because it qualifies the list above rather than any one row of it:
+	// what is named is what logind knows, and there is no way to find out
+	// whether anything else is holding the screen as well.
+	out = append(out, Check{Warn, "idle", "and there may be more than logind can see: " + unseen})
 	return out
 }
 

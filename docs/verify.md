@@ -1048,15 +1048,17 @@ list, and that is the first thing to check if nothing below works.
 
 niri grabs zde's binds at the compositor, which is what stops a container
 shadowing or watching them. There is one hole in that, and it is the reason
-this section exists. `zwp_keyboard_shortcuts_inhibit_manager_v1` is the single
-sensitive Wayland global niri 26.04 does not gate on the security context every
-zinc app is launched behind: thirteen others vanish for a sandboxed client -
-screencopy, both data-control protocols, the virtual keyboard and pointer,
-layer-shell - and that one stays. niri then activates a new inhibitor the moment
-it is asked, with no dialog and nobody consulted; there is a FIXME in its source
-saying the confirmation is the missing part. While that surface has the
-keyboard, every zde bind that has not said otherwise is handed to it instead of
-being acted on.
+this section exists. `zwp_keyboard_shortcuts_inhibit_manager_v1` is one of the
+two sensitive Wayland globals niri 26.04 does not gate on the security context
+every zinc app is launched behind: thirteen others vanish for a sandboxed
+client - screencopy, both data-control protocols, the virtual keyboard and
+pointer, layer-shell - and these two stay. niri then activates a new inhibitor
+the moment it is asked, with no dialog and nobody consulted; there is a FIXME in
+its source saying the confirmation is the missing part. While that surface has
+the keyboard, every zde bind that has not said otherwise is handed to it instead
+of being acted on.
+
+The other ungated one is `zwp_idle_inhibit_manager_v1`, and it is section 11.
 
 Four say otherwise, and only four: panic (`Mod+Shift+Escape`), lock
 (`Mod+Ctrl+semicolon`), the mode picker (`Mod+m`), and `Mod+Ctrl+Escape`, which
@@ -1105,6 +1107,70 @@ And the one worth going out of your way for, because it is the real shape of
 this rather than an app you chose to hand the keyboard to: **a zinc container
 doing it**. Any app in any desk can bind that global, and the one you did not
 launch on purpose is the one this protects against.
+
+## 11. The screen an application can keep awake
+
+The second ungated global, and the one that costs you something while you are
+not at the machine. `zwp_idle_inhibit_manager_v1` is built with no security
+filter (niri 26.04, `src/niri.rs`: `IdleInhibitManagerState::new::<State>` where
+thirteen neighbours take `client_is_unrestricted`), so any sandboxed app can
+take one. niri honours it while the surface is merely **visible, not focused** -
+its refresh asks whether the surface has a scanout output, nothing more - so a
+container sitting on a workspace you are not looking at is enough. Nothing is
+asked and nothing is shown.
+
+zde cannot close this. niri exposes no knob, and the protocol is the protocol.
+What zde does instead is say it is happening, which is principle 4: whatever a
+keypress depends on is on the bar, and "your screen is not going to lock" is
+squarely that.
+
+**The part to get right is what zde can actually see, because it is half.**
+
+- **logind's idle inhibitors** are visible. `system.idle` reads the same
+  `ListInhibitors` the power menu costs its rows from, keeps the rows whose
+  `What` contains `idle` in mode `block`, and that is what the bar counts and
+  `zde doctor` names.
+- **Wayland idle inhibitors are not visible, at all.** They terminate in the
+  compositor. niri keeps the answer in `Niri::idle_inhibiting_surfaces` and
+  hands the computed bool to the idle notifier and to nothing else: there is no
+  IPC request, no event on the event stream, and its `org.freedesktop.ScreenSaver`
+  has `Inhibit` and `UnInhibit` with no getter, no property and no signal. There
+  is no interface to ask.
+
+The two do not overlap, and that was measured rather than reasoned about: a
+client holding a real inhibitor on a mapped, visible surface for twelve seconds
+moved nothing in `systemd-inhibit --list` and left the session's `IdleHint`
+false throughout. So the bar's silence means "logind sees nothing", never
+"nothing is holding your screen".
+
+What only a session settles:
+
+- **Does anything you actually run take one?** This is the whole question. A
+  browser playing video is the likely first hit, and a video call, a game, a
+  presentation tool and a video player are the rest. Take one, then check
+  `systemd-inhibit --list` and the bar: if the bar stays empty while the screen
+  visibly refuses to blank, you have found a Wayland-only holder, which is the
+  case this section exists for.
+- **A zinc container doing it**, which is the real shape of this rather than an
+  app you chose. Any app in any desk can bind that global.
+- **Visible and not focused.** Put the holder on a second monitor, or leave it
+  on screen and work in another window. It should still be holding, which is the
+  part people find surprising and the part that makes "close the window you are
+  using" the wrong advice.
+- **`zde doctor` names the holder** for a logind inhibitor, and says which half
+  it could see in both cases. `systemd-inhibit --what=idle --who=me --why=test
+  --mode=block sleep 60` is how to make one to look at without waiting for a
+  real app; the bar should read `idle held` within five seconds and go empty
+  again within five of the sleep ending.
+- **The bar is silent when it cannot ask.** Stop logind's answer (or run the bar
+  against a zded with no system bus) and the word must disappear rather than
+  stay on the last thing it knew. A stale `idle held` is merely noise; a stale
+  blank is somebody walking away from an unlocked screen.
+- **What it is worth on a machine that does not lock on idle**, which today is
+  every zde machine: nothing auto-locks yet, so an idle hold currently costs
+  only whatever logind's own `IdleActionSec` would have done. This is worth
+  deciding about before the lock preset lands (roadmap 0.3), because that is the
+  release where this stops being an indicator and starts being a hole.
 
 ## Expected to be missing
 

@@ -227,9 +227,10 @@ turned "when someone has hardware" into something anyone can do this evening.
   keyboard, which is worth remembering before the input layer is asked for
   anything else.
 - keymap, the shortcuts inhibitor: `zwp_keyboard_shortcuts_inhibit_manager_v1`
-  is the one sensitive global niri 26.04 hands to sandboxed clients too - every
-  other manager is built behind its security-context filter and that one is not
-  - and it activates a new inhibitor with no dialog, which niri's own source
+  is one of the two sensitive globals niri 26.04 hands to sandboxed clients too
+  - thirteen other managers are built behind its security-context filter and
+  these two are not (`src/niri.rs`; the other is the idle inhibitor below) - and
+  it activates a new inhibitor with no dialog, which niri's own source
   calls a FIXME. So a focused container can take any zde bind that has not said
   `allow-inhibiting=false`. Four say it: panic, lock, the mode picker, and the
   `Mod+Ctrl+Escape` that ends a grab. What a session has to settle is whether
@@ -237,8 +238,38 @@ turned "when someone has hardware" into something anyone can do this evening.
   anything you actually run grabs the keyboard at all, whether losing `Mod+j`
   to it is tolerable or maddening, and whether the key that gives them back is
   reachable enough for the moment you need it. Upstream may also close this: a
-  confirmation dialog, or the filter that every other global already has, would
+  confirmation dialog, or the filter the other thirteen already have, would
   make the whole question smaller.
+- the idle inhibitor, the second ungated global:
+  `IdleInhibitManagerState::new::<State>` is built with no
+  `client_is_unrestricted` where its thirteen neighbours take one, so a
+  sandboxed app can hold `zwp_idle_inhibit_manager_v1`. Worse than the keyboard
+  one in the part that matters: niri's `refresh_idle_inhibit` honours a surface
+  that is merely **visible, not focused**, so a container on a workspace nobody
+  is looking at keeps the session from ever going idle, with no interaction and
+  nothing shown.
+
+  **zde cannot see it, and that is the finding.** niri exposes it nowhere: not
+  in `niri-ipc`'s `Request`, `Response` or `Event` (checked at 26.4.0 - the only
+  hit for "inhibit" in 2109 lines is the keyboard-shortcuts action), not on the
+  event stream, and its `org.freedesktop.ScreenSaver` has `Inhibit` with no
+  getter. The computed bool goes to the idle notifier and stops.
+
+  So what shipped is the half that is observable, labelled as a half. logind's
+  own `idle` inhibitors are readable and always were - `system.idle` reads the
+  table the power menu already costs its rows from - and that is what the bar's
+  `idle held` counts and what `zde doctor` names. The two mechanisms do not
+  overlap: a Wayland inhibitor on a mapped surface moves nothing in
+  `ListInhibitors` and does not touch the session's `IdleHint`, measured rather
+  than assumed. Every place the reading is drawn says which half it is, because
+  a bar that implied it could see both would be worse than no bar at all.
+
+  What is open: whether anything anybody runs takes a Wayland one in practice
+  ([`verify.md`](verify.md), section 11), and what to do when the lock preset
+  lands in 0.3 - that is the release where this stops being an indicator and
+  starts being a way to keep a screen unlocked. Upstream adding the filter would
+  close it; so would any read-back at all, which is the smaller ask and the one
+  worth opening an issue for.
 - niri config: `nav.*` shelling to zded per keypress feeling instant, and the
   config driving a real compositor. The smoke test settles the static half -
   niri's own parser accepts the tree, its includes resolve, and every emitted
