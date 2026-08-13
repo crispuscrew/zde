@@ -308,6 +308,29 @@ let
           echo "no NetworkManager here and the bar last read '$netread'"; exit 1
         fi
 
+        # The idle hold. Nothing on this VM takes an idle inhibitor, so the two
+        # readings that may appear are "none" - logind answering with an empty
+        # table - and "unknown", which is logind not answering at all.
+        #
+        # Deliberately not waited into "none" the way the mic is waited into it.
+        # The mic's answer is guaranteed here because PipeWire is layer 0's and
+        # does come up; logind's is not, which is exactly why the doctor line
+        # above accepts warn as well as ok (line 12: no logind seat). Demanding
+        # "none" would make this test assert something about the VM's session
+        # management rather than about the widget.
+        #
+        # What it does catch is the two failures that are the widget's own. An
+        # empty string is the IPC call not landing at all, which is how a
+        # function wired to nothing answers; and "held" on a machine where
+        # nothing took an inhibitor is a strip inventing the one fact it exists
+        # to report, which is worse than a strip that says nothing.
+        idleread=$(barq idle)
+        case "$idleread" in
+          none | unknown) ;;
+          "") echo "the bar's idle reading came back empty, so the call never landed"; exit 1 ;;
+          *) echo "nothing holds an idle inhibitor here and the bar reads '$idleread'"; exit 1 ;;
+        esac
+
         # Then the count, against a queue that changes underneath it. "0 0"
         # before, "1 0" after: the poll is two seconds, so both of these wait
         # rather than asking once and hoping.
@@ -1213,6 +1236,23 @@ let
         grep -qE '^(ok|warn) +logind ' /tmp/doctor.txt || {
           echo "doctor says nothing about logind, so nothing says whether this session may power off:"
           cat /tmp/doctor.txt; exit 1
+        }
+        # The idle hold, on the same terms and for the same reason: this VM may
+        # or may not have a logind that answers, so the level is not the
+        # assertion and the line being there is.
+        grep -qE '^(ok|warn) +idle ' /tmp/doctor.txt || {
+          echo "doctor says nothing about what is holding this session awake:"
+          cat /tmp/doctor.txt; exit 1
+        }
+        # And whichever way it answered, it has to say what it could not see.
+        # This is the one line in the report a person could read as a promise
+        # that their screen will lock, and it is not one: the Wayland half of
+        # the mechanism is invisible to every interface zde has. A clean line
+        # with the caveat dropped is the failure worth catching from here,
+        # because nothing about it looks wrong.
+        grep -E '^(ok|warn) +idle ' /tmp/doctor.txt | grep -q 'zwp_idle_inhibit_manager_v1' || {
+          echo "doctor's idle line does not say which half of the mechanism it could see:"
+          grep -E '^(ok|warn) +idle ' /tmp/doctor.txt; exit 1
         }
 
         # Mod+t, which is `zde app launch terminal`. The one thing a desktop has
