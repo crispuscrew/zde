@@ -143,8 +143,24 @@ var registry = map[string]Entry{
 	"nav.up":                {Group: "desk", Desc: "focus the window above, else rotate to the previous desk", Spawn: []string{"zde", "nav", "up"}, written: true},
 	"desk.move-window-next": {Group: "desk", Desc: "move the window to the next desk", Spawn: []string{"zde", "desk", "move-window", "next"}, written: true},
 	"desk.move-window-prev": {Group: "desk", Desc: "move the window to the previous desk", Spawn: []string{"zde", "desk", "move-window", "prev"}, written: true},
-	"desk.queue-jump":       {Group: "desk", Desc: "jump to the queue's top item", Spawn: []string{"zde", "desk", "queue-jump"}, written: true},
-	"desk.regulars":         {Group: "desk", Desc: "go to the regulars (shared singletons: comms, music, personal browser)", Spawn: []string{"zde", "desk", "regulars"}, written: true},
+	// The two that say which desk outright, rather than counting to it. They are
+	// how a window reaches a desk that is not beside this one, and
+	// move-workspace-to is the only way the regulars come into being at all
+	// (docs/roadmap.md) - which until now was a sentence about a terminal,
+	// because neither had a row here.
+	//
+	// Deliberately not parametric. app.launch takes its argument in the keymap
+	// because "terminal" and "editor" are names this repo ships and every machine
+	// has; a desk name is the person's own, so there is nothing a shipped keymap
+	// could write after the verb. The bind spawns it bare, which opens the same
+	// picker Mod+Tab opens - the surface that already exists for naming a desk
+	// with the keyboard - and the row chosen there is the argument (internal/zded,
+	// deskPicker). That also keeps one row in the palette per verb instead of one
+	// per desk somebody happens to have.
+	"desk.move-window-to":    {Group: "desk", Desc: "pick a desk, and send the focused window there", Spawn: []string{"zde", "desk", "move-window-to"}, written: true},
+	"desk.move-workspace-to": {Group: "desk", Desc: "pick a desk, and hand it this whole workspace (how the regulars are made)", Spawn: []string{"zde", "desk", "move-workspace-to"}, written: true},
+	"desk.queue-jump":        {Group: "desk", Desc: "jump to the queue's top item", Spawn: []string{"zde", "desk", "queue-jump"}, written: true},
+	"desk.regulars":          {Group: "desk", Desc: "go to the regulars (shared singletons: comms, music, personal browser)", Spawn: []string{"zde", "desk", "regulars"}, written: true},
 	// panic and block are Unsuppressible because they are the two keys whose
 	// whole job is to work when something on the screen is wrong. panic is the
 	// vision's first named exception; block is the same reflex one notch harder
@@ -153,6 +169,22 @@ var registry = map[string]Entry{
 	"desk.panic": {Group: "desk", Desc: "panic: decoy desk, mute, silence", Spawn: []string{"zde", "desk", "panic"}, Unsuppressible: true},
 	"desk.block": {Group: "desk", Desc: "block: hard lock, no notifications or capture leak", Spawn: []string{"zde", "desk", "block"}, Unsuppressible: true},
 	"desk.zen":   {Group: "desk", Desc: "toggle zen (content only)", Spawn: []string{"zde", "desk", "zen"}},
+	// pause is 0.3's, with the background policies and the per-desk cost widgets
+	// (docs/roadmap.md, resources), and nothing in this tree pauses anything: the
+	// manifest's `background: pause` is parsed and acted on by nobody
+	// (docs/model.md, section 5). Registered unwritten and unbound, which is what
+	// the rest of this list does with an action that is coming: the palette
+	// carries the row and says nothing is written behind it, and no key is spent
+	// on it until something is.
+	//
+	// `guest <name>` from the same table is deliberately not here. It carries a
+	// desk name, and a parametric entry is listed only where a keymap fills the
+	// argument in (actions.go, Actions) - so an unbound one would be a name in
+	// this file that no surface can ever show and no key can reach. It is also
+	// the one row in the desk group that is a security posture rather than a verb
+	// (docs/glossary.md: an unlock limited to one desk), and 0.2 is where that set
+	// is decided. Nothing to register until it is.
+	"desk.pause": {Group: "desk", Desc: "pause this desk's apps, freeing what they hold", Spawn: []string{"zde", "desk", "pause"}},
 
 	// monitor: niri natives. The window axis owns h/l, so monitors get their
 	// own pair of chords (keymap.yaml).

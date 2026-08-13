@@ -136,8 +136,17 @@ func run(args []string) error {
 		return switchDesk(args[2])
 	case len(args) == 3 && args[0] == "desk" && args[1] == "move-window":
 		return focusDesk("desk.move-window", args[2])
+	// Two arities each, and the short one is what the chord spawns: the desk to
+	// send to is a name only the person standing there knows, so the key asks
+	// for it the way Mod+Tab asks - the picker - and hands the row back through
+	// the same socket. With no shell to draw one, this prints the desks and the
+	// second form takes the name off that list.
+	case len(args) == 2 && args[0] == "desk" && args[1] == "move-window-to":
+		return pickDesk("desk.move-window-to")
 	case len(args) == 3 && args[0] == "desk" && args[1] == "move-window-to":
 		return focusDesk("desk.move-window-to", args[2])
+	case len(args) == 2 && args[0] == "desk" && args[1] == "move-workspace-to":
+		return pickDesk("desk.move-workspace-to")
 	case len(args) == 3 && args[0] == "desk" && args[1] == "move-workspace-to":
 		return focusDesk("desk.move-workspace-to", args[2])
 	case len(args) == 2 && args[0] == "workspace" && (args[1] == "next" || args[1] == "prev"):
@@ -1114,14 +1123,24 @@ func call(method string, args ...string) error {
 // this prints nothing; without one, the key still has to do something, so it
 // prints the list it would have shown - which is what it did before there was
 // a picker at all.
-func switcher() error {
+func switcher() error { return pickDesk("desk.switcher") }
+
+// pickDesk asks for the desks on behalf of whichever verb wants one named -
+// going there, or sending the focused window or workspace there. One surface and
+// one printed list, because it is one question, and the verb that asked is what
+// the chosen row is spent on (internal/zded, deskPicker).
+//
+// The printed fallback is the whole of what a move verb does on a session with
+// no shell: it names the desks and marks the one you are on, and `zde desk
+// move-window-to NAME` is the same command with the answer in it.
+func pickDesk(method string) error {
 	c, err := zded.Dial()
 	if err != nil {
 		return err
 	}
 	defer c.Close()
 	var sw zded.Switcher
-	if err := c.Call("desk.switcher", &sw); err != nil {
+	if err := c.Call(method, &sw); err != nil {
 		return err
 	}
 	if sw.Shown {
@@ -1779,11 +1798,17 @@ func usage() {
   zde nav down|up        the window along the stack, else the desk beside this
   zde desk move-window next|prev
                          carry the focused window to the desk beside, and go
-  zde desk move-window-to NAME
-                         carry the focused window to that desk
-  zde desk move-workspace-to NAME
+  zde desk move-window-to [NAME]
+                         carry the focused window to that desk (Mod+Ctrl+Tab).
+                         With no name it opens the desk picker and the row you
+                         choose is the destination; prints the desks when no
+                         shell is up, and the name goes here
+  zde desk move-workspace-to [NAME]
                          hand this whole workspace to that desk, which is how
                          the regulars are made and how work comes back out
+                         (Mod+Ctrl+Shift+Tab). The same two forms, and the
+                         picker offers the regulars whether or not the band
+                         exists yet - it comes into being by being chosen
   zde desk next          the desk after this one, wrapping (regulars excluded)
   zde desk prev          the desk before this one, wrapping
   zde queue              what is waiting, oldest first

@@ -851,15 +851,29 @@ func (s *Server) Dispatch(req Request) Response {
 		// A verb of its own rather than another word this one accepts,
 		// because "next" and "prev" are desk names anybody may use, and a
 		// desk you cannot reach because of what you called it is a trap.
-		if len(req.Args) != 1 {
-			return Response{Error: "desk.move-window-to takes one desk name"}
+		//
+		// Two arities, the way window.jump-to has them: the picker and the
+		// choice are one question - which desk - and with no surface to ask it
+		// of, what the first form printed is what the second one takes. It is
+		// what gives a chord something to do at all, since the argument is a
+		// name only the person standing there knows.
+		switch len(req.Args) {
+		case 0:
+			return s.deskPicker(EventPickerMoveWindow)
+		case 1:
+			return s.moveWindowTo(req.Args[0])
+		default:
+			return Response{Error: "desk.move-window-to takes one desk name, or none to pick one"}
 		}
-		return s.moveWindowTo(req.Args[0])
 	case "desk.move-workspace-to":
-		if len(req.Args) != 1 {
-			return Response{Error: "desk.move-workspace-to takes one desk name"}
+		switch len(req.Args) {
+		case 0:
+			return s.deskPicker(EventPickerMoveWorkspace)
+		case 1:
+			return s.moveWorkspaceTo(req.Args[0])
+		default:
+			return Response{Error: "desk.move-workspace-to takes one desk name, or none to pick one"}
 		}
-		return s.moveWorkspaceTo(req.Args[0])
 	case "workspace.next", "workspace.prev":
 		if len(req.Args) != 0 {
 			return Response{Error: req.Method + " takes no arguments"}

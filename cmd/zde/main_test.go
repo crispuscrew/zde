@@ -363,6 +363,55 @@ func TestAskPanelWithAQuestionOpensThePanelAndRunsNoTier(t *testing.T) {
 	}
 }
 
+// The two verbs that send something to a desk, with the name and without it.
+//
+// Without it is what the chord spawns, and it has to reach the daemon as a
+// request with no arguments: the desk is named by the picker that opens, and a
+// CLI that insisted on the name here would leave the key printing usage to a
+// stderr no keypress has. With no shell to draw one, the same request answers
+// with the desks, and this prints them so the second form has a name to take -
+// which is the whole of the verb on a session whose shell has died.
+func TestTheMoveVerbsAskForADeskWhenNobodyNamedOne(t *testing.T) {
+	for _, verb := range []string{"move-window-to", "move-workspace-to"} {
+		t.Run(verb, func(t *testing.T) {
+			f := fakeDaemon(t, func(req zded.Request) []string {
+				if len(req.Args) == 0 {
+					// Nothing drew it, which is what makes the CLI print.
+					return []string{`{"ok":{"shown":false,"desks":["haven","vshop"],"on":"vshop"}}`}
+				}
+				return []string{`{"ok":["haven.DP-1.code"]}`}
+			})
+
+			said, err := onStdout(t, func() error { return run([]string{"desk", verb}) })
+			if err != nil {
+				t.Fatalf("zde desk %s: %v", verb, err)
+			}
+			got := f.asked()
+			if len(got) != 1 || got[0].Method != "desk."+verb || len(got[0].Args) != 0 {
+				t.Fatalf("sent %+v, want one desk.%s with no arguments", got, verb)
+			}
+			// The list, with the desk you are on marked: it is the row a move
+			// cannot use, and the only thing about a desk list you cannot see
+			// from the list.
+			if !strings.Contains(said, "haven\n") || !strings.Contains(said, "vshop (here)") {
+				t.Errorf("printed %q, want the desks with the one we are on marked", said)
+			}
+
+			// And the name off that list, handed straight back.
+			said, err = onStdout(t, func() error { return run([]string{"desk", verb, "haven"}) })
+			if err != nil {
+				t.Fatalf("zde desk %s haven: %v", verb, err)
+			}
+			if got = f.asked(); len(got) != 2 || len(got[1].Args) != 1 || got[1].Args[0] != "haven" {
+				t.Fatalf("sent %+v, want the name it printed", got)
+			}
+			if !strings.Contains(said, "haven.DP-1.code") {
+				t.Errorf("printed %q, want the workspace it ended on", said)
+			}
+		})
+	}
+}
+
 // The other verb, unchanged, because it is somebody's script: a question
 // written after `oneshot` is answered on the terminal it was typed at, on the
 // provider tier, streamed as it comes. This is the guarantee the panel change

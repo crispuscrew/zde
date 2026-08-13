@@ -186,7 +186,10 @@ blocks 0.2:
   runbook exists: [`update.md`](update.md)). The state collection landed early
   as `zde doctor`, which is one line per check and no agent at all.
 - update: staleness/CVE collection, agent-drafted re-pin, human signs.
-- resources: `desk.pause`, background policies, per-desk cost widgets.
+- resources: `desk.pause`, background policies, per-desk cost widgets. The
+  action is registered and bound to nothing, so the palette carries the row and
+  says nothing is written behind it; the manifest key `background: pause` is
+  parsed and acted on by nobody until this lands.
 - netview: per-app connections/rates, nft counters (zinc ask 6), `app-cut`.
 - per-project browsers via `Inherits:` (ask 5) + `zde new`.
 - regulars polish: focus-mode comms filtering.
@@ -255,15 +258,19 @@ turned "when someone has hardware" into something anyone can do this evening.
   the regulars and adoption still names into the desk you are on, so this verb
   is the only way the band comes into being - and being a rename in either
   direction, it is also how work leaves a band that would otherwise only fill
-  up. Both of those verbs are the CLI's and nothing else: neither is in the
-  keymap registry, so neither has a chord or a palette row, and the answer to
-  "how do I make my regulars" is `zde desk move-workspace-to regulars` typed in
-  a terminal. That is the part to decide rather than to note, and it is a
-  decision about which keys exist ([`model.md`](model.md), section 6). What is
-  left of the item is the shape of it in use: whether promoting a workspace is
-  the thing people reach for, or whether they want to name an empty one and fill
-  it afterwards, which this refuses because an empty workspace is never adopted
-  and so has no name to move.
+  up. It is a key now, `Mod+Ctrl+Shift+Tab`, with `Mod+Ctrl+Tab` for the window:
+  a terminal was the only way to reach the one verb the band depends on, and a
+  CLI-only action is right for a TTY - the console you go to when the session is
+  broken - and not for a session that is running. Neither chord carries the desk
+  name, because a desk is called whatever you called it: the bind spawns the
+  verb bare and it opens the picker `Mod+Tab` opens, which offers the regulars
+  whether or not there is a band yet. What is left of the item is the shape of it
+  in use: whether promoting a workspace is the thing people reach for, or whether
+  they want to name an empty one and fill it afterwards, which this refuses
+  because an empty workspace is never adopted and so has no name to move - and
+  now also whether one surface with three verbs behind it reads as one thing or
+  as a key you have to check before you press ([`verify.md`](verify.md), a day of
+  work).
 - a single unreadable file in the desks directory taking every manifest with
   it: answered, by failing one file at a time. The loader returns what it read
   and what it could not, `zde doctor` names the files it could not, and the
