@@ -332,6 +332,26 @@ func status() error {
 		shell = fmt.Sprintf("%s (%d listening)", shell, st.Listeners)
 	}
 	fmt.Printf("shell      %s\n", shell)
+	// And how many connections there are at all, which is the question the
+	// listener count only half answers: a flood that opens sockets and never
+	// subscribes leaves "shell no, 0 listening" on a daemon that is one second
+	// from being killed by its own descriptor limit.
+	//
+	// Always printed, and with the ceiling beside it, because this is a number
+	// nobody can act on alone. Five is a shell and this call; 256 of 256 is
+	// somebody else's program, and the difference is only visible if the second
+	// number is on the line. Read from the constant rather than sent down the
+	// wire: it is one bound, in one place, and the two binaries are built
+	// together (internal/zded, ConnectionsMax).
+	conns := fmt.Sprintf("%d of %d", st.Connections, zded.ConnectionsMax)
+	if st.Dropped > 0 {
+		// Once it has happened at all, because it is the only thing left to
+		// find after a flood has stopped: the count goes back to a session's
+		// size and nothing else says the session's own connections were being
+		// closed under it.
+		conns = fmt.Sprintf("%s, %d dropped to make room", conns, st.Dropped)
+	}
+	fmt.Printf("conns      %s\n", conns)
 	fmt.Printf("notify     %s\n", yesno(st.Notifications))
 	// Layer 2: whether the session can run a sandboxed app at all. It is the
 	// whole diagnosis for a desk whose apps do nothing, and it is a fact about
