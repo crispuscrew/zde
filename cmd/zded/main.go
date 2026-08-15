@@ -178,7 +178,7 @@ func run(ctx context.Context, socket, jrnPath, desksDir, histPath string, notify
 	// notification center starting empty is where a first login starts, and it
 	// is not worth a session over (internal/zded, LoadHistory).
 	if err := srv.LoadHistory(histPath); err != nil {
-		fmt.Fprintf(os.Stderr, "zded: notification history: %v\n", err)
+		complain(fmt.Errorf("notification history: %w", err))
 	}
 	srv.UseClipboard(clipboard)
 	if err := srv.Listen(socket); err != nil {
@@ -226,7 +226,7 @@ func run(ctx context.Context, socket, jrnPath, desksDir, histPath string, notify
 	// whether or not anything can send it a notification, and a daemon that
 	// refused to start because of a bus would take the desks down with it.
 	if n, err := notify(srv, version); err != nil {
-		fmt.Fprintf(os.Stderr, "zded: notifications: %v\n", err)
+		complain(fmt.Errorf("notifications: %w", err))
 	} else {
 		defer n.Close()
 		// So that finishing something with `zde queue done` tells whoever sent
@@ -433,6 +433,20 @@ func (compositor) SetWorkspaceNameByID(id uint64, name string) error {
 }
 
 func fatal(err error) {
-	fmt.Fprintln(os.Stderr, "zded:", err)
+	complain(err)
 	os.Exit(1)
 }
+
+// complain is every line this daemon logs that has somebody else's words in it:
+// niri's, the bus's, a YAML parser's about a manifest. The rest of what it
+// prints - a socket path, a count of entries it could not read - it wrote
+// itself and prints as it is.
+//
+// Filtered for the reason `zde` filters an error (cmd/zde, complain), with one
+// difference in who reads it. This is a unit's log, and its usual reader is
+// journalctl, which by default abbreviates a message with unprintable bytes in
+// it to "blob data" - so that terminal was already safe, and what the filter
+// buys there is the message surviving to be read at all. The reader that was
+// not safe is the other one: zded started by hand, where its log is whatever
+// terminal started it, which is where this daemon is debugged.
+func complain(err error) { fmt.Fprintln(os.Stderr, "zded:", attn.Block(err.Error())) }

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -1947,6 +1948,48 @@ func TestStatusNamesTheManifestItCouldNotRead(t *testing.T) {
 		t.Error("the manifest that parses went with the one that does not")
 	}
 }
+
+// Both of the fields status answers with somebody else's words in them are one
+// row each, cleaned here where those words enter the daemon.
+//
+// A manifest is a file somebody edits by hand and a YAML parser answers it by
+// quoting the file back - `field <key> not found`, over as many lines as there
+// were mistakes, with an ESC in it if the file had one. niri's message is
+// whatever niri says. Every reader of these draws a row: a line under
+// "manifest" or after "compositor" in `zde status`, a failing check in doctor's
+// report, whatever the shell puts them on next. In a row a newline is a second
+// row with nothing in column one, which is a line no daemon printed.
+func TestStatusAnswersWithOneRowForEachThingItDidNotWrite(t *testing.T) {
+	desks := partialDesks{
+		good: map[string]*manifest.Desk{},
+		bad: []manifest.Problem{{
+			Path: "/desks/haven.yaml",
+			Err:  errors.New("manifest: yaml: unmarshal errors:\n  line 2: field \x1b[2Jmonitorz not found\n  line 9: no"),
+		}},
+	}
+	s := New("test", nil, &fakeCompositor{err: errors.New("niri: socket\x1b[2J gone\ncompositor connected")}, desks)
+	s.manifestFor("vshop")
+
+	st := s.status()
+	if len(st.BadManifests) != 1 {
+		t.Fatalf("BadManifests = %v, want the one file", st.BadManifests)
+	}
+	for what, got := range map[string]string{"the manifest problem": st.BadManifests[0], "the compositor line": st.Compositor} {
+		if strings.ContainsAny(got, "\n\x1b") {
+			t.Errorf("%s is %q, which is more than one row or drives a terminal", what, got)
+		}
+	}
+	// Still legible: the file, what the parser could not use, and what niri
+	// said - which is the whole reason these are reported rather than dropped.
+	for _, want := range []string{"haven.yaml", "monitorz", "line 9"} {
+		if !strings.Contains(st.BadManifests[0], want) {
+			t.Errorf("status says %q, which no longer contains %q", st.BadManifests[0], want)
+		}
+	}
+	if !strings.Contains(st.Compositor, "socket") {
+		t.Errorf("the compositor line is %q, which no longer says what niri said", st.Compositor)
+	}
+}
 func (f fixedDesks) Save(*manifest.Desk) (string, error) {
 	return "", errors.New("not writable")
 }
@@ -3008,5 +3051,360 @@ func TestTheLargestConversationACallerMaySendFitsInOneRequest(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no local tier") {
 		t.Errorf("the answer was %v, want the missing tier", err)
+	}
+}
+
+// peer is one connection held open by a test, with the reader that goes with
+// it. Raw rather than a Client, because these tests are about connections that
+// are not being used: what has to be asserted is what arrives on one that is
+// only open, and Client has no way to read without asking first.
+type peer struct {
+	conn net.Conn
+	r    *bufio.Reader
+}
+
+// dialPeers opens n connections and makes each of them ask for something, in
+// order, so that the order they were admitted in is the order they will be
+// dropped in.
+//
+// The asking is not decoration. admit runs on the connection's own goroutine,
+// so n dials in a loop are n goroutines racing to be counted and which of them
+// is the oldest is whatever the scheduler decided. A reply read back is proof
+// that this connection was admitted before the next one dialled.
+func dialPeers(t *testing.T, path string, n int) []*peer {
+	t.Helper()
+	peers := make([]*peer, 0, n)
+	for i := 0; i < n; i++ {
+		p := dialPeer(t, path)
+		if line := p.ask(t, `{"method":"status"}`); !strings.Contains(line, `"ok"`) {
+			t.Fatalf("connection %d was answered %q", i, strings.TrimSpace(line))
+		}
+		peers = append(peers, p)
+	}
+	return peers
+}
+
+func dialPeer(t *testing.T, path string) *peer {
+	t.Helper()
+	c, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close() })
+	return &peer{conn: c, r: bufio.NewReader(c)}
+}
+
+// ask writes one request and waits for one line back.
+func (p *peer) ask(t *testing.T, req string) string {
+	t.Helper()
+	if _, err := fmt.Fprintln(p.conn, req); err != nil {
+		t.Fatalf("writing %s: %v", req, err)
+	}
+	line, err := p.hear(10 * time.Second)
+	if err != nil {
+		t.Fatalf("after %s: %v", req, err)
+	}
+	return line
+}
+
+// hear waits for one line, or says what stopped it. An error is an answer here
+// rather than a failure: a connection that was closed under its client is
+// exactly what these tests are about.
+func (p *peer) hear(wait time.Duration) (string, error) {
+	if err := p.conn.SetReadDeadline(time.Now().Add(wait)); err != nil {
+		return "", err
+	}
+	return p.r.ReadString('\n')
+}
+
+// How many connections zded keeps is bounded, over the socket, the way a
+// program with a socket would find out.
+//
+// Measured on a running zded before this existed, connections opened and then
+// held idle: 10,000 of them cost 99 MB of RSS and 10,007 descriptors, and
+// 100,000 cost 882 MB and 100,007 - about 9 KB and one descriptor each, opened
+// at 65,000 a second, and none of the memory came back when they closed. Past
+// that the daemon does not slow down, it stops: accept4 returns EMFILE at
+// RLIMIT_NOFILE, Serve returns it and the process exits and removes its socket.
+// Measured at a lowered limit: 262,138 connections in 4.3 seconds and then no
+// zded at all.
+//
+// What is asserted is the bound under the load rather than the existence of a
+// constant. Four times the cap arrives, and what the daemon is holding
+// afterwards is the cap - in connections, and in the goroutines behind them,
+// because a connection dropped from the table that went on reading would be the
+// same leak with the count hidden.
+func TestOnlySoManyConnectionsAreKeptAtOnce(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
+	path := serve(t, s)
+
+	before := runtime.NumGoroutine()
+	const flood = ConnectionsMax * 4
+	for i := 0; i < flood; i++ {
+		c, err := net.Dial("unix", path)
+		if err != nil {
+			t.Fatalf("connection %d: %v", i, err)
+		}
+		defer c.Close()
+	}
+
+	waitFor(t, "the table settling at the cap", func() bool { return s.held() == ConnectionsMax })
+	if n := s.held(); n != ConnectionsMax {
+		t.Errorf("%d connections open after %d were dialled, want the cap of %d", n, flood, ConnectionsMax)
+	}
+
+	// And the goroutines with them. One read loop per connection kept, plus the
+	// handful the daemon runs on its own account, against one per connection
+	// dialled if nothing dropped them.
+	waitFor(t, "the dropped connections' goroutines ending", func() bool {
+		return runtime.NumGoroutine()-before < ConnectionsMax+64
+	})
+	if grew := runtime.NumGoroutine() - before; grew >= ConnectionsMax+64 {
+		t.Errorf("%d connections were dialled and the daemon grew by %d goroutines, past the %d the cap allows",
+			flood, grew, ConnectionsMax+64)
+	}
+}
+
+// And the cap is safe to have because of what happens at it: the connection
+// that has gone longest without asking anything is dropped, and the one that
+// has just arrived gets in.
+//
+// This is the whole reason the bound is shaped this way. Refusing the newest is
+// the obvious thing and it is the one thing that must not happen here, because
+// the newest connection may be the shell dialling again after a switch
+// restarted zded - and a shell that cannot reconnect is the failure
+// fix/bar-redial exists to prevent, reached from the other side.
+//
+// So: a full table of connections that are only open, and then a shell. It
+// subscribes, and it is drawn to.
+func TestAShellDialingIntoAFullTableStillGetsIn(t *testing.T) {
+	f := &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code", output: "DP-1"}
+	s := New("test", nil, f, nil)
+	path := serve(t, s)
+
+	idle := dialPeers(t, path, ConnectionsMax)
+	waitFor(t, "the table filling", func() bool { return s.held() == ConnectionsMax })
+
+	shell := dialPeer(t, path)
+	if line := shell.ask(t, `{"method":"events"}`); !strings.Contains(line, "listening") {
+		t.Fatalf("a shell dialling into a full table was answered %q", strings.TrimSpace(line))
+	}
+	if n := s.listeners(); n != 1 {
+		t.Fatalf("%d listeners after the shell subscribed, want 1", n)
+	}
+
+	// Not merely admitted: drawn to. A connection that is in the table and gets
+	// no events is a shell that is dark, which is the failure with a different
+	// name on it.
+	if sent := s.broadcast(Event{Kind: EventPicker, Desks: []string{"vshop"}}); sent != 1 {
+		t.Fatalf("a broadcast reached %d listeners, want the shell", sent)
+	}
+	line, err := shell.hear(10 * time.Second)
+	if err != nil {
+		t.Fatalf("the shell got no event: %v", err)
+	}
+	if !strings.Contains(line, EventPicker) {
+		t.Errorf("the shell was sent %q, want a picker", strings.TrimSpace(line))
+	}
+
+	// And the one that paid for it is the one that had gone longest without
+	// asking anything, which is the first of the idle ones.
+	// It is told why (see the test below) and then it ends.
+	if _, err := idle[0].hear(10 * time.Second); err != nil {
+		t.Errorf("the longest-idle connection was closed with nothing said: %v", err)
+	}
+	if _, err := idle[0].hear(2 * time.Second); err == nil {
+		t.Error("the longest-idle connection is still open and answering, so the shell got in by going over the cap")
+	}
+	if n := s.held(); n != ConnectionsMax {
+		t.Errorf("%d connections open, want the cap of %d", n, ConnectionsMax)
+	}
+}
+
+// The one connection that must never be dropped is the one that looks idlest.
+//
+// A shell holding the event stream says `events` once at login and then reads
+// for the rest of the session. Measured on its own traffic it is the quietest
+// connection zded has, so "longest without asking anything" finds it first - and
+// losing it is the shell going dark, which is what the cap exists to prevent.
+//
+// It is exempt because listenersMax bounds the listeners separately at 16, so
+// the exemption cannot be turned into a way of filling the table. Four times
+// the cap arrives after it, and it is still there and still drawn to.
+func TestTheEventStreamIsNotWhatGetsDropped(t *testing.T) {
+	f := &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code", output: "DP-1"}
+	s := New("test", nil, f, nil)
+	path := serve(t, s)
+
+	// First, so that nothing else in the table has been quiet for as long.
+	shell := dialPeer(t, path)
+	if line := shell.ask(t, `{"method":"events"}`); !strings.Contains(line, "listening") {
+		t.Fatalf("the shell was answered %q", strings.TrimSpace(line))
+	}
+
+	const flood = ConnectionsMax * 4
+	for i := 0; i < flood; i++ {
+		c, err := net.Dial("unix", path)
+		if err != nil {
+			t.Fatalf("connection %d: %v", i, err)
+		}
+		defer c.Close()
+	}
+	waitFor(t, "the table settling at the cap", func() bool { return s.held() == ConnectionsMax })
+
+	if n := s.listeners(); n != 1 {
+		t.Fatalf("%d listeners after %d connections arrived, want the shell's one", n, flood)
+	}
+	if sent := s.broadcast(Event{Kind: EventPicker, Desks: []string{"vshop"}}); sent != 1 {
+		t.Fatalf("a broadcast reached %d listeners after the flood, want the shell", sent)
+	}
+	line, err := shell.hear(10 * time.Second)
+	if err != nil {
+		t.Fatalf("the event stream was dropped under %d connections: %v", flood, err)
+	}
+	if !strings.Contains(line, EventPicker) {
+		t.Errorf("the shell was sent %q, want a picker", strings.TrimSpace(line))
+	}
+}
+
+// Nor is a connection with a tier running on it, which is the same trap on a
+// shorter clock. An ask.run is answered over as long as a model takes, up to
+// askTimeout of two minutes, and for the whole of it the connection has nothing
+// more to send - so by the measure this cap uses it is idle, while a person is
+// sitting in front of it waiting for the answer.
+//
+// Bounded the same way the listeners are: asksMax allows four across the daemon
+// (ask.go, claimAsk), so the exemption is worth four connections of 256.
+func TestATierRunningIsNotDroppedToMakeRoom(t *testing.T) {
+	writeTiers(t, map[string][]string{TierLocal: fakeTier("slow")})
+	s := New("test", nil, &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code"}, nil)
+	path := serve(t, s)
+
+	c, err := DialPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.Call(MethodAskRun, nil, TierLocal, "how long"); err != nil {
+		t.Fatalf("ask.run: %v", err)
+	}
+
+	// The flood, while the tier is still thinking. The fake one sleeps two
+	// seconds before it says anything, which is what makes this connection the
+	// quietest thing in the table at the moment the table fills.
+	const flood = ConnectionsMax * 4
+	for i := 0; i < flood; i++ {
+		f, err := net.Dial("unix", path)
+		if err != nil {
+			t.Fatalf("connection %d: %v", i, err)
+		}
+		defer f.Close()
+	}
+	waitFor(t, "the table settling at the cap", func() bool { return s.held() == ConnectionsMax })
+
+	var b strings.Builder
+	for {
+		ev, err := c.NextEventBefore(time.Now().Add(20 * time.Second))
+		if err != nil {
+			t.Fatalf("the answer never arrived, so the connection asking for it was dropped: %v", err)
+		}
+		if ev.Kind != EventAskText {
+			continue
+		}
+		b.WriteString(ev.Text)
+		if ev.Done {
+			break
+		}
+	}
+	if got := b.String(); got != "eventually" {
+		t.Errorf("the answer was %q, want the tier's", got)
+	}
+}
+
+// A dropped connection is told why, and that is the difference between a bound
+// and a daemon that looks like it has crashed.
+//
+// A socket that ends under a client is what a crash looks like from the outside,
+// and this is not one: zded is running, it has just answered the connection that
+// took this one's place, and what the client should do is dial again - which the
+// shell does on its own (shell/Dialer.qml) and a person does by running the verb
+// again. A bare EOF sends somebody to the journal looking for a daemon that
+// never died.
+func TestADroppedConnectionIsToldWhyBeforeItEnds(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
+	path := serve(t, s)
+
+	idle := dialPeers(t, path, ConnectionsMax)
+	waitFor(t, "the table filling", func() bool { return s.held() == ConnectionsMax })
+
+	// One more, which is what makes room have to be found.
+	dialPeer(t, path)
+
+	line, err := idle[0].hear(10 * time.Second)
+	if err != nil {
+		t.Fatalf("the longest-idle connection was closed with nothing said: %v", err)
+	}
+	for _, want := range []string{"make room", strconv.Itoa(ConnectionsMax), "zded is running", "dial again"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("a dropped connection was told %q, which does not say %q", strings.TrimSpace(line), want)
+		}
+	}
+	// And then it ends, rather than being left half-open for a client to keep
+	// writing into.
+	if _, err := idle[0].hear(10 * time.Second); err == nil {
+		t.Error("the connection was told it had been dropped and is still open")
+	}
+}
+
+// `zde status` carries the count and what has been dropped, because the
+// listener count only half answered this. A flood that opens sockets and never
+// subscribes never reaches the listeners at all, so status said "shell no, 0
+// listening" on a daemon a second away from being killed by its own descriptor
+// limit.
+func TestStatusSaysHowManyConnectionsAreOpen(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
+	path := serve(t, s)
+
+	c, err := DialPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var st Status
+	if err := c.Call("status", &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.Connections != 1 {
+		t.Errorf("status says %d connections on a daemon with one caller, want 1", st.Connections)
+	}
+	if st.Dropped != 0 {
+		t.Errorf("status says %d dropped on a daemon nothing has flooded, want 0", st.Dropped)
+	}
+
+	const flood = ConnectionsMax * 2
+	for i := 0; i < flood; i++ {
+		f, err := net.Dial("unix", path)
+		if err != nil {
+			t.Fatalf("connection %d: %v", i, err)
+		}
+		defer f.Close()
+	}
+	waitFor(t, "the table settling at the cap", func() bool { return s.held() == ConnectionsMax })
+
+	// Asked on a connection of its own, because the one above is long since
+	// dropped - which is itself the point: the diagnostic still answers.
+	c2, err := DialPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c2.Close()
+	if err := c2.Call("status", &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.Connections != ConnectionsMax {
+		t.Errorf("status says %d connections under a flood of %d, want the cap of %d", st.Connections, flood, ConnectionsMax)
+	}
+	if st.Dropped == 0 {
+		t.Error("status says nothing was dropped after a flood that filled the table twice over")
 	}
 }

@@ -21,13 +21,29 @@
     ./zde-user.nix
   ];
 
-  zde.enable = true;
+  # One block rather than a zde.* line per concern, which is what statix asks
+  # for once there are three of them.
+  zde = {
+    enable = true;
 
-  # The laptop branch, which the smoke test deliberately leaves off (it would
-  # hand the VM's network to NetworkManager and make the test flaky). Real
-  # hardware is where it belongs anyway: battery, radios and the lid switch
-  # are exactly what a VM cannot answer for.
-  zde.laptop.enable = true;
+    # The state snapshot, on, because this image is the by-hand list and the
+    # list asks for it (docs/verify.md, section 1). It is also the honest place
+    # to find out whether the mechanism works before anybody relies on it for a
+    # machine that will not boot.
+    #
+    # What it cannot do here is outlive the boot: this image's root is a tmpfs,
+    # so /var/log/zde goes with the power. That is the difference between a
+    # stick and an install and it is the whole reason the file exists on the
+    # second one - so read it on this image, and turn it on in your own flake
+    # before you install.
+    debug.enable = true;
+
+    # The laptop branch, which the smoke test deliberately leaves off (it would
+    # hand the VM's network to NetworkManager and make the test flaky). Real
+    # hardware is where it belongs anyway: battery, radios and the lid switch
+    # are exactly what a VM cannot answer for.
+    laptop.enable = true;
+  };
 
   # A password, and the greeter left in the way on purpose. Autologin would be
   # friendlier and would skip the one part of the boot path nothing has ever
@@ -112,6 +128,9 @@
   # The runtime they need is layer 0's - rootless podman is on already.
   home-manager.users.zde = {
     imports = [ zincModule ];
+    # The other half of zde.debug above: layer 0 makes the directory and this
+    # is what writes into it.
+    zde.debug.enable = true;
     programs.zinc.enable = true;
     # zlg is opt-in in zinc's module, on the reasoning that a desktop shipping
     # its own launcher does not want a second one. zde ships none: its

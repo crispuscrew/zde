@@ -238,7 +238,28 @@ type sink struct {
 	// can write lines - and two writes racing for the selection is two answers
 	// about which entry is on the clipboard.
 	putting atomic.Bool
+	// asked is when this connection last sent a request line, as a Unix time in
+	// nanoseconds, starting at the moment it was accepted. It is what "longest
+	// idle" is measured with when the daemon is full and one connection has to
+	// go (server.go, admit).
+	//
+	// What this connection last sent, and deliberately not what was last sent to
+	// it. The second is the wrong question and would give the wrong answer for
+	// the one connection that must never be the answer: a shell holding the
+	// event stream sends `events` once at login and correctly sends nothing
+	// again, so by anything measured on its own traffic it is the quietest
+	// connection zded has.
+	//
+	// Atomic because it is written by this connection's read loop and read by
+	// whichever other connection's goroutine has just found the table full.
+	asked atomic.Int64
 }
+
+// touch records that this connection has just asked something. Called when a
+// request line is read rather than when it is answered: what the number is for
+// is telling a connection that is being used from one that is only open, and a
+// request that takes two minutes to answer was still asked at the start of it.
+func (k *sink) touch() { k.asked.Store(time.Now().UnixNano()) }
 
 // gateOf is the lock, made once. Every path to it goes through here, so no
 // caller can meet a nil channel and wait for ever on it.
@@ -338,7 +359,16 @@ func (k *sink) sendWithin(ev Event, wait time.Duration) error {
 	if err != nil {
 		return err
 	}
-	line = append(line, '\n')
+	return k.writeWithin(append(line, '\n'), wait)
+}
+
+// writeWithin puts one whole line on the connection, or gives up. It is the
+// body sendWithin's comment above argues for, in its own function because two
+// callers now want exactly that bargain: an event being broadcast, and the
+// sentence a connection is told before it is dropped (server.go, handle). Both
+// are written to a client that may not be reading, and neither has anybody who
+// can afford to wait for one that is not.
+func (k *sink) writeWithin(line []byte, wait time.Duration) error {
 	deadline := time.Now().Add(wait)
 	if !k.lockBefore(deadline) {
 		return errSinkBusy
@@ -363,6 +393,29 @@ func (k *sink) sendWithin(ev Event, wait time.Duration) error {
 		}
 	}
 	return err
+}
+
+// drop says why and then closes the connection.
+//
+// The sentence comes first and the close is unconditional, which is the whole
+// difference between this and a socket that simply ends: a connection closed
+// under a client is exactly what a daemon that has crashed looks like, and this
+// one has not crashed - it is running, it has just answered the connection that
+// took this one's place, and the client's own answer is to dial again.
+//
+// Bounded, because the client this is being said to may be one that never reads
+// anything, and the goroutine saying it belongs to whichever connection has just
+// arrived. A gate held by somebody else costs the sentence and not the close:
+// what holds it is a line already being written, and there is nothing useful to
+// queue a second one behind.
+func (k *sink) drop(reason string) {
+	// A Response carrying one string cannot fail to marshal, so there is no
+	// fallback line here of the kind writeResponse has to keep.
+	line, _ := json.Marshal(Response{Error: reason})
+	k.writeWithin(append(line, '\n'), sendWait)
+	if c, ok := k.w.(io.Closer); ok {
+		c.Close()
+	}
 }
 
 // listenersMax is how many connections may be listening at once.

@@ -11,6 +11,7 @@ package attn
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode"
@@ -693,8 +694,69 @@ func urgency(hints map[string]dbus.Variant) byte {
 // where something was dropped - and four copies of a filter is three of them
 // drifting. What it is not is a filter for everything: text that keeps its own
 // shape, an answer with paragraphs and indented code in it, is a different job
-// and is done where it is printed (cmd/zde, plain).
+// and is done by Text below.
 func Line(s string) string { return oneLine(s) }
+
+// Text is foreign text that keeps its own shape on its way to a terminal: what
+// a terminal reads as an instruction taken out, and everything else left
+// exactly as it was written.
+//
+// The other half of Line's job, and the difference is the shape. Line reflows -
+// it folds runs of whitespace and cuts at a bound - because it is making a row.
+// This is for text that has paragraphs and indented code in it: a tier's answer
+// as it streams (cmd/zde, askRun), a parser's complaint about a manifest with
+// its caret under the column that is wrong. So tabs and newlines are shape and
+// stay. A carriage return is not shape: it is how a line is drawn over with
+// another one, which is a way of hiding what was printed rather than of writing
+// anything. Nothing is cut, because there is no row to fit and an error cut off
+// before the path in it is one nobody can act on.
+//
+// The zero-width joiner survives, for the reason clean keeps it: it is
+// unprintable by every test Go has, and a family emoji without it is three
+// people.
+//
+// Here beside Line rather than in the command that first needed it, because
+// three binaries print somebody else's text now and these rune decisions are
+// the ones Line already makes. A second copy is the copy that drifts.
+func Text(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n' || r == '\t' || r == zwj:
+			return r
+		case unicode.IsPrint(r):
+			return r
+		default:
+			return -1
+		}
+	}, s)
+}
+
+// zwj is the zero-width joiner, spelled rather than typed: it is invisible in
+// source, and a rune nobody can see in a filter is one nobody can review.
+const zwj = '\u200d'
+
+// Block is one message on its way to a terminal whole - an error, which is the
+// text zde prints that it least often wrote itself.
+//
+// Text and two things a whole message needs that a stream does not. The first
+// line starts in column one and no other line does, because the lines after it
+// are somebody else's: zcr's output from a failed launch, logind's refusal,
+// niri's message, a parser's several lines about one file. Indented they read
+// as what they are - the rest of this error - and cannot be a second error zde
+// never printed. The indent is two spaces for every line after the first, so
+// whatever a parser lined up under a column of its own is still lined up.
+//
+// A message with nothing printable in it is quoted rather than dropped. It is
+// the one case where this would otherwise print an empty line and exit 1, which
+// tells a person that something failed and nothing about what - so the bytes go
+// out the way Go writes a string it cannot show, escaped and harmless.
+func Block(s string) string {
+	out := strings.TrimSpace(Text(s))
+	if out == "" {
+		return strconv.Quote(s)
+	}
+	return strings.ReplaceAll(out, "\n", "\n  ")
+}
 
 // oneLine makes anything an app sends fit one line of the queue.
 //
@@ -739,7 +801,7 @@ func clean(s string, max int, lines bool) string {
 				gap = " "
 			}
 			continue
-		case r == '‍' || unicode.IsPrint(r):
+		case r == zwj || unicode.IsPrint(r):
 		default:
 			// Something was here. A word boundary is a better guess at what it
 			// meant than joining what sat on either side of it.
