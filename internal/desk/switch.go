@@ -21,8 +21,10 @@ func SwitchPlan(m *Map, target string, lastActive map[string]string) []Name {
 	if len(owned) == 0 {
 		return nil
 	}
-	// Workspaces are already sorted by monitor then slot, so the first of each
-	// monitor's run is the band's first.
+	// Workspaces come by monitor and then down the strip, so the first of each
+	// monitor's run is the top of the band there - which is where a desk with
+	// nothing remembered has to open, or the first scroll down has nowhere to
+	// go and the rest of the band is above the screen.
 	var plan []Name
 	seen := map[string]bool{}
 	for _, n := range owned {
@@ -54,7 +56,7 @@ func Landing(m *Map, target, monitor, slot string) (Name, bool) {
 }
 
 // pick is the remembered workspace on this monitor if the desk still owns it,
-// and the first of the band otherwise.
+// and the top of the band there otherwise.
 func pick(owned []Name, monitor, slot string) Name {
 	var first *Name
 	for i, n := range owned {

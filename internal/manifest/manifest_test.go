@@ -61,7 +61,6 @@ func TestParseRejects(t *testing.T) {
 		{"empty monitor", "name: vshop\nmonitors: { DP-1: { workspaces: [] } }", "declares no workspaces"},
 		{"bad output", "name: vshop\nmonitors: { 1DP: { workspaces: [a] } }", "not an output connector"},
 		{"bad label", "name: vshop\nmonitors: { DP-1: { workspaces: [Code] } }", "not a lowercase label"},
-		{"numeric label", "name: vshop\nmonitors: { DP-1: { workspaces: [\"2\"] } }", "adoption mints into"},
 		{"duplicate workspace", "name: vshop\nmonitors: { DP-1: { workspaces: [a, a] } }", "twice"},
 		{"app with no app", "name: vshop\nmonitors: { DP-1: { workspaces: [a] } }\napps: [{ instance: x }]", "has no app"},
 		{"app on unknown monitor", "name: vshop\nmonitors: { DP-1: { workspaces: [a] } }\napps: [{ app: nvim, monitor: DP-9, workspace: a }]", "does not use"},
@@ -236,15 +235,54 @@ func TestFromMapEmptyDesk(t *testing.T) {
 	}
 }
 
-// An adopted workspace that fell back to an ordinal cannot be declared, since
-// ordinals are the space adoption mints into. Better to refuse than to write a
-// manifest that fights its own adoption.
-func TestFromMapRefusesOrdinals(t *testing.T) {
+// Adoption falls back to an ordinal for a window whose app id leaves nothing
+// readable, and what adoption mints a snapshot has to be able to write down.
+// One such workspace used to refuse the whole desk, and the only way out was to
+// close the app.
+func TestFromMapWritesDownAnAdoptedOrdinal(t *testing.T) {
 	m := desk.Rebuild([]desk.Workspace{
-		{ID: 1, Name: "vshop.DP-1.1", Output: "DP-1"},
+		{ID: 1, Name: "vshop.DP-1.code", Output: "DP-1", Idx: 0},
+		{ID: 2, Name: "vshop.DP-1.1", Output: "DP-1", Idx: 1},
 	}, []string{"DP-1"})
-	if _, err := FromMap(m, "vshop", false); err == nil {
-		t.Error("wrote an ordinal into a manifest")
+	d, err := FromMap(m, "vshop", false)
+	if err != nil {
+		t.Fatalf("a desk holding an adopted ordinal could not be written down: %v", err)
+	}
+	dir := Dir(t.TempDir())
+	path, err := dir.Save(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := Load(path)
+	if err != nil {
+		t.Fatalf("what snapshot wrote does not load: %v", err)
+	}
+	var got []string
+	for _, n := range back.Workspaces() {
+		got = append(got, n.String())
+	}
+	want := []string{"vshop.DP-1.code", "vshop.DP-1.1"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("round trip = %v, want %v", got, want)
+	}
+}
+
+// The manifest lists a monitor's workspaces in the order they should be, and
+// entering the desk lands on the first of them - so a snapshot has to write
+// the strip's order and not an order of its own. Here the strip reads zsh then
+// agent, which is the reverse of how the names sort.
+func TestFromMapKeepsTheStripOrder(t *testing.T) {
+	m := desk.Rebuild([]desk.Workspace{
+		{ID: 1, Name: "vshop.DP-1.zsh", Output: "DP-1", Idx: 0},
+		{ID: 2, Name: "vshop.DP-1.agent", Output: "DP-1", Idx: 1},
+	}, []string{"DP-1"})
+	d, err := FromMap(m, "vshop", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := d.Monitors["DP-1"].Workspaces
+	if strings.Join(got, ",") != "zsh,agent" {
+		t.Errorf("snapshot wrote %v, want the strip order [zsh agent]", got)
 	}
 }
 

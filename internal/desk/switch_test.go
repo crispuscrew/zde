@@ -69,6 +69,28 @@ func TestSwitchPlanIgnoresStaleMemory(t *testing.T) {
 	}
 }
 
+// With nothing remembered, the switch lands at the top of the band - the top
+// of the strip, not the first label in alphabetical order. Landing at the
+// bottom left `zde workspace next` with nowhere to go and the rest of the desk
+// above the screen. Data where the two answers differ, or the test proves
+// nothing: the strip reads zsh then agent, and the names sort the other way.
+func TestSwitchPlanLandsOnTheTopOfTheBand(t *testing.T) {
+	m := Rebuild([]Workspace{
+		{ID: 1, Name: "vshop.DP-1.zsh", Output: "DP-1", Idx: 0},
+		{ID: 2, Name: "vshop.DP-1.agent", Output: "DP-1", Idx: 1},
+	}, []string{"DP-1"})
+	band := m.Band("vshop", "DP-1")
+	plan := SwitchPlan(m, "vshop", nil)
+	if len(plan) != 1 || plan[0] != band[0] {
+		t.Errorf("plan = %v, want the top of the band %v", names(plan), names(band))
+	}
+	// A window carried here comes down by the same rule, or it lands on a
+	// workspace the switch is not looking at.
+	if got, ok := Landing(m, "vshop", "DP-1", ""); !ok || got != band[0] {
+		t.Errorf("landing = %v %v, want the top of the band", got, ok)
+	}
+}
+
 // A desk with nothing in it is not an error: it is a manifest that has not
 // been launched yet, and the caller decides what to do about it.
 func TestSwitchPlanEmptyDesk(t *testing.T) {

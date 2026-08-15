@@ -157,6 +157,33 @@ func TestBandOrderAcrossMonitors(t *testing.T) {
 	}
 }
 
+// Inside one monitor the order is the strip's, which is niri's to say, and not
+// the names'. Everything that reads a desk's workspaces reads which end is the
+// top out of this: a switch with nothing remembered lands there, and a snapshot
+// writes the order into a manifest. Sorting names here put the bottom of the
+// strip first whenever the labels happened to sort that way.
+func TestWorkspacesFollowTheStrip(t *testing.T) {
+	m := Rebuild([]Workspace{
+		{ID: 1, Name: "vshop.DP-1.zsh", Output: "DP-1", Idx: 0},
+		{ID: 2, Name: "vshop.DP-1.agent", Output: "DP-1", Idx: 1},
+	}, both)
+	var got []string
+	for _, n := range m.Workspaces("vshop") {
+		got = append(got, n.Slot)
+	}
+	if !equal(got, []string{"zsh", "agent"}) {
+		t.Errorf("Workspaces = %v, want the strip's order [zsh agent]", got)
+	}
+	// And the band agrees, or a switch and a scroll disagree about the top.
+	var band []string
+	for _, n := range m.Band("vshop", "DP-1") {
+		band = append(band, n.Slot)
+	}
+	if !equal(band, got) {
+		t.Errorf("Band = %v, Workspaces = %v, want one order", band, got)
+	}
+}
+
 // Ordinals are numbers, so 2 sorts before 10. Lexical order would have put the
 // strip in an order no human reads.
 func TestBandOrderOrdinals(t *testing.T) {
