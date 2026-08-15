@@ -741,6 +741,16 @@ show up in use.
   what is in it, on the desk you were standing on.
 - **Nothing moves under you** (invariant 6): focus changes never rearrange the
   strip.
+- **Stopping the daemon stops what a desk was starting.** Switch to a desk that
+  declares apps that are not running, and while they are still coming up run
+  `systemctl --user stop zded` from another tty. No `zcr run` is left in
+  `ps -ef`. The containers already up stay up, which is right - they are zinc's,
+  not zde's - but nothing of zde's own is still working on a session that has
+  ended. This used to leave one launch per app running with nothing to own them.
+- **A held desk key is not a hundred launches.** Hold the key for a desk you are
+  not on, or alternate two of them, and watch `ps -ef | grep 'zcr run'` while you
+  do. It stays at one per desk. Every entry used to start its own goroutine and
+  its own `zcr run`, so a repeating key was as many launches as it repeated.
 - **Lock the screen**: `Mod+Tab` then `l`, which is the one to get into your
   fingers, and `Mod+Ctrl+semicolon` as a direct chord. Then unlock it. Deliberately
   not tested in CI: a VM with no input devices that locks itself cannot unlock
@@ -1061,6 +1071,13 @@ actually gets.
   the session - so this used to leave a model running for a login that had ended.
   The same on log out, which is the case that matters on a machine with a GPU in
   it.
+- **Killing the daemon stops it too.** The same again with
+  `systemctl --user kill -s KILL zded`, which is the case a stop cannot cover:
+  there is no daemon left to run the code that would have killed the group, so
+  what ends the tier is the kernel doing it (PR_SET_PDEATHSIG). The tier goes.
+  What the tier itself forked does not, unless it is still writing an answer, and
+  that is the honest limit rather than an oversight - the signal is cleared on
+  fork and nothing is left to reach them.
 - **A long answer does not slow the keys.** With one arriving, press `Mod+Tab`,
   `Mod+n`, `Mod+semicolon`. Each surface appears at once. Every one of them is a
   broadcast, and a broadcast used to queue behind whatever was being written to
