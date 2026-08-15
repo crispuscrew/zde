@@ -637,13 +637,14 @@ func notifCenter() error {
 		fmt.Println("nothing has arrived yet")
 		return nil
 	}
-	// id, urgency, when, sender, what became of it, text - tab separated, text
-	// last because it is the only field that can be long. The weekday rather
-	// than a date: the history is bounded at a day or two of use, so a weekday
-	// tells a person which one it was without a column nobody reads.
+	// id, urgency, who it was, when, sender, what became of it, text - tab
+	// separated, text last because it is the only field that can be long. The
+	// weekday rather than a date: the history is bounded at a day or two of use,
+	// so a weekday tells a person which one it was without a column nobody reads.
 	for _, r := range center.Notifications {
-		fmt.Printf("%d\t%s\t%s\t%s\t%s\t%s\n",
-			r.ID, urgentMark(r.Urgent), r.At.Format("Mon 15:04"), dash(r.From), became(r), r.Text)
+		fmt.Printf("%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			r.ID, urgentMark(r.Urgent), selfMark(r.Self), r.At.Format("Mon 15:04"),
+			dash(r.From), became(r), r.Text)
 	}
 	return nil
 }
@@ -675,10 +676,10 @@ func queueList() error {
 	if err := c.Call("queue.list", &q); err != nil {
 		return err
 	}
-	// id, urgency, desk, sender, text - tab separated, text last because it is
-	// the only field that can be long, so a reader splitting on tabs has every
-	// column it wants before it. A dash is "nothing here", which for the
-	// sender means a person typed it.
+	// id, urgency, who it was, desk, sender, text - tab separated, text last
+	// because it is the only field that can be long, so a reader splitting on
+	// tabs has every column it wants before it. A dash is "nothing here", which
+	// for the sender means a person typed it.
 	//
 	// Filtered on the way out as well as on the way in, which is the one place
 	// in this command where that is worth the line. `zde queue add` refuses a
@@ -696,8 +697,9 @@ func queueList() error {
 	// about: every reader of the queue is line-based and column-based, and this
 	// is the reader that is a terminal.
 	for _, it := range q {
-		fmt.Printf("%d\t%s\t%s\t%s\t%s\n",
-			it.ID, urgentMark(it.Urgent), dash(attn.Line(it.Desk)), dash(attn.Line(it.From)), attn.Line(it.Text))
+		fmt.Printf("%d\t%s\t%s\t%s\t%s\t%s\n",
+			it.ID, urgentMark(it.Urgent), selfMark(it.Self), dash(attn.Line(it.Desk)),
+			dash(attn.Line(it.From)), attn.Line(it.Text))
 	}
 	return nil
 }
@@ -708,6 +710,27 @@ func queueList() error {
 func urgentMark(urgent bool) string {
 	if urgent {
 		return "!"
+	}
+	return "."
+}
+
+// selfMark is the column that says whether the desktop wrote this or an app
+// did: "*" for zde's own, "." for a claim (internal/attn, Record.Self).
+//
+// A column of its own rather than a mark inside the sender column, and that is
+// the whole of why it is here. The sender is a string an app chooses, so
+// anything drawn inside it can be sent by the thing it is meant to distinguish:
+// an app that calls itself "* zde" would wear the mark. It cannot reach this
+// column, because these listings are tab separated and a sender name cannot
+// hold a tab - everything printed here has been through attn.Line or the
+// arrival path's own cleaning, and both fold a tab into a space.
+//
+// One character and in the shape urgentMark already set, because both listings
+// are read by people at a terminal and by whatever they pipe them into, and a
+// column that is sometimes empty is a column that shifts the ones after it.
+func selfMark(self bool) string {
+	if self {
+		return "*"
 	}
 	return "."
 }
@@ -1787,7 +1810,8 @@ func usage() {
   zde desk next          the desk after this one, wrapping (regulars excluded)
   zde desk prev          the desk before this one, wrapping
   zde queue              what is waiting, oldest first
-                         (id, urgency, desk, sender, text - tab separated)
+                         (id, urgency, * for the desktop's own, desk, sender,
+                         text - tab separated)
   zde queue add TEXT     make something wait, on the desk you are on
   zde queue done ID      it is not waiting any more
   zde attn [MODE]        the attn mode, or set it: work queues everything,
@@ -1799,8 +1823,9 @@ func usage() {
                          key you reach for when you need silence now
   zde system notif-center
                          what arrived (Mod+n); prints the history when no
-                         shell is up - id, urgency, when, sender, whether it
-                         is waiting, done or silent, and the text
+                         shell is up - id, urgency, * for the desktop's own,
+                         when, sender, whether it is waiting, done or silent,
+                         and the text
   zde system notif-reach put the keyboard on the newest popup (Mod+Ctrl+n), so
                          its sender's buttons can be pressed. A popup never
                          takes the keyboard on its own, which is why this key

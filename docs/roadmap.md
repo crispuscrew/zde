@@ -87,7 +87,9 @@ blocks 0.2:
   is reserved: a claim off the bus that reads as that word is recorded under the
   bus address instead, and the desktop's ring is exempt from eviction, because
   it holds one record and was otherwise the cheapest thing on the machine to
-  throw away. What the file buys is "what did I miss" answering across a reboot
+  throw away. The record is also marked as the desktop's own, which is what the
+  surfaces badge and what the snapshot carries so the badge survives a reboot -
+  the name says which ring, the mark says who wrote it. What the file buys is "what did I miss" answering across a reboot
   instead of starting every login blank. A file of its own rather than the
   journal, which is appended to on every arrival and rewritten only when a
   daemon starts, so whatever goes in it is carried until the next login
@@ -109,13 +111,19 @@ blocks 0.2:
   to out-hold it. What none of that does is say who sent anything: the name is
   still the sender's own claim, and only attribution by channel changes that
   ([`vision.md`](vision.md), principle 6 and ask 4), which waits on something in
-  zde reading `zcr bus`. One name is out of the claim's reach in the meantime:
-  `zde` is what the desktop's own messages carry, and an arrival that asks for
-  it is recorded under its bus address instead - because "this desk could not
-  start browser@vshop" is a sentence whose whole weight is that the thing
-  telling you is the thing that tried (`internal/attn`, `SelfFrom`). It is a
-  reservation on the word and not on one spelling of it; what it does not cover
-  is a name that merely looks like it, which is the unverified column itself.
+  zde reading `zcr bus`. One message is out of the claim's reach in the
+  meantime, and it is out of reach by not being a name at all: what the desktop
+  sends itself is marked where the record is made, and every surface draws that
+  mark rather than the sender column - a badge on the card and on the row, a
+  column of its own in `zde queue` and in the printed centre (`internal/attn`,
+  `Notification.Self`). "This desk could not start browser@vshop" is a sentence
+  whose whole weight is that the thing telling you is the thing that tried, so
+  what carries it has to be something an arrival cannot ask for. The name `zde`
+  is reserved beside it, which is a smaller thing than it looks: it keeps the
+  ring the history never evicts out of reach and stops the word colliding, and
+  it cannot stop a name that merely looks like the word - `zdе` with a Cyrillic
+  е, `ｚｄｅ` in fullwidth, `ᴢᴅᴇ` in small capitals - because that would be a
+  table of confusables nobody will keep current.
 - a replacement spends a revision of the history it did not need to. The bus
   side closes the old notification before the new one arrives, so the record is
   marked dismissed and the revision counter moves, and then the arrival removes

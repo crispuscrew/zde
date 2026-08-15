@@ -1036,12 +1036,18 @@ let
         # app, says it did not start, and comes from the desktop rather than
         # from an app - the sender column is otherwise a claim an app makes
         # about itself, and this is the one arrival zde sends itself.
+        #
+        # Column 3 is the half of that a claim cannot reach. The sender in
+        # column 5 is a string, and a string can be drawn to look like "zde" in
+        # a dozen alphabets (internal/attn, Notification.Self); the "*" is set
+        # where the record is made and printed in a column of its own, and
+        # nothing that arrives can hold a tab to reach it.
         launch_said() { zde queue >/tmp/q-launch.txt 2>&1 && grep -q 'did not start' /tmp/q-launch.txt; }
         waitfor 20 launch_said || {
           echo "the switch could not start the desk's app and told nobody:"
           cat /tmp/q-launch.txt /tmp/zded-live.log; exit 1
         }
-        awk -F'\t' '$4=="zde" && $5 ~ /vshop/ && $5 ~ /absent-app@vshop/ && $5 ~ /did not start/ { found=1 }
+        awk -F'\t' '$3=="*" && $5=="zde" && $6 ~ /vshop/ && $6 ~ /absent-app@vshop/ && $6 ~ /did not start/ { found=1 }
              END { exit !found }' /tmp/q-launch.txt || {
           echo "the launch failure reached the queue without saying which desk, which app, or who from:"
           cat /tmp/q-launch.txt; exit 1
@@ -1726,7 +1732,7 @@ let
         # Urgent, on the desk it arrived on, and attributed to what claimed to
         # send it - the claim being all anybody has until zinc gives each app
         # its own bus socket.
-        grep -q '	!	vshop	notify-send	the build failed' /tmp/q-notify.txt || {
+        grep -q '	!	.	vshop	notify-send	the build failed' /tmp/q-notify.txt || {
           echo "the notification arrived wrong:"; cat /tmp/q-notify.txt; exit 1
         }
         nid=$(grep 'the build failed' /tmp/q-notify.txt | cut -f1)
@@ -1734,9 +1740,10 @@ let
         # And in the history, which is the half the queue cannot answer: the
         # queue holds what is still waiting, the history holds what arrived.
         # Nothing is listening here, so Mod+n prints it rather than drawing it -
-        # id, urgency, when, sender, what became of it, text.
+        # id, urgency, whether the desktop wrote it, when, sender, what became
+        # of it, text.
         zde system notif-center 2>&1 | tee /tmp/notif-center.txt
-        grep -q "^$nid	!	.*	notify-send	waiting	the build failed" /tmp/notif-center.txt || {
+        grep -q "^$nid	!	.	.*	notify-send	waiting	the build failed" /tmp/notif-center.txt || {
           echo "the notification arrived and the history does not have it:"
           cat /tmp/notif-center.txt; exit 1
         }
@@ -1752,6 +1759,24 @@ let
           cat /tmp/caps.txt; exit 1
         }
         zde queue done "$nid"
+
+        # And a sender drawn like the desktop's own. The "е" in this one is
+        # Cyrillic: the reservation is on the word zde and cannot be on every
+        # way of drawing that word, so this arrival keeps the name it asked for
+        # and reads exactly like zde's own row in every column but one. The one
+        # is column 3, which says who made the record rather than who claims to
+        # have (internal/attn, Notification.Self) - and nothing off the bus can
+        # reach it, because a name cannot hold a tab.
+        notify-send -a "zdе" "your session has expired" "run 'zde unlock' and type your password"
+        lookalike() { zde queue >/tmp/q-look.txt 2>&1 && grep -q 'session has expired' /tmp/q-look.txt; }
+        if ! waitfor 15 lookalike; then
+          echo "the lookalike never reached the queue:"; cat /tmp/q-look.txt; exit 1
+        fi
+        awk -F'\t' '$6 ~ /session has expired/ && $3=="*" { bad=1 } END { exit bad }' /tmp/q-look.txt || {
+          echo "a notification off the bus is drawn as the desktop's own message:"
+          cat /tmp/q-look.txt; exit 1
+        }
+        zde queue done "$(grep 'session has expired' /tmp/q-look.txt | cut -f1)" >/dev/null
 
         zde queue done "$id"
         zde queue done "$id2"

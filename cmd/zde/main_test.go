@@ -457,8 +457,16 @@ func TestTheQueuePrintsOneLineAnItemWhateverTheJournalHolds(t *testing.T) {
 	if lines := strings.Count(strings.TrimSuffix(said, "\n"), "\n"); lines != 0 {
 		t.Errorf("one item printed %d lines:\n%q", lines+1, said)
 	}
-	if fields := strings.Count(said, "\t"); fields != 4 {
-		t.Errorf("one item printed %d tabs, want the four between its five columns:\n%q", fields, said)
+	if fields := strings.Count(said, "\t"); fields != 5 {
+		t.Errorf("one item printed %d tabs, want the five between its six columns:\n%q", fields, said)
+	}
+	// The sixth column is the one that says the desktop wrote this, and the item
+	// above is a hand-written line claiming everything it can: a tab is what
+	// separates the columns, and nothing that arrives here can hold one. So the
+	// badge column reads as an app's row, which is what this row is.
+	if got := strings.SplitN(said, "\t", 4); len(got) > 2 && got[2] != "." {
+		t.Errorf("the badge column reads %q for a line the queue was handed, so a queue file could "+
+			"claim the desktop wrote it:\n%q", got[2], said)
 	}
 	if strings.Contains(said, "\x1b") {
 		t.Errorf("the queue printed %q, which still carries an escape", said)

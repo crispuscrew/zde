@@ -83,12 +83,19 @@ func TestADeskThatCannotStartAnAppSaysWhichOneAndWhy(t *testing.T) {
 	if got.Urgent {
 		t.Error("a desk that came up short interrupted a focus mode")
 	}
-	// And it is the desktop that said it, in the one name the sender column
-	// reserves. The whole message is "the thing that tried to start your apps is
-	// telling you it could not", so the column has to be the reserved name and
-	// not a second spelling of it (internal/attn, SelfFrom and claim).
+	// And it is the desktop that said it. Two things say so and they are not the
+	// same thing: the name, which is the word the reservation keeps an app off
+	// (internal/attn, SelfFrom and claim), and the mark, which is what every
+	// surface draws its badge from and what no arrival off the bus can set. The
+	// whole message is "the thing that tried to start your apps is telling you it
+	// could not", and a name that only reads like that word is a message anybody
+	// can send (internal/attn, Notification.Self).
 	if got.From != attn.SelfFrom {
 		t.Errorf("sender is %q, want the reserved name nothing on the bus can take", got.From)
+	}
+	if !got.Self {
+		t.Error("the desktop's own notification is unbadged, so every surface draws it as a claim - " +
+			"and a claim is what a lookalike name sends")
 	}
 }
 
@@ -257,8 +264,14 @@ func TestWhatADeskCouldNotStartWaitsOnTheQueue(t *testing.T) {
 	if waiting[0].Text != rec.Text {
 		t.Errorf("the queue says %q and the centre says %q", waiting[0].Text, rec.Text)
 	}
-	if waiting[0].From != launchFrom {
+	if waiting[0].From != attn.SelfFrom {
 		t.Errorf("queued from %q, want the desktop saying it is the sender", waiting[0].From)
+	}
+	// And the badge goes on the queue with it, or `zde queue` is the one surface
+	// where the desktop's row and an app drawing itself like the desktop read
+	// the same (internal/journal, Item.Self).
+	if !waiting[0].Self {
+		t.Error("the queued item is unbadged, so `zde queue` cannot say who wrote it")
 	}
 	// The reason is asked of the record and not of the queue item, because the
 	// journal stopped carrying bodies (internal/journal, Item): a queued line is
@@ -386,7 +399,7 @@ func TestWhatASwitchSaysAboutItsLaunchesIsBoundedLikeAnythingElse(t *testing.T) 
 	t.Run("the summary", func(t *testing.T) {
 		failed := []launchFailure{{Address: strings.Repeat("a", 900), Err: errors.New("no app defined")}}
 		raw := launchSummary("vshop", failed)
-		want := attn.Local(launchFrom, raw, launchBody(failed))
+		want := attn.Local(raw, launchBody(failed))
 		if want.Text == raw {
 			t.Fatal("the fixture never reaches the summary's bound, so this would prove nothing")
 		}
@@ -405,7 +418,7 @@ func TestWhatASwitchSaysAboutItsLaunchesIsBoundedLikeAnythingElse(t *testing.T) 
 			})
 		}
 		raw := launchBody(failed)
-		want := attn.Local(launchFrom, launchSummary("vshop", failed), raw)
+		want := attn.Local(launchSummary("vshop", failed), raw)
 		if want.Body == raw {
 			t.Fatal("the fixture never reaches the body's bound, so this would prove nothing")
 		}
@@ -414,7 +427,7 @@ func TestWhatASwitchSaysAboutItsLaunchesIsBoundedLikeAnythingElse(t *testing.T) 
 			t.Errorf("the history kept %d characters of body, want the %d a notification is clamped to",
 				len([]rune(got.Body)), len([]rune(want.Body)))
 		}
-		if got.From != launchFrom {
+		if got.From != attn.SelfFrom {
 			t.Errorf("from = %q, want the desktop saying it is the sender", got.From)
 		}
 	})

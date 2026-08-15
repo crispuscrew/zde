@@ -135,6 +135,11 @@ type entry struct {
 	Body   string `json:"body,omitempty"`
 	From   string `json:"from,omitempty"`
 	Urgent bool   `json:"urgent,omitempty"`
+	// Self is the queued item's badge: the desktop said this, and no app on the
+	// bus can ask for it (see Item.Self). A line from an older zde has no such
+	// field and replays as false, which is the honest answer about a file
+	// written before anything could tell.
+	Self bool `json:"self,omitempty"`
 	// Mode is the attn mode a "mode" entry sets. Its own field rather than
 	// borrowed from To: a mode is not a workspace name, and a reader looking at
 	// the file should not have to know which kinds put what where.
@@ -235,6 +240,19 @@ type Item struct {
 	// From is what sent it, as it described itself. Empty when a person typed
 	// it. Nothing verifies it - see internal/attn.
 	From string `json:"from,omitempty"`
+	// Self says the desktop's own machinery put this here rather than an app on
+	// the bus, and it is the one thing in this struct that is not somebody's
+	// claim. It is carried so that `zde queue` can draw the same distinction the
+	// notification centre draws: the name above is a string, and a string that
+	// is drawn like "zde" is worth what any other string is worth
+	// (internal/attn, Notification.Self).
+	//
+	// Set once, by the arrival that queued the item (internal/zded, Arrived),
+	// and replayed rather than recomputed. A journal a person has edited can say
+	// what it likes about this, the way it can about the rest of the line: that
+	// takes the uid that owns the file, which is the uid that could replace the
+	// daemon.
+	Self bool `json:"self,omitempty"`
 	// Urgent is the sender's claim that this should interrupt rather than
 	// wait. It is a claim too, and attn's modes are what will act on it.
 	Urgent bool `json:"urgent,omitempty"`
@@ -467,7 +485,9 @@ func (j *Journal) apply(e entry) {
 		// e.Body is dropped rather than carried into the item: a queue built out
 		// of an older journal is the same queue, and the body it used to hold is
 		// on its way off the disk (see Open).
-		j.state.Queue = append(j.state.Queue, Item{ID: e.ID, Text: e.Text, Desk: e.Desk, From: e.From, Urgent: e.Urgent})
+		j.state.Queue = append(j.state.Queue, Item{
+			ID: e.ID, Text: e.Text, Desk: e.Desk, From: e.From, Urgent: e.Urgent, Self: e.Self,
+		})
 		if e.ID > j.lastID {
 			j.lastID = e.ID
 		}
@@ -642,6 +662,7 @@ func (j *Journal) Queue(it Item) (Item, error) {
 	it.ID = j.lastID + 1
 	if err := j.recordLocked(entry{
 		Kind: kindQueued, ID: it.ID, Text: it.Text, Desk: it.Desk, From: it.From, Urgent: it.Urgent,
+		Self: it.Self,
 	}); err != nil {
 		return Item{}, err
 	}
@@ -780,6 +801,7 @@ func (j *Journal) compactLocked() error {
 	for _, it := range j.state.Queue {
 		if err := write(entry{
 			Kind: kindQueued, ID: it.ID, Text: it.Text, Desk: it.Desk, From: it.From, Urgent: it.Urgent,
+			Self: it.Self,
 		}); err != nil {
 			return err
 		}
