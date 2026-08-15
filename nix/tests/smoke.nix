@@ -1289,14 +1289,31 @@ let
     apps:
       - { app: absent-secret-app }
     '       > ~/.config/zde/desks/report-secret.yaml
-        # Nine older files this package would recognise as its own, and one it
-        # would not. The bound has to hold, and it has to hold without deleting
-        # something somebody copied in here while debugging - which is the
-        # difference between a bound and a program that deletes things.
-        for i in 1 2 3 4 5 6 7 8 9; do
+        # And one that will not parse, in the daemon's own desk directory,
+        # because that list comes back over the socket rather than off this
+        # process's disk. Nothing can read a private flag out of a file that did
+        # not load - the flag is inside the file - so the report may name none
+        # of them, and this one's name is a desk's name.
+        #
+        # desk.apps rather than a restart: it re-reads the directory and
+        # remembers what would not parse (internal/zded, rememberProblems),
+        # which is the cheapest way to put a real entry in that list.
+        printf 'name: report-broken\n  monitors: [oh dear\n' > /tmp/desks/report-broken.yaml
+        XDG_STATE_HOME=/tmp/state zde desk apps vshop >/dev/null 2>&1 || true
+        # Eight older files this package would recognise as its own, one it
+        # would not, and one named for a century from now. The bound has to
+        # hold; it has to hold without deleting something somebody copied in
+        # here while debugging, which is the difference between a bound and a
+        # program that deletes things; and it must not be steerable by a name,
+        # which is what the last of these is. Any process running as this
+        # account can write that file, and while rotation kept whatever sorted
+        # highest, one of them was enough to evict a real snapshot on every
+        # write - starting with the one just written.
+        for i in 1 2 3 4 5 6 7 8; do
           : > "/var/log/zde/zde/2020010''${i}T000000Z-deadbeef.txt"
         done
         : > /var/log/zde/zde/notes.txt
+        : > /var/log/zde/zde/29991231T235959Z-ffffffff.txt
         zde report > /tmp/report-path.txt 2>&1 || {
           echo "zde report failed:"; cat /tmp/report-path.txt; exit 1
         }
@@ -1304,12 +1321,30 @@ let
         [ -n "$snap2" ] && [ -f "$snap2" ] || {
           echo "zde report wrote no file, and said:"; cat /tmp/report-path.txt; exit 1
         }
-        for secret in report-secret absent-secret-app; do
+        for secret in report-secret absent-secret-app report-broken; do
           if grep -qF "$secret" "$snap2"; then
-            echo "$secret is on a desk declared private and is in a file meant to leave this machine:"
+            echo "$secret names a desk this file may not name and is in a file meant to leave this machine:"
             sed -n '/^\[doctor\]/,$p' "$snap2"; exit 1
           fi
         done
+        # Counted, though, and still a failure: those desks are not declared and
+        # somebody has to be told, without being told which files.
+        grep -qE '^  fail +manifests +[0-9]+ manifest\(s\)' "$snap2" || {
+          echo "the manifests that would not parse are neither named nor counted:"
+          sed -n '/^\[doctor\]/,$p' "$snap2"; exit 1
+        }
+        # And `zde doctor` on this person's own screen names it, because that
+        # screen is theirs and the path is the file they have to go and open.
+        # Not through a pipe: a manifest that will not parse is a failed check,
+        # so doctor exits non-zero here and pipefail would read that as the
+        # grep having found nothing.
+        zde doctor >/tmp/doctor-broken.txt 2>&1 || true
+        grep -qF 'report-broken.yaml' /tmp/doctor-broken.txt || {
+          echo "doctor in a terminal will not say which manifest to go and fix:"
+          cat /tmp/doctor-broken.txt; exit 1
+        }
+        rm -f /tmp/desks/report-broken.yaml
+        XDG_STATE_HOME=/tmp/state zde desk apps vshop >/dev/null 2>&1 || true
         # And the desk that declared nothing is still reported, or the redaction
         # would be a way to silence the check by declaring everything private.
         grep -qF 'report-open names absent-app' "$snap2" || {
@@ -1322,13 +1357,32 @@ let
           echo "nothing in the file says something was left out of it:"
           sed -n '/^\[doctor\]/,$p' "$snap2"; exit 1
         }
-        kept=$(ls -1 /var/log/zde/zde/ | grep -cE '^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}\.txt$')
-        [ "$kept" = 8 ] || {
-          echo "$kept snapshots are kept, against a bound of 8:"; ls -la /var/log/zde/zde; exit 1
+        # The bound took one out for the one that went in - the oldest - and
+        # exactly one, because a snapshot writer that deletes eight things
+        # because of one write is a tool and a name is all it takes to aim it.
+        # Asserted by name rather than by a count, since the session start
+        # already left one of these here.
+        test -f /var/log/zde/zde/20200101T000000Z-deadbeef.txt && {
+          echo "the oldest snapshot is still here, so the bound did nothing:"
+          ls -la /var/log/zde/zde; exit 1
+        }
+        test -f /var/log/zde/zde/20200102T000000Z-deadbeef.txt || {
+          echo "one write took more than the one file it replaced:"
+          ls -la /var/log/zde/zde; exit 1
+        }
+        # And the three rotation must not touch: a name it could not have
+        # written, something copied in here by hand, and the file zde has just
+        # told somebody it wrote.
+        test -f /var/log/zde/zde/29991231T235959Z-ffffffff.txt || {
+          echo "rotation deleted a file dated after the write, which it cannot have written"; exit 1
         }
         test -f /var/log/zde/zde/notes.txt || {
           echo "rotation deleted a file zde never wrote"; exit 1
         }
+        test -f "$snap2" || {
+          echo "zde printed the path of a file rotation deleted as it landed: $snap2"; exit 1
+        }
+        rm -f /var/log/zde/zde/29991231T235959Z-ffffffff.txt
         rm -f ~/.config/zde/desks/report-open.yaml ~/.config/zde/desks/report-secret.yaml
 
         # Mod+t, which is `zde app launch terminal`. The one thing a desktop has

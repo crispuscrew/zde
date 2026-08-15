@@ -158,6 +158,9 @@ type Hardware struct {
 	// Cmdline is what the kernel was started with. nomodeset and
 	// nvidia_drm.modeset=0 are both in it and both are a black screen, and
 	// neither leaves a trace anywhere else on this list.
+	//
+	// With the disk out of it - see kernelCmdline. Every parameter is here and
+	// the values that name a filesystem are not.
 	Cmdline string
 
 	// Inputs is what the kernel calls each input device, which is the answer to
@@ -180,10 +183,24 @@ const (
 	// two or three; the context around them is worth a screenful and no more.
 	fellMax = 12
 	sawMax  = 20
-	// lineMax is how much of any one line is kept. A tracing line naming a
-	// device path and an error is under 200 characters; 400 is twice that, and
-	// it stops one line of somebody's log being the whole file.
-	lineMax = 400
+	// lineMax is how much of any one reading is kept. A tracing line naming a
+	// device path and an error is under 200 characters, and this stops one line
+	// of somebody's log being the whole file.
+	//
+	// Under the bound the row filter carries with it (internal/attn,
+	// summaryMax at 300), and that is the point of the number rather than a
+	// coincidence: a bound that sat above it would never fire, the filter would
+	// do the cutting instead, and the filter cuts in silence. This file says
+	// where it was cut everywhere else it cuts, and a reading that quietly lost
+	// its last forty characters is the one kind of lie a snapshot cannot
+	// afford - the reader is on another machine and cannot go and look.
+	lineMax = 256
+	// cmdlineMax is the kernel command line's own bound, and it is larger for a
+	// reason the rest of this list does not have: that line is three store
+	// paths and an initrd before it reaches nomodeset, and nomodeset is what
+	// somebody is reading it for. Two kilobytes is more than any bootloader
+	// writes and a thirtieth of the file's own ceiling.
+	cmdlineMax = 2 << 10
 	// cardsMax, inputsMax and outputsMax bound the three lists a machine
 	// supplies. Eight graphics devices is a workstation with two cards and their
 	// render nodes twice over; sixty-four input devices is a machine with a
@@ -591,9 +608,63 @@ func probeHardware(root string) Hardware {
 	if fi, err := os.Stat(filepath.Join(root, "sys", "firmware", "efi")); err == nil && fi.IsDir() {
 		h.Firmware = "UEFI"
 	}
-	h.Cmdline = cut(firstLine(readFile(filepath.Join(root, "proc", "cmdline"))), lineMax)
+	h.Cmdline = cut(kernelCmdline(firstLine(readFile(filepath.Join(root, "proc", "cmdline")))), cmdlineMax)
 	h.Inputs = inputNames(filepath.Join(root, "proc", "bus", "input", "devices"))
 	return h
+}
+
+// diskParams are the kernel parameters whose value is the identity of a
+// filesystem rather than an instruction to the kernel.
+//
+// root= and resume= are a UUID or a device path, rd.luks.* and cryptdevice= are
+// the encrypted volume this machine unlocks at boot, and resume_offset= is
+// where in it the swap file starts. Every one of them travels with the file and
+// none of them can cause or explain a black screen: the parameters that do -
+// nomodeset, nvidia_drm.modeset=0, a module blacklist, an i915 option - are on
+// the same line and are kept, along with everything else, including parameters
+// this list has never heard of.
+var diskParams = []string{
+	"root",
+	"resume",
+	"resume_offset",
+	"cryptdevice",
+	"rd.luks.uuid",
+	"rd.luks.name",
+	"rd.lvm.lv",
+	"rd.md.uuid",
+	"rd.dm.uuid",
+}
+
+// kernelCmdline is /proc/cmdline with the disk taken out of it.
+//
+// The parameter's name stays and only its value goes, which is the whole
+// balance of it: "this machine resumes from something" is a fact about how it
+// boots and may well matter, and which volume it resumes from is a serial
+// number for the disk. A person reading the file sees the parameter was there.
+//
+// Prefix-matched on the name before the first "=", so root=UUID=..., root=/dev/-
+// nvme0n1p2 and root=LABEL=nixos are all the same parameter and all go. A bare
+// word with no "=" is not a value to remove and is left alone: `ro`, `quiet`
+// and `nomodeset` are the shape of most of this line.
+func kernelCmdline(s string) string {
+	fields := strings.Fields(s)
+	for i, f := range fields {
+		name, _, ok := strings.Cut(f, "=")
+		if !ok {
+			continue
+		}
+		for _, p := range diskParams {
+			if name == p {
+				// One word, with no space in it, because the line it goes back
+				// into is read as words: a placeholder with a sentence in it
+				// would be four more parameters as far as anything reading this
+				// is concerned. What it means is in the file's own header.
+				fields[i] = name + "=<removed>"
+				break
+			}
+		}
+	}
+	return strings.Join(fields, " ")
 }
 
 // cpuInfo is the processor's own name for itself and how many the kernel sees.
@@ -718,15 +789,27 @@ func nulString(b []byte) string {
 	return string(b)
 }
 
-// cut is one line as long as it is allowed to be, saying so when it was cut.
-// Counted in bytes and not runes, unlike the notification bounds: these are
-// kernel and compositor strings, which are ASCII, and a byte bound is the one
-// that holds against a file that is not.
+// cut is one reading as long as it is allowed to be, saying so when it was cut.
+//
+// A bound and not a filter, which is the distinction the first version of this
+// got wrong: its comment said these are kernel and compositor strings, which
+// are ASCII, and one of them is a USB product string - whatever a device's
+// maker wrote in a descriptor, in whatever bytes they liked, changed by putting
+// a different device in a port and needing no account on this machine at all.
+// What a string is allowed to contain is decided where it is written down
+// instead (report.go, reading).
+//
+// Counted in characters, so that the cut lands between two of them: a bound in
+// bytes can stop halfway through one, and half a character is a run of bytes
+// that is not text - which the filter downstream then has to turn into a
+// replacement mark, on a reading that was perfectly good UTF-8 before this
+// touched it.
 func cut(s string, max int) string {
-	if len(s) <= max {
+	r := []rune(s)
+	if len(r) <= max {
 		return s
 	}
-	return s[:max] + fmt.Sprintf(" ... (%d more bytes)", len(s)-max)
+	return string(r[:max]) + fmt.Sprintf(" ... (%d more characters)", len(r)-max)
 }
 
 // exists says whether a probe found anything, which is the difference between a

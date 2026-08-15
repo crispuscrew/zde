@@ -31,6 +31,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/crispuscrew/zde/internal/attn"
 )
 
 // ReportDir is where the files go: the root filesystem, not the ESP.
@@ -58,23 +60,30 @@ const ReportDir = "/var/log/zde"
 // bounded is the same defect with a slower clock.
 //
 // One file is what the sections below add up to. The header and the four
-// section headings are a page, about 2 KB. Graphics is a verdict, up to
-// cardsMax device lines, fellMax + sawMax log lines cut to lineMax (32 lines x
-// 400 bytes = 13 KB), the environment allowlist, and outputsMax names: under 16
-// KB. Versions is a dozen lines of store paths, which are long: 2 KB. Hardware
-// is DMI, a CPU name, a kernel command line and inputsMax device names at
-// lineMax: 26 KB at its absolute limit and about 2 KB on a laptop. The doctor
-// report is one line per check, and its own count is the one thing here that
-// something else decides - a machine with two hundred desks each naming an app
-// nothing can run gets a line each. So 64 KiB is roughly four times the widest
-// ordinary file and is enforced rather than derived: what does not fit is cut,
-// and the cut says so on its own line, because a file that stopped in the
-// middle of a word is one nobody can tell from a disk that filled up.
+// section headings are a page and a half, about 3 KB. Graphics is a verdict, up
+// to cardsMax device lines, fellMax + sawMax log lines at lineMax (32 rows x
+// 300 characters, which is where the row filter bounds them: 10 KB), the
+// environment allowlist, and outputsMax names: under 14 KB. Versions is a dozen
+// lines of store paths, which are long: 2 KB. Hardware is DMI, a CPU name, the
+// kernel command line filled across a few rows, and inputsMax device names at a
+// row's bound: 20 KB at its absolute limit and about 2 KB on a laptop. The
+// doctor report is one line per check, and its own count is the one thing here
+// that something else decides - a machine with two hundred desks each naming an
+// app nothing can run gets a line each. So 64 KiB is roughly three times the
+// widest ordinary file and is enforced rather than derived: what does not fit
+// is cut, and the cut says so on its own line, because a file that stopped in
+// the middle of a word is one nobody can tell from a disk that filled up.
 //
 // Eight of them, at 64 KiB, is 512 KiB: the boot that broke and the seven
 // before it, for less than the space of one photograph. Eight because the
 // question a person actually has is "what changed", and that takes the last
 // good one as well as the bad one - one file could only ever answer half of it.
+//
+// Eight is what this writer keeps, at one taken out for each one put in (see
+// rotate). It is not a ceiling on the directory, because it cannot be: a
+// process running as this account can write files into a directory that belongs
+// to it, and a rotation that answered that by deleting more would be an easier
+// way to lose eight real snapshots than to gain one fake one.
 const (
 	reportsMax     = 8
 	reportBytesMax = 64 << 10
@@ -126,7 +135,12 @@ func bootID(root string) string {
 // and the time inside it cannot disagree.
 func WriteReport(self Self) (path, text string, err error) {
 	now := time.Now().UTC()
-	s := Gather()
+	// Gathered for anyone, and that is the whole of the privacy rule: nothing a
+	// desk declaring private named is in what comes back, because no probe put
+	// it there (gather.go, audience). The alternative was a pass over the
+	// finished struct, which has to know every field that could carry a desk
+	// name - and the field somebody adds next will not tell it.
+	s := gather(anyone)
 	if s.Status != nil {
 		self.Zded = s.Status.Version
 	}
@@ -150,10 +164,25 @@ const (
 // It is here rather than in a doc comment because of where this file ends up.
 // Somebody is going to paste it into a bug report, and the two questions they
 // will have - is this safe to send, and what is missing from it - have to be
-// answerable from the file itself and not from this repository. So it says both
-// out loud, and every promise in it is kept by something above: the allowlist
-// (graphicsEnv), the outputs-and-never-windows rule (askNiri), and the private
-// desks that are counted and never named (redactPrivate).
+// answerable from the file itself and not from this repository.
+//
+// So the "what is in it" half is a list rather than a sentence, and the list is
+// the answer to the question the first draft of this file got wrong. That draft
+// said "readings: device nodes, driver names, chip ids", which is true and is
+// not what a person weighing whether to paste it needs: the same file carried
+// two filesystem UUIDs, this machine's hostname inside a store path, the
+// account name, and twenty-seven input devices by name - one of which said out
+// loud that there is remote-access software on the machine. Every one of those
+// is either the point of the file or the cost of the reading beside it, so what
+// changed is not what is captured but what the file admits to carrying. The one
+// exception is the kernel command line, which is narrowed: root= and resume=
+// name a disk and can explain nothing about a black screen, while nomodeset,
+// which is on the same line, explains most of them.
+//
+// Every promise in it is kept by something above or beside it: the allowlist
+// (graphicsEnv), the outputs-and-never-windows rule (askNiri), the disk
+// identities taken out of the command line (kernelCmdline), and the private
+// desks that are counted and never named (gather.go, audience).
 const reportHeader = `zde state snapshot
 %s
 
@@ -164,20 +193,43 @@ A session with zde.debug on writes one of these when it starts, and ` + "`zde re
 writes one at any time. It is meant to be read from another machine, off a disk
 that will not boot.
 
-What is in it, exactly: readings. Device nodes, driver names, chip ids, kernel
-and system versions, store paths, the kernel command line, the names the kernel
-gives your input devices and the names niri gives your monitors, and the lines
-niri itself logged about renderers this boot.
+What is in it, exactly. Readings, and this is the whole list of them, because
+somebody is going to paste this file into a bug report:
+
+  - the graphics device nodes, the drivers bound to them and the chip ids, and
+    the lines niri itself logged about renderers this boot
+  - the make and model of this machine, its motherboard and its processor, the
+    memory the kernel sees, and whether it booted through UEFI or BIOS
+  - the kernel command line, with the values that name a disk removed - root=,
+    resume= and the like - and every other parameter kept, because nomodeset is
+    on that line too and it is the answer to half the black screens there are
+  - every input device the kernel names. That is your keyboard, and it is
+    equally a security key, a tablet, a games controller, or the virtual
+    keyboard a remote-desktop program creates: whatever is attached is here
+    under the name its maker gave it
+  - the account this session belongs to, paths under its home directory, its
+    user id inside the runtime paths, its session id and its seat
+  - kernel, system and package versions; the system's store path, which on
+    NixOS has this machine's hostname in it; and the revision the configuration
+    was built from, where it records one
+  - the names niri gives your monitors, and the names your desks and the apps
+    they declare are written under
+  - what ` + "`zde doctor`" + ` checks, which is a handful of names of programs on this
+    machine: the units a login starts and whether they are running, the program
+    holding the notification name and its process id, the program configured to
+    lock the screen, and the id logind gives this session
 
 What is never in it: no notification text, no clipboard content, nothing
 waiting in the queue, and no window titles - nothing here asks the compositor
-what is on a screen. A desk that declares ` + "`private: true`" + ` is counted and never
-named, and neither are the apps on it. The environment is an allowlist of the
-dozen variables that change what a compositor renders with, and never the
-environment itself, which is where an API key would be.
+what is on a screen. Nothing about the network: no MAC address, no IP address,
+no wifi name. No machine-id, no firmware serial numbers, no monitor serial
+numbers. No command line but the kernel's own, no journal content, and nothing
+out of your niri config. The environment is an allowlist of the dozen variables
+that change what a compositor renders with, and never the environment itself,
+which is where an API key would be.
 
-Desk names, app names and monitor names are configuration and are here. What
-you were sent and what you wrote is not.
+A desk that declares ` + "`private: true`" + ` is counted and never named, and neither are
+the apps on it nor the manifest file that would have named it.
 
 The journal is the other half and it is not in here. It survives a reboot on
 this machine, and docs/verify.md, section 1 says how to read it off a disk that
@@ -232,7 +284,10 @@ func capped(s string) string {
 // order it was weighed.
 func writeGraphics(b *strings.Builder, g Graphics) {
 	b.WriteString(secGraphics + "\n")
-	device := g.Device()
+	// Filtered as one reading rather than card by card: what it is cut to is
+	// the tail of a list of sixteen graphics devices, and every one of them has
+	// a line of its own below.
+	device := attn.Line(g.Device())
 	switch g.Drew() {
 	case DrewNo:
 		fmt.Fprintf(b, "  answer     NO - niri came up and never reached a renderer. It says so itself, below.\n")
@@ -255,20 +310,24 @@ func writeGraphics(b *strings.Builder, g Graphics) {
 	// niri, as it answered.
 	switch {
 	case g.NiriErr != nil:
-		fmt.Fprintf(b, "  niri       not answering: %s\n", g.NiriErr)
+		fmt.Fprintf(b, "  niri       not answering: %s\n", reading(g.NiriErr.Error()))
 	case len(g.Outputs) == 0:
-		fmt.Fprintf(b, "  niri       answering on %s, and listing no outputs at all - a compositor with\n", g.Socket)
+		fmt.Fprintf(b, "  niri       answering on %s, and listing no outputs at all - a compositor with\n", reading(g.Socket))
 		fmt.Fprintf(b, "             nowhere to draw is a black screen however well its renderer started\n")
 	default:
-		fmt.Fprintf(b, "  niri       answering on %s\n", g.Socket)
-		fmt.Fprintf(b, "  outputs    %s\n", strings.Join(g.Outputs, " "))
+		fmt.Fprintf(b, "  niri       answering on %s\n", reading(g.Socket))
+		// Each name and then the join, rather than the join and then the
+		// filter: a monitor called "a b" and two monitors called "a" and "b"
+		// are different machines, and one filter over the joined string cannot
+		// keep them apart.
+		fmt.Fprintf(b, "  outputs    %s\n", reading(strings.Join(each(g.Outputs), " ")))
 	}
 
 	// The cards, one line each. Written even when the verdict was decided
 	// without them: "on which device" is half the question.
 	switch {
 	case g.CardsErr != nil:
-		fmt.Fprintf(b, "  cards      could not be listed: %s\n", g.CardsErr)
+		fmt.Fprintf(b, "  cards      could not be listed: %s\n", reading(g.CardsErr.Error()))
 	case len(g.Cards) == 0:
 		fmt.Fprintf(b, "  cards      none\n")
 	}
@@ -277,41 +336,63 @@ func writeGraphics(b *strings.Builder, g Graphics) {
 		if driver == "" {
 			driver = "no driver bound"
 		}
-		line := fmt.Sprintf("  card       %-20s %-14s", c.Node, driver)
+		// Node, driver and chip id are three columns of one row, so each is
+		// filtered on its own: a driver name carrying a newline would otherwise
+		// take the pci id onto a line of its own and leave it reading as a row.
+		line := fmt.Sprintf("  card       %-20s %-14s", reading(c.Node), reading(driver))
 		if c.PCI != "" {
-			line += " pci " + c.PCI
+			line += " pci " + reading(c.PCI)
 		}
 		if c.OpenErr != nil {
 			// The reading nothing else on the machine makes. A card that is
 			// there, with a driver bound, that this account may not open is a
 			// black screen with no complaint anywhere above it.
-			line += fmt.Sprintf("\n             this session cannot open it: %s", c.OpenErr)
+			line += fmt.Sprintf("\n             this session cannot open it: %s", reading(c.OpenErr.Error()))
 		}
 		b.WriteString(line + "\n")
 	}
 
-	// niri's own words, verbatim.
+	// niri's own words, verbatim - which here means every word of them a
+	// terminal will not act on, since this file is printed to one.
 	switch {
 	case g.LogErr != nil:
-		fmt.Fprintf(b, "  log        could not be read: %s\n", g.LogErr)
+		fmt.Fprintf(b, "  log        could not be read: %s\n", reading(g.LogErr.Error()))
 		fmt.Fprintf(b, "             (journalctl --user -b -u %s is the same question by hand)\n", niriUnit)
 	case len(g.Fell) == 0 && len(g.Saw) == 0:
 		fmt.Fprintf(b, "  log        %s said nothing about a renderer this boot\n", niriUnit)
 	}
 	for _, l := range g.Fell {
-		fmt.Fprintf(b, "  FELL BACK  %s\n", l)
+		fmt.Fprintf(b, "  FELL BACK  %s\n", reading(l))
 	}
 	for _, l := range g.Saw {
-		fmt.Fprintf(b, "  log        %s\n", l)
+		fmt.Fprintf(b, "  log        %s\n", reading(l))
 	}
 
 	for _, e := range g.Env {
 		if !e.Set {
 			continue
 		}
-		fmt.Fprintf(b, "  env        %s=%s\n", e.Name, cut(e.Value, lineMax))
+		// The name is this package's own (graphicsEnv) and the value is
+		// whatever started the session, which is why only one of them is
+		// filtered - and why the demonstration that opened this fix was a
+		// variable with a newline in it.
+		//
+		// attn.Line and not reading: a variable set to nothing is a reading of
+		// its own here, since LIBGL_ALWAYS_SOFTWARE= and no LIBGL_ALWAYS_-
+		// SOFTWARE are different instructions to the stack that reads them
+		// (machine.go, EnvVar), and "not known" would be the wrong word for it.
+		fmt.Fprintf(b, "  env        %s=%s\n", e.Name, attn.Line(e.Value))
 	}
 	b.WriteByte('\n')
+}
+
+// each is a list of readings, every one of them filtered.
+func each(all []string) []string {
+	out := make([]string, 0, len(all))
+	for _, s := range all {
+		out = append(out, reading(s))
+	}
+	return out
 }
 
 // writeVersions is what this is a version of, and whether the running machine
@@ -334,19 +415,19 @@ func writeVersions(b *strings.Builder, v Versions) {
 		if errors.Is(v.NiriErr, exec.ErrNotFound) {
 			fmt.Fprintf(b, "  niri       not installed\n")
 		} else {
-			fmt.Fprintf(b, "  niri       could not be asked: %s\n", v.NiriErr)
+			fmt.Fprintf(b, "  niri       could not be asked: %s\n", reading(v.NiriErr.Error()))
 		}
 	} else {
-		fmt.Fprintf(b, "  niri       %s\n", orNone(v.Niri))
+		fmt.Fprintf(b, "  niri       %s\n", reading(v.Niri))
 	}
-	fmt.Fprintf(b, "  kernel     %s\n", orNone(v.Kernel))
-	fmt.Fprintf(b, "  os         %s\n", orNone(v.OS))
+	fmt.Fprintf(b, "  kernel     %s\n", reading(v.Kernel))
+	fmt.Fprintf(b, "  os         %s\n", reading(v.OS))
 	if v.Revision != "" {
-		fmt.Fprintf(b, "  revision   %s\n", v.Revision)
+		fmt.Fprintf(b, "  revision   %s\n", reading(v.Revision))
 	}
 	if v.Booted != "" || v.Current != "" {
-		fmt.Fprintf(b, "  booted     %s\n", orNone(v.Booted))
-		fmt.Fprintf(b, "  current    %s\n", orNone(v.Current))
+		fmt.Fprintf(b, "  booted     %s\n", reading(v.Booted))
+		fmt.Fprintf(b, "  current    %s\n", reading(v.Current))
 	}
 	if v.Skewed() {
 		// The named cause, said as what it costs. The running kernel and the
@@ -364,22 +445,29 @@ func writeVersions(b *strings.Builder, v Versions) {
 }
 
 // writeHardware is the inventory: what machine this report is about.
+//
+// Everything on it but the core count and the firmware word is a string some
+// firmware, some kernel or some device's own descriptor supplied, so every one
+// of them goes through the filter above. A motherboard's name is whatever the
+// vendor wrote in the DMI table, and an input device's is whatever its maker
+// put in a USB descriptor - which needs no account on this machine to change,
+// only a hand and a port.
 func writeHardware(b *strings.Builder, h Hardware) {
 	b.WriteString(secHardware + "\n")
-	fmt.Fprintf(b, "  model      %s\n", orNone(h.Model))
-	fmt.Fprintf(b, "  board      %s\n", orNone(h.Board))
-	fmt.Fprintf(b, "  cpu        %s\n", orNone(h.CPU))
+	fmt.Fprintf(b, "  model      %s\n", reading(h.Model))
+	fmt.Fprintf(b, "  board      %s\n", reading(h.Board))
+	fmt.Fprintf(b, "  cpu        %s\n", reading(h.CPU))
 	if h.Cores > 0 {
 		fmt.Fprintf(b, "  cores      %d\n", h.Cores)
 	}
-	fmt.Fprintf(b, "  memory     %s\n", orNone(h.Memory))
+	fmt.Fprintf(b, "  memory     %s\n", reading(h.Memory))
 	fmt.Fprintf(b, "  firmware   %s\n", h.Firmware)
-	fmt.Fprintf(b, "  cmdline    %s\n", orNone(h.Cmdline))
+	writeWords(b, "cmdline", strings.Fields(h.Cmdline))
 	if len(h.Inputs) == 0 {
 		fmt.Fprintf(b, "  input      none the kernel names\n")
 	}
 	for _, name := range h.Inputs {
-		fmt.Fprintf(b, "  input      %s\n", name)
+		fmt.Fprintf(b, "  input      %s\n", reading(name))
 	}
 	b.WriteByte('\n')
 }
@@ -389,63 +477,131 @@ func writeHardware(b *strings.Builder, h Hardware) {
 // In full and not summarised: it is the half of this file that says whether the
 // session that did come up was well, and every line of it is already written to
 // be read by somebody with nothing else to look anything up on (this package's
-// own doc). What it is not allowed to carry here is the one thing a terminal
-// may show its owner and a file may not - see redactPrivate.
+// own doc).
+//
+// Nothing is taken out here, and that is the fix rather than an omission. This
+// used to be a pass over the gathered session that dropped the private desks
+// out of one field, and it was wrong in the way a pass is always wrong: two
+// other fields carried the same names - the resolver's error, which quotes
+// whichever app was asked first, and zded's list of manifests it could not
+// read, every entry of which begins with a path that is a desk's name - and the
+// pass had no way to know. So the readings this section is judged off were
+// gathered for a reader who is not the owner and never had those names in them
+// (gather.go, audience), and the counts that survive are printed by the checks
+// themselves (doctor.go, hiddenApps and manifests).
+//
+// What is left here is the one line that is about the file rather than about
+// the machine.
 func writeDoctor(b *strings.Builder, s Session) {
-	s, hidden := redactPrivate(s)
 	b.WriteString(secDoctor + "\n")
 	for _, c := range Judge(s) {
 		fmt.Fprintf(b, "  %s\n", c)
 	}
-	if hidden > 0 {
-		fmt.Fprintf(b, "  %-5s %-13s %d app(s) on desks that declare private are left out of the count\n",
-			"note", "desk apps", hidden)
-		fmt.Fprintf(b, "  %-5s %-13s above and are not named here. `zde doctor` in a terminal shows them.\n", "", "")
-	}
-	if hidden == 0 && s.Desks.Private > 0 {
-		// Said even when it changes nothing, because "there is a private desk on
-		// this machine and it had nothing to report" and "there is no private
-		// desk" are the same blank otherwise - and somebody deciding whether to
-		// paste this into a bug report is entitled to know which.
+	if s.Desks.Private > 0 {
+		// Said even when nothing was left out, because "there is a private desk
+		// on this machine and it had nothing to report" and "there is no
+		// private desk" are the same blank otherwise - and somebody deciding
+		// whether to paste this into a bug report is entitled to know which.
 		fmt.Fprintf(b, "  %-5s %-13s %d desk(s) declare private, and nothing about them is in this file\n",
 			"note", "desk apps", s.Desks.Private)
 	}
 }
 
-// redactPrivate takes the desks that declare private out of what is about to be
-// written down, and says how many entries went.
+// reading is one thing this machine said, on its way into one row of this file:
+// filtered, and never a blank - a line ending in nothing reads as a bug in
+// whatever wrote it.
 //
-// This is the rule the whole file is written around, and it is stricter here
-// than anywhere else in zde for one reason: this is a file on a disk that is
-// meant to be carried to another machine and pasted into a bug report. A
-// private desk is history only (docs/vision.md, section 3) - the notification
-// snapshot already leaves its arrivals out entirely (internal/attn, Snapshot) -
-// and a report that named the desk and the three apps on it would say what that
-// desk is for to everybody who ever reads it.
+// The one door every scalar in the three machine sections goes through, and it
+// is a door because of what was on the other side of it. Almost nothing in this
+// file was written by zde. A USB product string is whatever its maker put in
+// the descriptor, and plugging a device in needs no account on this machine; an
+// environment value is set by whatever started the session; a DMI string is
+// firmware; a niri log line is a compositor's. All of it lands in a file that
+// is read in a pager and often printed straight to a terminal (cmd/zde,
+// runReport), where ESC is not a character but the start of an instruction.
 //
-// Both halves go: the desk's name and the app's. Naming the app and hiding the
-// desk would be the same disclosure with an extra step.
+// attn.Line, which is the filter for foreign text on its way into a row, and
+// the choice between the three is the shape of what is being made. This section
+// is a two-column list: a label, then one reading. A newline in a reading is
+// therefore not shape, it is a row nobody made - and column one of this file is
+// where a section heading goes, so a value carrying "\n[doctor]" opens a second
+// doctor section and a value carrying "\nok    forged    ..." is a check that
+// was never run, in the column an eye runs down. attn.Text would leave both
+// where they are, because keeping shape is its whole job; attn.Block would push
+// them one indent in, which stops a heading and does not stop a forged row,
+// since every row in this file is already indented. Line is the only one of the
+// three that makes the forgery impossible rather than harder, and reflowing a
+// reading costs nothing: it was one line to begin with or it was lying.
 //
-// A count survives, and that is the deliberate limit of it. A file that
-// silently dropped lines would be a file whose all-clear cannot be trusted, and
-// "three apps on a desk you declared private could not be started" is a real
-// fault somebody has to be told about without being told which.
-func redactPrivate(s Session) (Session, int) {
-	kept := make([]DeskApp, 0, len(s.Desks.Unrunnable))
-	hidden := 0
-	for _, a := range s.Desks.Unrunnable {
-		if a.Private {
-			hidden++
-			continue
-		}
-		kept = append(kept, a)
+// Its bound comes with it - a queue row's - and that is deliberate here too: an
+// environment value has no length a machine can rely on, and the report's own
+// ceiling should be reached by a machine with forty input devices rather than
+// by one variable.
+func reading(s string) string {
+	out := attn.Line(s)
+	if out == "" {
+		return "not known"
 	}
-	s.Desks.Unrunnable = kept
-	return s, hidden
+	return out
+}
+
+// The two columns every row in the three machine sections is made of: two
+// spaces, a label eleven wide, and the reading. wrapAt is where a row that
+// carries a list of words is filled onto the next one.
+const (
+	valueAt = 13
+	wrapAt  = 79
+)
+
+// writeWords is one reading that is a list of words, filled across as many rows
+// as it takes rather than cut to fit one.
+//
+// The kernel command line is the only reading shaped like this and it is why
+// this exists. It is the one field in the file that a row's bound would ruin:
+// an initrd and two store paths run past a queue row's three hundred characters
+// long before the line reaches nomodeset or nvidia_drm.modeset=0, which are the
+// words somebody is reading it for, and a filter that quietly dropped the tail
+// would take exactly the part that explains the black screen.
+//
+// The other two filters were both wrong here, and the second one instructively
+// so. attn.Text keeps newlines, which is the forgery itself. attn.Block indents
+// what follows a newline by two - which stops a heading, since a heading is in
+// column one, and does not stop anything else: every row in this file is
+// already two spaces in, so a value carrying "\nok    forged   ..." lands
+// exactly where a check result goes and reads as one. Block is for a message
+// printed on its own in column one, which is what cmd/zde does with an error;
+// inside a file whose shape is an indent it buys nothing.
+//
+// So the line is split at the word boundaries it already has, every word goes
+// through the row filter on its own, and the wrap is this package's. What
+// reaches any row is whole parameters, `grep nomodeset` still finds it, and no
+// word can end a row because none of them can contain a newline any more.
+func writeWords(b *strings.Builder, label string, words []string) {
+	indent := strings.Repeat(" ", valueAt)
+	line, empty := fmt.Sprintf("  %-11s", label), true
+	for _, w := range words {
+		w = reading(w)
+		if !empty && len(line)+1+len(w) > wrapAt {
+			b.WriteString(line + "\n")
+			line, empty = indent, true
+		}
+		if !empty {
+			line += " "
+		}
+		line, empty = line+w, false
+	}
+	if empty {
+		line += "not known"
+	}
+	b.WriteString(line + "\n")
 }
 
 // orNone is a reading, or the fact that there was none. Never a blank: a line
 // ending in nothing reads as a bug in whatever wrote it.
+//
+// zde's own strings, which is the difference between it and reading above: a
+// version set at link time, the daemon's answer about itself. Nothing filters
+// them because nothing else wrote them.
 func orNone(s string) string {
 	if !exists(s) {
 		return "not known"
@@ -465,6 +621,16 @@ func orNone(s string) string {
 //
 // 0600 from the open, and owned by whoever is running: this is written by the
 // session, into a directory layer 0 made for that account (nix/system.nix).
+//
+// A write that failed leaves nothing. That is the other half of O_EXCL and it
+// was missing: a disk that filled up halfway through, or an RLIMIT_FSIZE, used
+// to leave the first half of a report on the disk under a name that looks like
+// a whole one, with no "cut here" line in it and nothing anywhere saying it was
+// cut - while this returned no path at all, so the person was told no file was
+// written and the file was there. The two together are the worst shape this can
+// have: a file nobody knows about that reads as complete and stops in the
+// middle of the section somebody needed. Removed, and then a retry in the same
+// second works too, which O_EXCL had otherwise made impossible.
 func writeReport(dir, text string, now time.Time, boot string) (string, error) {
 	if boot == "" {
 		boot = "00000000"
@@ -482,22 +648,48 @@ func writeReport(dir, text string, now time.Time, boot string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
-	if _, err := f.WriteString(text); err != nil {
-		return "", err
-	}
-	// Synced, because the whole premise is a machine that is about to be
-	// powered off by somebody holding the button down.
-	if err := f.Sync(); err != nil {
+	if err := writeWhole(f, text); err != nil {
+		// Closed here whatever it was that failed. writeWhole closes it on its
+		// own way out, so this is either the close that never happened or one
+		// that answers "already closed" - and a descriptor left open on the
+		// error path is the one thing that would outlive the failure.
+		f.Close()
+		if rm := os.Remove(path); rm != nil {
+			// Both, because the second one changes what is on the disk and
+			// therefore what the person has to do about it.
+			return "", fmt.Errorf("%w - and the part of it already written could not be removed: %v", err, rm)
+		}
 		return "", err
 	}
 	// Best effort, and after the file is safely down: a directory that could not
 	// be tidied is not a reason to lose the snapshot that was just written.
-	rotate(dir, reportsMax)
+	rotate(dir, reportsMax, name)
 	return path, nil
 }
 
-// rotate keeps the newest keep files and removes the rest.
+// writeWhole is the file on the disk or an error, with nothing in between: the
+// bytes, the sync and the close, and the first of them that fails is the answer.
+//
+// The sync is here because the whole premise is a machine that is about to be
+// powered off by somebody holding the button down, and the close is checked
+// beside it because a close is where a write over a full filesystem is allowed
+// to surface - a snapshot that reported success off an ignored close would be
+// the same truncated file with a better story.
+func writeWhole(f *os.File, text string) error {
+	if _, err := f.WriteString(text); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	return f.Close()
+}
+
+// rotate makes room for the file just written, and takes out at most the one it
+// replaced.
+//
+// Three rules, and each of them is here because leaving it out was a way of
+// steering this into deleting the snapshots it exists to keep.
 //
 // Only files whose name this package generated, matched whole. That is the
 // difference between a bound and a program that deletes things: the directory
@@ -505,28 +697,43 @@ func writeReport(dir, text string, now time.Time, boot string) (string, error) {
 // while debugging, and a rotation that removed whatever was oldest would remove
 // that.
 //
-// By name and not by mtime, which is what the name is shaped for: the timestamp
-// is fixed-width UTC, so lexicographic order is chronological order, and a
-// clock that jumped backwards between two boots cannot make this delete the
-// newest file.
-func rotate(dir string, keep int) {
+// Nothing that sorts at or above the name just written. The timestamp is
+// fixed-width UTC, so that is every name claiming a moment this write had not
+// reached - which is a name this package cannot have written before now, and is
+// therefore either something else's or this machine's own from a clock that has
+// since been corrected. Neither is a reason to delete eight real snapshots.
+// Without this rule one file called 29991231T235959Z-ffffffff.txt is enough to
+// evict a genuine one on every write for ever, and eight of them evict all
+// eight - while `zde report` goes on printing the path of a file it deleted a
+// microsecond after writing it, because the file it had just written sorted
+// below all of them. The file just written is inside this rule and so can never
+// be the one that goes, which is what makes that line true.
+//
+// And one file per file written, however many are over the bound. A snapshot
+// writer that removes eight things because of one write is a tool, and a
+// process running as this account can plant names anywhere in the order this
+// reads - it need only date them a second ago rather than a century on. It can
+// also unlink these files outright, and nothing here can stop that; what this
+// rule buys is that rotation is never the instrument, since one write can cost
+// at most the one it replaced. The directory converges on keep at a snapshot a
+// boot, which is the rate it fills up at.
+func rotate(dir string, keep int, wrote string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
 	var ours []string
 	for _, e := range entries {
-		if !e.IsDir() && reportName.MatchString(e.Name()) {
-			ours = append(ours, e.Name())
+		if e.IsDir() || !reportName.MatchString(e.Name()) || e.Name() > wrote {
+			continue
 		}
+		ours = append(ours, e.Name())
 	}
 	if len(ours) <= keep {
 		return
 	}
 	sort.Strings(ours)
-	for _, name := range ours[:len(ours)-keep] {
-		os.Remove(filepath.Join(dir, name))
-	}
+	os.Remove(filepath.Join(dir, ours[0]))
 }
 
 // whoami is the account this session belongs to, which is the directory layer 0

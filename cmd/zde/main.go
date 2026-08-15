@@ -434,6 +434,18 @@ var version = "dev"
 // surface-backed verb in this file already has - `zde desk switcher` prints the
 // list when no shell is up. A machine with nowhere to write is a machine where
 // somebody typed this into a terminal, and the answer is still the answer.
+//
+// Printed unfiltered, and that is a statement about the report rather than an
+// omission here. This is the ordinary path and not the rare one - every machine
+// that has not turned zde.debug on ends up here - so the file's own contents
+// reach a terminal on the ordinary run, and each of its readings is filtered
+// where it is written down instead (internal/doctor, reading). A filter over
+// the whole text at this point could only be attn.Text, which would leave the
+// newline that forges a heading exactly where it was.
+//
+// The error is a different thing and takes the filter an error takes: it is one
+// message printed on its own in column one, and what is in it came from the
+// filesystem.
 func runReport() error {
 	path, text, err := doctor.WriteReport(doctor.Self{Zde: version})
 	if err == nil {
@@ -445,7 +457,8 @@ func runReport() error {
 	// - it is above - and a non-zero exit here would make the one command that
 	// still works on a broken machine look like another thing that is broken.
 	fmt.Fprintf(os.Stderr, "\nno file written: %s\n"+
-		"%s belongs to root and is made by layer 0 when zde.debug is on (nix/system.nix).\n", err, doctor.ReportDir)
+		"%s belongs to root and is made by layer 0 when zde.debug is on (nix/system.nix).\n",
+		attn.Block(err.Error()), doctor.ReportDir)
 	return nil
 }
 

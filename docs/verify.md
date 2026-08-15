@@ -234,8 +234,18 @@ UTC, then the first eight characters of the boot id. Eight files are kept, 64
 KiB each, 0600 and yours. It holds the graphics answer, the versions, the
 hardware and the whole of `zde doctor`; it holds no notification text, no
 clipboard, nothing from the queue, no window titles and nothing that names a
-desk declared `private: true`, and it says all of that in its own header,
-because the point of it is that you can send it to somebody.
+desk declared `private: true`.
+
+**Read the header before you send it to anybody**, because the file itself is
+the list of what is in it and this paragraph is not. It is an inventory of a
+machine, so it identifies one: the make and model, the motherboard, the
+processor, your account name and paths under your home directory, the store
+path of the running system - which on NixOS has your hostname in it - and every
+input device the kernel names, which is your keyboard and equally a security
+key, a tablet or the virtual keyboard a remote-desktop program creates. One
+thing is narrowed rather than listed: the kernel command line keeps every
+parameter and drops the values that name a disk, because `root=` cannot explain
+a black screen and `nomodeset`, on the same line, explains half of them.
 
 `zde report` writes one by hand at any time - from a terminal, or from
 Ctrl+Alt+F2 on a machine whose tty1 is black. That is the first thing to try,

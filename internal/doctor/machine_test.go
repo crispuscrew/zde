@@ -295,6 +295,64 @@ H: Handlers=event1
 	}
 }
 
+// The one thing this file narrows rather than admits to. root= and resume= are
+// the identity of a filesystem, they travel with the file into whatever bug
+// report it is pasted into, and neither of them can cause or explain a black
+// screen. The parameters that can are on the same line and every one of them
+// stays - including the ones this list has never heard of.
+func TestTheCommandLineKeepsEveryParameterAndNoDiskIdentity(t *testing.T) {
+	got := kernelCmdline(`initrd=\efi\nixos\abc-initrd.efi BOOT_IMAGE=/nix/store/abc-linux/bzImage ` +
+		`root=UUID=1d0a1e2b-3c4d-5e6f-7a8b-9c0d1e2f3a4b resume=/dev/disk/by-uuid/deadbeef-0000-1111-2222-333344445555 ` +
+		`resume_offset=533760 rd.luks.uuid=luks-9c0d1e2f ro quiet loglevel=4 nomodeset nvidia_drm.modeset=0 ` +
+		`i915.enable_psr=0 something.nobody.has.heard.of=7`)
+	for _, gone := range []string{
+		"1d0a1e2b", "deadbeef-0000", "533760", "luks-9c0d1e2f",
+	} {
+		if strings.Contains(got, gone) {
+			t.Errorf("%q names a disk and is still on the command line:\n%s", gone, got)
+		}
+	}
+	for _, kept := range []string{
+		"nomodeset",                       // the answer to half the black screens there are
+		"nvidia_drm.modeset=0",            // and to most of the rest
+		"i915.enable_psr=0",               // a driver option, which is the same kind of answer
+		"something.nobody.has.heard.of=7", // and this is not a list of what may stay
+		"BOOT_IMAGE=/nix/store/abc-linux/bzImage",
+		"ro", "quiet", "loglevel=4",
+	} {
+		if !strings.Contains(got, kept) {
+			t.Errorf("%q is what somebody reads this line for and it is gone:\n%s", kept, got)
+		}
+	}
+	// The parameter's own name stays where its value went, because "this
+	// machine resumes from something" is a fact about how it boots and only
+	// which volume it resumes from is a serial number for a disk.
+	for _, named := range []string{"root=", "resume=", "resume_offset=", "rd.luks.uuid="} {
+		if !strings.Contains(got, named) {
+			t.Errorf("%q was taken off the line entirely rather than emptied:\n%s", named, got)
+		}
+	}
+}
+
+// And the whole of it reaches the file, however long it is: a queue row's bound
+// would have cut it off two store paths before nomodeset, which is the word it
+// is being read for.
+func TestALongCommandLineReachesTheFileWhole(t *testing.T) {
+	long := strings.Repeat("init=/nix/store/0123456789abcdef0123456789abcdef-nixos-system-x-26.05/init ", 8) + "nomodeset"
+	var b strings.Builder
+	writeHardware(&b, Hardware{Firmware: "UEFI", Cmdline: long})
+	if !strings.Contains(b.String(), "nomodeset") {
+		t.Errorf("the last word of a %d character command line did not reach the file:\n%s", len(long), b.String())
+	}
+	// Filled onto rows this package wrote, so nothing on any of them came from
+	// a value: every one is either the label's row or an indent of its own.
+	for _, line := range strings.Split(strings.TrimRight(b.String(), "\n"), "\n") {
+		if line != "" && line != secHardware && !strings.HasPrefix(line, "  ") {
+			t.Errorf("the command line wrote a line of the file: %q", line)
+		}
+	}
+}
+
 // A rebuild swaps /run/current-system and leaves /run/booted-system where it
 // was, so the running kernel and mesa are one generation's and everything
 // started since is another's. It is the ordinary cause of a black screen after
