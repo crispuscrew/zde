@@ -256,16 +256,29 @@ func units(s Session) []Check {
 // manifests is one line per desk that could not be read, because that is the
 // answer to "where did my desk go" and a count would send somebody through the
 // directory looking for which one.
+//
+// Except where the readings are for somebody other than the owner, and there it
+// is exactly a count: every entry starts with the manifest's path, a manifest's
+// path is a desk's name, and a file that will not parse is one nothing can read
+// a `private: true` out of - so there is no half of this list that is safe to
+// name (see Session.BadHidden). The count is still a failure and still says the
+// desks are gone, which is the part somebody has to act on.
 func manifests(s Session) []Check {
 	if s.Status == nil {
 		return []Check{{Warn, "manifests", noDaemon}}
 	}
-	if len(s.Status.BadManifests) == 0 {
-		return []Check{{OK, "manifests", "every manifest zded has read parsed"}}
-	}
-	out := make([]Check, 0, len(s.Status.BadManifests))
+	out := make([]Check, 0, len(s.Status.BadManifests)+1)
 	for _, bad := range s.Status.BadManifests {
 		out = append(out, Check{Fail, "manifests", bad})
+	}
+	if s.BadHidden > 0 {
+		out = append(out, Check{Fail, "manifests", fmt.Sprintf(
+			"%d manifest(s) zded read did not parse, so that many desks are not declared. They are not named here,"+
+				" because a manifest is named by its path and a path is a desk name. `zde doctor` in a terminal names them",
+			s.BadHidden)})
+	}
+	if len(out) == 0 {
+		return []Check{{OK, "manifests", "every manifest zded has read parsed"}}
 	}
 	return out
 }
@@ -285,16 +298,25 @@ func manifests(s Session) []Check {
 // there is (docs/delivery.md), so a machine whose desks name apps nobody has
 // defined yet is the ordinary young machine and not a broken one - and a
 // command that exits non-zero everywhere is one nobody reads the output of.
+//
+// Hidden is the entries that were never made, because the readings were
+// gathered for somebody who is not this machine's owner (probeDesks). It gets a
+// line of its own and the all-clear above it is withdrawn when there is one: an
+// "ok" saying no desk names an app this machine cannot start, printed over the
+// top of apps this machine cannot start, is the one failure mode a redaction
+// must not have.
 func deskApps(s Session) []Check {
 	d := s.Desks
 	switch {
 	case d.Err != nil:
 		return []Check{{Warn, "desk apps", "not known: " + d.Err.Error() + d.askedOf()}}
-	case len(d.Unrunnable) == 0:
+	case len(d.Unrunnable) == 0 && d.Hidden == 0:
 		// The directory is named on this line alone, and that is deliberate: it
 		// is the reading that can quietly be about the wrong place, since zded
 		// can be started with another one (cmd/zded, -desks).
 		return []Check{{OK, "desk apps", "no desk in " + d.Dir + " names an app this machine cannot start" + d.askedOf()}}
+	case len(d.Unrunnable) == 0:
+		return []Check{hiddenApps(d)}
 	case d.resolver() == byApps && !d.Configured:
 		// A machine with nothing in zde.apps gets one line and not one per name.
 		// The reason is the same sentence every time and the fix is a single
@@ -304,14 +326,36 @@ func deskApps(s Session) []Check {
 		// Only for that resolver. A zinc app is a YAML file of its own in a
 		// store (docs/delivery.md, layer 2), so there is no one edit to name and
 		// a line each is exactly right: they are that many things to write.
-		return []Check{{Warn, "desk apps", d.Unrunnable[0].Err.Error() + ", and the desks name " +
-			strings.Join(wanted(d.Unrunnable), ", ") + d.askedOf()}}
+		one := Check{Warn, "desk apps", d.Unrunnable[0].Err.Error() + ", and the desks name " +
+			strings.Join(wanted(d.Unrunnable), ", ") + d.askedOf()}
+		if d.Hidden > 0 {
+			// The count still goes on a line of its own, because the names on
+			// this one are the only ones there are: a reader who counted them
+			// would count too few and think they had the whole list.
+			return []Check{one, hiddenApps(d)}
+		}
+		return []Check{one}
 	}
-	out := make([]Check, 0, len(d.Unrunnable))
+	out := make([]Check, 0, len(d.Unrunnable)+1)
 	for _, a := range d.Unrunnable {
 		out = append(out, Check{Warn, "desk apps", a.Desk + " names " + a.App + ": " + a.Err.Error() + d.askedOf()})
 	}
+	if d.Hidden > 0 {
+		out = append(out, hiddenApps(d))
+	}
 	return out
+}
+
+// hiddenApps is the one line that stands for every entry a private desk cost
+// this report, and it is the deliberate limit of the rule: a count, never a
+// name. "Three apps on a desk you declared private could not be started" is a
+// real fault somebody has to be told about without being told which - and a
+// report that dropped those lines in silence would be a report whose all-clear
+// is worth nothing.
+func hiddenApps(d Desks) Check {
+	return Check{Warn, "desk apps", fmt.Sprintf(
+		"%d app(s) on desks that declare private could not be started, and neither those desks nor those apps"+
+			" are named here. `zde doctor` in a terminal names them%s", d.Hidden, d.askedOf())}
 }
 
 // resolver is which of the two answered, and what a Session written down

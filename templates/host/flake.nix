@@ -88,6 +88,17 @@
             zde.enable = true;
             # zde.laptop.enable = true;   # battery, radios, the lid switch
 
+            # The state snapshot, for the failure with no terminal in it: the
+            # session does not come up, the screen is black, and the only way
+            # left to ask this machine anything is to take the disk out. With
+            # both halves on, every session start writes what the machine
+            # looked like into /var/log/zde/${user} - the graphics device and
+            # whether niri reached a renderer on it, the versions, the
+            # hardware, and the whole of `zde doctor`. Eight files, 0600, and
+            # nothing private in them (docs/verify.md, when the screen is
+            # black). Off by default because it is a file on your disk.
+            # zde.debug.enable = true;                      # layer 0: the directory
+
             # Layer 1: the niri config, the generated binds, zded and its unit.
             # Layer 2 arrives here too: zinc's tools on PATH, which is what a
             # `zde.apps` entry naming `zcr` needs to exist.
@@ -97,6 +108,7 @@
                 zinc.homeModules.zinc
               ];
               zde.enable = true;
+              # zde.debug.enable = true;                    # layer 1: what writes it
               programs.zinc.enable = true;
               # zlg is opt-in in zinc's module, on the reasoning that a desktop shipping
               # its own launcher does not want a second one. zde ships none: its
