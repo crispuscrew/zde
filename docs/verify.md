@@ -586,6 +586,29 @@ ones are the point of zded holding the bus name.
     check should collapse to one `not known:` line naming the command to run by
     hand - not a warning per desk. A partial list of faults reads exactly like a
     complete one, which is the failure this is arranged against.
+  - **A zcr that answers in escape sequences.** Almost nothing in a zde error
+    was written by zde: zcr's refusal is carried whole, niri's message and
+    logind's come back through the daemon as text, and a hand-edited manifest is
+    answered by a YAML parser quoting the file back. On a terminal, ESC is not a
+    character but the start of an instruction.
+
+    ```sh
+    printf '#!/bin/sh\nprintf "zcr: no app \\033[2Jdefined\\033]0;pwned\\007\\r\\n\\ttry: zc list\\n" >&2\nexit 1\n' \
+      > "$dir/zcr"; chmod +x "$dir/zcr"      # $dir first on PATH
+    zde desk apps 2>&1 | cat -A
+    zde doctor | cat -A
+    ```
+
+    No `^[`, no `^G` and no `^M` in either, and every line of the report still
+    starts with `ok`, `warn` or `fail` - a report is one line per check, and a
+    line that is not one is a check nobody made. What must still be there is
+    what somebody would act on: the app zcr would not have, and in `zde desk
+    apps` the advice it gave and the `^I` it indented that advice with. That one
+    keeps zcr's whole refusal, several lines if it sent several, with everything
+    after the first indented two spaces - a parse error with a caret under the
+    column that is wrong is the shape of the fix, and only the first line of an
+    error starts where zde's own words do. The report takes a program's first
+    line of complaint and no more, which is its own rule and not this one.
 - **Who can read what you were sent.** One line: `ls -l
   ~/.local/state/zde/journal.jsonl` says `-rw-------`. It has to say that on a
   machine that has been running an earlier zde too, because the mode is set on

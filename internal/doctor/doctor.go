@@ -48,8 +48,23 @@ type Check struct {
 // queue uses: this goes into a bug report to be read by people, and the level
 // is the column an eye runs down. Nothing generated reads it, so nothing is
 // owed a separator.
+//
+// The detail is filtered here, and it takes the row filter rather than the one
+// an error printed on its own takes (internal/attn, Line against Block). Most
+// of what is in this column was written by something else - systemctl's and
+// podman's first line of complaint, zcr's refusal of an app name, a YAML
+// parser's several lines about a manifest, logind's answer off the bus - and
+// this report is one line per check with the level in column one. A detail with
+// a newline in it is a check nobody made, drawn in the column an eye runs down;
+// a detail with an ESC in it drives the terminal somebody pasted the report
+// into. So it is one printable line each, and a manifest that has more wrong
+// with it than fits on one is fixed an edit at a time.
+//
+// Here rather than in each of the twenty places a Check is made, for the reason
+// `zde` filters its errors in one place: a filter per call site is a filter the
+// next check forgets.
 func (c Check) String() string {
-	return fmt.Sprintf("%-5s %-13s %s", c.Level, c.Name, c.Detail)
+	return fmt.Sprintf("%-5s %-13s %s", c.Level, c.Name, attn.Line(c.Detail))
 }
 
 // Report is the whole screen, in the order the checks are printed.

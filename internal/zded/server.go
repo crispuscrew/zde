@@ -2155,7 +2155,13 @@ func (s *Server) status() Status {
 		// Not an error to the caller: a zded that cannot reach niri is
 		// exactly the situation someone is running `zde status` to find out
 		// about, so it reports rather than refuses.
-		st.Compositor = err.Error()
+		//
+		// Cleaned here, where niri's words enter this daemon, because from here
+		// they are a row: `zde status` prints them after "compositor" and the
+		// report doctor makes prints them after "fail compositor" (cmd/zde,
+		// status; internal/doctor). A row is where a newline is a second row
+		// with nothing in column one.
+		st.Compositor = attn.Line(err.Error())
 	} else {
 		st.Desks = len(m.DeskNames())
 	}
@@ -2188,10 +2194,17 @@ func (s *Server) status() Status {
 // `zde status` can say so. Replaced rather than accumulated: the list is the
 // state of the directory now, and a manifest somebody has since fixed should
 // stop being mentioned.
+//
+// One row each, cleaned here where the parser's words enter the daemon, because
+// a row is what every reader of this list draws: a line under "manifest" in
+// `zde status`, a failing check in doctor's report, and whatever the shell puts
+// it on next. What the parser says about a hand-edited file is several lines
+// with the file's own text quoted in them (`field <key> not found`), so this is
+// the one place in zde where a newline and an ESC arrive out of a YAML file.
 func (s *Server) rememberProblems(problems []manifest.Problem) {
 	list := make([]string, 0, len(problems))
 	for _, p := range problems {
-		list = append(list, p.String())
+		list = append(list, attn.Line(p.String()))
 	}
 	s.mu.Lock()
 	s.problems = list

@@ -17,7 +17,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	"unicode"
 
 	"golang.org/x/sys/unix"
 
@@ -40,10 +39,30 @@ func main() {
 		return
 	}
 	if err := run(args); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		complain(err)
 		os.Exit(1)
 	}
 }
+
+// complain is every error this command puts in front of a person: the one above
+// that ends the process, and the one place that prints an error and carries on
+// (deskApps).
+//
+// One door rather than a filter at each of the few dozen places that return an
+// error, because of where the words come from. Very little of an error here is
+// zde's own: `zcr` prints its refusal and it is carried whole (internal/zinc,
+// Run); logind's message comes back through the bus; niri's comes back through
+// the daemon, which hands its own errors over the socket as text and they are
+// printed exactly as they arrived (internal/zded, Call); a manifest somebody
+// hand-edited is answered by a YAML parser in several lines. Filtering at each
+// call site is filtering the error paths that exist today, and the next one
+// added is the one that forgets.
+//
+// What it must not cost is legibility. An error is read in order to fix
+// something, so the path, the quoted name and the parser's caret line all have
+// to survive - which is why this is Block and not the one-line filter a queue
+// row takes (internal/attn).
+func complain(err error) { fmt.Fprintln(os.Stderr, attn.Block(err.Error())) }
 
 func run(args []string) error {
 	switch {
@@ -303,7 +322,7 @@ func deskApps(args []string) error {
 	// to what the desk declares, and repeating one missing binary per app would
 	// bury them.
 	if unanswered != nil {
-		fmt.Fprintln(os.Stderr, unanswered)
+		complain(unanswered)
 	}
 	return nil
 }
@@ -581,7 +600,13 @@ func askRun(c *zded.Client, tier, question string) error {
 		// Filtered first and then asked about, so that a piece which was
 		// nothing but control characters is a piece that printed nothing - and
 		// does not leave this thinking it ended a line it never wrote.
-		if said := plain(ev.Text); said != "" {
+		//
+		// Text and not Block: this arrives in pieces, and a piece is not a whole
+		// message to indent the lines of. zded hands the bytes over as the tier
+		// produced them and counts them against its own cap while it does
+		// (internal/zded, pump), so the filtering is here, where there is no
+		// bookkeeping to disturb and the reader is known to be a terminal.
+		if said := attn.Text(ev.Text); said != "" {
 			fmt.Print(said)
 			ended = strings.HasSuffix(said, "\n")
 		}
@@ -1106,44 +1131,6 @@ func dash(s string) string {
 		return "-"
 	}
 	return s
-}
-
-// plain is a piece of somebody else's text on its way to this terminal: what a
-// terminal reads as an instruction taken out, and everything else left exactly
-// as it was written.
-//
-// It exists for the tier's answer (see askRun), which is the one thing this
-// command prints that arrives as a stream from a program somebody else wrote.
-// zded hands those bytes over as the tier produced them and counts them against
-// its own cap while it does (internal/zded, pump); filtering there would mean a
-// cap counting a different number of bytes than the tier sent, on the path that
-// is already doing the delicate part - holding back a character whose last byte
-// has not arrived. Here there is no bookkeeping to disturb, and here is also the
-// only place that knows what it is writing into. If a second surface ever needs
-// the same protection, this moves to the daemon and both get it.
-//
-// Not the filter the notification path uses, and the difference is the job.
-// That one reflows: it folds runs of whitespace and cuts at a bound, because it
-// is making a row. This is an answer to a question, and an answer has
-// paragraphs and indented code in it - so the shape stays and only what a
-// terminal would act on goes. Tabs and newlines are shape. A carriage return is
-// not: it is how a line is drawn over with another one, which is a way of
-// hiding what was printed rather than of writing anything.
-//
-// The zero-width joiner survives, for the reason internal/attn keeps it: it is
-// unprintable by every test Go has, and a family emoji without it is three
-// people.
-func plain(s string) string {
-	return strings.Map(func(r rune) rune {
-		switch {
-		case r == '\n' || r == '\t' || r == '‍':
-			return r
-		case unicode.IsPrint(r):
-			return r
-		default:
-			return -1
-		}
-	}, s)
 }
 
 // call is a verb with nothing to print: it worked, or it says why not.
