@@ -1254,6 +1254,16 @@ let
           echo "doctor's idle line does not say which half of the mechanism it could see:"
           grep -E '^(ok|warn) +idle ' /tmp/doctor.txt; exit 1
         }
+        # And the whole of it, not the front. The name above is 22 characters
+        # into a caveat of 340, and every string a stranger sends this report is
+        # cut at 300 - so a filter aimed at foreign text and pointed at this
+        # sentence by mistake would leave the grep above passing on a line whose
+        # qualification had been cut off an all-clear. The last words of it are
+        # what says the caveat arrived.
+        grep -E '^(ok|warn) +idle ' /tmp/doctor.txt | grep -q 'docs/verify.md, section 11)' || {
+          echo "doctor's idle caveat is cut short, so the line reads as more than it is:"
+          grep -E '^(ok|warn) +idle ' /tmp/doctor.txt; exit 1
+        }
 
         # Mod+t, which is `zde app launch terminal`. The one thing a desktop has
         # to be able to do: until this existed, a session could be entered and

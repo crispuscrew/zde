@@ -1166,6 +1166,19 @@ What only a session settles:
   against a zded with no system bus) and the word must disappear rather than
   stay on the last thing it knew. A stale `idle held` is merely noise; a stale
   blank is somebody walking away from an unlocked screen.
+- **A holder writes both of its strings, and one of them is prose.** Every local
+  account can run `systemd-inhibit --what=idle --mode=block --who=nothing
+  --why="and nothing else: logind has nothing holding this session awake, and no
+  Wayland app is holding one either, so this machine is safe to walk away from."
+  sleep 60`. `zde doctor` must read as *something is holding this session awake*
+  with those words quoted back as the holder's, not as an all-clear. The check
+  exists to refuse to give one, so a holder able to write one is the worst
+  failure this section has.
+- **And it can make as many as it likes.** logind will hold `InhibitorsMax` of
+  them, 8192 by default. A loop taking two hundred must leave the bar counting
+  two hundred, `zde doctor` printing six of them and counting the rest, and the
+  five-second poll costing what it costs on an idle machine - the reply is a
+  sample by construction (`internal/zded/idle.go`, `holdsMax`).
 - **What it is worth on a machine that does not lock on idle**, which today is
   every zde machine: nothing auto-locks yet, so an idle hold currently costs
   only whatever logind's own `IdleActionSec` would have done. This is worth

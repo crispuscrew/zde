@@ -53,9 +53,22 @@ type Idle struct {
 	// Known is whether logind answered at all. False means the question was not
 	// put or came back as an error - not that the answer was no.
 	Known bool `json:"known"`
+	// Count is how many holders logind named, all of them, and it is the number
+	// the bar draws.
+	//
+	// Its own field rather than len(Holds), because the two are no longer the
+	// same number: the rows are bounded at holdsMax and this is not. A count
+	// that stopped at the bound would be the one widget on the strip inventing
+	// the fact it exists to report - "held 6" on a machine holding eight
+	// thousand - and a surface cannot recover the truth from a list that was cut
+	// without being told it was cut.
+	Count int `json:"count"`
 	// Holds is what logind says is holding idle off, and never the Wayland
 	// inhibitors, which nothing on this machine can enumerate. Empty with Known
 	// true is "logind sees nothing", which is a smaller claim than "nothing".
+	//
+	// At most holdsMax of them: this is the sample a surface names, where Count
+	// is how many there are.
 	Holds []IdleHold `json:"holds,omitempty"`
 	// Why is why logind could not say, when it could not. Carried so the surface
 	// and `zde system idle` give the same reason rather than each inventing one.
@@ -81,23 +94,62 @@ func (s *Server) idleHold() Response {
 	if err != nil {
 		return ok(Idle{Why: err.Error()})
 	}
-	return ok(Idle{Known: true, Holds: idleHolds(st.HoldingIdle())})
+	blocks := st.HoldingIdle()
+	return ok(Idle{Known: true, Count: len(blocks), Holds: idleHolds(blocks)})
 }
 
-// idleHolds is the rows, filtered.
+// holdsMax is how many holders one answer carries.
+//
+// The rows are a stranger's to multiply. `systemd-inhibit --what=idle
+// --who=... --why=...` takes both strings from whoever runs it, every local
+// account can run it, and how many may exist at once is logind's InhibitorsMax,
+// which defaults to 8192.
+//
+// The arithmetic, on the answer rather than on the table. Each row is two
+// strings at attn.Line's 300 characters, which in an alphabet costing four
+// bytes a character is 2.4 KB, so an unbounded answer at logind's own ceiling
+// is about 19 MB - JSON-encoded, written down one socket, on the five-second
+// clock the bar polls this on (shell.qml, the idle hold), for as long as the
+// session runs. Twenty holders with a megabyte of prose each is enough to make
+// that visible, and logind accepts them.
+//
+// Six is what that becomes: 14 KB at the very worst and a couple of hundred
+// bytes on a real machine. Six because the question is "is something holding
+// the screen", and six holders answer it as well as eight thousand do - a
+// machine that is not being played with holds nought or one, a download or a
+// video call or a backup wrapped in `systemd-inhibit`. The same number the
+// report prints (internal/doctor, holdsShown), because the two are answering
+// the same question and a surface that named more than the report did would be
+// a second answer to it.
+//
+// What is not bounded is Count, and that is the half that makes this a sample
+// rather than a lie.
+const holdsMax = 6
+
+// idleHolds is the rows, filtered and bounded.
 //
 // Filtered here rather than in internal/power for the reason the power menu's
 // cost lines are (power.go, held): that package is the logind client and has no
 // business knowing where a string is about to be drawn. This one goes to a Qt
 // Text on the layer-shell bar and to a terminal for `zde system idle`, and
 // `--why="$(printf '\033[2J')"` would clear the second one.
+//
+// The first holdsMax of them, in logind's own order, with the full count sent
+// beside them (see Idle.Count). The first rather than a choice among them:
+// nothing here can rank one holder above another, since both fields are the
+// holder's own claim, so any rule for picking would be a rule somebody could
+// aim - and taking them in the order they arrived is the one that cannot be.
 func idleHolds(blocks []power.Block) []IdleHold {
+	if len(blocks) > holdsMax {
+		blocks = blocks[:holdsMax]
+	}
 	var out []IdleHold
 	for _, b := range blocks {
 		who := attn.Line(b.Who)
 		if who == "" {
-			// Never an empty row: the count is what the bar draws, so a holder
-			// whose name filtered away to nothing still has to be one holder.
+			// Never an empty row: a holder whose name filtered away to nothing
+			// still has to be one row, or a surface drawing the sample would
+			// show fewer than it has been told there are.
 			who = "something on this machine"
 		}
 		out = append(out, IdleHold{Who: who, Why: attn.Line(b.Why)})

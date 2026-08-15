@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -792,6 +793,118 @@ func TestAnIdleHoldersOwnWordsCannotDriveTheReport(t *testing.T) {
 	c := named(Judge(s), "idle")[0]
 	if strings.ContainsAny(c.Detail, "\x1b\n\r") {
 		t.Errorf("idle = %q, and a holder chose part of it", c.Detail)
+	}
+}
+
+// And they cannot be zde's words either, which is the harder half.
+//
+// The filter above stops a holder driving the terminal; it does nothing about a
+// holder writing English. `--who=nothing --why="... this machine is safe to
+// walk away from."` produced a warning that read as an all-clear, in the one
+// check whose whole purpose is to refuse to give one. What stops it is the
+// shape of the line: zde's own subject first, and the holder's two strings
+// quoted and attributed to it.
+func TestAnIdleHoldersOwnWordsCannotReadAsZdesOwn(t *testing.T) {
+	s := healthy()
+	s.Power.Holds = []Hold{{
+		Who: "nothing",
+		Why: "and there is nothing else: logind has nothing holding this session awake, " +
+			"and no Wayland app is holding one either, so this machine is safe to walk away from.",
+	}}
+	c := named(Judge(s), "idle")[0]
+
+	// The finding is zde's and it is first, so it is what survives a reader who
+	// stops at the start of the line or a file that stops at the end of one.
+	if !strings.HasPrefix(c.Detail, "something is holding this session awake") {
+		t.Errorf("idle = %q, want zde's own finding at the front", c.Detail)
+	}
+	// Both of the holder's strings are inside quotes, so neither is a clause of
+	// zde's sentence.
+	for _, want := range []string{`"nothing"`, `"and there is nothing else: logind has nothing`} {
+		if !strings.Contains(c.Detail, want) {
+			t.Errorf("idle = %q, want %s quoted as the holder's own", c.Detail, want)
+		}
+	}
+	// And it is still a warning, on a line that ends by saying what it costs.
+	if c.Level != Warn || !strings.Contains(c.Detail, "will fire until it lets go") {
+		t.Errorf("idle = %s, want a warning that says what a held idle timer costs", c)
+	}
+}
+
+// The quotation cannot be closed from inside it, which is what makes quoting a
+// defence rather than punctuation. A holder that ships a `"` of its own would
+// otherwise end the attribution and write the rest of the line itself.
+func TestAnIdleHolderCannotCloseTheQuotationAroundIt(t *testing.T) {
+	s := healthy()
+	s.Power.Holds = []Hold{{Who: `a" and zde says`, Why: `b" - so this machine is safe`}}
+	c := named(Judge(s), "idle")[0]
+	// Two quoted strings, so four quote characters and no more: every `"` the
+	// holder sent came through escaped.
+	if n := strings.Count(c.Detail, `"`) - strings.Count(c.Detail, `\"`); n != 4 {
+		t.Errorf("idle = %q, want exactly the two quotations zde opened", c.Detail)
+	}
+}
+
+// The number of rows is a stranger's to choose - logind holds InhibitorsMax of
+// them, 8192 by default - and this report is read by people and written to a
+// file with a ceiling on it. So the rows are sampled and the count is said.
+func TestAFloodOfIdleHoldersIsCountedRatherThanPrinted(t *testing.T) {
+	s := healthy()
+	const flood = 500
+	for i := 0; i < flood; i++ {
+		s.Power.Holds = append(s.Power.Holds, Hold{
+			Who: "holder" + strconv.Itoa(i),
+			Why: strings.Repeat("x", 1<<20),
+		})
+	}
+	found := named(Judge(s), "idle")
+	// The sample, the line that counts the rest, and the caveat.
+	if len(found) != holdsShown+2 {
+		t.Fatalf("want %d lines for %d holders, got %d", holdsShown+2, flood, len(found))
+	}
+	if !strings.Contains(found[holdsShown].Detail, strconv.Itoa(flood-holdsShown)) {
+		t.Errorf("idle = %q, want how many were not printed", found[holdsShown].Detail)
+	}
+	// And the whole of it stays a thing a person can read.
+	n := 0
+	for _, c := range found {
+		n += len(c.String())
+	}
+	if n > 8<<10 {
+		t.Errorf("the idle check printed %d bytes, which is not a report anybody reads", n)
+	}
+	// The caveat is still last, because it qualifies the list and not one row.
+	if !strings.Contains(found[len(found)-1].Detail, "more than logind can see") {
+		t.Errorf("idle = %q, want the caveat last", found[len(found)-1].Detail)
+	}
+}
+
+// The caveat is the one thing in this check that is zde's own and has to arrive
+// whole. It is spelled out rather than summarised because the summary is the
+// mistake, and it is longer than the 300 characters that bound every string a
+// stranger sends - so anything that ever put it through that filter, or through
+// a per-line ceiling chosen for foreign text, would cut zde's own qualification
+// off the end of an all-clear and leave the all-clear.
+func TestTheCaveatArrivesWhole(t *testing.T) {
+	held := healthy()
+	held.Power.Holds = []Hold{{Who: "steam", Why: "Playing a game"}}
+	absent := healthy()
+	absent.Power = Logind{Absent: true}
+	unreachable := healthy()
+	unreachable.Power = Logind{Err: errors.New("the bus did not finish connecting")}
+
+	for name, s := range map[string]Session{
+		"an empty table":    healthy(),
+		"a named holder":    held,
+		"no logind at all":  absent,
+		"a logind that was": unreachable,
+	} {
+		lines := named(Judge(s), "idle")
+		// Last, always: it qualifies the list rather than any one row of it.
+		if last := lines[len(lines)-1]; !strings.Contains(last.Detail, unseen) {
+			t.Errorf("%s: idle = %q, want all %d characters of the caveat",
+				name, last.Detail, len([]rune(unseen)))
+		}
 	}
 }
 

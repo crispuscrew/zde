@@ -3,6 +3,7 @@ package zded
 import (
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -118,6 +119,61 @@ func TestAHolderWithNoPrintableNameIsStillCounted(t *testing.T) {
 	}
 	if got.Holds[0].Who == "" {
 		t.Error("a holder reached the bar with no name to draw")
+	}
+}
+
+// How many rows there are is a local account's to choose: `systemd-inhibit
+// --what=idle` takes an inhibitor from anybody, and logind will hold
+// InhibitorsMax of them, which is 8192 by default. This reply goes down the
+// shell's socket every five seconds, so an unbounded one is megabytes of
+// somebody else's prose on a clock.
+//
+// The count is what may not be bounded with it. A surface cannot recover "there
+// are 200" from a list of six, and the count is the one thing the strip draws.
+func TestAFloodOfIdleHoldersIsSampledAndStillCountedInFull(t *testing.T) {
+	s, l, _ := powerServer(t)
+	const flood = 200
+	for i := 0; i < flood; i++ {
+		l.state.Blocks = append(l.state.Blocks, power.Block{
+			What: "idle",
+			Who:  "holder" + strconv.Itoa(i),
+			Why:  strings.Repeat("x", 1<<20),
+		})
+	}
+
+	got := idleOf(t, s)
+	if got.Count != flood {
+		t.Errorf("count = %d, want all %d of them", got.Count, flood)
+	}
+	if len(got.Holds) != holdsMax {
+		t.Fatalf("holds = %d rows, want the sample of %d", len(got.Holds), holdsMax)
+	}
+	// In logind's own order, because no rule for choosing among them could be
+	// one somebody could not aim.
+	if got.Holds[0].Who != "holder0" {
+		t.Errorf("holds[0] = %q, want the first logind named", got.Holds[0].Who)
+	}
+	// And the whole answer stays small enough to send on a five-second clock.
+	wire := s.Dispatch(Request{Method: "system.idle"}).Ok
+	if len(wire) > 32<<10 {
+		t.Errorf("system.idle answered %d bytes, which is not a thing to send every five seconds", len(wire))
+	}
+}
+
+// The count is the number of holders and not the number of rows sent, on a
+// machine with fewer holders than the bound as well: a surface reading `count`
+// has to get the same answer it used to get from the length of the list.
+func TestTheIdleCountIsTheHolderCount(t *testing.T) {
+	s, l, _ := powerServer(t)
+	l.state = power.State{Blocks: []power.Block{
+		{What: "sleep", Who: "chromium", Why: "Playing audio"},
+		{What: "idle", Who: "steam", Why: "Playing a game"},
+		{What: "idle:sleep", Who: "backup", Why: "Copying"},
+	}}
+
+	got := idleOf(t, s)
+	if got.Count != 2 || len(got.Holds) != 2 {
+		t.Errorf("count = %d over %d rows, want 2 of each: the idle ones", got.Count, len(got.Holds))
 	}
 }
 

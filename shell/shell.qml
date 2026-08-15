@@ -988,7 +988,14 @@ ShellRoot {
                 idleState.known = false;
                 return;
             }
-            idleState.holds = (res.ok.holds ?? []).length;
+            // The count and not the length of the list beside it. zded sends at
+            // most a handful of rows, because the number of them is a local
+            // account's to choose and the reply goes down this socket every five
+            // seconds (internal/zded/idle.go, holdsMax) - so the list is a
+            // sample and `count` is how many there are. Reading the length would
+            // make the strip say "held 6" on a machine holding eight thousand,
+            // which is the widget inventing the one fact it reports.
+            idleState.holds = res.ok.count ?? 0;
             idleState.known = true;
         }
     }
