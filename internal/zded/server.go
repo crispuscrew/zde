@@ -141,6 +141,18 @@ type Status struct {
 	// is the one diagnostic a person runs saying the thing is fine. One shell is
 	// one; a number climbing towards the cap is somebody else's process.
 	Listeners int `json:"listeners"`
+	// Connections is how many connections are open, out of ConnectionsMax. The
+	// listener count answered the same question one connection at a time and
+	// only for the ones that had subscribed: a flood that opens sockets and
+	// sends nothing never reaches subs at all, so `zde status` said "shell no,
+	// 0 listening" on a daemon a second away from being killed by its own
+	// descriptor limit. Five is a session with a shell in it; a number near the
+	// cap is somebody else's program.
+	Connections int `json:"connections"`
+	// Dropped is how many connections have been closed to make room for a newer
+	// one since this daemon started (see admit). Zero on any session nothing is
+	// doing this to, and the only evidence left once a flood has stopped.
+	Dropped uint64 `json:"dropped"`
 	// Notifications says whether zded took the bus name. Without it every
 	// notification the session receives goes to whoever did, or nowhere.
 	Notifications bool `json:"notifications"`
@@ -313,7 +325,17 @@ type Server struct {
 	// is a ceiling on (ask.go, claimAsk). Separate from runs, which is a wait
 	// group and cannot be read: what Close needs is to know when they have all
 	// gone, and what a new run needs is to know how many there are.
-	asks    int
+	asks int
+	// conns is every connection this daemon is holding, which is the population
+	// ConnectionsMax is a ceiling on (see admit). Separate from subs, because
+	// the two questions are different: subs is who is being broadcast to, and
+	// this is who is costing a descriptor.
+	conns map[*sink]struct{}
+	// dropped counts the connections closed to make room for a newer one. Kept
+	// for the same reason unplaced is: it is the only evidence left after a
+	// flood has ended that a session's own connections were being churned, and
+	// the count is on `zde status` where somebody will meet it.
+	dropped uint64
 	subs    map[*sink]struct{}
 	waiting map[string]chan struct{}
 	tokens  uint64
@@ -544,6 +566,157 @@ func (s *Server) stopRuns() {
 // 4 MiB of buffer rather than 2856 MB.
 const requestMax = 1 << 20
 
+// ConnectionsMax is how many connections zded keeps open at once.
+//
+// requestMax bounds what one connection may spend and listenersMax bounds how
+// many of them may subscribe, so what a flood costs is now linear in
+// connections rather than in bytes - and nothing bounded the connections.
+// Measured on a running zded over its real socket, connections opened and then
+// held idle:
+//
+//	idle          rss=9 MB    fds=7
+//	10,000 open   rss=99 MB   fds=10,007
+//	100,000 open  rss=882 MB  fds=100,007
+//
+// About 9 KB and one descriptor each, opened at 65,000 a second by a program
+// that does nothing but dial, and none of the memory comes back: closing all
+// 100,000 left RSS at 905 MB.
+//
+// The end of that line is not a slow daemon, it is no daemon. accept4 returns
+// EMFILE at RLIMIT_NOFILE, which is 524,288 here; Serve returns that error, run
+// returns it, and the process exits and removes its own socket on the way out
+// (cmd/zded, run). Measured at a lowered limit, because reaching the real one
+// costs 4.6 GB: 262,138 connections in 4.3 seconds, then "accept4: too many
+// open files", then no zded and no socket file for anything to dial. That is
+// the session, from a program that opens sockets and sends nothing.
+//
+// The arithmetic, and it is set by what a session really opens:
+//
+//   - The shell holds four, one per Dialer in shell/shell.qml: the bar's poll,
+//     the event stream, the ask window's, and the network surface's. They are
+//     four on purpose - an answer arriving in pieces must not sit in front of
+//     the acknowledgement a picker is waiting for.
+//   - A shell being restarted holds eight for the moment before the daemon
+//     reads EOF on the old four, and every home-manager switch restarts it.
+//   - A `zde` verb dials, asks and exits, so a terminal costs one connection for
+//     the length of one call and a keybind costs the same. Half a dozen
+//     terminals and a leader key is another handful.
+//
+// So twenty is a session being worked hard, and the floor is not much below it
+// either: every listener is a connection too, and listenersMax allows 16.
+//
+// Two hundred and fifty-six is that with an order of magnitude of room, and at
+// the cap the daemon holds about 2.3 MB of connections and 263 descriptors -
+// against 105 MB and 10,007 for a flood a tenth the size of the one that ends
+// the daemon.
+//
+// Generous rather than tight, because the two ways of being wrong do not cost
+// the same. Too high and zded holds a couple of megabytes it did not need. Too
+// low and a connection somebody wanted is the one closed to make room, and the
+// connections a session wants are the shell's.
+const ConnectionsMax = 256
+
+// admit adds a connection and answers the one that has to go to make room for
+// it, or nil when there was room.
+//
+// Dropping the longest idle rather than refusing the newest, and that choice is
+// the whole of why a cap on connections is safe to have at all. Refusing means
+// the connection refused may be the shell's, dialling again after a switch
+// restarted zded - and a shell that cannot reconnect is the failure
+// fix/bar-redial exists to prevent, arrived at from the other end. Dropping
+// means a shell dialling into a full table always gets in, and a flood pays for
+// its own slots: every connection it opens past the cap takes out one of its
+// own, because its connections are the ones that have asked nothing.
+//
+// Idle is time since this connection last sent a request line (events.go,
+// sink.touch), and a connection that has never sent one is idle from the moment
+// it was accepted. That is what makes the flood the cheapest thing in the table
+// and the bar's two-second poll one of the dearest.
+//
+// A listener is not a candidate at all. Measured on its own traffic the event
+// stream is the quietest connection zded has - it says `events` once at login
+// and then reads for the rest of the session - so it is precisely what "longest
+// without asking anything" would find first, and it is the one connection whose
+// loss is the shell going dark. The exemption cannot be turned into a way of
+// filling the table, because listenersMax already bounds the listeners at 16
+// and a seventeenth is refused in a sentence (events.go, listen). That separate
+// cap is what makes this one affordable.
+//
+// Nor is a connection with a tier running on it. An ask.run takes as long as a
+// model takes, up to askTimeout of two minutes, and for all of it the
+// connection has nothing more to send and is idle by this measure - while a
+// person is sitting in front of the answer. Bounded the same way: asksMax
+// allows four across the whole daemon (ask.go, claimAsk).
+//
+// So at most twenty of 256 are exempt and there is always a candidate. The walk
+// does not lean on that arithmetic staying true: k has just been added, is not
+// listening and is not asking, so it is a candidate for its own slot, and a
+// table where everything else were exempt would drop the connection that has
+// just arrived rather than go over the cap.
+//
+// A linear walk rather than anything ordered. It is 256 entries under a lock a
+// keypress also takes, which is a few microseconds, and it is paid by the
+// goroutine of the connection that arrived - so under a flood, the flood is
+// what waits for it.
+//
+// The honest cost, and it is worth naming because it is what dropping buys the
+// guarantee with. A flood that keeps dialling rather than holding what it has
+// turns the table over in milliseconds, and then a connection that is waiting
+// for an answer - a `zde` verb inside ackWait, which is 200ms - can be the
+// longest idle one there is. It is dropped, and it is told so in a sentence it
+// can print. What no flood can do is what refusing would have let it do, which
+// is keep the shell out: the event stream is exempt, and a shell dialling again
+// is the newest connection there is and is never the one chosen.
+func (s *Server) admit(k *sink) *sink {
+	k.touch()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.conns == nil {
+		s.conns = map[*sink]struct{}{}
+	}
+	s.conns[k] = struct{}{}
+	if len(s.conns) <= ConnectionsMax {
+		return nil
+	}
+	var out *sink
+	var idle int64
+	for c := range s.conns {
+		if _, listening := s.subs[c]; listening {
+			continue
+		}
+		if c.asking.Load() {
+			continue
+		}
+		if t := c.asked.Load(); out == nil || t < idle {
+			out, idle = c, t
+		}
+	}
+	if out != nil {
+		delete(s.conns, out)
+		s.dropped++
+	}
+	return out
+}
+
+// forget takes a connection out of the table when its read loop ends. Deleting
+// one that has already gone - the connection admit dropped, which is the same
+// map entry - is what a delete of a missing key does, which is nothing.
+func (s *Server) forget(k *sink) {
+	s.mu.Lock()
+	delete(s.conns, k)
+	s.mu.Unlock()
+}
+
+// held is how many connections are open. For tests; `zde status` reads the
+// count under the same lock as the drop count, because the two are one
+// sentence (see status). Named for what it counts rather than what it counts
+// of, because Server.connections is already the network surface (net.go).
+func (s *Server) held() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.conns)
+}
+
 func (s *Server) handle(conn net.Conn) {
 	defer conn.Close()
 	if err := allowPeer(conn); err != nil {
@@ -562,6 +735,27 @@ func (s *Server) handle(conn net.Conn) {
 	// one place that finds out: the read ends when the peer closes, and nothing
 	// else on the daemon notices a tier whose asker has left.
 	defer k.end()
+	// And counted, because connections are the last thing about this socket that
+	// nothing bounded (see admit). Deferred before the count is taken so that a
+	// connection dropped for its own slot leaves the table on its way out too.
+	defer s.forget(k)
+	if out := s.admit(k); out != nil {
+		// Told what happened rather than just closed (events.go, sink.drop). The
+		// number is in the sentence because it is the fact that makes the rest
+		// of it make sense: a person who reads this wants to know whether zded
+		// is broken or busy, and 256 open connections says which.
+		out.drop(fmt.Sprintf(
+			"zded closed this connection to make room: it was holding %d, which is every one it keeps, and this was the one that had gone longest without asking anything. zded is running - dial again",
+			ConnectionsMax))
+		if out == k {
+			// The table was full of connections none of which could be dropped,
+			// so this one is. Unreachable at today's numbers - at most
+			// listenersMax plus asksMax are exempt, which is 20 of 256 - and
+			// handled rather than asserted, because the alternative if it ever
+			// stops being unreachable is a cap that silently is not one.
+			return
+		}
+	}
 
 	// A scanner rather than a reader, for the cap: bufio.Scanner is what takes
 	// a maximum, and it is the same mechanism and the same ceiling the journal
@@ -571,6 +765,12 @@ func (s *Server) handle(conn net.Conn) {
 	r := bufio.NewScanner(conn)
 	r.Buffer(make([]byte, 0, 4<<10), requestMax)
 	for r.Scan() {
+		// This connection is being used, which is what keeps it out of the way
+		// when something has to be dropped to make room (see admit). Recorded
+		// for anything that arrived, including a line that turns out to be
+		// nonsense: a client sending malformed requests is a client sending, and
+		// what this measures is whether anybody is there.
+		k.touch()
 		var req Request
 		// Valid until the next Scan, and json.Unmarshal copies what it keeps
 		// into the request's own strings, so nothing below outlives the buffer.
@@ -2174,6 +2374,13 @@ func (s *Server) status() Status {
 	}
 	st.Listeners = s.listeners()
 	st.Shell = st.Listeners > 0
+	// Under one lock with the drop count, because the two are one sentence:
+	// a number at the cap with a count beside it is a flood happening now, and
+	// a number a session's size with a count beside it is one that has ended.
+	s.mu.Lock()
+	st.Connections = len(s.conns)
+	st.Dropped = s.dropped
+	s.mu.Unlock()
 	st.Notifications = s.watcher() != nil
 	st.Mode = string(s.mode())
 	// Looked up per call rather than remembered from startup. PATH points at
