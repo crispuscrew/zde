@@ -558,7 +558,7 @@ func TestALaunchInFlightIsStoppedWithTheDaemon(t *testing.T) {
 	}
 	// Waited for on the fork rather than on the call, because a Close that raced
 	// ahead of exec would prove nothing about what a fork survives.
-	waitFor(t, func() bool { return len(runnerPids(t, pids)) == 2 })
+	waitFor(t, "the launch forking", func() bool { return len(runnerPids(t, pids)) == 2 })
 	up := runnerPids(t, pids)
 	if n := stillAlive(up); n != 2 {
 		t.Fatalf("the launch had %d of its 2 processes up before the daemon was closed", n)
@@ -654,7 +654,7 @@ func TestADeskAlreadyComingUpIsNotStartedAgain(t *testing.T) {
 		t.Errorf("%d desks are coming up, and there are %d", got, desks)
 	}
 	close(release)
-	waitFor(t, func() bool { return s.comingUp() == 0 })
+	waitFor(t, "the launches draining", func() bool { return s.comingUp() == 0 })
 	// And the map holds the desks coming up rather than every desk ever entered.
 	if got := s.comingUp(); got != 0 {
 		t.Errorf("%d desks are still marked as coming up after their launches finished", got)

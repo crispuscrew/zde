@@ -722,7 +722,7 @@ func TestNothingTheDaemonStartedOutlivesItBeingKilled(t *testing.T) {
 	// Both, written down by the processes themselves, so this is the test knowing
 	// there is something to outlive rather than racing exec.
 	pids := []int{tierPid(t, pidFile)}
-	waitFor(t, func() bool { return len(runnerPids(t, launched)) > 0 })
+	waitFor(t, "the launch starting", func() bool { return len(runnerPids(t, launched)) > 0 })
 	pids = append(pids, runnerPids(t, launched)[0])
 	for _, p := range pids {
 		if syscall.Kill(p, 0) != nil {

@@ -510,7 +510,7 @@ func TestADeskWhoseAppsZincDefinesIsNotWarnedAboutForHavingNoZdeApps(t *testing.
 		t.Fatal(err)
 	}
 
-	d := probeDesks(manifest.DefaultDir())
+	d := probeDesks(manifest.DefaultDir(), owner)
 	if d.Err != nil {
 		t.Fatalf("probeDesks: %v", d.Err)
 	}
@@ -546,7 +546,7 @@ func TestWithAZcrTheLineCarriesZcrsOwnRefusal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	d := probeDesks(manifest.DefaultDir())
+	d := probeDesks(manifest.DefaultDir(), owner)
 	if len(d.Unrunnable) != 1 || d.Unrunnable[0].App != "absent-app" {
 		t.Fatalf("unrunnable = %+v, want the one name zinc has no app for", d.Unrunnable)
 	}
@@ -584,7 +584,7 @@ func TestAZcrThatWillNotAnswerIsNotWrittenDownAsABrokenDesk(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	d := probeDesks(manifest.DefaultDir())
+	d := probeDesks(manifest.DefaultDir(), owner)
 	if d.Err == nil {
 		t.Fatalf("a zcr that answers nothing = %+v, want a check that says it could not be made", d)
 	}
@@ -659,7 +659,7 @@ func TestWithNoZcrTheDesksAreJudgedByZdeApps(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	d := probeDesks(manifest.DefaultDir())
+	d := probeDesks(manifest.DefaultDir(), owner)
 	if d.Err != nil {
 		t.Fatalf("probeDesks: %v", d.Err)
 	}
@@ -684,7 +684,7 @@ func TestNoDesksAtAllIsNothingToReport(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
 	noZcr(t)
-	d := probeDesks(manifest.DefaultDir())
+	d := probeDesks(manifest.DefaultDir(), owner)
 	if d.Err != nil || len(d.Unrunnable) != 0 {
 		t.Errorf("a machine with no desks = %+v, want nothing to say", d)
 	}
