@@ -184,6 +184,18 @@ func writeRules(path, content string) error {
 		// the difference between this and a desk manifest, which is somebody's
 		// own file and keeps whatever mode they gave it (internal/manifest,
 		// Save).
+		//
+		// On the path and not on a descriptor, which means it chmods through a
+		// symlink - the read above deliberately followed one to get here. Left
+		// that way, with the reasoning written down rather than the fix, because
+		// the reach of it is nothing. os.Chmod refuses a file this account does
+		// not own, so the far end can only ever be one of ours; the mode only
+		// ever narrows, 0644 to 0600; and getting there at all means arranging a
+		// file whose bytes are already byte-for-byte the rules zde would write,
+		// which is a thing only somebody who can write this path could do, and
+		// they can write this path. Every other route through this function
+		// replaces the link by rename rather than following it, so this is the
+		// one case and it is a tightening of your own file.
 		return os.Chmod(path, 0o600)
 	}
 	// The directory as well, because nothing else makes it. niri's config
