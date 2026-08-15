@@ -205,6 +205,21 @@ blocks 0.2:
   is not one you can use - so what is left here is folding bluetooth into that
   surface, the lid and the battery thresholds, and the rest of what a laptop
   is.
+- **Bringing a workspace home when niri cannot.** Re-placing workspaces on
+  their home monitor after a dock is niri's, not zde's: it records the output
+  each workspace was opened on and returns it there when that output comes
+  back (`Layout::add_output`, niri 26.04). zde deliberately does not do this
+  itself. The action exists - `MoveWorkspaceToMonitor { output, reference }` -
+  but performing it *overwrites* niri's record with zde's, and zde's record is
+  the workspace name, which is the weaker of the two: it is the one an unplug
+  can corrupt, and niri's surviving copy is what puts things right when it
+  does. What is genuinely uncovered is the case niri's record cannot reach,
+  because it does not outlive a compositor restart: a workspace whose monitor
+  was away when niri started sits on the survivor under a name that still says
+  home, and nothing will move it when the monitor returns. `desk.Map.Displaced`
+  names exactly that set and has no caller yet; surfacing it in `zde status` is
+  the honest first step, and moving anything is a decision to take after a
+  laptop has been lived with.
 
 Delivery ([`delivery.md`](delivery.md)): the flake skeleton exists; the home
 module grows with each 0.1 component; ISO and `install.sh` after 0.1 is

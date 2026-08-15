@@ -258,9 +258,29 @@ desk model is defined in terms of monitors (docs/model.md, invariant 1).
   manifest named, which matters for the next item.
 - **Undock.** A desk that named a monitor which is no longer there: does the
   session survive, does `zde workspace next` still walk something sensible, and
-  does `zde desk switch` say something useful rather than nothing?
+  does `zde desk switch` say something useful rather than nothing? A switch
+  should bring the surviving screen up **once**, on the workspace it was left
+  on: two of the desk's workspaces are now sitting on one screen, and the one
+  that gets focused last is the one you end up looking at.
+- **Close the lid with an external attached**, which is the same shape and the
+  one that actually happens. niri switches the laptop panel off by itself and
+  parks its workspaces on the external, but the panel keeps its connector and
+  stays in `niri msg outputs` with `"logical": null`. zde reads that field and
+  nothing else to decide what is a screen, so the names must **not** change:
+  `niri msg workspaces` should still show `<desk>.eDP-1.<slot>` sitting on
+  `DP-1`. If the names have been rewritten to `DP-1`, the record of where those
+  workspaces belong is gone, and a `zde desk snapshot` taken now writes the
+  wrong monitor into the manifest for good.
 - **Redock**, and plug the screen into a different port. niri's output names
   are stable per connector, so a manifest naming `DP-1` is looking at a cable.
+  What brings a workspace back to the monitor it belongs to is niri, not zde
+  and not the manifest: niri records the output each workspace was opened on
+  and returns it there when that output comes back (`Layout::add_output`).
+  zde's whole part is to leave the name saying home while the monitor is away.
+  The case niri cannot cover is a niri that restarted while the monitor was
+  away, since its record does not outlive the session - those workspaces stay
+  on the survivor with a truthful name, and nothing moves them
+  ([`roadmap.md`](roadmap.md), 0.4).
 
 ## 5. Notifications from real apps
 
