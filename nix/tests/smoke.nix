@@ -1909,6 +1909,15 @@ pkgs.testers.runNixOSTest {
         # one yet - so niri accepting a second binds block is load-bearing
         # rather than incidental, and the niri validate below is what keeps it
         # that way.
+        #
+        # This block also goes through nix/niri-local.nix on the way in, which
+        # parses it at build time - and that does not make the check below
+        # redundant. Two different claims: that one is that this text is KDL,
+        # this one is that home-manager put it where niri looks, that the
+        # includes resolve at the real paths, and that the file zded writes
+        # beside it is there and writable. A synthetic tree in a build sandbox
+        # cannot answer any of those; a booted machine is the only thing that
+        # can.
         niri.extraConfig = ''
           binds {
               Mod+Return { spawn "foot"; }

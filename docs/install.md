@@ -139,6 +139,13 @@ While you are in those two files:
   zde.niri.xkb.options = "grp:caps_toggle";
   ```
 
+  Those two and `zde.niri.extraConfig` are the same file in the end
+  (`~/.config/niri/local.kdl`), and a rebuild runs niri's own parser over it
+  before it will install it. So a mistake in there is a build that stops and
+  prints the line, which is the point: niri treats a config it cannot parse as
+  a warning and carries on with its own defaults, and a session running niri's
+  defaults has none of zde's keys in it.
+
 ## 3. Install
 
 ```sh
@@ -257,6 +264,14 @@ manifest edited while the session runs wants a reconcile before the pin bites.
 
 It will. In descending order of how much it hurts:
 
+- **No key does anything.** Not one bind, and `Mod+Return` opens nothing either.
+  That is niri running its own compiled-in config rather than zde's: it treats a
+  config it cannot parse as a warning and carries on, and its default terminal
+  key spawns an `alacritty` this system does not install. `niri validate -c
+  ~/.config/niri/config.kdl` from a text console (`Ctrl+Alt+F2`) names the file
+  and the line. Of the four files there, three are built and were parsed before
+  they were installed; the one that was not is `dynamic.kdl`, which is the one
+  anything writes to by hand. Empty it and log back in.
 - **A key did nothing.** On a machine you have just installed, the likeliest one
   is `Mod+e`: nothing is configured to be an editor until you say so (section
   4). `zde app list` settles it in one line, since it prints what this machine

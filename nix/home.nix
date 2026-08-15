@@ -25,6 +25,34 @@ let
   # thing that gets copied around and then wondered about.
   layoutSet = cfg.niri.xkb.layout != "" || cfg.niri.xkb.options != "";
 
+  # local.kdl, in full: the xkb block this host asked for and whatever else it
+  # wrote. Named here rather than written inline below because it is handed to
+  # a parser before it is handed to home-manager (nix/niri-local.nix).
+  localText = ''
+    // Generated from zde.niri.xkb and zde.niri.extraConfig. Edit those,
+    // not this.
+    ${lib.optionalString layoutSet ''
+      input {
+          keyboard {
+              xkb {
+                  ${lib.optionalString (cfg.niri.xkb.layout != "") ''layout "${cfg.niri.xkb.layout}"''}
+                  ${lib.optionalString (cfg.niri.xkb.options != "") ''options "${cfg.niri.xkb.options}"''}
+              }
+          }
+      }
+    ''}
+    ${cfg.niri.extraConfig}
+  '';
+
+  # And the same text after niri's parser has agreed it is a config. The build
+  # fails here rather than the login: a config niri refuses is a warning it
+  # carries on past, into its own compiled-in defaults, which is a session with
+  # none of zde's binds in it.
+  localKdl = pkgs.callPackage ./niri-local.nix {
+    inherit zdeConfig;
+    text = localText;
+  };
+
   # What dynamic.kdl says before zded has written anything into it. niri treats
   # a missing include as a fatal error, so this file has to exist from the
   # first boot, and it cannot be a store symlink because zded writes it.
@@ -36,6 +64,14 @@ let
     // the one part of the niri config that is not generated, because it has to
     // change without a rebuild. Anything you want to keep belongs in
     // zde.niri.extraConfig, which lands in local.kdl beside this.
+    //
+    // Which is also where anything you want *checked* belongs. A rebuild runs
+    // niri's parser over local.kdl before installing it; nothing can do that
+    // for this file, because the whole point of it is that it changes while
+    // the session runs. And niri treats a config it cannot parse as a warning
+    // and carries on with its own defaults - a session where no key works,
+    // including the one that opens a terminal to find out why. So after
+    // editing this by hand: niri validate -c ~/.config/niri/config.kdl
   '';
 in
 {
@@ -218,6 +254,17 @@ in
         included after the generated binds. This is where outputs, an xkb
         layout, or a window rule go: everything zde does not fix, without
         forking the config it does.
+
+        It is KDL and not Nix, and the difference bites in one place: a node's
+        children go on their own lines. `output "eDP-1" { scale 2 }` is not a
+        thing niri parses.
+
+        A rebuild runs niri's own parser over the whole of local.kdl before it
+        will install it (nix/niri-local.nix), so a mistake here costs a build
+        error with the line printed. That is worth having because the
+        alternative is silent: niri treats a config it cannot parse as a
+        warning and comes up on its compiled-in defaults, which is a session
+        with none of these binds and no key that opens a terminal.
       '';
     };
   };
@@ -312,23 +359,13 @@ in
         source = "${zdeConfig}/binds.kdl";
         force = true;
       };
-      # The host's own half, still declarative.
+      # The host's own half, still declarative - and the only one of the three
+      # whose text this machine wrote, so it is the only one that has to be
+      # parsed here. A source rather than text: what lands is the derivation
+      # that ran niri over it, so there is no way to install this file without
+      # having checked it.
       "niri/local.kdl" = {
-        text = ''
-          // Generated from zde.niri.xkb and zde.niri.extraConfig. Edit those,
-          // not this.
-          ${lib.optionalString layoutSet ''
-            input {
-                keyboard {
-                    xkb {
-                        ${lib.optionalString (cfg.niri.xkb.layout != "") ''layout "${cfg.niri.xkb.layout}"''}
-                        ${lib.optionalString (cfg.niri.xkb.options != "") ''options "${cfg.niri.xkb.options}"''}
-                    }
-                }
-            }
-          ''}
-          ${cfg.niri.extraConfig}
-        '';
+        source = localKdl;
         force = true;
       };
       # The cheatsheet the help widget (system.help) will show when there is

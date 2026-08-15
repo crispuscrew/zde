@@ -27,6 +27,12 @@ runCommand "zde-config" { nativeBuildInputs = [ niri ]; } ''
   # shape of a key name; this is what knows that "Mod+banana" is not one, that
   # every emitted action resolves, and that the includes resolve at all.
   # Without it the first thing to find out is the compositor, at a login.
+  #
+  # local.kdl is empty here because this derivation is shared - the flake
+  # package and every host build the same one - so it cannot know what any
+  # particular machine wrote in zde.niri.extraConfig. That text gets the same
+  # parser one derivation later, in nix/niri-local.nix, which the home module
+  # sources local.kdl from.
   mkdir -p check
   ln -s "$out/niri-config.kdl" check/config.kdl
   ln -s "$out/binds.kdl" check/binds.kdl
