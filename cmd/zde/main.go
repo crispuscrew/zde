@@ -228,9 +228,14 @@ func launch(name string) error {
 // Mod+slash spawns a terminal on this (zde.apps.help). Printing to a stderr no
 // keypress has is what it did before, which on a desktop where most keys are
 // still silent is the worst key to have chosen for that.
+//
+// Through keymap.ReadText, for the reason the palette reads it that way: this
+// runs on `zde keys` and on Mod+slash, and a plain open of a FIFO at that path
+// waits in the kernel for a writer that never comes - a key that hangs a
+// terminal rather than printing the keymap.
 func keys() error {
 	path := keymap.TextPath()
-	data, err := os.ReadFile(path)
+	data, err := keymap.ReadText()
 	if os.IsNotExist(err) {
 		return fmt.Errorf("no keymap at %s: layer 1 installs it, so this is a zde "+
 			"whose home-manager module has not been activated", path)

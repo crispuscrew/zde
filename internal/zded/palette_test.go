@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // A machine's cheatsheet, where the palette looks for the keys: the file the
@@ -246,6 +248,58 @@ func TestPaletteWorksWithNoCheatsheet(t *testing.T) {
 	}
 	if got := row(t, p, "desk.switcher"); got.Key != "" || !got.Live {
 		t.Errorf("desk.switcher = %+v, want an action with no key it can name", got)
+	}
+}
+
+// A FIFO where the cheatsheet should be costs the keys and nothing else.
+//
+// This is the shape the bug had rather than a variation on the one above. A
+// missing file was already handled; a FIFO is not a missing file. Opening one
+// for reading waits in the kernel for a writer that never comes, and both of the
+// calls that read this file - palette.list and palette.run - are served on the
+// connection's own goroutine, so the palette key never opened and every attempt
+// left a goroutine and a descriptor parked for the life of the daemon. Closing
+// the socket cannot take those back: nothing wakes a goroutine blocked in a
+// read.
+//
+// So the assertion is two things at once, and both matter. It answers, within a
+// deadline rather than eventually. And it answers with every action, because a
+// palette that refused would be the surface somebody reaches for when the rest
+// of the session is unwell refusing them as well.
+func TestAFifoAtTheCheatsheetCostsThePaletteItsKeysAndNothingElse(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "zde"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(filepath.Join(dir, "zde", "keymap.txt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	s, _, _ := paletteServer(t)
+
+	done := make(chan Response, 1)
+	go func() { done <- s.Dispatch(Request{Method: "palette.list"}) }()
+	select {
+	case resp := <-done:
+		if resp.Error != "" {
+			t.Fatalf("palette.list: %s", resp.Error)
+		}
+		var p Palette
+		if err := json.Unmarshal(resp.Ok, &p); err != nil {
+			t.Fatal(err)
+		}
+		if len(p.Actions) < 20 {
+			t.Fatalf("the palette has %d rows past a FIFO, want every action", len(p.Actions))
+		}
+		for _, a := range p.Actions {
+			if a.Key != "" {
+				t.Errorf("%s claims key %q off a file nothing could read", a.Name, a.Key)
+			}
+		}
+	case <-time.After(10 * time.Second):
+		// Leaked on purpose: the goroutine is blocked in the kernel with
+		// nothing to unblock it, which is the whole finding.
+		t.Fatal("palette.list did not answer in 10s, which is the palette key that never opened")
 	}
 }
 
