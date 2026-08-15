@@ -300,7 +300,13 @@ func socketPath(t *testing.T) string {
 
 func serve(t *testing.T, s *Server) string {
 	t.Helper()
-	path := socketPath(t)
+	return serveAt(t, s, socketPath(t))
+}
+
+// serveAt is serve at a path the caller chose, for the one test that cares
+// which directory the socket lands in.
+func serveAt(t *testing.T, s *Server, path string) string {
+	t.Helper()
 	if err := s.Listen(path); err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
@@ -477,9 +483,18 @@ func TestGarbageRequest(t *testing.T) {
 
 // The socket is the zde boundary, so it is not world-reachable even before the
 // peer check runs.
+//
+// The directory has to be one zded makes, and that is the whole reason this
+// test does not use the helper. socketPath hands back a name inside an
+// os.MkdirTemp directory, which Go creates 0700 - so Listen's MkdirAll found
+// the directory already there and created nothing, and what the assertion
+// measured was the mode of Go's temp directory. It passed with the 0700 in
+// Listen changed to 0755, and would have gone on passing after somebody
+// widened it. A path two levels down is a directory Listen has to make itself,
+// which is what a fresh XDG_RUNTIME_DIR looks like on a real login.
 func TestSocketIsPrivate(t *testing.T) {
 	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
-	path := serve(t, s)
+	path := serveAt(t, s, filepath.Join(t.TempDir(), "zde", "zded.sock"))
 
 	fi, err := os.Stat(path)
 	if err != nil {

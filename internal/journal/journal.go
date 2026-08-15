@@ -297,12 +297,10 @@ func Open(path string) (*Journal, error) {
 	if err := j.replay(); err != nil {
 		return nil, err
 	}
-	// O_NOFOLLOW refuses a symlink sitting at journal.jsonl itself, with ELOOP,
-	// rather than opening whatever it points at. It constrains the last
-	// component and nothing above it, so a symlinked ~/.local/state, or an
-	// XDG_STATE_HOME on another disk, still works - which is the only symlink a
-	// real setup puts anywhere near this path.
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY|syscall.O_NOFOLLOW, journalMode)
+	// The second refusal of a symlink at the name, after replay's (see
+	// openForAppend). What it catches that replay does not is a name that became
+	// a link in between the two.
+	f, err := openForAppend(path)
 	if err != nil {
 		return nil, err
 	}
@@ -338,6 +336,27 @@ func Open(path string) (*Journal, error) {
 		}
 	}
 	return j, nil
+}
+
+// openForAppend opens the journal to be written to, refusing a symlink at the
+// name.
+//
+// O_NOFOLLOW answers a symlink sitting at journal.jsonl itself with ELOOP,
+// rather than opening whatever it points at. It constrains the last component
+// and nothing above it, so a symlinked ~/.local/state, or an XDG_STATE_HOME on
+// another disk, still works - which is the only symlink a real setup puts
+// anywhere near this path.
+//
+// A function rather than the same open written out at each of the two places
+// that need it, which is how it was. Neither copy was reachable with a symlink
+// at the name:
+// replay refuses one before Open gets here, and a compaction has just renamed a
+// regular file over the name, so the flag could be deleted from either copy
+// with the whole suite green. That is exactly why it wants one home - depth
+// nothing exercises is depth that rots, and one copy is a thing a test can call
+// (journal_test.go, TestTheWriteSideOfTheJournalRefusesASymlinkOfItsOwnAccord).
+func openForAppend(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY|syscall.O_NOFOLLOW, journalMode)
 }
 
 // tighten makes an open journal 0600 and decides what a refusal means.
@@ -822,12 +841,12 @@ func (j *Journal) compactLocked() error {
 	if j.file != nil {
 		j.file.Close()
 	}
-	// O_NOFOLLOW here too, for the reason Open has it. Nothing legitimate can
-	// have put a symlink at the name in the moment since the rename, but a
-	// second way to open the journal that follows one is a second way in, and
-	// an asymmetry a reader would have to work out is not worth the word it
-	// saves.
-	f, err := os.OpenFile(j.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY|syscall.O_NOFOLLOW, journalMode)
+	// Through openForAppend, for the reason Open goes through it. Nothing
+	// legitimate can have put a symlink at the name in the moment since the
+	// rename, but a second way to open the journal that follows one is a second
+	// way in, and an asymmetry a reader would have to work out is not worth the
+	// word it saves.
+	f, err := openForAppend(j.path)
 	if err != nil {
 		return err
 	}
