@@ -6,12 +6,11 @@ package keymap
 
 import (
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
-
-	"github.com/crispuscrew/zde/internal/plainfile"
 )
 
 type sourceFile struct {
@@ -35,27 +34,34 @@ type Keymap struct {
 	Binds []Bind
 }
 
-// sourceMax bounds the keymap source.
-//
-// common/keymap/keymap.yaml is two lines a bind and the tree has under two
-// hundred binds: 12 KB today. 1 MiB is eighty times that, and it is here for
-// the reason every other bound in this tree is - so that a path somebody
-// pointed -in at by mistake is a message rather than a YAML parser given a
-// filesystem.
-const sourceMax = 1 << 20
-
 // Load reads the keymap source.
 //
-// Through internal/plainfile, which is what the rest of the tree's file reads
-// take (internal/apps, internal/manifest, internal/journal) and what this one
-// was left out of. -in is a path off a command line, so what is at it is
-// whatever somebody put there, and "something else" is not usually another
-// file: a plain open of a FIFO does not fail, it waits for a writer that never
-// arrives, and this generator runs inside a nix build with nothing watching it.
-// Symlinks at the last component are followed, because in a build that path is
-// a store symlink about as often as it is not.
+// A plain read, and deliberately not internal/plainfile, which is the other
+// read in this package (see ReadText). The two look alike and are not, so they
+// are decided separately:
+//
+//   - This one is the generator's input at build time. zde-keymap is run by one
+//     derivation, on `-in ${../common/keymap/keymap.yaml}` (nix/zde-config.nix),
+//     which is a store path the derivation names. There is no attacker to be had
+//     there: anybody who could change that file could change the derivation, and
+//     the derivation is what decides which compiler builds this binary at all.
+//     Nothing here outlives the build, and nothing reads a session's files.
+//   - ReadText's is a live machine's config, read by a running daemon on every
+//     palette call and by `zde keys`. That one is a real plainfile customer and
+//     keeps it.
+//
+// And the check cannot work where this one has to run, which is what settles it
+// rather than the exposure argument alone. Nix's Linux sandbox puts the builder
+// in a user namespace with a single uid mapping, build user to sandbox-uid,
+// 1000 by default. Host uid 0 is not in that map, so every root-owned store
+// path reads inside the builder as the overflow uid, 65534. That is not a
+// property of what plainfile trusts: the old rule of "ours or root's" refuses
+// 65534 as well. From inside a builder the store does not look like the store,
+// so "came out of the store" is not a thing ownership can recognise there - and
+// a check that refuses the only environment this function runs in, to defend
+// against nobody, is a check that costs and buys nothing.
 func Load(path string) (*Keymap, error) {
-	raw, err := plainfile.Read(path, sourceMax)
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}

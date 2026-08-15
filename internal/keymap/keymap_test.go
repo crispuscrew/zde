@@ -617,22 +617,52 @@ func TestSomethingFarTooBigIsNotACheatsheet(t *testing.T) {
 	}
 }
 
-// The generator's own source takes the same care, for the same reason: -in is a
-// path off a command line, this runs inside a nix build with nothing watching
-// it, and a FIFO there is a build that never ends rather than one that fails.
-func TestAFifoWhereTheKeymapSourceShouldBeIsRefused(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "keymap.yaml")
-	if err := syscall.Mkfifo(path, 0o600); err != nil {
-		t.Fatal(err)
+// The generator's source is read plainly, and a store path is what it reads.
+//
+// The opposite of the test above, on purpose, because the two reads in this
+// package are not the same read (see Load). This one is the input of a
+// build-time tool, named by the derivation that runs it, and it must not be
+// subject to an ownership check: inside nix's sandbox the builder is in a user
+// namespace with a single uid mapping, so every root-owned store path reads as
+// the overflow uid and every one of them would be refused. That is what took
+// the flake red - `zde-keymap: ...keymap.yaml belongs to another account` - and
+// it is not a thing a test on this machine can see, because a check run outside
+// a sandbox reads the store's real uids.
+//
+// So what is pinned here is the decision rather than the mechanism: this call
+// does not consult ownership, which is checkable by handing it a file that
+// belongs to somebody else. /etc/os-release is root's on every machine this
+// builds on, and it is not YAML - so the read reaching the parser is the whole
+// assertion, and the parse failing afterwards is the proof it got that far.
+func TestTheKeymapSourceIsReadWithoutAskingWhoOwnsIt(t *testing.T) {
+	const foreign = "/etc/os-release"
+	fi, err := os.Stat(foreign)
+	if err != nil {
+		t.Skipf("no %s on this machine to read as somebody else's file", foreign)
 	}
-	done := make(chan error, 1)
-	go func() { _, err := Load(path); done <- err }()
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("read a FIFO as the keymap source")
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("Load did not return in 10s: a nix build would have hung here")
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok || int(st.Uid) == os.Getuid() {
+		t.Skipf("%s belongs to this account here, so it cannot stand in for a store path", foreign)
+	}
+	_, err = Load(foreign)
+	if err == nil {
+		t.Fatalf("%s parsed as a keymap, so this test proves nothing", foreign)
+	}
+	// Anchored on the tail every ownership refusal in internal/plainfile shares,
+	// rather than on one of their two wordings. Which one comes back depends on
+	// where the test runs - in a builder a store path reads as the overflow uid
+	// and gets "belongs to another account", while on this machine the same file
+	// reads as root's and gets the other one - and a test that named a single
+	// wording passed on the very code that took the flake red.
+	if strings.Contains(err.Error(), "not zde's to act on") {
+		t.Errorf("Load = %v, and a store path inside a nix builder is refused exactly like this", err)
+	}
+	// And positively: the error is the parser's, which is only reachable once
+	// the bytes have been read.
+	if !strings.Contains(err.Error(), "keymap:") {
+		t.Errorf("Load = %v, want the parser's complaint, which means the read got that far", err)
+	}
+	if !strings.Contains(err.Error(), foreign) {
+		t.Errorf("Load = %v, want the path in it: the generator runs on a path the caller chose", err)
 	}
 }

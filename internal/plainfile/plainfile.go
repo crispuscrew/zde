@@ -47,6 +47,17 @@
 //
 // What it is: the thing that stops a path zde reads from being something that
 // is not a file, and the thing that stops it being somebody else's.
+//
+// One place it must not be used, written down here because it costs a red CI
+// run to find out and nothing on a developer's machine shows it. Inside a nix
+// build sandbox the ownership check below cannot be satisfied by a store path at
+// all. The builder runs in a user namespace with a single uid mapping - the
+// build user to sandbox-uid, 1000 by default - and host uid 0 is not in that
+// map, so every root-owned file, which is every path in the store, reads inside
+// the builder as the overflow uid, 65534. Neither half of trusted can match
+// that, and this is not about how narrow the rule is: "ours or root's" refused
+// it too. So a build-time tool reading its own input reads it plainly
+// (internal/keymap, Load), and this package is for the session.
 package plainfile
 
 import (
