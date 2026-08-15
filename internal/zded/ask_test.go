@@ -614,8 +614,8 @@ func TestATierDoesNotOutliveTheDaemonThatStartedIt(t *testing.T) {
 	took := time.Since(start)
 	// The other half of this: a logout that waits on a model is its own bug, so
 	// whatever is added here has a ceiling.
-	if took > askStopWait {
-		t.Errorf("stopping the daemon took %v, above its own ceiling of %v", took, askStopWait)
+	if took > runStopWait {
+		t.Errorf("stopping the daemon took %v, above its own ceiling of %v", took, runStopWait)
 	}
 	// Directly, and not after a poll: Close waits for the run to end, and the run
 	// ends after the tier has been waited for. A test that polled would pass on a
