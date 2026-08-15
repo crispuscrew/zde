@@ -1947,6 +1947,48 @@ func TestStatusNamesTheManifestItCouldNotRead(t *testing.T) {
 		t.Error("the manifest that parses went with the one that does not")
 	}
 }
+
+// Both of the fields status answers with somebody else's words in them are one
+// row each, cleaned here where those words enter the daemon.
+//
+// A manifest is a file somebody edits by hand and a YAML parser answers it by
+// quoting the file back - `field <key> not found`, over as many lines as there
+// were mistakes, with an ESC in it if the file had one. niri's message is
+// whatever niri says. Every reader of these draws a row: a line under
+// "manifest" or after "compositor" in `zde status`, a failing check in doctor's
+// report, whatever the shell puts them on next. In a row a newline is a second
+// row with nothing in column one, which is a line no daemon printed.
+func TestStatusAnswersWithOneRowForEachThingItDidNotWrite(t *testing.T) {
+	desks := partialDesks{
+		good: map[string]*manifest.Desk{},
+		bad: []manifest.Problem{{
+			Path: "/desks/haven.yaml",
+			Err:  errors.New("manifest: yaml: unmarshal errors:\n  line 2: field \x1b[2Jmonitorz not found\n  line 9: no"),
+		}},
+	}
+	s := New("test", nil, &fakeCompositor{err: errors.New("niri: socket\x1b[2J gone\ncompositor connected")}, desks)
+	s.manifestFor("vshop")
+
+	st := s.status()
+	if len(st.BadManifests) != 1 {
+		t.Fatalf("BadManifests = %v, want the one file", st.BadManifests)
+	}
+	for what, got := range map[string]string{"the manifest problem": st.BadManifests[0], "the compositor line": st.Compositor} {
+		if strings.ContainsAny(got, "\n\x1b") {
+			t.Errorf("%s is %q, which is more than one row or drives a terminal", what, got)
+		}
+	}
+	// Still legible: the file, what the parser could not use, and what niri
+	// said - which is the whole reason these are reported rather than dropped.
+	for _, want := range []string{"haven.yaml", "monitorz", "line 9"} {
+		if !strings.Contains(st.BadManifests[0], want) {
+			t.Errorf("status says %q, which no longer contains %q", st.BadManifests[0], want)
+		}
+	}
+	if !strings.Contains(st.Compositor, "socket") {
+		t.Errorf("the compositor line is %q, which no longer says what niri said", st.Compositor)
+	}
+}
 func (f fixedDesks) Save(*manifest.Desk) (string, error) {
 	return "", errors.New("not writable")
 }
