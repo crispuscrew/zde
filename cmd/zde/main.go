@@ -17,7 +17,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	"unicode"
 
 	"golang.org/x/sys/unix"
 
@@ -40,10 +39,30 @@ func main() {
 		return
 	}
 	if err := run(args); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		complain(err)
 		os.Exit(1)
 	}
 }
+
+// complain is every error this command puts in front of a person: the one above
+// that ends the process, and the one place that prints an error and carries on
+// (deskApps).
+//
+// One door rather than a filter at each of the few dozen places that return an
+// error, because of where the words come from. Very little of an error here is
+// zde's own: `zcr` prints its refusal and it is carried whole (internal/zinc,
+// Run); logind's message comes back through the bus; niri's comes back through
+// the daemon, which hands its own errors over the socket as text and they are
+// printed exactly as they arrived (internal/zded, Call); a manifest somebody
+// hand-edited is answered by a YAML parser in several lines. Filtering at each
+// call site is filtering the error paths that exist today, and the next one
+// added is the one that forgets.
+//
+// What it must not cost is legibility. An error is read in order to fix
+// something, so the path, the quoted name and the parser's caret line all have
+// to survive - which is why this is Block and not the one-line filter a queue
+// row takes (internal/attn).
+func complain(err error) { fmt.Fprintln(os.Stderr, attn.Block(err.Error())) }
 
 func run(args []string) error {
 	switch {
@@ -187,6 +206,8 @@ func run(args []string) error {
 		return status()
 	case "doctor":
 		return runDoctor()
+	case "report":
+		return runReport()
 	case "desk list":
 		return deskList()
 	default:
@@ -301,7 +322,7 @@ func deskApps(args []string) error {
 	// to what the desk declares, and repeating one missing binary per app would
 	// bury them.
 	if unanswered != nil {
-		fmt.Fprintln(os.Stderr, unanswered)
+		complain(unanswered)
 	}
 	return nil
 }
@@ -401,6 +422,63 @@ func runDoctor() error {
 	if n := report.Failed(); n > 0 {
 		return fmt.Errorf("zde doctor: %d of %d checks failed", n, len(report))
 	}
+	return nil
+}
+
+// version is this build of zde, set at link time by the derivation that builds
+// it (nix/zde.nix passes -X main.version to every subPackage). A `go build`
+// with no ldflags says "dev" rather than claiming a release it is not, which is
+// the same bargain cmd/zded makes.
+var version = "dev"
+
+// runReport writes the state snapshot: what this machine looked like, for
+// somebody who will read it off a disk that will not boot (internal/doctor,
+// report.go).
+//
+// A verb of its own and not a mode of `zde doctor`, and the three differences
+// are the argument. What doctor produces is a screen of verdicts for somebody
+// sitting in front of a working session; this produces a file of readings for
+// somebody with no session at all, days later, on another machine. Doctor's
+// exit status is a verdict - non-zero when a check failed - and this one's must
+// not be, because the unit that writes it at login would then go `failed` on
+// exactly the machines it exists for, putting a red herring in `systemctl
+// --failed` on the morning somebody is already debugging a black screen. And a
+// flag on doctor would have to mean "print differently and also write a file
+// and also stop meaning what the exit status meant", which is two commands
+// wearing one name.
+//
+// What it does not do is gather twice: the whole of doctor is a section of the
+// file, judged off one Gather (internal/doctor, WriteReport).
+//
+// It prints the report when it could not write one, which is the shape every
+// surface-backed verb in this file already has - `zde desk switcher` prints the
+// list when no shell is up. A machine with nowhere to write is a machine where
+// somebody typed this into a terminal, and the answer is still the answer.
+//
+// Printed unfiltered, and that is a statement about the report rather than an
+// omission here. This is the ordinary path and not the rare one - every machine
+// that has not turned zde.debug on ends up here - so the file's own contents
+// reach a terminal on the ordinary run, and each of its readings is filtered
+// where it is written down instead (internal/doctor, reading). A filter over
+// the whole text at this point could only be attn.Text, which would leave the
+// newline that forges a heading exactly where it was.
+//
+// The error is a different thing and takes the filter an error takes: it is one
+// message printed on its own in column one, and what is in it came from the
+// filesystem.
+func runReport() error {
+	path, text, err := doctor.WriteReport(doctor.Self{Zde: version})
+	if err == nil {
+		fmt.Println("wrote", path)
+		return nil
+	}
+	fmt.Print(text)
+	// Not an error the process exits on. There is nothing wrong with the report
+	// - it is above - and a non-zero exit here would make the one command that
+	// still works on a broken machine look like another thing that is broken.
+	fmt.Fprintf(os.Stderr, "\nno file written: %s\n"+
+		"%s belongs to root and is made by layer 0 when zde.debug is on (nix/system.nix).\n",
+		attn.Block(err.Error()), doctor.ReportDir)
 	return nil
 }
 
@@ -555,7 +633,13 @@ func askRun(c *zded.Client, tier, question string) error {
 		// Filtered first and then asked about, so that a piece which was
 		// nothing but control characters is a piece that printed nothing - and
 		// does not leave this thinking it ended a line it never wrote.
-		if said := plain(ev.Text); said != "" {
+		//
+		// Text and not Block: this arrives in pieces, and a piece is not a whole
+		// message to indent the lines of. zded hands the bytes over as the tier
+		// produced them and counts them against its own cap while it does
+		// (internal/zded, pump), so the filtering is here, where there is no
+		// bookkeeping to disturb and the reader is known to be a terminal.
+		if said := attn.Text(ev.Text); said != "" {
 			fmt.Print(said)
 			ended = strings.HasSuffix(said, "\n")
 		}
@@ -1080,44 +1164,6 @@ func dash(s string) string {
 		return "-"
 	}
 	return s
-}
-
-// plain is a piece of somebody else's text on its way to this terminal: what a
-// terminal reads as an instruction taken out, and everything else left exactly
-// as it was written.
-//
-// It exists for the tier's answer (see askRun), which is the one thing this
-// command prints that arrives as a stream from a program somebody else wrote.
-// zded hands those bytes over as the tier produced them and counts them against
-// its own cap while it does (internal/zded, pump); filtering there would mean a
-// cap counting a different number of bytes than the tier sent, on the path that
-// is already doing the delicate part - holding back a character whose last byte
-// has not arrived. Here there is no bookkeeping to disturb, and here is also the
-// only place that knows what it is writing into. If a second surface ever needs
-// the same protection, this moves to the daemon and both get it.
-//
-// Not the filter the notification path uses, and the difference is the job.
-// That one reflows: it folds runs of whitespace and cuts at a bound, because it
-// is making a row. This is an answer to a question, and an answer has
-// paragraphs and indented code in it - so the shape stays and only what a
-// terminal would act on goes. Tabs and newlines are shape. A carriage return is
-// not: it is how a line is drawn over with another one, which is a way of
-// hiding what was printed rather than of writing anything.
-//
-// The zero-width joiner survives, for the reason internal/attn keeps it: it is
-// unprintable by every test Go has, and a family emoji without it is three
-// people.
-func plain(s string) string {
-	return strings.Map(func(r rune) rune {
-		switch {
-		case r == '\n' || r == '\t' || r == '‍':
-			return r
-		case unicode.IsPrint(r):
-			return r
-		default:
-			return -1
-		}
-	}, s)
 }
 
 // call is a verb with nothing to print: it worked, or it says why not.
@@ -1688,6 +1734,15 @@ func usage() {
                          whether the screen lock could accept a password.
                          Non-zero when something failed, so it is worth piping
                          into a bug report
+  zde report             write down what this machine looks like: the graphics
+                         device and whether niri ever reached a renderer on it,
+                         the versions, the hardware, and the whole of doctor.
+                         It lands in /var/log/zde, 0600, one file per boot, for
+                         the failure nothing else survives - a black screen with
+                         no terminal to ask anything from. Needs zde.debug on;
+                         with nowhere to write it prints the report instead.
+                         No notification text, no clipboard, no queue, no window
+                         titles, and nothing about a desk declared private
   zde desk list          the desks that exist right now
   zde desk switcher      open the picker; prints the list when no shell is up
   zde app launch NAME    run what this machine calls that (Mod+t, Mod+e)

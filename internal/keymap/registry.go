@@ -349,4 +349,18 @@ var registry = map[string]Entry{
 	// palette runs actions by name - the chord comes with a surface to print
 	// into. Until then it is `zde doctor` in a terminal.
 	"system.doctor": {Group: "system", Desc: "the doctor: every check on one screen", Spawn: []string{"zde", "doctor"}, written: true},
+	// The state snapshot, and it is registered for the opposite reason doctor
+	// is. Doctor's whole product is text, so a bind that sends it to a log
+	// nobody reads is a key that answers into a file - it waits for a surface.
+	// This one's product is the file: run from the palette on a session that is
+	// half up, it writes down what the machine looks like while it still looks
+	// like that, and the line it prints afterwards is the least of it. So it is
+	// reachable by name today and loses nothing by having no chord, which is
+	// the owner's rule met on the honest side of it - inside a session it is an
+	// action you can reach, and `zde report` in a TTY is the same thing when
+	// there is no session left to reach anything from.
+	//
+	// Nothing binds it in common/keymap/keymap.yaml on purpose. A chord for the
+	// day something has gone wrong is a chord carried every other day.
+	"system.report": {Group: "system", Desc: "write down what this machine looks like, for a session that will not come up", Spawn: []string{"zde", "report"}, written: true},
 }
