@@ -75,7 +75,10 @@ cost is the script alone.
 - `zde.iso`: a NixOS installer preseeded with the zde configuration, CI-built
   and checksummed. Once 0.1 is usable. Until then the live image installs a
   machine by hand, which is [`install.md`](install.md).
-- `install.sh`: the portable bootstrapper, checksummed alongside.
+- `install.sh`: the portable bootstrapper, checksummed alongside. Not written
+  yet, and after 0.1 like the installer above it - this list is what the
+  delivery model produces, not what you can download today, and this is the
+  entry with nothing behind it.
 
 ## Sequencing
 

@@ -24,6 +24,15 @@ zde is early, and this is what "early" means in practice:
   an ordinary host program. Most of the security model in
   [`vision.md`](vision.md) is not true of this install until you define apps
   that way.
+- **No X11 application runs.** `programs.xwayland.enable` evaluates false on
+  this install: niri does not turn it on and neither does zde, because under
+  niri that job belongs to xwayland-satellite, which is later work
+  ([`roadmap.md`](roadmap.md), and the note in `nix/system.nix`). So anything
+  that is not a native Wayland client - Chromium and Electron builds that have
+  not been told to prefer Wayland, anything drawing through Java's AWT or Swing,
+  and a long tail of older GTK and Qt programs - starts, finds no display, and
+  exits. Check that against the handful of programs you actually need before you
+  give a machine over to this.
 - **It has never run for a week.** Or a day. Bugs found in ordinary use are the
   point of installing it, and the ones that matter will be found by you.
 
@@ -304,6 +313,13 @@ cd /etc/nixos
 sudo nix flake update zde
 sudo nixos-rebuild switch --flake .#zdebox
 ```
+
+Know what that first line does today: zde has no tags, so the template pins it
+to the `dev` branch and the update takes whatever is on dev at that moment,
+which can be a week of unrelated work. Your `flake.lock` is a real pin and
+nothing moves until you run it - but it is not a release, so read the commits
+between your lock and dev first, and expect the template's `zde` input to
+become `github:crispuscrew/zde/vX.Y.Z` once there is a version to name.
 
 zinc - the sandbox - is a second input in that same flake, pinned to a tag, so
 updating the desktop does not update it and the other way round. Moving it is

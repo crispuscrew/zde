@@ -26,6 +26,16 @@ so moving it means editing the URL in `flake.nix` - and in
 `templates/host/flake.nix`, which is the pin a real machine actually has. It
 follows this repo's nixpkgs, so a machine has one and not two.
 
+**zde does not yet offer what it asks for.** This repository has no tags, so
+`templates/host/flake.nix` pins zde to the `dev` branch - named there rather
+than left implicit, so it says what it is. A machine is still pinned, by its
+own `flake.lock`, and still moves only when somebody runs `nix flake update
+zde`; what it lacks is a version to have decided about. Cutting the first tag
+is the fix, and it is one commit and one line: tag a commit of `dev` that
+passes `nix flake check` and the smoke test, then change the template's `zde`
+url to `github:crispuscrew/zde/vX.Y.Z`. From then on that line moves the way
+zinc's does, by hand, and this section stops having an exception in it.
+
 niri has no input of its own. Stable currently carries the release zde wants
 (26.04) and builds it against the same mesa the system runs, which is what
 keeps a session off a black screen. The day zde needs a niri that stable does
@@ -43,7 +53,7 @@ nix flake update nixpkgs         # or just one
 ```
 
 To a new NixOS release, twice a year: edit both URLs in `flake.nix` to the new
-release (`nixos-XX.YY` and `release-XX.YY`), then `nix flake update`. Five
+release (`nixos-XX.YY` and `release-XX.YY`), then `nix flake update`. Seven
 other places name the release and none of them can read the flake, so they
 move by hand in the same commit:
 
@@ -57,6 +67,12 @@ move by hand in the same commit:
   to the rule below: in a template they are not a machine's creation stamp but
   what every *new* machine will be created at, and a stranger installing on
   27.05 should not start out declaring 26.05.
+- `home.stateVersion` in `nix/zde-user.nix` and `system.stateVersion` in
+  `nix/test-host.nix`, for the same reason and one more: those two are what
+  `nix flake check`, the smoke test and the live image evaluate, so a stale
+  number there means every automated check is evaluating a machine nobody has.
+  It was 25.05 against a template saying 26.05 once, and the live image booted
+  with one of each.
 - the table at the top of this file.
 
 Read the release notes for renames - the 25.05 to 26.05 move alone renamed
@@ -106,6 +122,9 @@ sudo nix flake update zde
 sudo nixos-rebuild switch --flake .#zdebox
 ```
 
+Until zde tags a release, that middle line takes dev's head rather than a
+version (What is pinned, above). Read what is between first.
+
 zinc is a separate input in that flake, on its own tag, so the sandbox and the
 desktop move independently: `sudo nix flake update zinc` after editing its tag,
 applied by the same rebuild. Two decisions rather than one is deliberate - the
@@ -117,7 +136,11 @@ CI tests and says nothing about what your machine runs: import zde from a flake
 on unstable and zde is built against unstable, whatever `flake.lock` here says.
 `nix flake init -t github:crispuscrew/zde#host` writes a flake that starts on
 the tested release with the `follows` already wired, and layer 0 warns at build
-time if the release underneath it is not the one zde is tested against.
+time if the release underneath it is not the one zde is tested against. It also
+sets `home-manager.useGlobalPkgs`, which is what makes an overlay or a
+`nixpkgs.config` in your `configuration.nix` reach layer 1's packages as well as
+the system's: without it home-manager instantiates nixpkgs a second time, from
+the same input, and that second one never sees your instructions.
 
 `switch` builds the new generation, activates it, and restarts what changed.
 Layer 1 comes with it: home-manager runs as part of the system generation, so
@@ -138,9 +161,18 @@ What survives and what does not:
   reason, in its own nixpkgs module.
 - **zded is restarted**, mid-session, by any switch that changes it. It is a
   home-manager unit, and home-manager restarts its changed user units during
-  activation. This is safe by design - the journal is replayed on the way back
-  up, which is what the desks are rebuilt from - but it is a real restart: a
+  activation. Most of it is safe by design - the journal is replayed on the way
+  back up, which is what the desks are rebuilt from, and the notification
+  history is written to a snapshot and read back - but it is a real restart: a
   `zde` running at that instant gets a closed socket rather than an answer.
+- **The clipboard history does not survive it.** It is held in memory and
+  nowhere else, on purpose and permanently (`internal/clip`: a clipboard
+  history on disk is every password ever pasted, in one file, outliving the
+  TTL that is supposed to shred it). The journal does not hold it and no
+  snapshot does either, so any switch that touches the Go tree empties `Mod+v`,
+  silently, mid-session. Nothing warns and nothing is wrong; it is the one
+  piece of session state a rebuild costs you. Paste it somewhere first if it
+  matters.
 - **Nothing restarts a running app** when zinc moves. The tools on PATH are the
   new ones and the containers already up were started by the old ones; what
   changes them is stopping and starting the app.
