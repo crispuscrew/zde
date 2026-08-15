@@ -95,12 +95,12 @@ func main() {
 // stopGrace is how long the daemon has to leave after it has been asked to.
 //
 // Long enough for the tidy exit, which is the whole point of having a grace
-// rather than exiting on the signal: run stops the tiers it started and waits
-// up to two seconds for their process groups to go (internal/zded,
-// askStopWait), and then writes the last notification snapshot, which is a file
-// write on whatever disk the person has. Five seconds covers both with room,
-// and anything longer than that is not a slow stop - it is a stop that is not
-// happening.
+// rather than exiting on the signal: run stops the tiers and the desk launches
+// it started and waits up to two seconds for their process groups to go
+// (internal/zded, runStopWait), and then writes the last notification snapshot,
+// which is a file write on whatever disk the person has. Five seconds covers
+// both with room, and anything longer than that is not a slow stop - it is a
+// stop that is not happening.
 const stopGrace = 5 * time.Second
 
 // awaitStop waits for the daemon to finish, and says whether it did.
@@ -236,24 +236,24 @@ func run(ctx context.Context, socket, jrnPath, desksDir, histPath string, notify
 	}
 
 	err = <-serving
-	// And the tiers, before this process goes.
+	// And the tiers and the desk launches, before this process goes.
 	//
 	// Close is already called from the goroutine above, but that one races the
 	// exit: closing the listener is what makes Serve return, so run could be
-	// back in main with the tiers still being stopped. Called again here, on the
+	// back in main with them still being stopped. Called again here, on the
 	// goroutine that is actually leaving, so the wait inside it is a wait this
 	// process does. Close is idempotent and bounded (internal/zded, stopRuns).
 	//
 	// On every way out and not only the signal: a Serve that returned an error
-	// ends the daemon just as thoroughly, and a tier is a subprocess in a
+	// ends the daemon just as thoroughly, and each of these is a subprocess in a
 	// process group the session's own signal cannot reach - so nothing else
 	// would ever stop it.
 	srv.Close()
 	// Then the last snapshot, waited for rather than left to a goroutine the
 	// process is about to exit out from under. A logout is the ordinary way a
 	// session ends, so it must not be the ordinary way the last arrivals are
-	// lost. After the tiers rather than before, so that the writing is the last
-	// thing this process does and takes in whatever arrived while they died.
+	// lost. After the subprocesses rather than before, so that the writing is the
+	// last thing this process does and takes in whatever arrived while they died.
 	stopSaving()
 	<-saved
 	return err
