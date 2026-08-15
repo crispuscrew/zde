@@ -35,10 +35,28 @@ roll back and does nothing about a disk you have already reformatted.
 
 A machine that boots UEFI (nearly everything since about 2012), the live image,
 and about twenty minutes. Build the image and write it to a stick as in
-[`verify.md`](verify.md), boot it, and log in at the greeter as **zde / zde**.
+[`verify.md`](verify.md), and boot it.
 
-Everything below is typed in that session. Open a terminal with **Mod+Return**
-(the live image binds it; a real install uses `Mod+t`).
+## Where to type it
+
+**Press `Ctrl+Alt+F2`.** That is a text console, and the image logs you into it
+as `nixos` with no password and with passwordless `sudo`. Sections 1 to 3 are
+all root work, and that is the account with root on it.
+
+Not the greeter's session. `zde / zde` on the first console is the desktop, and
+the `zde` user is deliberately not in `wheel`: its password is printed in this
+document, so anything it could `sudo` would be root for everyone who has read
+the repo. `sudo -i` there answers `zde is not in the sudoers file`, and the
+first command of section 1 is where you would find that out.
+
+Both are up at once, so nothing is lost by that. `Ctrl+Alt+F1` goes back to the
+desktop - **Mod+Return** opens a terminal in it, which is the image's own bind
+and not zde's - and `Ctrl+Alt+F2` returns to the install. Look at zde on the
+one, install it from the other.
+
+If the machine has no cable, join a wifi network before section 2: `nmtui` runs
+from the console, and `nixos` is in the `networkmanager` group. NetworkManager
+is a system service, so a connection made on either console is there on both.
 
 ## 1. The disk
 
@@ -281,9 +299,10 @@ It will. In descending order of how much it hurts:
   doing now - the desk you are on, how many things are queued, and whether the
   shell, the notification name and zinc are there.
 
-  Then `Ctrl+Alt+F2` is a text console you can log into with the same password:
-  `journalctl --user -u zded`, `systemctl --user restart zded`, and
-  `systemctl --user restart zde-bar`.
+  Then `Ctrl+Alt+F2` is a text console. On the installed machine it is your own
+  user and your own password - there is no autologin here, that belonged to the
+  live image - and from it: `journalctl --user -u zded`,
+  `systemctl --user restart zded`, and `systemctl --user restart zde-bar`.
 - **A rebuild broke the session.** `sudo nixos-rebuild switch --rollback`, or
   pick the previous generation in the boot menu. This is why NixOS is the
   reference platform, and it is worth doing once on purpose before you need it.
