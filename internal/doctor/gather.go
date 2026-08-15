@@ -197,6 +197,35 @@ const pamDir = "/etc/pam.d"
 // filesystem that has gone away.
 const probeTimeout = 5 * time.Second
 
+// probeGrace is how long Wait may go on waiting after probeTimeout has fired,
+// or after the program has exited leaving its pipes held.
+//
+// The second half is the one this was written for, and it is the half that made
+// probeTimeout a promise the code did not keep. cmd.Run gives the program's
+// stdout and stderr to pipes exec copies from, and a program that forks hands a
+// copy of both ends to the child - so Wait, which waits for the copying to
+// finish, waits on the fork and not on the program. Measured against a target
+// that answers and leaves a child holding stdout: the five second deadline never
+// returned at all and had to be killed at forty seconds, where the same call
+// with a WaitDelay came back in 2.002s with the answer intact.
+//
+// The first half is the ordinary guard the other exec sites already have
+// (internal/zded/ask.go, askGrace): a program that ignores its deadline is
+// killed rather than waited for.
+//
+// Two seconds because by the time either half fires the answer has been written
+// and what is left is a descriptor nobody will write to, or a process no signal
+// reached. Short matters here more than anywhere: doctor is what somebody runs
+// when the machine is already misbehaving, so each probe's worst case is added
+// to the wait before the one report that would explain it.
+//
+// No process group beside it, unlike a tier's. doctor is a command in a
+// terminal, and a child in a group of its own is a child ctrl+c no longer
+// reaches - which would cost a person the one escape they have from a probe
+// that is taking too long, to save a fork that the deadline above already
+// bounds.
+const probeGrace = 2 * time.Second
+
 // Gather asks everything, and refuses nothing: every probe records what it
 // found or why it could not, and none of them decides what that means.
 func Gather() Session {
@@ -569,6 +598,9 @@ func run(d time.Duration, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	// What makes the deadline above a deadline (see probeGrace). Without it a
+	// probe whose target forked was not bounded by anything.
+	cmd.WaitDelay = probeGrace
 	err := cmd.Run()
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return stdout.String(), noAnswer{fmt.Sprintf("%s did not answer in %s", name, d)}
