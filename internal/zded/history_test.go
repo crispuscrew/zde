@@ -456,8 +456,13 @@ func TestTheLastSnapshotIsWrittenBeforeTheDaemonStops(t *testing.T) {
 // difference between an error from the journal and this particular one.
 func TestAFullQueueStillRecordsAndNumbersWhatArrives(t *testing.T) {
 	s, _ := historyServer(t, "work.DP-1.code", map[string]string{"work": openDesk})
+	// Filled by hand rather than by arriving, because nothing off the bus can
+	// reach this ceiling any more: a hundred places are kept for what a person
+	// typed and no sender can spend them (internal/journal, Reserved). So these
+	// are a person's own entries, which is the only way the whole queue is full
+	// and therefore the only way this refusal happens at all.
 	for i := 0; i < journal.QueueMax; i++ {
-		if _, err := s.Arrived(attn.Notification{From: "ci", Text: "build " + strconv.Itoa(i)}); err != nil {
+		if _, err := s.jrn.Queue(journal.Item{Text: "owed " + strconv.Itoa(i)}); err != nil {
 			t.Fatalf("filling the queue at %d: %v", i, err)
 		}
 	}
@@ -486,5 +491,56 @@ func TestAFullQueueStillRecordsAndNumbersWhatArrives(t *testing.T) {
 	}
 	if !found {
 		t.Error("a full queue lost the notification: it is in neither the queue nor the history")
+	}
+}
+
+// One app on the session bus cannot spend the queue on everybody else.
+//
+// The demonstrated failure, at the level it was demonstrated: nothing
+// authenticates a Notify, so a single connection sent a thousand and after that
+// a second app, a person typing `zde queue add`, and the desktop's own message
+// about a desk that would not start were all refused. Now it costs that sender
+// its own share (internal/journal, PerSenderMax) and costs nobody else a place.
+//
+// Everything it sent still lands, which is the other half and the one a bound
+// could break: a refusal here is about the list and never about the arrival.
+func TestOneBusAppCannotSpendTheQueueOnEverybodyElse(t *testing.T) {
+	s, _ := historyServer(t, "work.DP-1.code", map[string]string{"work": openDesk})
+	for i := 0; i < journal.PerSenderMax+20; i++ {
+		id, err := s.Arrived(attn.Notification{From: "loud", Text: "spam " + strconv.Itoa(i)})
+		if err != nil {
+			t.Fatalf("the flood's own arrival %d failed: %v", i, err)
+		}
+		if id == 0 {
+			t.Fatalf("arrival %d got no id, so its sender cannot close it", i)
+		}
+	}
+	if n := len(s.jrn.Waiting()); n != journal.PerSenderMax {
+		t.Fatalf("%d waiting, want one sender's share of %d", n, journal.PerSenderMax)
+	}
+
+	if _, err := s.Arrived(attn.Notification{From: "ci", Text: "the build failed"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Arrived(attn.Notification{From: attn.SelfFrom, Text: "this desk could not start three of its apps"}); err != nil {
+		t.Fatal(err)
+	}
+	if resp := s.Dispatch(Request{Method: "queue.add", Args: []string{"call the dentist"}}); resp.Error != "" {
+		t.Fatalf("a person was refused after an app's flood: %s", resp.Error)
+	}
+	waiting := s.jrn.Waiting()
+	if len(waiting) != journal.PerSenderMax+3 {
+		t.Fatalf("%d waiting, want the flood's share and the three that followed it", len(waiting))
+	}
+	for _, want := range []string{"the build failed", "this desk could not start three of its apps", "call the dentist"} {
+		var found bool
+		for _, it := range waiting {
+			if it.Text == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%q is not on the queue, and the flood is what kept it off", want)
+		}
 	}
 }

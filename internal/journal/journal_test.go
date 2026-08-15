@@ -1050,6 +1050,200 @@ func TestAJournalLongerThanTheCapStillLoadsWhole(t *testing.T) {
 	}
 }
 
+// A flood under one name costs that name its share and costs nobody else
+// anything.
+//
+// This is the whole of the finding. The ceiling above was a bound on the queue
+// and not on anybody in it, so the first caller to reach it spent it on
+// everybody: one app on the session bus filled a thousand places through Notify,
+// with nothing authenticating it, and after that a second app was refused, a
+// person typing `zde queue add` was refused, and an urgent arrival was refused.
+// Every assertion here is one of those.
+func TestOneSenderCannotFillTheQueueForEverybody(t *testing.T) {
+	j := open(t, filepath.Join(t.TempDir(), "journal.jsonl"))
+	for i := 0; i < PerSenderMax; i++ {
+		if _, err := j.Queue(Item{Text: "spam " + strconv.Itoa(i), From: "loud"}); err != nil {
+			t.Fatalf("queueing %d of %d for one sender: %v", i, PerSenderMax, err)
+		}
+	}
+	// Its own share and nothing more.
+	if _, err := j.Queue(Item{Text: "spam again", From: "loud"}); !errors.Is(err, ErrSenderFull) {
+		t.Fatalf("the sender past its share = %v, want ErrSenderFull", err)
+	}
+	// And the rest of the queue is exactly as it was.
+	if _, err := j.Queue(Item{Text: "your build failed", From: "ci"}); err != nil {
+		t.Errorf("a different sender was refused by somebody else's flood: %v", err)
+	}
+	if _, err := j.Queue(Item{Text: "call the dentist"}); err != nil {
+		t.Errorf("a person was refused by an app's flood: %v", err)
+	}
+	if _, err := j.Queue(Item{Text: "the disk is full", From: "alarm", Urgent: true}); err != nil {
+		t.Errorf("an urgent arrival was refused by an ordinary flood: %v", err)
+	}
+	// The refusal is a refusal and not an eviction: what was already owed is
+	// still owed, which is the promise the queue makes and the history does not.
+	if n := len(j.Waiting()); n != PerSenderMax+3 {
+		t.Errorf("%d waiting, want the sender's %d and the three that followed", n, PerSenderMax)
+	}
+	// And finishing one of that sender's gives it its place back, so the share
+	// is a ceiling rather than a lifetime allowance.
+	if err := j.Done(j.Waiting()[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.Queue(Item{Text: "room again", From: "loud"}); err != nil {
+		t.Errorf("the sender stayed shut out after one of its own was finished: %v", err)
+	}
+}
+
+// Urgency is not a share, and that is a decision rather than an oversight.
+//
+// Urgent is the sender's own claim and nothing verifies it (see Item), so a
+// reservation keyed on it is leverage handed out in proportion to a free claim -
+// the flood would mark everything urgent and hold the reserved part too. What
+// answers the complaint instead is the per-sender share: an ordinary sender can
+// hold PerSenderMax places whatever it calls them, so no volume of ordinary
+// items from one app can refuse anybody's urgent one.
+func TestUrgencyBuysNoPlaceOfItsOwn(t *testing.T) {
+	j := open(t, filepath.Join(t.TempDir(), "journal.jsonl"))
+	for i := 0; i < PerSenderMax; i++ {
+		if _, err := j.Queue(Item{Text: "spam " + strconv.Itoa(i), From: "loud", Urgent: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := j.Queue(Item{Text: "and again", From: "loud", Urgent: true}); !errors.Is(err, ErrSenderFull) {
+		t.Errorf("calling it urgent bought a place past the share: %v", err)
+	}
+	if _, err := j.Queue(Item{Text: "the disk is full", From: "alarm", Urgent: true}); err != nil {
+		t.Errorf("somebody else's urgent arrival was refused: %v", err)
+	}
+}
+
+// A name costs nothing to mint, so the shares are not the whole defence: what
+// keeps a person's own entries reachable is that the emptiness of From is not a
+// claim anything on the bus can make (internal/attn, claim).
+//
+// The desktop's own name is the same kind of thing and is kept for the same
+// reason (internal/attn, SelfFrom and unevictable): "this desk could not start
+// three of its apps" is one item, the cheapest thing on the machine, so without
+// the reservation a flood would refuse zde's own words first.
+func TestAThousandInventedNamesStillLeaveRoomForAPersonAndForZde(t *testing.T) {
+	j := open(t, filepath.Join(t.TempDir(), "journal.jsonl"))
+	filled := 0
+	for name := 0; filled < QueueMax; name++ {
+		it := Item{Text: "flood", From: "app-" + strconv.Itoa(name)}
+		if _, err := j.Queue(it); err != nil {
+			if !errors.Is(err, ErrSenderFull) {
+				t.Fatalf("filling under invented names: %v", err)
+			}
+			break
+		}
+		filled++
+	}
+	if filled != QueueMax-Reserved {
+		t.Fatalf("invented names took %d places, want the senders' share of %d", filled, QueueMax-Reserved)
+	}
+	if _, err := j.Queue(Item{Text: "call the dentist"}); err != nil {
+		t.Errorf("a person was refused after a flood under invented names: %v", err)
+	}
+	if _, err := j.Queue(Item{Text: "this desk could not start three of its apps", From: "zde"}); err != nil {
+		t.Errorf("the desktop's own message was refused after a flood: %v", err)
+	}
+	// And a person can still reach the whole ceiling, because the reservation is
+	// the senders' bound and not a person's.
+	for len(j.Waiting()) < QueueMax {
+		if _, err := j.Queue(Item{Text: "owed"}); err != nil {
+			t.Fatalf("a person was stopped short of the ceiling at %d: %v", len(j.Waiting()), err)
+		}
+	}
+	if _, err := j.Queue(Item{Text: "one too many"}); !errors.Is(err, ErrQueueFull) {
+		t.Errorf("past the whole ceiling = %v, want ErrQueueFull", err)
+	}
+}
+
+// The way out, in one call rather than a thousand.
+//
+// Recovery from a full queue was `zde queue done <id>` a thousand times, which
+// is not a way out - it is the reason nobody would take it. And a journal
+// written before any of these bounds can hold more than the ceiling, on purpose
+// (see the replay test above), so there has to be something that empties it.
+func TestClearEmptiesTheQueueInOneEntry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "journal.jsonl")
+	j := open(t, path)
+	for i := 0; i < 50; i++ {
+		if _, err := j.Queue(Item{Text: "owed " + strconv.Itoa(i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	last, err := j.Queue(Item{Text: "the last one"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := j.Clear()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 51 {
+		t.Errorf("Clear said %d, want the 51 that were waiting", n)
+	}
+	if got := len(j.Waiting()); got != 0 {
+		t.Errorf("%d still waiting after a clear", got)
+	}
+	// Nothing written when there is nothing to clear: this is reachable twice in
+	// a row, and a line and an fsync for a no-op is a file growing for nothing.
+	before := j.entries
+	if n, err := j.Clear(); err != nil || n != 0 {
+		t.Errorf("clearing an empty queue = %d, %v", n, err)
+	}
+	if j.entries != before {
+		t.Errorf("clearing an empty queue wrote %d entries", j.entries-before)
+	}
+	// It survives the restart, and the ids it spent stay spent: a number handed
+	// out again would let an app close something somebody typed (see ClaimID).
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	again := open(t, path)
+	if got := len(again.Waiting()); got != 0 {
+		t.Fatalf("%d waiting after a restart, want the clear to have survived", got)
+	}
+	next, err := again.Queue(Item{Text: "after the clear"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.ID <= last.ID {
+		t.Errorf("the next id is %d and %d was already handed out", next.ID, last.ID)
+	}
+}
+
+// A cleared queue compacts to a journal with no queue in it, and keeps the
+// counter. Without the counter the next reminder takes a number somebody already
+// wrote down next to a different one.
+func TestCompactionAfterAClearKeepsTheCounterAndNothingElse(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "journal.jsonl")
+	j := open(t, path)
+	for i := 0; i < 20; i++ {
+		if _, err := j.Queue(Item{Text: "owed " + strconv.Itoa(i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := j.Clear(); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Compact(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"queued"`) {
+		t.Errorf("a compacted journal still holds the queue it cleared:\n%s", raw)
+	}
+	if !strings.Contains(string(raw), `"lastid"`) {
+		t.Errorf("the compacted journal forgot the highest id it handed out:\n%s", raw)
+	}
+}
+
 // mode is a path's permission bits and nothing else about it.
 func mode(t *testing.T, path string) os.FileMode {
 	t.Helper()

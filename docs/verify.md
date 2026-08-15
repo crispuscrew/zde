@@ -278,6 +278,14 @@ ones are the point of zded holding the bus name.
   and both times it is one row saying what the download says now.
 - `notify-send --wait "test"` in one terminal, `zde queue done <id>` in
   another: the first command returns.
+- **A loop.** `for i in $(seq 200); do notify-send "spam $i"; done` from one
+  client. Every one of them lands in the centre and draws its popup, and the
+  queue takes the first thirty of them and no more - that sender's own share
+  (`internal/journal`, `PerSenderMax`). While it runs, and after it, a second
+  app's notification and `zde queue add something` must both still reach the
+  queue: what a flood costs is its own place in the list and nobody else's. Then
+  `zde queue clear`, which prints how many it dropped and is the one call that
+  empties it.
 - **The popup, which is the one thing in this section CI cannot touch at all.**
   Send anything and a card should appear at the top right of the screen you are
   looking at, under the bar, with the sender, the summary, the body and a button
