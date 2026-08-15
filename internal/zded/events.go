@@ -189,6 +189,22 @@ const MethodEvents = "events"
 // deadline. Distinct from a write that failed, because the connection is fine:
 // it is carrying an answer, and the caller gave up rather than waiting behind
 // it. A listener that returns this keeps its place (see broadcast).
+//
+// That distinction only means anything because every writer is now bounded. A
+// caller waiting on the gate learns one thing - somebody else is writing - and
+// nothing at all about the client; the writer holding the gate is the one with
+// the evidence, because a write deadline that expires is a client that has not
+// taken a byte for the whole of it with its own buffer full. So the line
+// between a listener that is busy and one that is gone is drawn by the holder
+// and never by the queue behind it: the holder closes the connection when its
+// own deadline expires (see writeWithin), the read loop ends, and the listener
+// slot goes with it.
+//
+// Until reply took a deadline that sentence was false, and this error was how
+// it failed. reply held the gate across a write with no deadline on it, so one
+// client that stopped reading made every later caller see "busy" for the rest
+// of the session - permanently, with nothing left to tell the two apart (see
+// replyWait).
 var errSinkBusy = errors.New("zded: the connection is busy with another line")
 
 // sink is one connection, with the lock that keeps a reply and an event from
@@ -199,7 +215,11 @@ type sink struct {
 	//
 	// The lock is held across the write, and the write's deadline is as long as
 	// the caller can afford: 200ms for a broadcast (sendWait), five seconds for
-	// a piece of an answer (askSendWait). A mutex has no deadline, so a
+	// a piece of an answer (askSendWait) or for the answer to a request
+	// (replyWait). Every one of them has a deadline, and that is what makes the
+	// gate a thing a caller can wait on at all - a holder that could keep it for
+	// ever would make "busy" and "gone" the same answer (see errSinkBusy). A
+	// mutex has no deadline, so a
 	// broadcast allowed to wait 200ms for a listener in fact waited for
 	// whatever answer was being pushed down the same connection - and the
 	// keypress behind that broadcast waited with it. Measured on a client that
@@ -238,10 +258,25 @@ type sink struct {
 	// can write lines - and two writes racing for the selection is two answers
 	// about which entry is on the clipboard.
 	putting atomic.Bool
-	// asked is when this connection last sent a request line, as a Unix time in
-	// nanoseconds, starting at the moment it was accepted. It is what "longest
-	// idle" is measured with when the daemon is full and one connection has to
-	// go (server.go, admit).
+	// pid is the process on the other end, from the credentials the kernel
+	// attaches to the socket (server.go, allowPeer). Set once, before this sink
+	// is in any table, and never written again - so it needs no lock and is not
+	// atomic.
+	//
+	// It is there because "a flood pays for its own slots" is a sentence about a
+	// client, and a client is a process rather than a socket. What a connection
+	// has sent can be forged with one byte; how many connections the process
+	// behind it is holding cannot be forged at all, only paid for in processes
+	// (server.go, admit).
+	//
+	// Zero for a sink that is not a connection - a test's, or the one Close
+	// answers on - which groups them together and is the right answer for a
+	// number only used to compare connections in one table.
+	pid int32
+	// asked is when this connection was last used, as a Unix time in
+	// nanoseconds: the last request line that parsed, or its arrival if it has
+	// never sent one. It is the tie-break when the daemon is full and one
+	// connection has to go (server.go, admit).
 	//
 	// What this connection last sent, and deliberately not what was last sent to
 	// it. The second is the wrong question and would give the wrong answer for
@@ -255,10 +290,20 @@ type sink struct {
 	asked atomic.Int64
 }
 
-// touch records that this connection has just asked something. Called when a
-// request line is read rather than when it is answered: what the number is for
-// is telling a connection that is being used from one that is only open, and a
-// request that takes two minutes to answer was still asked at the start of it.
+// touch records that this connection has just been used: a request line that
+// parsed as one, or the moment it arrived.
+//
+// A line that parsed, and not any line at all. It was any line, and that made
+// the number forgeable by the cheapest thing a socket can do: a connection
+// sending "\n" was refreshed exactly as if it had asked something, because the
+// touch came before the JSON was looked at. Demonstrated against a running
+// daemon - a flood writing one byte per connection kept all 256 of its own
+// connections fresh and chose which of the session's connections was dropped,
+// naming targets 130, 7 and 255 and getting each of them first try.
+//
+// Called when the request is read rather than when it is answered, which is the
+// other half of what the number means: a request that takes two minutes to
+// answer was still asked at the start of it.
 func (k *sink) touch() { k.asked.Store(time.Now().UnixNano()) }
 
 // gateOf is the lock, made once. Every path to it goes through here, so no
@@ -297,8 +342,8 @@ func (k *sink) end() {
 }
 
 // lockBefore takes the connection for one line, or gives up at the deadline and
-// says so. Waiting for ever is what a reply does; an event has a caller with
-// somewhere else to be.
+// says so. Every caller has a deadline, an event's being the shortest because
+// it has a keypress behind it.
 func (k *sink) lockBefore(deadline time.Time) bool {
 	gate := k.gateOf()
 	// The ordinary case, which is nobody else writing: no timer, no allocation.
@@ -319,13 +364,68 @@ func (k *sink) lockBefore(deadline time.Time) bool {
 
 func (k *sink) unlock() { <-k.gateOf() }
 
-// reply waits for the connection however long it takes. It is the read loop's
-// own answer to the request it has just read, on the connection that asked, and
-// there is nothing useful to do with it except send it.
+// replyWait is how long the answer to a request may take to be taken by the
+// client that asked for it.
+//
+// It is the deadline this write did not have. reply took the connection with no
+// deadline and held it across a write with none either, which is the one shape
+// sendWait exists to end and the one place it was missed - every other write on
+// this socket was already bounded. So a client that subscribed, asked, and then
+// stopped reading filled its own receive buffer, and the read loop parked in
+// that write for as long as the client stayed alive. Measured against a running
+// daemon: one such connection left a goroutine sitting in sink.reply, kept its
+// listener slot through 257 evictions - a full turnover of a 256-connection
+// table, because a listener is exempt from the cap (server.go, admit) and a
+// busy one is kept by a broadcast (see broadcast) - and took a keypress from
+// 19µs to 200ms, where it stayed for the rest of the session.
+//
+// Five seconds, and the number is the client's rather than a guess: Call puts a
+// five second deadline on the whole round trip (client.go), so a reply written
+// after that is a reply nobody is waiting for any more. Shorter would be zded
+// giving up on a caller that has not. Longer would be zded holding a connection
+// open for a caller that has already gone, which is the shape of the bug this
+// ends. It is also the patience one piece of an answer gets (askSendWait), for
+// the same reason and against the same kind of client, so the socket has one
+// number for "as long as anybody could still want this line" rather than two.
+//
+// What has to be true for it to expire: the client has not taken a byte for
+// five seconds while its own receive buffer was full. That buffer is about
+// 200 KB on a unix socket, which is hundreds of unread replies, so it is not a
+// client that is slow or drawing or descheduled - it is one that asked and
+// stopped reading. Measured on a client that is reading: microseconds.
+//
+// What expiring costs is the connection, and what not expiring cost was every
+// keypress for the rest of the session. The bound this puts back is the one
+// sendWait's comment already promises - a keypress costs one sendWait whatever
+// is wedged - in place of a keypress that costs it for ever. It is still five
+// seconds of 200ms keypresses per wedged client, and a client that reconnects
+// can have that again, which is the same honest cost listenersMax already
+// names: a subscriber that is not reading is a subscriber a keypress pays for.
+const replyWait = 5 * time.Second
+
+// reply answers the request this connection asked, and gives up on a client
+// that will not take the answer.
+//
+// The read loop's own answer, on the connection that asked, so there is nothing
+// useful to do with it except send it - and nothing useful to do about a client
+// that is not reading it except stop. A write that runs out of time closes the
+// connection, which is writeWithin's rule for every write that could not be
+// finished, and right here for a second reason: what is on the wire is half a
+// line, and the next bytes would be read as the tail of a message nobody can
+// parse.
 func (k *sink) reply(resp Response) {
-	k.gateOf() <- struct{}{}
-	defer k.unlock()
-	writeResponse(k.w, resp)
+	if err := k.writeWithin(responseLine(resp), replyWait); errors.Is(err, errSinkBusy) {
+		// The gate was held by another line for the whole of replyWait, so this
+		// request has no answer coming. Closed rather than left, because a
+		// request that is never answered on a socket that stays open is a client
+		// waiting for ever, where an EOF is something it can act on. It takes a
+		// write already failing to reach this - every holder gives the gate up
+		// inside its own deadline, and the longest of those is this one - so the
+		// connection being closed here is one somebody else is closing anyway.
+		if c, ok := k.w.(io.Closer); ok {
+			c.Close()
+		}
+	}
 }
 
 func (k *sink) send(ev Event) error { return k.sendWithin(ev, sendWait) }
@@ -363,11 +463,13 @@ func (k *sink) sendWithin(ev Event, wait time.Duration) error {
 }
 
 // writeWithin puts one whole line on the connection, or gives up. It is the
-// body sendWithin's comment above argues for, in its own function because two
-// callers now want exactly that bargain: an event being broadcast, and the
-// sentence a connection is told before it is dropped (server.go, handle). Both
-// are written to a client that may not be reading, and neither has anybody who
-// can afford to wait for one that is not.
+// body sendWithin's comment above argues for, in its own function because every
+// write to a connection now wants exactly that bargain: an event being
+// broadcast, the answer to a request (see reply), and the sentence a connection
+// is told before it is dropped (server.go, handle). All three are written to a
+// client that may not be reading, none of them has anybody who can afford to
+// wait for one that is not, and one write left without a deadline is enough to
+// make the gate a place a connection can be parked for ever.
 func (k *sink) writeWithin(line []byte, wait time.Duration) error {
 	deadline := time.Now().Add(wait)
 	if !k.lockBefore(deadline) {
@@ -404,15 +506,18 @@ func (k *sink) writeWithin(line []byte, wait time.Duration) error {
 // took this one's place, and the client's own answer is to dial again.
 //
 // Bounded, because the client this is being said to may be one that never reads
-// anything, and the goroutine saying it belongs to whichever connection has just
-// arrived. A gate held by somebody else costs the sentence and not the close:
+// anything. A gate held by somebody else costs the sentence and not the close:
 // what holds it is a line already being written, and there is nothing useful to
 // queue a second one behind.
+//
+// And said on a goroutine of its own, which is the other half of that (server.go,
+// handle). The bound is 200ms, and the caller with something to lose is the
+// connection that has just arrived - which may be the shell, dialling again into
+// a full table. Measured on the arriving connection while the victim's gate was
+// held: 200.6 to 200.9ms before this was moved off it, which is the whole of the
+// ackWait a keypress has to be acknowledged in.
 func (k *sink) drop(reason string) {
-	// A Response carrying one string cannot fail to marshal, so there is no
-	// fallback line here of the kind writeResponse has to keep.
-	line, _ := json.Marshal(Response{Error: reason})
-	k.writeWithin(append(line, '\n'), sendWait)
+	k.writeWithin(responseLine(Response{Error: reason}), sendWait)
 	if c, ok := k.w.(io.Closer); ok {
 		c.Close()
 	}
@@ -442,7 +547,12 @@ func (k *sink) drop(reason string) {
 // 200ms, whatever is wedged among them.
 //
 // A cap can be taken by somebody else, and that is the honest cost of it: 16
-// connections that subscribe first are 16 the shell cannot be. That is a
+// connections that subscribe first are 16 the shell cannot be. It is the true
+// sentence about what a flood can still do to a session, and it is worth
+// reading beside the connection cap's, which sounds like it says otherwise:
+// there, a shell dialling in always gets a connection (server.go, admit). Both
+// hold. Getting a connection is not the same as getting a listener slot, and
+// this is the cap that can be filled first. That is a
 // session with no surfaces rather than a session that hangs on every keypress,
 // it is bounded rather than renewable, and `zde status` now reports the count
 // rather than a boolean that says a shell is there because something is.
@@ -491,6 +601,21 @@ func (s *Server) unlisten(k *sink) {
 // and happens to be receiving an answer is not a client to stop sending events
 // to for the rest of the session. It misses this one, and is not counted as
 // having taken it, which is the honest answer to "did anything draw it".
+//
+// Keeping it is safe only because busy is now a state that ends. This walk
+// cannot tell a listener that lost a race from one whose client has gone, and
+// it should not try: what it sees is a gate, and a gate says who is writing and
+// nothing about who is reading. The connection's own writer is what knows - a
+// write deadline that expires is a client that has not taken a byte while its
+// buffer was full - and it closes the connection when that happens, which ends
+// the read loop and takes the listener off this list on the way out (server.go,
+// handle). So every "busy" here is at most one write deadline long. It was not:
+// reply held the gate with no deadline at all, so one client that stopped
+// reading answered busy for the rest of the session, keeping its place through
+// a full turnover of the connection table and costing every keypress 200ms
+// (see replyWait). A rule here that dropped a listener for answering busy twice
+// would have papered over that and would have cost a shell its events for the
+// crime of receiving a long answer.
 //
 // The listeners are written to at once rather than one after another, and that
 // is what makes sendWait's promise true a second time. sendWait bounds what one

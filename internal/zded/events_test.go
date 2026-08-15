@@ -3,6 +3,8 @@ package zded
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"testing"
@@ -528,6 +530,74 @@ func TestOnlySoManyConnectionsMayListen(t *testing.T) {
 	}
 	if !st.Shell {
 		t.Error("something is listening and status says nothing is")
+	}
+}
+
+// A subscriber that stops reading costs a keypress once, and then stops costing
+// it anything.
+//
+// This is the last write on this socket that had no deadline on it. reply took
+// the connection's gate and held it across a write with no deadline either, so
+// a client that subscribed, asked, and then stopped reading parked the read loop
+// in that write for as long as it stayed alive - and neither of the two things
+// that reclaim a connection could touch it. A broadcast keeps a sink that
+// answers errSinkBusy on purpose, because a listener that merely lost a race is
+// not one to stop drawing to (see broadcast), and the connection cap will not
+// choose a listener at all (server.go, admit).
+//
+// Measured against a running daemon: one such connection kept its listener slot
+// through 257 evictions - a full turnover of the table - and took a keypress
+// from 19µs to 200ms, where it stayed for the rest of the session.
+//
+// So the assertion is not that a keypress is cheap while a client is wedged;
+// sendWait says it costs 200ms and that is the accepted price. It is that the
+// price ends: the write runs out of patience, the connection is closed, the read
+// loop ends and the listener goes with it.
+func TestASubscriberThatStopsReadingIsLetGoOf(t *testing.T) {
+	f := &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code", output: "DP-1"}
+	s := New("test", nil, f, nil)
+	path := serve(t, s)
+
+	c, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	// Subscribe, and from here on never read another byte.
+	if _, err := fmt.Fprint(c, "{\"method\":\"events\"}\n"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the client subscribing", func() bool { return s.listeners() == 1 })
+
+	// Ask, and keep asking, without reading any of it: the answers fill the
+	// receive buffer and the read loop parks in the write that cannot finish.
+	// It ends when the daemon closes the connection under it, which is the whole
+	// point of the test.
+	asking := make(chan struct{})
+	go func() {
+		defer close(asking)
+		for i := 0; i < 200000; i++ {
+			if _, err := fmt.Fprint(c, "{\"method\":\"status\"}\n"); err != nil {
+				return
+			}
+		}
+	}()
+
+	waitFor(t, "the daemon letting go of a client that stopped reading",
+		func() bool { return s.listeners() == 0 })
+	select {
+	case <-asking:
+	case <-time.After(10 * time.Second):
+		t.Error("the client is still being answered after the daemon let go of it")
+	}
+
+	// And with it gone, a keypress costs what it costs on an idle daemon rather
+	// than the sendWait it cost every time while the connection was parked.
+	start := time.Now()
+	s.broadcast(Event{Kind: EventPicker, Desks: []string{"vshop"}})
+	if took := time.Since(start); took > sendWait/4 {
+		t.Errorf("a keypress took %v after the parked subscriber was let go of, want nothing like sendWait (%v)",
+			took, sendWait)
 	}
 }
 

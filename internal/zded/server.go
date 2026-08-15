@@ -617,21 +617,51 @@ const requestMax = 1 << 20
 const ConnectionsMax = 256
 
 // admit adds a connection and answers the one that has to go to make room for
-// it, or nil when there was room.
+// it, and how many of the table the process that owned it was holding. Nil when
+// there was room.
 //
-// Dropping the longest idle rather than refusing the newest, and that choice is
-// the whole of why a cap on connections is safe to have at all. Refusing means
-// the connection refused may be the shell's, dialling again after a switch
-// restarted zded - and a shell that cannot reconnect is the failure
-// fix/bar-redial exists to prevent, arrived at from the other end. Dropping
-// means a shell dialling into a full table always gets in, and a flood pays for
-// its own slots: every connection it opens past the cap takes out one of its
-// own, because its connections are the ones that have asked nothing.
+// Dropping rather than refusing the newest, and that choice is the whole of why
+// a cap on connections is safe to have at all. Refusing means the connection
+// refused may be the shell's, dialling again after a switch restarted zded -
+// and a shell that cannot reconnect is the failure fix/bar-redial exists to
+// prevent, arrived at from the other end. Dropping means a connection dialling
+// into a full table always gets in.
 //
-// Idle is time since this connection last sent a request line (events.go,
-// sink.touch), and a connection that has never sent one is idle from the moment
-// it was accepted. That is what makes the flood the cheapest thing in the table
-// and the bar's two-second poll one of the dearest.
+// What has to go is chosen by how much of the table the process on the other
+// end is holding, and only then by how long this connection has gone without
+// asking anything. That order is the fix for what the first version of this
+// measured, and it is worth setting out what went wrong with the obvious
+// answer.
+//
+// The obvious answer is "the longest idle goes", and it inverts under one byte.
+// Idle was time since the last line arrived, stamped before the line was
+// parsed, so a connection sending "\n" - a malformed request, answered with an
+// error - counted as one that had just asked something. Measured against a
+// running daemon: a flood holding 256 connections and writing one byte on each
+// of them kept every one of its own, chose which of the session's connections
+// was dropped (targets 130, 7 and 255, each first try), and dropped a shell
+// three rounds running before its `{"method":"events"}` could reach listen. The
+// connections that had genuinely asked nothing were the session's own: a `zde`
+// verb sitting inside its 200ms ackWait, the bar between polls.
+//
+// Making the metric "last request that parsed" (events.go, sink.touch) raises
+// that price from one byte to one well-formed line, and no further. So the
+// first key is not about what a connection sent at all. A process holding 200
+// of 256 connections is holding them however quiet or noisy it is, and the only
+// way to hold that many while looking thin is to spread them over processes -
+// which costs a process each, not a byte each.
+//
+// What that buys, said plainly. The shell holds four connections in one process
+// (shell/shell.qml, one Dialer each) and a `zde` verb holds one for the length
+// of a call. A flood in one process is the largest holder in the table from its
+// fifth connection onwards, so every connection it opens past the cap takes out
+// one of its own - "a flood pays for its own slots", now a statement about the
+// flood rather than about how quiet it is. To take a session connection instead
+// it must hold the table with processes that each hold fewer than the shell's
+// four, which is 84 processes for 252 slots, forked and kept alive, and it must
+// keep them asking. That is the price, and it is the honest ceiling on this: a
+// program that can fork 84 processes as this user can do worse things to the
+// session than close a socket.
 //
 // A listener is not a candidate at all. Measured on its own traffic the event
 // stream is the quietest connection zded has - it says `events` once at login
@@ -648,54 +678,89 @@ const ConnectionsMax = 256
 // person is sitting in front of the answer. Bounded the same way: asksMax
 // allows four across the whole daemon (ask.go, claimAsk).
 //
-// So at most twenty of 256 are exempt and there is always a candidate. The walk
-// does not lean on that arithmetic staying true: k has just been added, is not
-// listening and is not asking, so it is a candidate for its own slot, and a
-// table where everything else were exempt would drop the connection that has
-// just arrived rather than go over the cap.
+// The exempt connections still count towards what their process is holding.
+// They are connections it holds, and a process that parks sixteen listeners is
+// exactly the one whose other connections should go first - which is also what
+// keeps the two exemptions from being a way to look thin.
 //
-// A linear walk rather than anything ordered. It is 256 entries under a lock a
-// keypress also takes, which is a few microseconds, and it is paid by the
-// goroutine of the connection that arrived - so under a flood, the flood is
-// what waits for it.
+// The connection that has just arrived is not a candidate while any other one
+// is, and that is deliberate in two directions. It is what makes the guarantee
+// above true through the gap between being accepted and saying what it is: a
+// shell's event loop takes a moment to get to its `events` line, and for that
+// moment the connection is a candidate like any other. And it closes a race the
+// timestamps left open - k used to be stamped before this lock was taken, so a
+// flood that kept every one of its own connections freshly stamped could make
+// the connection waiting on the lock the oldest thing in the table by the time
+// it got in, and be answered with its own eviction. Now k is stamped under the
+// lock and skipped in the walk, so it is chosen only when there is nothing else
+// to choose.
 //
-// The honest cost, and it is worth naming because it is what dropping buys the
-// guarantee with. A flood that keeps dialling rather than holding what it has
-// turns the table over in milliseconds, and then a connection that is waiting
-// for an answer - a `zde` verb inside ackWait, which is 200ms - can be the
-// longest idle one there is. It is dropped, and it is told so in a sentence it
-// can print. What no flood can do is what refusing would have let it do, which
-// is keep the shell out: the event stream is exempt, and a shell dialling again
-// is the newest connection there is and is never the one chosen.
-func (s *Server) admit(k *sink) *sink {
-	k.touch()
+// A linear walk rather than anything ordered, twice over: once to count what
+// each process holds and once to choose. It is 512 map operations on 256
+// entries under a lock a keypress also takes, which is a few microseconds, and
+// it is paid by the goroutine of the connection that arrived - so under a
+// flood, the flood is what waits for it.
+//
+// The honest cost, because dropping is what buys the guarantee. A flood that
+// keeps dialling rather than holding what it has turns the table over in
+// milliseconds, and a session connection can still be chosen once the flood is
+// spread thin enough - a `zde` verb inside ackWait, the bar between polls. It is
+// dropped, and it is told so in a sentence it can print. What no flood can do is
+// what refusing would have let it do, which is keep a shell out: the connection
+// arriving is never the one chosen while anything else can be, and the event
+// stream, once it exists, is exempt. Keeping a shell out of the listeners is a
+// different thing and remains possible - sixteen connections that subscribe
+// first are sixteen the shell cannot be (events.go, listenersMax).
+func (s *Server) admit(k *sink) (*sink, int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Under the lock, so that an arriving connection is the most recently used
+	// thing in the table at the moment the table is walked (see above).
+	k.touch()
 	if s.conns == nil {
 		s.conns = map[*sink]struct{}{}
 	}
 	s.conns[k] = struct{}{}
 	if len(s.conns) <= ConnectionsMax {
-		return nil
+		return nil, 0
+	}
+	// How much of the table each process on the other end is holding. Counted
+	// here rather than kept as a running tally, because the table is walked
+	// anyway and a tally is a second thing to keep true through every way a
+	// connection can leave.
+	holds := make(map[int32]int, len(s.conns))
+	for c := range s.conns {
+		holds[c.pid]++
 	}
 	var out *sink
+	var held int
 	var idle int64
 	for c := range s.conns {
+		if c == k {
+			continue
+		}
 		if _, listening := s.subs[c]; listening {
 			continue
 		}
 		if c.asking.Load() {
 			continue
 		}
-		if t := c.asked.Load(); out == nil || t < idle {
-			out, idle = c, t
+		n, last := holds[c.pid], c.asked.Load()
+		if out == nil || n > held || (n == held && last < idle) {
+			out, held, idle = c, n, last
 		}
 	}
-	if out != nil {
-		delete(s.conns, out)
-		s.dropped++
+	if out == nil {
+		// Every other connection in the table is exempt, so the one that has
+		// just arrived pays for its own slot. It is told why, like any other,
+		// and the alternative is a cap that silently is not one. At today's
+		// numbers this needs the table to be 256 listeners and tiers, against
+		// the 20 those two caps allow between them.
+		out, held = k, holds[k.pid]
 	}
-	return out
+	delete(s.conns, out)
+	s.dropped++
+	return out, held
 }
 
 // forget takes a connection out of the table when its read loop ends. Deleting
@@ -719,16 +784,26 @@ func (s *Server) held() int {
 
 func (s *Server) handle(conn net.Conn) {
 	defer conn.Close()
-	if err := allowPeer(conn); err != nil {
-		// Say nothing useful to a peer that should not be here.
-		writeResponse(conn, Response{Error: "not permitted"})
-		return
-	}
 	// Every write to this connection goes through the sink, because two of them
 	// can now happen at once: a reply to something asked, and an event pushed
 	// while that reply is being written. Interleaved, they would produce one
 	// line that is neither.
+	//
+	// Made before the peer is checked so that the refusal goes through it too. A
+	// caller that is refused is by definition one this daemon knows nothing
+	// about, and a bare write to it is a write with no deadline to a client that
+	// need not ever read - the last of which took a fix (events.go, replyWait).
 	k := &sink{w: conn}
+	pid, err := allowPeer(conn)
+	if err != nil {
+		// Say nothing useful to a peer that should not be here.
+		k.reply(Response{Error: "not permitted"})
+		return
+	}
+	// Who is on the other end, which is how the connection cap tells a session's
+	// four connections from somebody's four hundred (see admit). Set before this
+	// sink is in any table, which is what makes it safe to read without a lock.
+	k.pid = pid
 	defer s.unlisten(k)
 	// And the run this connection started, if it started one, is told the
 	// connection has gone (ask.go, askRun). Deferred here because this is the
@@ -739,20 +814,28 @@ func (s *Server) handle(conn net.Conn) {
 	// nothing bounded (see admit). Deferred before the count is taken so that a
 	// connection dropped for its own slot leaves the table on its way out too.
 	defer s.forget(k)
-	if out := s.admit(k); out != nil {
+	if out, held := s.admit(k); out != nil {
 		// Told what happened rather than just closed (events.go, sink.drop). The
-		// number is in the sentence because it is the fact that makes the rest
-		// of it make sense: a person who reads this wants to know whether zded
-		// is broken or busy, and 256 open connections says which.
-		out.drop(fmt.Sprintf(
-			"zded closed this connection to make room: it was holding %d, which is every one it keeps, and this was the one that had gone longest without asking anything. zded is running - dial again",
-			ConnectionsMax))
+		// numbers are in the sentence because they are what make the rest of it
+		// make sense: a person who reads this wants to know whether zded is
+		// broken or busy, and 256 open connections says which - and whether the
+		// program that lost this connection was holding one of them or two
+		// hundred says whose fault it was.
+		//
+		// On a goroutine of its own, because the sentence is bounded at sendWait
+		// and the connection that has just arrived is the one that would pay it.
+		// That connection may be the shell dialling again into a full table, and
+		// 200ms is the whole of ackWait. The goroutine writes one line to a
+		// connection already out of the table and ends inside sendWait.
+		go out.drop(fmt.Sprintf(
+			"zded closed this connection to make room: it was holding %d, which is every one it keeps, and of the %d open from this process this was the one that had gone longest without asking anything. zded is running - dial again",
+			ConnectionsMax, held))
 		if out == k {
-			// The table was full of connections none of which could be dropped,
-			// so this one is. Unreachable at today's numbers - at most
-			// listenersMax plus asksMax are exempt, which is 20 of 256 - and
-			// handled rather than asserted, because the alternative if it ever
-			// stops being unreachable is a cap that silently is not one.
+			// Every other connection in the table was exempt, so this one paid
+			// for its own slot (see admit). It needs 256 listeners and tiers to
+			// happen, against the 20 those caps allow, and it is handled rather
+			// than asserted because the alternative if that ever stops being
+			// true is a cap that silently is not one.
 			return
 		}
 	}
@@ -765,12 +848,6 @@ func (s *Server) handle(conn net.Conn) {
 	r := bufio.NewScanner(conn)
 	r.Buffer(make([]byte, 0, 4<<10), requestMax)
 	for r.Scan() {
-		// This connection is being used, which is what keeps it out of the way
-		// when something has to be dropped to make room (see admit). Recorded
-		// for anything that arrived, including a line that turns out to be
-		// nonsense: a client sending malformed requests is a client sending, and
-		// what this measures is whether anybody is there.
-		k.touch()
 		var req Request
 		// Valid until the next Scan, and json.Unmarshal copies what it keeps
 		// into the request's own strings, so nothing below outlives the buffer.
@@ -778,6 +855,14 @@ func (s *Server) handle(conn net.Conn) {
 			k.reply(Response{Error: "malformed request"})
 			continue
 		}
+		// This connection is being used, which is part of what keeps it out of
+		// the way when something has to be dropped to make room (see admit).
+		// After the parse and not before it: this used to be recorded for
+		// anything that arrived, on the reasoning that a client sending
+		// malformed requests is a client sending - and that made the measure
+		// forgeable with one byte, by a flood that then chose which of the
+		// session's connections was dropped (events.go, touch).
+		k.touch()
 		if req.Method == MethodEvents {
 			// The connection stays a connection: it keeps answering requests,
 			// and events arrive on it as well. A client that wanted a second
@@ -842,32 +927,41 @@ func (s *Server) handle(conn net.Conn) {
 	}
 }
 
-// allowPeer refuses anyone but the user who owns this zded. Peer credentials
-// come from the kernel, so a caller cannot claim to be someone else - which is
-// the same reasoning as attribution by channel (vision.md, principle 6).
-func allowPeer(conn net.Conn) error {
+// allowPeer refuses anyone but the user who owns this zded, and answers which
+// process is on the other end. Peer credentials come from the kernel, so a
+// caller cannot claim to be someone else - which is the same reasoning as
+// attribution by channel (vision.md, principle 6).
+//
+// The pid comes back with the same credentials the uid is checked from, so it
+// costs nothing extra and cannot be forged either. What it is for is the
+// connection cap, which has to tell a session's handful of connections from one
+// program's several hundred, and cannot do it by anything the connections say
+// (see admit). Pids are reused by the kernel, and that is harmless here: it is
+// only ever compared with the pids of other connections in the table, so the
+// worst a reused one can do is group two connections that are not related.
+func allowPeer(conn net.Conn) (int32, error) {
 	uc, ok := conn.(*net.UnixConn)
 	if !ok {
-		return errors.New("not a unix socket")
+		return 0, errors.New("not a unix socket")
 	}
 	raw, err := uc.SyscallConn()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	var cred *syscall.Ucred
 	var credErr error
 	if err := raw.Control(func(fd uintptr) {
 		cred, credErr = syscall.GetsockoptUcred(int(fd), syscall.SOL_SOCKET, syscall.SO_PEERCRED)
 	}); err != nil {
-		return err
+		return 0, err
 	}
 	if credErr != nil {
-		return credErr
+		return 0, credErr
 	}
 	if uint32(os.Getuid()) != cred.Uid {
-		return fmt.Errorf("uid %d is not %d", cred.Uid, os.Getuid())
+		return 0, fmt.Errorf("uid %d is not %d", cred.Uid, os.Getuid())
 	}
-	return nil
+	return cred.Pid, nil
 }
 
 // Dispatch answers one request. Exported so the methods can be tested without
@@ -2413,10 +2507,19 @@ func ok(v any) Response {
 	return Response{Ok: raw}
 }
 
-func writeResponse(w interface{ Write([]byte) (int, error) }, resp Response) {
+// responseLine is one answer as it goes on the wire, newline and all. The
+// fallback matters more than it looks: a reply that cannot be encoded is a bug
+// in zded, and a caller left waiting for a line that was never written would
+// meet it as a daemon that hangs rather than one that says something.
+//
+// A line rather than a write, because there is exactly one place that writes to
+// a connection now and it takes bytes and a deadline (events.go, writeWithin).
+// A second way to write here would be a second way to write with no deadline on
+// it, which is the bug this branch exists to end.
+func responseLine(resp Response) []byte {
 	line, err := json.Marshal(resp)
 	if err != nil {
 		line = []byte(`{"error":"zded could not encode its own reply"}`)
 	}
-	w.Write(append(line, '\n'))
+	return append(line, '\n')
 }
