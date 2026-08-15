@@ -2030,6 +2030,15 @@ pkgs.testers.runNixOSTest {
       machine.succeed("test ! -L /home/zde/.config/niri/dynamic.kdl")
       machine.succeed("su -l zde -c 'echo \"// zded was here\" >> ~/.config/niri/dynamic.kdl'")
 
+      # And at the mode zded keeps it at, whichever layer got there first. The
+      # nix seed and internal/zded/rules.go both write this file; they disagreed
+      # about its mode for a while, which meant the answer depended on whether
+      # the daemon had written yet. Asserted here because it is the only place
+      # both layers are running at once.
+      machine.succeed(
+          'test "$(stat -c %a /home/zde/.config/niri/dynamic.kdl)" = 600'
+      )
+
       # The whole tree is one config this niri accepts: the nodes parse, the
       # includes resolve, and every action name the keymap emitted is real.
       # Run as the user, since the includes resolve relative to the file.

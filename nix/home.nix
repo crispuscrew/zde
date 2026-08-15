@@ -353,11 +353,21 @@ in
     # dynamic.kdl is the seam zded writes through, so home-manager seeds it and
     # then keeps its hands off. Created rather than linked: a store symlink is
     # read-only, and a missing include is fatal to the whole config.
+    #
+    # 0600, which is the mode zded chmods it to on every write it makes
+    # (internal/zded/rules.go): only niri reads it, and what ends up in it is a
+    # line per pinned app naming the desk it opens on - one of which can be a
+    # private desk zde keeps out of the picker, so the file next door should not
+    # be publishing the name either. Seeded at 0644 the contents were only a
+    # comment and nothing leaked, but the two layers were stating different
+    # modes for the same file and the first zded write silently corrected one of
+    # them. The layer that creates the file should create it at the mode the
+    # layer that owns it keeps it at.
     home.activation.zdeNiriDynamic = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
       dynamic="${config.xdg.configHome}/niri/dynamic.kdl"
       if [ ! -e "$dynamic" ]; then
         run mkdir -p "$(dirname "$dynamic")"
-        run install -m 0644 ${dynamicSeed} "$dynamic"
+        run install -m 0600 ${dynamicSeed} "$dynamic"
       fi
     '';
 
