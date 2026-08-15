@@ -1203,3 +1203,41 @@ func TestClosingTheConnectionStopsTheTier(t *testing.T) {
 		t.Errorf("the run ended and the daemon still counts %d tiers running", n)
 	}
 }
+
+// And the answer a looping tier gets to push into the shell has a size, not
+// just a cap.
+//
+// The consequence is not this daemon's memory, which is what makes askMax
+// different from the other bounds in this package: zded streams and forgets, so
+// a tier looping for ever costs zded a 4 KB buffer whatever the number is. What
+// it costs is the window, which "keeps the whole thing in one text item on the
+// thread that draws the bar" - so what has to be asserted is how much text
+// leaves this daemon, measured at the client, which is where the cost lands.
+//
+// TestAnEndlessAnswerIsCappedAndSaysSo above pins that the cap is reached and
+// that the client is told the tier was stopped, and both of its numbers are
+// askMax, so it says the streaming stops somewhere and never where. This one is
+// the absolute half.
+//
+// A megabyte is the ceiling. askMax's own comment measures itself in pages -
+// "a quarter of a megabyte is about forty pages: past that, nothing is being
+// answered any more" - so a megabyte is four times over, about a hundred and
+// sixty pages, and the room to decide that forty pages was mean without this
+// test arguing. Past it, whatever the bar is holding in one text item is not an
+// answer to a question somebody asked.
+func TestALoopingTierCannotPushMoreThanAWindowHoldsIntoTheShell(t *testing.T) {
+	writeTiers(t, map[string][]string{TierProvider: fakeTier("loop")})
+	text, failure := askAll(t, askServer(t), TierProvider, "go on for ever")
+	if len(text) > 1<<20 {
+		t.Errorf("a tier that never stopped got %d KiB of text into the client, past the 1 MiB "+
+			"a window can hold in one text item on the thread that draws the bar",
+			len(text)>>10)
+	}
+	// And it stopped because it was stopped, rather than because the fixture
+	// ran out: a tier that exited on its own would make the number above a
+	// statement about the stand-in.
+	if !strings.Contains(failure, "was stopped") {
+		t.Errorf("the tier was not stopped, so %d KiB is what it chose to say and not what it "+
+			"was allowed to: %q", len(text)>>10, failure)
+	}
+}

@@ -1059,3 +1059,81 @@ func mode(t *testing.T, path string) os.FileMode {
 	}
 	return fi.Mode().Perm()
 }
+
+// A flood leaves a journal a restart can shorten, and that is what the cap
+// bought.
+//
+// The consequence chosen here is the file and not the queue, because the file
+// is what the incident was: a flood filled a 16 GB tmpfs and took every shell
+// on the machine with it. The queue being long is a nuisance; the queue being
+// long on disk, in a file that is only ever rewritten when a daemon starts, is
+// the thing that ran a machine out of space. So what is asserted is the size of
+// the journal after a compaction - which is exactly the "49 MB compacted to
+// 49 MB" that QueueMax's comment says used to happen, measured rather than
+// described.
+//
+// An absolute ceiling and not a comparison against QueueMax, which is the whole
+// point: TestTheQueueHasACeilingAndTheOldestSurvivesIt above pins which end
+// gives way, and it queues QueueMax items to do it, so the number can be
+// anything at all and that test still passes. This one fails when the number
+// stops being one a disk can hold.
+//
+// Eight megabytes, against the two and a half QueueMax's own arithmetic
+// arrives at for a thousand items at their ceiling. Three times over, so that
+// deciding a queue may hold two or three thousand things is a decision somebody
+// can make without this test arguing about it, and eight times over is caught.
+//
+// The items are as large as an item gets: a summary and a sender at the 300
+// characters each that internal/zded clamps them to, written in an alphabet
+// that costs four bytes a character. Nothing in this package clamps them - the
+// caller does - so building them here is the only way to ask what the worst
+// case costs.
+func TestAFloodLeavesAJournalThatCompactsToSomethingADiskCanHold(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "journal.jsonl")
+	j := open(t, path)
+
+	// Four bytes a character, and 300 of them, which is what a queued line is
+	// at its ceiling. An emoji in a notification summary is not an exotic case.
+	wide := strings.Repeat("\U0001F642", 300)
+	// Spelled as a number rather than as QueueMax times eight, so that widening
+	// the cap does not widen the flood along with it: a fixture written in
+	// terms of the bound it is testing grows to meet whatever the bound became,
+	// and here it would also mean eight thousand fsynced appends on the way.
+	const flood = 8001
+	refused := 0
+	for i := 0; i < flood; i++ {
+		_, err := j.Queue(Item{Text: wide, From: wide, Desk: "vshop"})
+		switch {
+		case err == nil:
+		case errors.Is(err, ErrQueueFull):
+			refused++
+		default:
+			t.Fatalf("queueing %d of %d: %v", i, flood, err)
+		}
+	}
+	// The rewrite a restart does, which is the only thing that ever shortens
+	// this file: Compact has no other caller in the tree, and it runs at Open.
+	if err := j.Compact(); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Size() > 8<<20 {
+		t.Errorf("%d arrivals left a journal of %d MB after the compaction a restart does, "+
+			"past the 8 MB a bounded queue can cost: this is the file that filled a 16 GB tmpfs",
+			flood, fi.Size()>>20)
+	}
+	// And the queue is still a queue, so the size above is a ceiling something
+	// reached rather than a journal that lost what was owed.
+	if len(j.Waiting()) == 0 {
+		t.Error("nothing is waiting after the flood, so the size above is about an empty queue")
+	}
+	// Said after the size, and not instead of it: a cap so high that eight
+	// thousand arrivals never reach it is a cap that no flood a machine can
+	// produce will ever meet, which is the same fault as having none.
+	if refused == 0 {
+		t.Errorf("%d arrivals and none of them was refused, so nothing here is capping anything", flood)
+	}
+}
