@@ -604,6 +604,64 @@ func TestDeskLast(t *testing.T) {
 	}
 }
 
+// The desk you came from can stop existing while you are away: its last
+// workspace is closed or changes hands, and no manifest declares it. Nothing
+// used to clear the pointer, so desk.last named a desk that is not there every
+// time it was pressed for the rest of the session. It says so once, and gives
+// the pointer up.
+func TestDeskLastForgetsADeskThatIsGone(t *testing.T) {
+	jrn, err := journal.Open(filepath.Join(t.TempDir(), "j.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jrn.Close()
+	jrn.SetLastDesk("haven")
+
+	niri := &fakeCompositor{m: desk.Rebuild([]desk.Workspace{
+		{ID: 1, Name: "vshop.DP-1.code", Output: "DP-1"},
+	}, []string{"DP-1"})}
+	s := New("test", jrn, niri, nil)
+
+	resp := s.Dispatch(Request{Method: "desk.last"})
+	if resp.Error == "" {
+		t.Fatal("went back to a desk with no workspaces")
+	}
+	if !strings.Contains(resp.Error, "haven") {
+		t.Errorf("refusal %q does not name the desk that is gone", resp.Error)
+	}
+	if got := jrn.State().LastDesk; got != "" {
+		t.Errorf("LastDesk = %q, want the pointer given up", got)
+	}
+	// Pressed again it is the ordinary answer of a session with nowhere to go
+	// back to, rather than a desk name to go looking for.
+	if resp := s.Dispatch(Request{Method: "desk.last"}); !strings.Contains(resp.Error, "no desk to go back to") {
+		t.Errorf("second press = %q, want the answer for having nowhere to go back to", resp.Error)
+	}
+	if got := niri.focusCalls(); len(got) != 0 {
+		t.Errorf("focused %v on the way to a desk that is not there", got)
+	}
+}
+
+// Any other failure keeps the pointer. A compositor that cannot be reached is
+// not a desk that is gone, and the desk is still there to go back to once it
+// can.
+func TestDeskLastKeepsThePointerWhenNiriIsUnreadable(t *testing.T) {
+	jrn, err := journal.Open(filepath.Join(t.TempDir(), "j.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jrn.Close()
+	jrn.SetLastDesk("haven")
+
+	s := New("test", jrn, &fakeCompositor{err: errors.New("NIRI_SOCKET is not set")}, nil)
+	if resp := s.Dispatch(Request{Method: "desk.last"}); resp.Error == "" {
+		t.Fatal("a switch with no compositor was reported as done")
+	}
+	if got := jrn.State().LastDesk; got != "haven" {
+		t.Errorf("LastDesk = %q, want the desk kept: it is still there", got)
+	}
+}
+
 // Switching to a desk with nothing in it is not a switch, and saying so beats
 // reporting success while every monitor stayed where it was.
 func TestDeskSwitchEmpty(t *testing.T) {
@@ -1989,6 +2047,98 @@ func TestDeskSnapshot(t *testing.T) {
 	}
 }
 
+// Snapshot and the reading of a manifest back are meant to be inverses: the
+// desk you arranged, written down, comes back as the same desk. This is that
+// property rather than a case per way it was not - the desk goes to a file, the
+// file comes back onto a machine with nothing on the screen, and the workspaces
+// are the same ones in the same order.
+//
+// The shapes are the ones where a wrong answer shows. Labels that do not sort
+// into the strip's order catch a snapshot writing an order of its own; an
+// ordinal catches the check that used to refuse the whole desk because adoption
+// had minted one for a window with no readable app id.
+//
+// The manifest is the only record here - no journal - so what comes back comes
+// back out of the file.
+func TestSnapshotAndSwitchAreInverses(t *testing.T) {
+	// reconcile below writes niri's placement rules, which go under
+	// XDG_CONFIG_HOME. This keeps them out of the home directory of whoever is
+	// running the tests.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	cases := []struct {
+		name  string
+		strip map[string][]string // monitor -> its strip, top first
+	}{
+		{"labels the strip does not have in sorted order", map[string][]string{"DP-1": {"zsh", "agent"}}},
+		{"a workspace adoption named with an ordinal", map[string][]string{"DP-1": {"code", "1"}}},
+		{"ordinals in the strip's order and not in numeric order", map[string][]string{"DP-1": {"10", "2"}}},
+		{"two monitors", map[string][]string{"DP-1": {"zsh", "agent"}, "HDMI-A-1": {"aux"}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := manifest.Dir(t.TempDir())
+			monitors := make([]string, 0, len(c.strip))
+			for mon := range c.strip {
+				monitors = append(monitors, mon)
+			}
+			sort.Strings(monitors)
+
+			// The desk as it is on the screen: each monitor's strip, in order.
+			var all []desk.Workspace
+			var want []string
+			for _, mon := range monitors {
+				for i, slot := range c.strip[mon] {
+					name := "vshop." + mon + "." + slot
+					all = append(all, desk.Workspace{ID: uint64(len(all) + 1), Name: name, Output: mon, Idx: uint8(i)})
+					want = append(want, name)
+				}
+			}
+			before := &fakeCompositor{m: desk.Rebuild(all, monitors), focused: all[0].Name, output: monitors[0]}
+			if resp := New("test", nil, before, dir).Dispatch(
+				Request{Method: "desk.snapshot", Args: []string{"vshop"}}); resp.Error != "" {
+				t.Fatalf("snapshot: %s", resp.Error)
+			}
+
+			// The other machine: the manifest, and nothing but niri's empty
+			// tail on each monitor.
+			after := &fakeCompositor{empty: map[string][]uint64{}, nextID: 100, output: monitors[0]}
+			for i, mon := range monitors {
+				after.empty[mon] = []uint64{uint64(10 + i)}
+			}
+			after.remap()
+			s := New("test", nil, after, dir)
+			if resp := s.Dispatch(Request{Method: "desk.switch", Args: []string{"vshop"}}); resp.Error != "" {
+				t.Fatalf("switch: %s", resp.Error)
+			}
+			if got := after.adoptCalls(); !slices.Equal(got, want) {
+				t.Errorf("the desk came back as %v, want %v", got, want)
+			}
+			// And each monitor is entered where its strip starts, which is
+			// where you were standing when you wrote the desk down.
+			var top []string
+			for _, mon := range monitors {
+				top = append(top, "vshop."+mon+"."+c.strip[mon][0])
+			}
+			if got := after.focusCalls(); !slices.Equal(got, top) {
+				t.Errorf("entered on %v, want the top of each strip %v", got, top)
+			}
+			// And reconcile finds nothing to correct: the round trip converged
+			// rather than leaving work for the next pass to do.
+			after.focused = top[0]
+			if resp := s.Dispatch(Request{Method: "desk.reconcile"}); resp.Error != "" {
+				t.Fatalf("reconcile: %s", resp.Error)
+			}
+			if got := after.renameCalls(); len(got) != 0 {
+				t.Errorf("reconcile renamed %v after a round trip", got)
+			}
+			if got := after.adoptCalls(); !slices.Equal(got, want) {
+				t.Errorf("reconcile named %v as well", got[len(want):])
+			}
+		})
+	}
+}
+
 // With nothing focused there is no desk you are on, and guessing which one to
 // write down would write the wrong one.
 func TestDeskSnapshotWithoutFocus(t *testing.T) {
@@ -2661,6 +2811,43 @@ func TestMoveWorkspaceToMakesTheRegulars(t *testing.T) {
 	}
 	if st.LastDesk != "vshop" {
 		t.Errorf("LastDesk = %q, want vshop, so desk.last comes back", st.LastDesk)
+	}
+}
+
+// The workspace changes hands and the position remembered for it goes with it.
+// It used to be written back into the desk that lost it, so vshop remembered a
+// workspace the regulars own - a last-active slot that is not a memory of
+// anything, and the desk it names is one no switch to vshop can reach.
+func TestMoveWorkspaceToMovesTheRememberedPosition(t *testing.T) {
+	f := &fakeCompositor{
+		m: desk.Rebuild([]desk.Workspace{
+			{ID: 1, Name: "vshop.DP-1.comms", Output: "DP-1", Idx: 0},
+			{ID: 2, Name: "vshop.DP-1.code", Output: "DP-1", Idx: 1},
+		}, []string{"DP-1"}),
+		focused: "vshop.DP-1.comms",
+		output:  "DP-1",
+	}
+	jrn, err := journal.Open(filepath.Join(t.TempDir(), "j.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jrn.Close()
+	comms, err := desk.NewName("vshop", "DP-1", "comms")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jrn.SetActive(comms)
+	s := New("test", jrn, f, nil)
+
+	if resp := s.Dispatch(Request{Method: "desk.move-workspace-to", Args: []string{"regulars"}}); resp.Error != "" {
+		t.Fatalf("move-workspace-to: %s", resp.Error)
+	}
+	st := jrn.State()
+	if got, stale := st.LastActive["vshop"]["DP-1"]; stale {
+		t.Errorf("vshop remembers %q on DP-1, which the regulars own now", got)
+	}
+	if got := st.LastActive["regulars"]["DP-1"]; got != "comms" {
+		t.Errorf("regulars last active = %q, want the workspace they were given", got)
 	}
 }
 

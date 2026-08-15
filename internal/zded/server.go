@@ -953,7 +953,7 @@ func (s *Server) Dispatch(req Request) Response {
 		if prev == "" {
 			return Response{Error: "no desk to go back to yet"}
 		}
-		return s.switchDesk(prev)
+		return s.lastDesk(prev)
 	default:
 		if bluetoothMethods[req.Method] {
 			// One line here and the rest in bluetooth.go: the radio has ten
@@ -1338,10 +1338,11 @@ func (s *Server) moveWorkspaceTo(target string) Response {
 	if s.jrn != nil {
 		s.jrn.Renamed(desk.Rename{From: from, To: to})
 		// You are standing in the target band now, and desk.last should come
-		// back to where you were. The desk you left keeps a last-active slot
-		// naming a workspace it no longer owns, which needs no correcting: a
-		// switch falls back to the first workspace of the band when the
-		// remembered one is not there (desk.Landing).
+		// back to where you were. The rename is what moves the remembered
+		// position from the desk that lost the workspace to the one that has
+		// it (internal/journal, applyRename); the desk you left is then
+		// remembering nothing on that monitor, and a switch to it enters at the
+		// top of its band.
 		s.jrn.SetOnDesk(target)
 		s.jrn.SetActive(to)
 		if from.Desk != target {
@@ -1823,6 +1824,36 @@ func bandAdvice(target string, resp Response) Response {
 // meant cannot drift from writing it.
 func noSuchBand(target string) string {
 	return "desk " + target + " has no workspaces and no manifest that declares any"
+}
+
+// lastDesk goes back to the desk you came from, and gives up the pointer when
+// that desk is not there any more.
+//
+// A desk stops existing when its last workspace is closed or changes hands and
+// no manifest declares it, and nothing used to clear this: the key then refused
+// with the same words for the rest of the session, and the only thing that ever
+// fixed it was some later switch happening to overwrite the pointer. A key that
+// names a desk you cannot get to, every time you press it, is worse than one
+// that says there is nowhere to go back to - it sends you looking for a desk.
+//
+// Cleared rather than re-pointed at something else. Where you came from has one
+// answer, and going somewhere else instead is not going back.
+//
+// Only that refusal, read back through the one function that writes it, which
+// is the affordance bandAdvice already uses. A compositor that cannot be read
+// or a focus that failed partway is a desk that is still there, and a pointer
+// worth keeping. The caller has already found the journal this reads.
+//
+// "Where you came from" rather than "the desk", because it can be the regulars:
+// the band you were standing in when you switched away is what this remembers,
+// and the last workspace can leave it the same way it leaves a desk.
+func (s *Server) lastDesk(prev string) Response {
+	resp := s.switchDesk(prev)
+	if resp.Error != noSuchBand(prev) {
+		return resp
+	}
+	s.jrn.SetLastDesk("")
+	return Response{Error: "where you came from (" + prev + ") is not there any more, so there is nowhere to go back to"}
 }
 
 // scroll moves one workspace along the band of the desk you are on, on the
