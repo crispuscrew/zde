@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -3406,5 +3408,301 @@ func TestStatusSaysHowManyConnectionsAreOpen(t *testing.T) {
 	}
 	if st.Dropped == 0 {
 		t.Error("status says nothing was dropped after a flood that filled the table twice over")
+	}
+}
+
+// One byte is not asking for anything, and what counts as asking is what decides
+// who goes.
+//
+// The connection that has gone longest without asking anything is the one
+// dropped to make room. That was measured on every line the scanner returned,
+// stamped before the JSON was looked at - so a connection sending "\n", answered
+// "malformed request", was refreshed exactly as if it had asked something.
+// Measured against a running daemon: a flood holding the table and writing one
+// byte per connection kept every one of its own and named which of the session's
+// went, getting targets 130, 7 and 255 each on the first try, and dropping a
+// shell three rounds running before it could subscribe.
+//
+// So: a full table, and the connection at the front of the queue writes a byte.
+// It is still the one that goes.
+func TestAByteOnAConnectionIsNotAskingForAnything(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
+	path := serve(t, s)
+
+	idle := dialPeers(t, path, ConnectionsMax)
+	waitFor(t, "the table filling", func() bool { return s.held() == ConnectionsMax })
+
+	// A bare newline, and the answer that says the daemon read it and made
+	// nothing of it. Read back, so that what follows cannot race the line.
+	if line := idle[0].ask(t, ""); !strings.Contains(line, "malformed") {
+		t.Fatalf("a bare newline was answered %q, want a malformed request", strings.TrimSpace(line))
+	}
+
+	// One more connection, so that somebody has to go.
+	dialPeer(t, path)
+
+	line, err := idle[0].hear(10 * time.Second)
+	if err != nil {
+		t.Fatalf("the connection that had asked nothing since it arrived was kept, so a byte bought its place: %v", err)
+	}
+	if !strings.Contains(line, "make room") {
+		t.Errorf("it was told %q, want the sentence a dropped connection gets", strings.TrimSpace(line))
+	}
+	// And the one behind it in the queue is untouched, which is the other half:
+	// a byte that refreshed the first would have moved the choice on to this one.
+	if line := idle[1].ask(t, `{"method":"status"}`); !strings.Contains(line, `"ok"`) {
+		t.Errorf("the next connection along was answered %q, so it was dropped instead", strings.TrimSpace(line))
+	}
+}
+
+// What goes is what the process holding most of the table holds, and the measure
+// above is only the tie-break under it.
+//
+// "Longest without asking anything" can be beaten by asking - a byte before this
+// branch, a well-formed line after it - and the connections that have genuinely
+// asked nothing are the session's own: a `zde` verb sitting inside its 200ms
+// ackWait, the bar between polls. So the first question is not what a connection
+// sent. A process holding two hundred connections is holding them however noisy
+// it is, and the only way to hold that many while looking thin is to spread them
+// over processes, which costs a process each rather than a byte each.
+//
+// Built rather than dialled, because two processes cannot be arranged from inside
+// one: every connection a test dials is held by the test. The socket-level
+// version is the flood in a process of its own, below.
+func TestWhatGoesIsWhatTheProcessHoldingMostOfTheTableHolds(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
+	now := time.Now().UnixNano()
+
+	// One program holding all but one of the table, and every connection of it
+	// noisy: each has just asked something well-formed.
+	s.conns = map[*sink]struct{}{}
+	for i := 0; i < ConnectionsMax-1; i++ {
+		c := &sink{pid: 4242}
+		c.asked.Store(now)
+		s.conns[c] = struct{}{}
+	}
+	// And one of the session's own, quiet since the moment it arrived: a verb
+	// waiting inside ackWait to hear that a surface drew.
+	quiet := &sink{pid: 7}
+	quiet.asked.Store(now - int64(time.Minute))
+	s.conns[quiet] = struct{}{}
+
+	out, held := s.admit(&sink{pid: 9})
+	if out == nil {
+		t.Fatal("a connection arrived at a full table and nothing was dropped")
+	}
+	if out == quiet {
+		t.Fatal("the session's own connection was dropped while one program held 255 of 256: " +
+			"a flood that keeps its connections noisy chooses which of the session's goes")
+	}
+	if out.pid != 4242 {
+		t.Errorf("the connection dropped belonged to pid %d, want the program holding most of the table", out.pid)
+	}
+	if held != ConnectionsMax-1 {
+		t.Errorf("it was reported as one of %d from that process, want %d", held, ConnectionsMax-1)
+	}
+	if _, still := s.conns[out]; still {
+		t.Error("the dropped connection is still in the table")
+	}
+}
+
+// The connection that has just arrived is not the one chosen, and timestamps
+// cannot make it the one either.
+//
+// admit stamped the arriving connection before it took the lock, so a flood
+// keeping all of its own connections freshly stamped could make the one waiting
+// on that lock the oldest thing in the table by the time it got in - and answer
+// it with its own eviction, which is a shell locked out of its own socket by a
+// program that dials fast enough. The stamp is under the lock now and the
+// arriving connection is skipped in the walk, so this is closed by construction
+// rather than by winning a race.
+//
+// Driven from the far end of it, and with the first key taken out of the way:
+// every connection in the table comes from a process of its own, so nothing is
+// holding more of it than anything else and the choice is the timestamps alone.
+// Each is stamped a second into the future, which is the flood keeping its own
+// connections fresh while this one waited to be let in.
+func TestTheConnectionThatHasJustArrivedIsNotTheOneDropped(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
+	ahead := time.Now().Add(time.Second).UnixNano()
+	s.conns = map[*sink]struct{}{}
+	for i := 0; i < ConnectionsMax; i++ {
+		c := &sink{pid: int32(1000 + i)}
+		c.asked.Store(ahead)
+		s.conns[c] = struct{}{}
+	}
+
+	shell := &sink{pid: 7}
+	out, _ := s.admit(shell)
+	if out == shell {
+		t.Fatal("the connection that had just arrived paid for its own slot while 256 others could have, " +
+			"so a flood that keeps its own connections stamped keeps everything else out")
+	}
+	if _, in := s.conns[shell]; !in {
+		t.Error("the connection that arrived is not in the table")
+	}
+}
+
+// And when there is genuinely nothing else to choose it is the one that pays,
+// because the alternative is a cap that silently is not one.
+//
+// It takes a table of 256 listeners and tiers to reach, against the 20 those two
+// caps allow between them (events.go, listenersMax; ask.go, asksMax), so this is
+// a branch being kept honest rather than one anything reaches.
+func TestAConnectionPaysForItsOwnSlotWhenEverythingElseIsExempt(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
+	s.conns = map[*sink]struct{}{}
+	s.subs = map[*sink]struct{}{}
+	for i := 0; i < ConnectionsMax; i++ {
+		c := &sink{pid: 4242}
+		s.conns[c] = struct{}{}
+		s.subs[c] = struct{}{}
+	}
+
+	k := &sink{pid: 7}
+	out, _ := s.admit(k)
+	if out != k {
+		t.Fatalf("a table of %d listeners took another connection, so the cap is not one", ConnectionsMax)
+	}
+	if n := s.held(); n != ConnectionsMax {
+		t.Errorf("%d connections held, want the cap of %d", n, ConnectionsMax)
+	}
+}
+
+// floodSocket names the socket a flood should dial, and is what tells the
+// process below that it is one.
+const floodSocket = "ZDE_TEST_FLOOD_SOCKET"
+
+// TestAFloodInAProcessOfItsOwn is not a test. It is the flood, and it is a
+// process because what the test after it is about cannot be arranged from inside
+// one: the cap tells a session's four connections from somebody's four hundred
+// by the process holding them (see admit), and every connection a test dials is
+// held by the test.
+//
+// It holds twice the cap, keeps dialling so that something is being dropped
+// throughout, and on every connection it holds it writes both of the things that
+// can pass for being used: a bare byte, which is what used to count, and a real
+// `status` request, which is what would count if the fix stopped at "well-formed
+// lines only". It reads what comes back, because a client that lets its own
+// answers pile up has its connection closed under it (events.go, replyWait).
+// The most patient attacker there is, rather than the most obvious one.
+func TestAFloodInAProcessOfItsOwn(t *testing.T) {
+	path := os.Getenv(floodSocket)
+	if path == "" {
+		t.Skip("this is the flood, run as a process of its own by the test below it")
+	}
+	// A ceiling of its own, so that a parent which dies without saying so leaves
+	// nothing behind for longer than a test run.
+	deadline := time.Now().Add(2 * time.Minute)
+	stop := make(chan struct{})
+	go func() {
+		// The parent closes stdin when it is done with the flood.
+		io.Copy(io.Discard, os.Stdin)
+		close(stop)
+	}()
+
+	const holds = ConnectionsMax * 2
+	conns := make([]net.Conn, 0, holds)
+	defer func() {
+		for _, c := range conns {
+			c.Close()
+		}
+	}()
+	for time.Now().Before(deadline) {
+		select {
+		case <-stop:
+			return
+		default:
+		}
+		// A few more each round, so that connections are being dropped to make
+		// room throughout rather than only at the start.
+		for i := 0; i < 4; i++ {
+			if len(conns) >= holds {
+				conns[0].Close()
+				conns = conns[1:]
+			}
+			c, err := net.Dial("unix", path)
+			if err != nil {
+				break
+			}
+			conns = append(conns, c)
+			go io.Copy(io.Discard, c)
+		}
+		for _, c := range conns {
+			// Errors ignored: many of these are connections the daemon has
+			// already dropped, which is the flood paying for its own slots.
+			c.Write([]byte("\n{\"method\":\"status\"}\n"))
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// flood starts one, and makes sure it does not outlive the test that started it.
+func flood(t *testing.T, path string) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestAFloodInAProcessOfItsOwn$", "-test.timeout=3m")
+	cmd.Env = append(os.Environ(), floodSocket+"="+path)
+	in, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting the flood: %v", err)
+	}
+	t.Cleanup(func() {
+		in.Close()
+		cmd.Process.Kill()
+		cmd.Wait()
+	})
+}
+
+// A shell that has not said what it is yet still gets in, and stays in.
+//
+// This is the property the cap was written for, through the one moment it did
+// not cover. A connection is exempt from being dropped once it is a listener,
+// and between accepting it and its `{"method":"events"}` line there is a shell's
+// own event loop - about 7ms of table at the dial rate a flood reaches.
+// Demonstrated against a running daemon: with 50ms between dialling and
+// subscribing, the shell's connection was dropped before it could subscribe,
+// three times out of three.
+//
+// What covers the gap is not patience with a connection that has said nothing,
+// which is an exemption an attacker buys by being slow. It is that the flood
+// holds hundreds of connections in one process and the shell holds one in
+// another, whatever either of them is saying or not saying.
+func TestAShellIsNotDroppedInTheGapBeforeItSubscribes(t *testing.T) {
+	f := &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code", output: "DP-1"}
+	s := New("test", nil, f, nil)
+	path := serve(t, s)
+
+	flood(t, path)
+	waitFor(t, "the flood filling the table", func() bool { return s.held() == ConnectionsMax })
+
+	// The shell dials, and then does what a shell does before it says anything,
+	// which is nothing at all for as long as its own event loop takes. The flood
+	// is still arriving and still having connections dropped throughout.
+	shell := dialPeer(t, path)
+	time.Sleep(200 * time.Millisecond)
+
+	if line := shell.ask(t, `{"method":"events"}`); !strings.Contains(line, "listening") {
+		t.Fatalf("a shell that waited before subscribing was answered %q", strings.TrimSpace(line))
+	}
+	if n := s.listeners(); n != 1 {
+		t.Fatalf("%d listeners after the shell subscribed, want 1", n)
+	}
+	// And it is drawn to, which is the difference between holding a connection
+	// and being a shell that is not dark.
+	if sent := s.broadcast(Event{Kind: EventPicker, Desks: []string{"vshop"}}); sent != 1 {
+		t.Fatalf("a broadcast reached %d listeners under the flood, want the shell", sent)
+	}
+	line, err := shell.hear(10 * time.Second)
+	if err != nil {
+		t.Fatalf("the shell got no event: %v", err)
+	}
+	if !strings.Contains(line, EventPicker) {
+		t.Errorf("the shell was sent %q, want a picker", strings.TrimSpace(line))
+	}
+	if n := s.held(); n != ConnectionsMax {
+		t.Errorf("%d connections held under a flood, want the cap of %d", n, ConnectionsMax)
 	}
 }
