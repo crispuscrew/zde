@@ -217,10 +217,11 @@ func TestADetailPastTheBoundIsCutOutLoud(t *testing.T) {
 	}
 }
 
-// Almost nothing in this column was written by zde. zcr's refusal is carried
-// whole, a YAML parser answers a hand-edited manifest by quoting the file back,
-// and this report is read in a terminal and pasted into bug threads, where ESC
-// is not a character but the start of an instruction.
+// Almost nothing in this column was written by zde. A name it cannot resolve is
+// refused in zcr's own words, a hand-edited manifest is answered by a YAML
+// parser quoting the file back, and this report is read in a terminal and pasted
+// into bug threads, where ESC is not a character but the start of an
+// instruction.
 //
 // A newline is now kept rather than folded away, so the second half of this is
 // where it lands. A check's level is in column one; a continuation is twenty

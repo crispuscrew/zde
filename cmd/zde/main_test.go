@@ -1023,11 +1023,11 @@ func TestTheErrorThatEndsTheCommandKeepsItsShapeAndPrintsNoInstructions(t *testi
 // check's level is in column one, which is the column an eye runs down looking
 // for the word "fail".
 //
-// A detail keeps its shape now rather than being folded onto one line, so the
-// assertion is where a line is and no longer how many there are: a check starts
-// in column one and the rest of a check is indented under the detail column, so
-// a stranger's newline buys an indented line and never a check nobody made
-// (internal/doctor, Check.String).
+// A detail keeps its shape now rather than being folded onto one line, so what
+// is asserted is where a line starts and no longer that every line is a check:
+// a check starts in column one and the rest of a check is indented under the
+// detail column, so a stranger's newline buys an indented line and never a
+// check nobody made (internal/doctor, Check.String).
 func TestNoLineOfTheDoctorReportIsOneNobodyChecked(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "zde", "desks"), 0o700); err != nil {
