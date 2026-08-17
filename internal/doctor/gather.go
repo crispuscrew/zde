@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -176,6 +177,30 @@ type Logind struct {
 	// Can is one entry per verb logind has a question for, in the order the menu
 	// would list them.
 	Can []Can
+	// Holds is what logind says is holding this session's idle timers off: its
+	// own "idle" inhibitors, and nothing else. It is deliberately not called
+	// something like "awake", because the set it describes is much smaller than
+	// that word - see the idle check in doctor.go for what is missing from it
+	// and why nothing here can find out.
+	Holds []Hold
+	// HoldsErr is why the inhibitors could not be listed, when the rest of the
+	// probe worked. Kept apart from Err for the reason every other unknown in
+	// this file is: a question that was never answered is not the answer "no",
+	// and "nothing is holding your screen awake" is the one sentence here that
+	// must never be said on the strength of a call that failed.
+	HoldsErr error
+}
+
+// Hold is one thing logind says is holding idle off, in the words it gave.
+//
+// Who and Why are anybody's: `systemd-inhibit --who=... --why=...` takes two
+// strings from whoever runs it, and every local account can run it. This report
+// is printed to a terminal, so both are put through internal/attn's filter
+// before they reach a line (doctor.go, idle) rather than here, because this
+// struct is the reading and that is the drawing.
+type Hold struct {
+	Who string
+	Why string
 }
 
 // Can is one power verb and logind's own word about it: yes, no, na (the
@@ -670,7 +695,44 @@ func probeLogind() Logind {
 		l.Can = append(l.Can, c)
 	}
 	l.Session, l.SessionErr = displaySession(ctx, conn)
+	l.Holds, l.HoldsErr = idleHolds(ctx, mgr)
 	return l
+}
+
+// idleHolds is logind's inhibitor table, narrowed to the ones holding idle off.
+//
+// The row is a(ssssuu) and positional on the wire, so it is decoded into a
+// named struct for the reason internal/power decodes it into one: a field out
+// of order here would print one program's name against another's reason.
+//
+// Narrowed on two things. "idle" has to be in the colon-separated What, which
+// is logind's own vocabulary for this and not a guess at it; and the mode has to
+// be block, because a delay inhibitor postpones a suspend by seconds so
+// something can save its work and is not a thing holding a screen awake. Both
+// filters are the same ones internal/power applies, and they are duplicated here
+// on purpose - this package asks logind what is true, that one asks it to do
+// things, and gather.go already keeps its own copy of every logind constant for
+// exactly this reason.
+func idleHolds(ctx context.Context, mgr dbus.BusObject) ([]Hold, error) {
+	var rows []struct {
+		What string
+		Who  string
+		Why  string
+		Mode string
+		UID  uint32
+		PID  uint32
+	}
+	if err := mgr.CallWithContext(ctx, logindMgr+".ListInhibitors", 0).Store(&rows); err != nil {
+		return nil, err
+	}
+	var out []Hold
+	for _, r := range rows {
+		if r.Mode != "block" || !slices.Contains(strings.Split(r.What, ":"), "idle") {
+			continue
+		}
+		out = append(out, Hold{Who: r.Who, Why: r.Why})
+	}
+	return out, nil
 }
 
 // displaySession asks logind for this user's graphical session, which is the
