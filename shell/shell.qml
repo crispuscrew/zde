@@ -317,6 +317,10 @@ ShellRoot {
             }
             if (msg.event.kind === "picker")
                 root.openPicker(msg.event);
+            else if (msg.event.kind === "picker.move-window")
+                root.openMoveWindow(msg.event);
+            else if (msg.event.kind === "picker.move-workspace")
+                root.openMoveWorkspace(msg.event);
             else if (msg.event.kind === "windows")
                 root.openWindows(msg.event);
             else if (msg.event.kind === "notif-center")
@@ -416,16 +420,47 @@ ShellRoot {
     // about sockets or methods.
     property string pickMethod: "desk.switch"
 
-    // The desks. The note on a row is where you are, because that is the one
-    // thing about a desk list you cannot see from the list.
+    // The desks, for the three verbs that want one named: go there, send the
+    // focused window there, send the whole workspace there. One list, because it
+    // is one question; what differs is the method a chosen row is spent on.
+    //
+    // Three functions rather than one taking the method, so that each name is a
+    // literal where a scan can see it. The method a picker row is sent as is the
+    // one this shell never writes inside a request - it is set here and read at
+    // the choice - and internal/zded's wire test finds it by looking for exactly
+    // this assignment (wire_test.go, methodHandedOnInQML). Passed in as an
+    // argument it is invisible to that scan, which is how the shell would come
+    // to ask for a method zded does not have with every test green.
     function openPicker(ev) {
-        const here = ev.on ?? "";
         root.pickMethod = "desk.switch";
-        root.showPicker(ev, "desks", (ev.desks ?? []).map(d => ({
+        root.showDesks(ev, "desks", "");
+    }
+
+    function openMoveWindow(ev) {
+        root.pickMethod = "desk.move-window-to";
+        root.showDesks(ev, "desks-move-window", "send this window to");
+    }
+
+    function openMoveWorkspace(ev) {
+        root.pickMethod = "desk.move-workspace-to";
+        root.showDesks(ev, "desks-move-workspace", "send this workspace to");
+    }
+
+    // The rows the three of them share. The note on a row is where you are,
+    // because that is the one thing about a desk list you cannot see from the
+    // list - and on a move it is also the row that would be a no-op, which is
+    // where the cursor starts (Picker.qml, show).
+    //
+    // The caption says what choosing a row will do, and it is not decoration:
+    // three verbs draw the same desks on the same surface, so without it the
+    // digit you press means whatever the last key pressed decided.
+    function showDesks(ev, kind, caption) {
+        const here = ev.on ?? "";
+        root.showPicker(ev, kind, (ev.desks ?? []).map(d => ({
                     key: d,
                     label: d,
                     note: d === here ? "here" : ""
-                })), here);
+                })), here, caption);
     }
 
     // The open windows. The app id and the title together, because neither
@@ -437,7 +472,7 @@ ShellRoot {
                     key: String(w.id),
                     label: (w.appId ?? "") + (w.title ? "  " + w.title : ""),
                     note: w.workspace ?? ""
-                })), "");
+                })), "", "");
     }
 
     // What arrived, for the notification center. The rows go over as they came
@@ -507,9 +542,14 @@ ShellRoot {
     // is being looked at, because a picker on every monitor is not a picker. An
     // unknown output falls back to the first screen, which on one monitor is
     // the right answer and on several is at least a screen.
-    function showPicker(ev, kind, rows, here) {
+    //
+    // The caption travels with the rows rather than being set beside this call,
+    // so that every caller has to say what choosing a row means - a surface left
+    // holding the last verb's caption is the same bug as one left holding its
+    // rows.
+    function showPicker(ev, kind, rows, here, caption) {
         root.present(picker, ev);
-        picker.show(kind, rows, here, ev.token ?? "");
+        picker.show(kind, rows, here, ev.token ?? "", caption);
     }
 
     // The ask popup and the ask panel, on the screen being looked at for the
@@ -919,6 +959,107 @@ ShellRoot {
 
     // ---- end of the network ---------------------------------------------
 
+    // ---- the idle hold ----------------------------------------------------
+    //
+    // Whether something is stopping this session going idle, which on a machine
+    // that blanks or locks on its own is whether that is going to happen
+    // (docs/vision.md, principle 4).
+    //
+    // Read once at the root, like the mic and the battery, because the strip
+    // draws it and the IPC reports it and two readings would eventually
+    // disagree. Unlike the mic it cannot come from a Quickshell service: this
+    // one is logind's inhibitor table, so it arrives down the zded socket
+    // already decided (internal/zded/idle.go), which is the rule the whole shell
+    // is built on.
+    //
+    // What it is honest about is the half it cannot see. logind's table is the
+    // smaller half of holding a screen awake on Wayland; the Wayland protocol
+    // itself, zwp_idle_inhibit_manager_v1, stops inside the compositor, and niri
+    // 26.04 offers no way to read it back. So `held` here means "logind says
+    // something is", and an empty list never means "nothing is". The word on the
+    // strip is chosen to claim only the first of those, and the full statement
+    // of the gap is in `zde doctor` and docs/verify.md, section 11, where there
+    // is room to say it properly.
+    QtObject {
+        id: idleState
+
+        // Whether zded answered and logind could say. The same bargain netState
+        // makes: a machine that has lost its system bus must not read the same
+        // as one where nothing is holding the screen.
+        property bool known: false
+        // How many holders logind named. A count and not a bool, because the
+        // IPC reports it and a test that could not tell one holder from three
+        // would pass on a widget that had stopped counting.
+        property int holds: 0
+    }
+
+    // Its own connection, and a single-question one. The bar's parser reads
+    // every reply as a queue listing and the network's is a FIFO matching
+    // answers to joins; this asks one thing and nothing else ever, so every
+    // reply it gets is the answer to that thing and it needs neither.
+    Dialer {
+        id: idleLink
+
+        path: Quickshell.env("XDG_RUNTIME_DIR") + "/zde/zded.sock"
+
+        onConnectedChanged: {
+            if (idleLink.connected)
+                idleLink.write(JSON.stringify({
+                    method: "system.idle"
+                }) + "\n");
+            else
+                idleState.known = false;
+        }
+
+        onHeard: line => {
+            let res = null;
+            try {
+                res = JSON.parse(line);
+            } catch (e) {
+                idleState.known = false;
+                return;
+            }
+            // zded answering is not logind answering. `known` is the daemon's
+            // own word about whether the question reached logind at all, and a
+            // reply that carries false is a machine that cannot say - which is
+            // the one state this widget must not draw as "nothing is holding
+            // it".
+            if (!res || res.error !== undefined || !res.ok || !res.ok.known) {
+                idleState.known = false;
+                return;
+            }
+            // The count and not the length of the list beside it. zded sends at
+            // most a handful of rows, because the number of them is a local
+            // account's to choose and the reply goes down this socket every five
+            // seconds (internal/zded/idle.go, holdsMax) - so the list is a
+            // sample and `count` is how many there are. Reading the length would
+            // make the strip say "held 6" on a machine holding eight thousand,
+            // which is the widget inventing the one fact it reports.
+            idleState.holds = res.ok.count ?? 0;
+            idleState.known = true;
+        }
+    }
+
+    Timer {
+        // Five seconds, the network's clock rather than the bar's two: an
+        // inhibitor is taken when an app starts a download or a call, not
+        // several times a minute, and this is a system bus round trip on the
+        // other end.
+        interval: 5000
+        running: true
+        repeat: true
+        triggeredOnStart: true
+        onTriggered: {
+            if (!idleLink.connected)
+                return;
+            idleLink.write(JSON.stringify({
+                method: "system.idle"
+            }) + "\n");
+        }
+    }
+
+    // ---- end of the idle hold ---------------------------------------------
+
     AskWindow {
         id: askWindow
 
@@ -1196,6 +1337,24 @@ ShellRoot {
             return netState.kind;
         }
 
+        // What the bar makes of the idle hold. Three words, and the first of
+        // them is the one that matters: "unknown" is zded or logind not
+        // answering, "none" is logind answering that its own table is empty.
+        // Those are not the same fact and the strip hides for both, so a test
+        // that could not tell them apart would pass on a widget wired to
+        // nothing at all - which is exactly how this one would fail, since the
+        // machine it runs on has no inhibitor to find.
+        //
+        // "none" and not "nothing is holding the screen awake": what is empty
+        // is logind's table, and the Wayland half of the mechanism is invisible
+        // from here (see the idle hold section above). The narrow word is the
+        // honest one.
+        function idle(): string {
+            if (!idleState.known)
+                return "unknown";
+            return idleState.holds === 0 ? "none" : "held " + idleState.holds;
+        }
+
         // Height and reserved space, as the panel came up. Not the same claim
         // as "the compositor honoured it" - proving that means measuring a
         // window with the bar and without it, which the smoke test does not do
@@ -1302,17 +1461,20 @@ ShellRoot {
             }
 
             // The right-hand chain, from the clock leftwards: clock, battery,
-            // link, mic. Each item anchors to the left edge of the one before
-            // it, and two of the four can be zero-width - a desktop has no
-            // battery and a machine with no sound card has no mic - so the
-            // order has to read the same with any of them missing.
+            // link, mic, idle hold. Each item anchors to the left edge of the
+            // one before it, and three of the five can be zero-width - a desktop
+            // has no battery, a machine with no sound card has no mic, and the
+            // idle hold is empty whenever nothing logind can see is holding one
+            // - so the order has to read the same with any of them missing.
             //
-            // The mic is last because it is the only one here that comes and
-            // goes. Anchored between the link and the battery it would push
-            // both of them sideways every time somebody joined a call, and a
-            // bar that moves while you are reading it is precisely what a
-            // keyboard-first strip should not do. At the end it grows leftwards
-            // into empty bar and nothing else moves.
+            // The two that come and go are at the end, in that order. Anchored
+            // between the link and the battery either of them would push both
+            // sideways every time somebody joined a call, and a bar that moves
+            // while you are reading it is precisely what a keyboard-first strip
+            // should not do. Out here they grow leftwards into empty bar: the
+            // mic keeps a fixed position against the furniture whatever the idle
+            // hold is doing, and the idle hold, being outermost and the rarer of
+            // the two, is the only thing that ever moves.
 
             // The mic, on the bar for the reason principle 4 gives and W16 asks
             // for: whether the room is being heard is not something to find out
@@ -1336,6 +1498,45 @@ ShellRoot {
                 // interrupting yourself over. Muted is the opposite of that, so
                 // it is said quietly.
                 color: micState.muted ? "#7a7f8a" : "#e5484d"
+                font.pixelSize: 13
+                font.family: "monospace"
+                textFormat: Text.PlainText
+            }
+
+            // The idle hold, outermost of the right-hand chain. Whether the
+            // screen is going to do what it does when you walk away is the same
+            // shape of fact as whether the room is being heard, and principle 4
+            // puts both on the strip.
+            //
+            // Outside the mic rather than inside it, which is the whole reason
+            // it is here and not next to the link. Two of these words come and
+            // go now, and the one that comes and goes most often is the mic - so
+            // the mic keeps the position it already had against the furniture,
+            // and this one takes all of the movement by growing leftwards into
+            // empty bar. The margin closes when the mic is not drawn, so the gap
+            // to the link reads the same either way.
+            //
+            // Empty unless logind names a holder. A machine that cannot answer
+            // draws nothing rather than guessing, the way the mic does - and
+            // here that silence is doing more work than usual, because an empty
+            // strip is also what a machine with a Wayland inhibitor nobody can
+            // see looks like. The word claims only what logind said; `zde
+            // doctor` is where the rest of the sentence lives.
+            Text {
+                id: idleHold
+
+                anchors.right: mic.left
+                anchors.rightMargin: mic.visible ? 14 : 0
+                anchors.verticalCenter: parent.verticalCenter
+                visible: idleHold.text !== ""
+
+                text: idleState.known && idleState.holds > 0 ? "idle held" : ""
+                // The amber the attn mode uses for the two modes that are
+                // holding things back, and for the same reason: this is
+                // something held off rather than something to interrupt
+                // yourself over, and the red on this bar is kept for the
+                // latter.
+                color: "#e5a23d"
                 font.pixelSize: 13
                 font.family: "monospace"
                 textFormat: Text.PlainText

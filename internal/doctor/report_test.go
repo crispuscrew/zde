@@ -280,7 +280,7 @@ func TestNoReadingCanForgeAHeadingOrACheck(t *testing.T) {
 	m := Machine{
 		Graphics: Graphics{
 			Socket:  forge,
-			Outputs: []string{forge, "DP-2"},
+			Screens: []string{forge, "DP-2"},
 			Cards: []Card{{
 				Node: forge, Driver: forge, PCI: forge,
 				OpenErr: errors.New(forge),

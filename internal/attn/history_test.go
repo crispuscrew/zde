@@ -444,3 +444,135 @@ func TestRecentIsACopy(t *testing.T) {
 		t.Errorf("the history's key is %q after a caller edited what Find gave it", after.Actions[0].Key)
 	}
 }
+
+// The whole history has a ceiling, and it is the product of three counts rather
+// than any one of them.
+//
+// The consequence encoded here is the one SendersMax's comment does the
+// arithmetic for and no test could see: fourteen rings of thirty records, at
+// 6040 characters a record, is about 10 MB in an alphabet that costs four bytes
+// a character. That number is what makes "in memory only" affordable, and it is
+// a product - so bodyMax, PerSenderMax and SendersMax are not three bounds with
+// three consequences, they are three terms in one. Widening any of them
+// multiplies the same total, and widening two a little each is a disaster that
+// neither of them looks like on its own.
+//
+// Written against an absolute ceiling rather than against the constants, which
+// is the whole point of it: comparing what was kept to PerSenderMax proves the
+// trim happened and says nothing about the number, so that shape passes at
+// thirty and at three thousand alike (see TestOneSendersHistoryIsBounded, which
+// is that test and is worth having for the eviction order it does pin). This
+// one fails when the product stops being a size a desktop can hold, whatever
+// combination of the three got it there.
+//
+// Counted in characters, and multiplied out to the widest alphabet at the end,
+// because characters are what every bound in this package is written in and
+// bytes are what the machine pays. The fixture shares one clamped record's
+// strings across every arrival rather than building 23,040 distinct ones: what
+// is being asserted is the arithmetic the bounds were chosen by, which is a
+// count of characters retained, and paying 90 MB of string building to say the
+// same number would make this a test nobody wants to run.
+//
+// Eight times each of the counts is what the fixture offers, so a widening has
+// something to keep and no more than eight times as much of it: the growth a
+// mutation produces is capped by the fixture, which is what makes the ceiling
+// below choosable at all. Thirty-two megabytes is that ceiling: about three
+// times the ten the package argues for, which leaves room for any one of these
+// to be retuned upwards by a real amount - the day thirty records is not a day
+// of one app, or four thousand characters is not a message - and catches
+// bodyMax, PerSenderMax and SendersMax at the eight times that stops each of
+// them being a bound at all.
+//
+// The one term this holds loosely is actionsMax, and that is deliberate rather
+// than overlooked. A list of buttons is a quarter of a record at the limit, so
+// nine becoming seventy-two moves this total by less than three times and lives
+// - which is right, because that number is the digits the notification center
+// can offer with one keypress each and its own comment says it moves the day
+// the center can offer more. Nine becoming nine hundred is not that, and the
+// fixture declares two hundred actions so that it is caught here.
+func TestTheWholeNotificationHistoryHasACeilingNoCombinationOfBoundsGetsPast(t *testing.T) {
+	// Spelled as numbers rather than as the constants times eight, which is the
+	// same choice the socket's bound test makes and for the same reason: a
+	// fixture written in terms of what it is testing grows when that number
+	// grows, so the widening it is meant to catch arrives with a bigger fixture
+	// to hide in and a run that takes minutes. These are eight times the bounds
+	// as they stand - 2400 characters of summary against 300, 32,000 of body
+	// against 4000, 96 senders against 12, 240 records each against 30 - and
+	// they stay where they are whatever the constants do.
+	const (
+		senders    = 96
+		perSender  = 240
+		summaryLen = 2400
+		bodyLen    = 32000
+		// Well past both nine and seventy-two, so that the difference between
+		// this bound being retuned and this bound being abandoned is visible.
+		declared = 200
+	)
+
+	// Through the door an app comes in by: Notify is what clamps a summary, a
+	// body and a list of actions, so the record this produces is the largest one
+	// a sender can cause however large the thing it sent was.
+	var actions []string
+	for i := 0; i < declared; i++ {
+		actions = append(actions,
+			strings.Repeat("k", actionTextMax), strings.Repeat("l", actionTextMax))
+	}
+	sink := &fakeSink{}
+	if _, derr := notifier(sink).Notify(peer, "app", 0, "",
+		strings.Repeat("s", summaryLen), strings.Repeat("b", bodyLen),
+		actions, nil, -1); derr != nil {
+		t.Fatal(derr)
+	}
+	one := sink.got[0]
+
+	// The fixture has to be over every bound or it proves nothing: a body that
+	// arrived whole would make this a test about the fixture's size.
+	if len([]rune(one.Text)) != summaryMax || len([]rune(one.Body)) != bodyMax {
+		t.Fatalf("the fixture was kept as %d characters of summary and %d of body, "+
+			"so it never reached the bounds this is about",
+			len([]rune(one.Text)), len([]rune(one.Body)))
+	}
+
+	// And the two counts the history itself keeps: senders, and records per
+	// sender. The names go through the clamp a sender name gets, so a ring
+	// costs what a ring can cost.
+	var h History
+	id := uint64(0)
+	for s := 0; s < senders; s++ {
+		from := oneLine(strconv.Itoa(s) + strings.Repeat("n", summaryLen))
+		for i := 0; i < perSender; i++ {
+			id++
+			// The fields internal/zded, Arrived copies across, and no others:
+			// what is being counted is what an arrival can put in here.
+			h.Add(Record{
+				ID: id, From: from, Text: one.Text, Body: one.Body,
+				Actions: one.Actions, Extra: one.Extra,
+			})
+		}
+	}
+
+	kept := h.Recent()
+	chars := 0
+	for _, r := range kept {
+		chars += len([]rune(r.From)) + len([]rune(r.Text)) + len([]rune(r.Body))
+		for _, a := range r.Actions {
+			chars += len([]rune(a.Key)) + len([]rune(a.Label))
+		}
+	}
+	// Four bytes a character, which is what a history written in an alphabet
+	// nobody here chose actually costs. The bounds are counted in characters so
+	// that a Japanese notification is not a third of an English one, and the
+	// memory question has to be asked in the units the machine answers in.
+	const widest = 4
+	if bytes := chars * widest; bytes > 32<<20 {
+		t.Errorf("%d senders sending %d notifications each left %d records holding %d MB, "+
+			"past the 32 MB a bounded history may cost: the ceiling is a product of "+
+			"bodyMax, PerSenderMax and SendersMax and one of them has stopped being a bound",
+			senders, perSender, len(kept), bytes>>20)
+	}
+	// And it is a history rather than an empty one, so the number above is a
+	// ceiling something reached and not a bug that dropped everything.
+	if len(kept) == 0 {
+		t.Error("nothing was kept at all, so the ceiling above is about an empty history")
+	}
+}

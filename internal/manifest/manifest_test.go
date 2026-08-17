@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -619,5 +620,83 @@ func TestASavedManifestIsWholeAndLeavesNothingBehind(t *testing.T) {
 	}
 	if len(entries) != 1 {
 		t.Errorf("the directory holds %d files, want only the manifest", len(entries))
+	}
+}
+
+// A directory of enormous files does not become the daemon's memory.
+//
+// The consequence encoded here is the one bytesMax's comment names and no test
+// could see: the cap "is there so that a directory somebody pointed `-desks` at
+// by mistake is a message instead of a daemon reading a filesystem". A message
+// is what TestAManifestPastTheCeilingIsRefused above proves, and it proves it
+// by writing a file of exactly bytesMax and a bit - so it says the refusal
+// happens and says nothing about where. This one says what the refusal is
+// worth: what LoadDir allocates going through a directory it should not have
+// been given.
+//
+// Allocation and not the size of the answer, for the reason the socket's own
+// bound test gives: TotalAlloc is every byte handed out since the process
+// started, so the difference across one call is what that call took whether or
+// not it was freed afterwards - which is the question, because a daemon that
+// read 128 MB and then let go of it still read 128 MB at the moment it was
+// starting up.
+//
+// Sparse files, because what is being measured is memory and writing half a
+// gigabyte to somebody's disk to say something about memory is a waste of both.
+// The holes read back as zeros, which is all a read has to be stopped from
+// doing.
+//
+// Eight megabytes is the ceiling, against a little over one that four refused
+// reads actually cost: io.ReadAll grows its buffer as it goes, so even a read
+// that stops at 64 KiB has handed out a few hundred of them by the time it
+// stops. Seven times over, which leaves room to decide that a manifest may be
+// four times the size it is now.
+//
+// It is tighter than a single file's arithmetic would suggest, and that is the
+// point rather than an accident. What a startup risks is bytesMax times however
+// many files are in the directory, and manifestsMax puts 256 at the top of that
+// - so four files here stand in for 256, and a number that looks generous
+// against four is a strict one against the directory the cap is really about.
+// At half a megabyte a manifest this fails, and it should: half a megabyte
+// times 256 is 128 MB read at the moment zded has no listener and no signal
+// handling. At 64 MiB apiece these four files are read whole, parsed, and in
+// the daemon before anything has measured them, which is the case the sentence
+// about a mistyped directory is about.
+func TestADirectoryOfEnormousFilesIsNotReadIntoTheDaemon(t *testing.T) {
+	dir := t.TempDir()
+	// Four of them, so this is the directory shape the comment describes and
+	// not one file: what a startup pays is bytesMax times however many are
+	// there, and manifestsMax bounds only the second term.
+	const files = 4
+	const size = 32 << 20
+	for i := 0; i < files; i++ {
+		path := filepath.Join(dir, fmt.Sprintf("far-too-big-%d.yaml", i))
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Truncate(size); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	desks, problems, err := LoadDir(dir)
+	runtime.ReadMemStats(&after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(desks) != 0 || len(problems) != files {
+		t.Errorf("%d desks and %d problems from %d files that are not manifests, want none and %d",
+			len(desks), len(problems), files, files)
+	}
+	if grew := after.TotalAlloc - before.TotalAlloc; grew > 8<<20 {
+		t.Errorf("reading a directory of %d files of %d MB allocated %d MB, and no manifest this "+
+			"zde reads is past %d KiB: the files went into the daemon's memory before anything "+
+			"measured them", files, size>>20, grew>>20, bytesMax>>10)
 	}
 }

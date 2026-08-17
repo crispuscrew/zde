@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -145,4 +146,119 @@ func orphanHelper() {
 	// Long enough that the child is still alive whether or not the fix works,
 	// so the test measures the fix and not this timer.
 	time.Sleep(2 * time.Minute)
+}
+
+// The watcher itself is started through the guard, and that is a claim about a
+// call site rather than about a helper.
+//
+// The two tests above prove the mechanism and neither can see this. The killed
+// daemon one calls guard by hand in its helper, so it would pass if no caller in
+// the package ever reached it. The process group one goes through read, which
+// Types and Read are built on - a real call site, and not this one. So
+// `spawn(ctx, Paste, "--watch", ...)` could become a plain exec.CommandContext
+// and the whole package stays green.
+//
+// That is not a hypothetical line to have got wrong. `wl-paste --watch` is the
+// exact process the guard was written for: it is the one thing here meant to
+// last the session, it is what was found alive against a developer's real
+// clipboard two hours after the run that started it, and it is the only spawn
+// in this package whose child is not expected to exit in milliseconds by
+// itself. If any call site is worth pinning it is this one.
+//
+// What is asserted is the process group, because that is the half of the guard
+// visible from outside without killing anything: a watcher sharing this
+// process's group is one nothing was applied to, so the parent-death signal set
+// beside it is not there either. Which is the same reasoning the read-side test
+// makes, asked of the call that matters most.
+//
+// The stand-in is a script named wl-paste on a PATH of this test's own. It has
+// to be a stand-in: attaching a second real watcher to whatever compositor the
+// developer is sitting in front of is how the bug being fixed here was found in
+// the first place, and this one prints a line and sleeps rather than reading
+// anybody's clipboard.
+func TestTheClipboardWatcherIsStartedThroughTheGuardToo(t *testing.T) {
+	for _, prog := range []string{"sh", "sleep", "cut"} {
+		if _, err := exec.LookPath(prog); err != nil {
+			t.Skipf("no %s on this machine to stand in for wl-clipboard", prog)
+		}
+	}
+	dir := t.TempDir()
+	where := filepath.Join(dir, "group")
+	// Field 5 of /proc/self/stat is the process group. The cut runs in a
+	// subshell of the stand-in and inherits its group, so what it writes is the
+	// group the guard was supposed to put the watcher in.
+	shim := "#!/bin/sh\n" +
+		"cut -d' ' -f5 /proc/self/stat > " + where + "\n" +
+		// The bell. Watch scans this process's stdout and rings its channel per
+		// line, so one line here is what tells the test the production path ran
+		// rather than something that merely started.
+		"echo text/plain\n" +
+		// Long enough that it is still there to be asked about, and killed by
+		// the cancel below either way.
+		"exec sleep 300\n"
+	if err := os.WriteFile(filepath.Join(dir, Paste), []byte(shim), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	changes, err := Tool{}.Watch(ctx)
+	if err != nil {
+		t.Fatalf("Watch with a stand-in on PATH: %v", err)
+	}
+	select {
+	case <-changes:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the watcher never rang, so nothing below is about a watcher that ran")
+	}
+
+	var group int
+	for i := 0; i < 500; i++ {
+		raw, err := os.ReadFile(where)
+		if err == nil && len(strings.TrimSpace(string(raw))) > 0 {
+			group, err = strconv.Atoi(strings.TrimSpace(string(raw)))
+			if err != nil {
+				t.Fatalf("the stand-in wrote %q where a process group was expected", raw)
+			}
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if group == 0 {
+		t.Fatal("the stand-in never said which process group it was in")
+	}
+	mine, err := syscall.Getpgid(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Fatal and not an error to carry on from, which is a fact about what
+	// follows rather than about how bad this is: everything below signals the
+	// group, and a group that turned out to be this test's own is one where
+	// doing that kills the run. A test that fails by taking the suite with it
+	// says nothing about what went wrong.
+	if group == mine {
+		stop()
+		t.Fatalf("the clipboard watcher is in this process's group (%d), so it was not started "+
+			"through spawn: cancelling it reaches only the pid zde knows about, and the "+
+			"parent-death signal that outlives a killed daemon is not set on it either", mine)
+	}
+
+	// And it goes when the daemon lets go of it. The tidy half rather than the
+	// discriminating one - a plain exec.CommandContext would also kill this -
+	// but a watcher left running by this test is the very thing the test is
+	// about, so it is worth saying out loud that it went.
+	stop()
+	gone := false
+	for i := 0; i < 500; i++ {
+		if err := syscall.Kill(group, 0); err != nil {
+			gone = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !gone {
+		syscall.Kill(-group, syscall.SIGKILL) //nolint:errcheck // never leave this test's own orphan behind
+		t.Errorf("the watcher in group %d was still running after the context ended", group)
+	}
 }

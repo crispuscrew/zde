@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -281,6 +283,53 @@ func TestASnapshotThatCannotBeReadCostsTheHistoryAndNothingElse(t *testing.T) {
 	}
 }
 
+// The one unreadable file that is not like the others, and the reason this
+// package opens through internal/plainfile rather than with os.Open.
+//
+// Every case above comes back with no records and an error, which is what "and
+// nothing else" means. A FIFO comes back with neither: a plain os.Open of one
+// does not fail, it waits in the kernel for a writer that never arrives. This
+// read is at startup, before zded has bound its listener or looked at a signal,
+// so one `mkfifo ~/.local/state/zde/history.json` is an account with no desktop,
+// through every reboot, with nothing in any log to say why. internal/journal
+// has this test for the same path at the same moment, and the journal is where
+// the bug was found; the snapshot beside it was opened the same way and had
+// nothing holding it.
+//
+// The deadline is not decoration. Without the fix this does not fail, it hangs,
+// and a CI job that hangs is a regression nobody gets told about.
+func TestAFifoWhereTheSnapshotShouldBeIsRefusedRatherThanWaitedOn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.json")
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	type answer struct {
+		records []Record
+		err     error
+	}
+	done := make(chan answer, 1)
+	go func() {
+		records, err := ReadSnapshot(path)
+		done <- answer{records, err}
+	}()
+	select {
+	case got := <-done:
+		if got.err == nil {
+			t.Fatal("read a FIFO as a snapshot")
+		}
+		if len(got.records) != 0 {
+			t.Errorf("a named pipe answered with %+v", got.records)
+		}
+		if !strings.Contains(got.err.Error(), "named pipe") {
+			t.Errorf("error is %q, and somebody with an unexplained daemon needs it to name what is at that path", got.err)
+		}
+	case <-time.After(10 * time.Second):
+		// Leaked on purpose: it is blocked in the kernel with nothing to
+		// unblock it, and the test binary is on its way out.
+		t.Fatal("ReadSnapshot did not return in 10s, which is the hang zded shipped with")
+	}
+}
+
 // An enormous file is not read into the daemon's memory to find out what it is.
 // Forty records at their limit is under 250 KB, so anything past a megabyte was
 // not written by this zde, and finding that out by allocating it is the failure
@@ -291,8 +340,16 @@ func TestASnapshotThatCannotBeReadCostsTheHistoryAndNothingElse(t *testing.T) {
 // away by the parser and prove nothing about the bound - and the complaint has
 // to name the size for the same reason: a person reading "invalid character" in
 // the log would go looking for the wrong problem.
+//
+// The complaint is not the property, though, and the second half is why. A
+// ReadSnapshot that read the whole file into memory and measured it afterwards
+// answers with the same no records and the same "larger than" - so deleting the
+// io.LimitReader left this test green while every byte of the file went into the
+// daemon, which is the one thing the bound exists to prevent. The ceiling has to
+// be weighed rather than quoted.
 func TestASnapshotTooLargeToBeOneIsNotReadIn(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "history.json")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "history.json")
 	huge, err := json.Marshal(snapshot{Version: snapshotVersion, Records: []Record{{
 		ID:   1,
 		Text: "a well formed record, and far too much of it",
@@ -311,12 +368,96 @@ func TestASnapshotTooLargeToBeOneIsNotReadIn(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "larger than") {
 		t.Errorf("the complaint is %v, and it should say the file is too large rather than blame its shape", err)
 	}
+
+	// And now the file the daemon must not swallow. Sparse, because what is
+	// being measured is memory and writing thirty-two megabytes to somebody's
+	// disk to prove something about memory is a waste of both; the holes read
+	// back as zeros, which is all the read has to be stopped from doing.
+	const size = 32 << 20
+	big := filepath.Join(dir, "far-too-big.json")
+	f, err := os.OpenFile(big, os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(size); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	records, err = ReadSnapshot(big)
+	runtime.ReadMemStats(&after)
+	if len(records) != 0 || err == nil {
+		t.Errorf("a %d MB file answered %+v, %v: want nothing, and a reason", size>>20, records, err)
+	}
+	// TotalAlloc is every byte handed out since the process started, so the
+	// difference is what this one call took, whether or not it was freed
+	// afterwards - which is the question. The bound is one megabyte and
+	// io.ReadAll grows its buffer by a quarter at a time, so the honest read
+	// allocates about five megabytes getting there; the file is thirty-two, and
+	// reading that one whole allocates about a hundred and ninety. Sixteen sits
+	// three times above the first and twelve below the second, so nothing about
+	// how a slice grows decides this.
+	if grew := after.TotalAlloc - before.TotalAlloc; grew > 16<<20 {
+		t.Errorf("reading a %d MB file allocated %d MB, and this zde never reads past %d MB of one: the file went into the daemon's memory before anything measured it",
+			size>>20, grew>>20, snapshotBytesMax>>20)
+	}
+}
+
+// A file with more rows than the bound gives back its newest, not its oldest.
+//
+// Only an edited file can be over the bound, so the trim is a guard rather than
+// a path anything ordinary takes - which is exactly why it wants pinning: taking
+// the front of the slice instead of the back is a one-character change, it does
+// not fail anything, and what it costs is silent. The center would come back
+// after a reboot showing whatever was oldest in the file, and a person would
+// read that as "nothing has happened since" while the rows that were actually
+// waiting for them sat past the end of the trim.
+func TestASnapshotLongerThanTheBoundGivesBackItsNewestRows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.json")
+	over := snapshotMax + 10
+	recs := make([]Record, 0, over)
+	for i := 1; i <= over; i++ {
+		recs = append(recs, Record{ID: uint64(i), Text: "number " + strconv.Itoa(i)})
+	}
+	// Written past Snapshot, which would have cut it to the bound: the file
+	// under test is one somebody edited, and that is the only way to be over it.
+	data, err := json.Marshal(snapshot{Version: snapshotVersion, Records: recs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ReadSnapshot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != snapshotMax {
+		t.Fatalf("read %d records, want the bound of %d", len(got), snapshotMax)
+	}
+	// Oldest first, so the newest is the last row and the first is the bound's
+	// worth back from it.
+	if got[len(got)-1].ID != uint64(over) {
+		t.Errorf("the newest row kept is %d, want %d: the trim took the front of the file and threw away everything that arrived last", got[len(got)-1].ID, over)
+	}
+	if got[0].ID != uint64(over-snapshotMax+1) {
+		t.Errorf("the oldest row kept is %d, want %d", got[0].ID, over-snapshotMax+1)
+	}
 }
 
 // These are notification bodies: somebody's mail, their two-factor codes, the
-// subject lines of everything they were sent while they were away. The journal
-// beside it holds window positions and is 0644; this one is nobody's but its
-// owner's.
+// subject lines of everything they were sent while they were away. Nobody's but
+// its owner's.
+//
+// 0600 written out rather than a constant, which is the point: a test that
+// compares the file against the number the file was made from cannot tell 0600
+// from 0644. internal/journal's mode tests spell theirs out too, and argue it
+// at more length.
 func TestTheSnapshotIsReadableOnlyByWhoeverItIsAbout(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "zde", "history.json")
 	if err := WriteSnapshot(path, filled(1).Snapshot()); err != nil {

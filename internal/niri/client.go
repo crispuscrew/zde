@@ -61,11 +61,23 @@ type Window struct {
 	IsFocused   bool    `json:"is_focused"`
 }
 
-// Output is niri's output, narrowed to its name. Which outputs exist is the
-// input that separates a workspace someone moved from one whose monitor was
-// unplugged (internal/desk).
+// Output is niri's output, narrowed to the two things that say whether a
+// workspace can be on it.
+//
+// Name is the connector - DP-1, eDP-1 - which is what a workspace name records
+// as its home monitor.
+//
+// Logical is where niri has put the output in the compositor's coordinate
+// space, and it is null exactly when niri has no layout monitor for the output:
+// niri fills it in by looking the output up in global_space, and an output is
+// mapped into global_space and added to the layout together, and unmapped and
+// removed together (niri 26.04, src/niri.rs add_output and remove_output).
+// Nothing inside it is read - whether it is there at all is the whole signal.
 type Output struct {
 	Name string `json:"name"`
+	// A pointer to nothing on purpose: presence is the fact, and naming the
+	// fields would be a second copy of niri's LogicalOutput to keep true.
+	Logical *struct{} `json:"logical"`
 }
 
 // Client is a connection to niri. It is not safe for concurrent use: one
@@ -298,8 +310,25 @@ func (c *Client) Workspaces() ([]Workspace, error) {
 	return out, nil
 }
 
-// Outputs lists the connected outputs, by name.
-func (c *Client) Outputs() ([]string, error) {
+// Screens lists the outputs a workspace can actually be on: the ones niri has
+// a layout monitor for.
+//
+// This is deliberately not what niri's Outputs reply lists, and the two names
+// differ because the two sets do. niri's reply is built by walking every
+// connector that has a crtc (src/backend/tty.rs, refresh_ipc_outputs), so an
+// output that is connected but switched off is still in it - including the
+// laptop panel niri turns off by itself when the lid closes with an external
+// monitor attached (should_disable_laptop_panels, the default). Its workspaces
+// have already been parked on another screen by then. A caller that read that
+// list as "the screens there are" would see a workspace sitting somewhere its
+// name does not say, with both monitors apparently present, and conclude the
+// user dragged it - which rewrites the name and destroys the only record of
+// where the workspace belongs (internal/desk, Rebuild).
+//
+// The safe direction is built in: a niri that says nothing about logical
+// outputs yields an empty list, and an empty list turns renaming off rather
+// than on. A missing rename is recoverable; a wrong one erases home.
+func (c *Client) Screens() ([]string, error) {
 	payload, err := c.request("Outputs", "Outputs")
 	if err != nil {
 		return nil, err
@@ -309,7 +338,14 @@ func (c *Client) Outputs() ([]string, error) {
 	if err := json.Unmarshal(payload, &byName); err != nil {
 		return nil, fmt.Errorf("niri: Outputs: %w", err)
 	}
-	return keysOf(byName), nil
+	out := make([]string, 0, len(byName))
+	for _, o := range byName {
+		if o.Logical == nil {
+			continue
+		}
+		out = append(out, o.Name)
+	}
+	return out, nil
 }
 
 // Windows lists the open windows.
@@ -513,17 +549,17 @@ func (c *Client) EmptyByOutput() (map[string][]uint64, error) {
 
 // DeskMap reads niri and rebuilds the desk map from it. This is the join
 // between the compositor and the spatial model: workspaces carry the names,
-// the output list is what tells a move apart from an unplug.
+// the list of screens is what tells a move apart from an unplug.
 func (c *Client) DeskMap() (*desk.Map, error) {
 	workspaces, err := c.Workspaces()
 	if err != nil {
 		return nil, err
 	}
-	outputs, err := c.Outputs()
+	screens, err := c.Screens()
 	if err != nil {
 		return nil, err
 	}
-	return desk.Rebuild(AsDeskWorkspaces(workspaces), outputs), nil
+	return desk.Rebuild(AsDeskWorkspaces(workspaces), screens), nil
 }
 
 // AsDeskWorkspaces narrows niri's workspaces to what the desk model reads.
@@ -545,14 +581,6 @@ func deref(s *string) string {
 }
 
 func keys(m map[string]json.RawMessage) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	return out
-}
-
-func keysOf(m map[string]Output) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)

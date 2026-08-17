@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -176,6 +177,30 @@ type Logind struct {
 	// Can is one entry per verb logind has a question for, in the order the menu
 	// would list them.
 	Can []Can
+	// Holds is what logind says is holding this session's idle timers off: its
+	// own "idle" inhibitors, and nothing else. It is deliberately not called
+	// something like "awake", because the set it describes is much smaller than
+	// that word - see the idle check in doctor.go for what is missing from it
+	// and why nothing here can find out.
+	Holds []Hold
+	// HoldsErr is why the inhibitors could not be listed, when the rest of the
+	// probe worked. Kept apart from Err for the reason every other unknown in
+	// this file is: a question that was never answered is not the answer "no",
+	// and "nothing is holding your screen awake" is the one sentence here that
+	// must never be said on the strength of a call that failed.
+	HoldsErr error
+}
+
+// Hold is one thing logind says is holding idle off, in the words it gave.
+//
+// Who and Why are anybody's: `systemd-inhibit --who=... --why=...` takes two
+// strings from whoever runs it, and every local account can run it. This report
+// is printed to a terminal, so both are put through internal/attn's filter
+// before they reach a line (doctor.go, idle) rather than here, because this
+// struct is the reading and that is the drawing.
+type Hold struct {
+	Who string
+	Why string
 }
 
 // Can is one power verb and logind's own word about it: yes, no, na (the
@@ -256,6 +281,35 @@ const pamDir = "/etc/pam.d"
 // hang for reasons of its own: a wedged user manager, a container store on a
 // filesystem that has gone away.
 const probeTimeout = 5 * time.Second
+
+// probeGrace is how long Wait may go on waiting after probeTimeout has fired,
+// or after the program has exited leaving its pipes held.
+//
+// The second half is the one this was written for, and it is the half that made
+// probeTimeout a promise the code did not keep. cmd.Run gives the program's
+// stdout and stderr to pipes exec copies from, and a program that forks hands a
+// copy of both ends to the child - so Wait, which waits for the copying to
+// finish, waits on the fork and not on the program. Measured against a target
+// that answers and leaves a child holding stdout: the five second deadline never
+// returned at all and had to be killed at forty seconds, where the same call
+// with a WaitDelay came back in 2.002s with the answer intact.
+//
+// The first half is the ordinary guard the other exec sites already have
+// (internal/zded/ask.go, askGrace): a program that ignores its deadline is
+// killed rather than waited for.
+//
+// Two seconds because by the time either half fires the answer has been written
+// and what is left is a descriptor nobody will write to, or a process no signal
+// reached. Short matters here more than anywhere: doctor is what somebody runs
+// when the machine is already misbehaving, so each probe's worst case is added
+// to the wait before the one report that would explain it.
+//
+// No process group beside it, unlike a tier's. doctor is a command in a
+// terminal, and a child in a group of its own is a child ctrl+c no longer
+// reaches - which would cost a person the one escape they have from a probe
+// that is taking too long, to save a fork that the deadline above already
+// bounds.
+const probeGrace = 2 * time.Second
 
 // Gather asks everything, and refuses nothing: every probe records what it
 // found or why it could not, and none of them decides what that means.
@@ -641,7 +695,44 @@ func probeLogind() Logind {
 		l.Can = append(l.Can, c)
 	}
 	l.Session, l.SessionErr = displaySession(ctx, conn)
+	l.Holds, l.HoldsErr = idleHolds(ctx, mgr)
 	return l
+}
+
+// idleHolds is logind's inhibitor table, narrowed to the ones holding idle off.
+//
+// The row is a(ssssuu) and positional on the wire, so it is decoded into a
+// named struct for the reason internal/power decodes it into one: a field out
+// of order here would print one program's name against another's reason.
+//
+// Narrowed on two things. "idle" has to be in the colon-separated What, which
+// is logind's own vocabulary for this and not a guess at it; and the mode has to
+// be block, because a delay inhibitor postpones a suspend by seconds so
+// something can save its work and is not a thing holding a screen awake. Both
+// filters are the same ones internal/power applies, and they are duplicated here
+// on purpose - this package asks logind what is true, that one asks it to do
+// things, and gather.go already keeps its own copy of every logind constant for
+// exactly this reason.
+func idleHolds(ctx context.Context, mgr dbus.BusObject) ([]Hold, error) {
+	var rows []struct {
+		What string
+		Who  string
+		Why  string
+		Mode string
+		UID  uint32
+		PID  uint32
+	}
+	if err := mgr.CallWithContext(ctx, logindMgr+".ListInhibitors", 0).Store(&rows); err != nil {
+		return nil, err
+	}
+	var out []Hold
+	for _, r := range rows {
+		if r.Mode != "block" || !slices.Contains(strings.Split(r.What, ":"), "idle") {
+			continue
+		}
+		out = append(out, Hold{Who: r.Who, Why: r.Why})
+	}
+	return out, nil
 }
 
 // displaySession asks logind for this user's graphical session, which is the
@@ -697,6 +788,9 @@ func run(d time.Duration, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	// What makes the deadline above a deadline (see probeGrace). Without it a
+	// probe whose target forked was not bounded by anything.
+	cmd.WaitDelay = probeGrace
 	err := cmd.Run()
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return stdout.String(), noAnswer{fmt.Sprintf("%s did not answer in %s", name, d)}

@@ -41,16 +41,14 @@ type launchFailure struct {
 // glance the summary is for; the rest are counted, and the log has them all.
 const launchesNamed = 4
 
-// launchFrom is what the notification says sent it. The sender column is
-// otherwise an app's own claim about itself (internal/attn, Notification.From),
-// and this is the one arrival where it is the desktop talking.
-//
-// attn's own constant rather than the same word spelled twice. The name is
-// reserved on the way in from the bus, so that nothing an app sends can land in
-// this column (internal/attn, SelfFrom and claim) - and a reservation that
-// guarded one spelling while the sender used another would be a defence with
-// nothing behind it.
-const launchFrom = attn.SelfFrom
+// What this arrival says sent it is not spelled here at all, and that is the
+// point. The sender column is an app's own claim about itself (internal/attn,
+// Notification.From), and this is the one arrival where it is the desktop
+// talking - so it goes through attn.Local, which is the only thing in the tree
+// that stamps both the reserved name and the mark that says the desktop made
+// the record. A caller that could pass one without the other would be a way to
+// mint the mark under another name, and two callers that each spelled the name
+// would be two spellings to drift apart (internal/attn, Local and SelfFrom).
 
 // reasonMax is as much of one failure as belongs on one line of the body.
 //
@@ -85,7 +83,7 @@ func (s *Server) launchesFailed(target string, failed []launchFailure) {
 	if len(failed) == 0 {
 		return
 	}
-	if _, err := s.Arrived(attn.Local(launchFrom, launchSummary(target, failed), launchBody(failed))); err != nil {
+	if _, err := s.Arrived(attn.Local(launchSummary(target, failed), launchBody(failed))); err != nil {
 		log.Printf("zded: %d of %s's apps did not start, and nor did the notification about it: %v",
 			len(failed), target, err)
 	}

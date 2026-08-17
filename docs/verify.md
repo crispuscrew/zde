@@ -398,9 +398,29 @@ desk model is defined in terms of monitors (docs/model.md, invariant 1).
   manifest named, which matters for the next item.
 - **Undock.** A desk that named a monitor which is no longer there: does the
   session survive, does `zde workspace next` still walk something sensible, and
-  does `zde desk switch` say something useful rather than nothing?
+  does `zde desk switch` say something useful rather than nothing? A switch
+  should bring the surviving screen up **once**, on the workspace it was left
+  on: two of the desk's workspaces are now sitting on one screen, and the one
+  that gets focused last is the one you end up looking at.
+- **Close the lid with an external attached**, which is the same shape and the
+  one that actually happens. niri switches the laptop panel off by itself and
+  parks its workspaces on the external, but the panel keeps its connector and
+  stays in `niri msg outputs` with `"logical": null`. zde reads that field and
+  nothing else to decide what is a screen, so the names must **not** change:
+  `niri msg workspaces` should still show `<desk>.eDP-1.<slot>` sitting on
+  `DP-1`. If the names have been rewritten to `DP-1`, the record of where those
+  workspaces belong is gone, and a `zde desk snapshot` taken now writes the
+  wrong monitor into the manifest for good.
 - **Redock**, and plug the screen into a different port. niri's output names
   are stable per connector, so a manifest naming `DP-1` is looking at a cable.
+  What brings a workspace back to the monitor it belongs to is niri, not zde
+  and not the manifest: niri records the output each workspace was opened on
+  and returns it there when that output comes back (`Layout::add_output`).
+  zde's whole part is to leave the name saying home while the monitor is away.
+  The case niri cannot cover is a niri that restarted while the monitor was
+  away, since its record does not outlive the session - those workspaces stay
+  on the survivor with a truthful name, and nothing moves them
+  ([`roadmap.md`](roadmap.md), 0.4).
 
 ## 5. Notifications from real apps
 
@@ -477,9 +497,12 @@ ones are the point of zded holding the bus name.
     is written in one place and deliberately not here (`internal/attn`), because
     it is a number under change.
   - **Nothing on the bus can be the desktop.** The sender column is the app's
-    own claim and nothing checks it (`vision.md`, principle 6), with one name
-    taken out of that: `zde` is what zde's own messages say, and an arrival
-    trying to use it is recorded under its bus address instead.
+    own claim and nothing checks it (`vision.md`, principle 6). Two separate
+    things keep the desktop's own messages out of an app's reach, and it is
+    worth doing them in that order because only the second one is what you read.
+
+    The name is reserved: `zde` is what zde's own messages carry, and an arrival
+    asking for it is recorded under its bus address instead.
 
     ```sh
     notify-send -a zde "desk vshop: 3 apps did not start" \
@@ -489,12 +512,34 @@ ones are the point of zded holding the bus name.
     The card, `Mod+n` and `zde queue` should all show `:1.57` or some other bus
     address where the name would be, and never `zde`. Try `-a ZDE` and
     `-a "[zde]"` too - the reservation is on the word somebody reads, not on
-    one spelling of it. What it does not stop is a name that merely looks like
-    the desktop's (`zde-session`, or `zdе` with a Cyrillic е): that is the
-    unverified column itself, and it ends where attribution by channel begins.
+    one spelling of it.
+
+    Then the part the reservation cannot do. Each of these keeps the name it
+    asked for, because none of them is the word - they are other characters that
+    draw it:
+
+    ```sh
+    notify-send -a "zdе"  "your session has expired" "run 'zde unlock'"   # Cyrillic е
+    notify-send -a "ｚｄｅ" "your session has expired" "run 'zde unlock'"   # fullwidth
+    notify-send -a "ᴢᴅᴇ"  "your session has expired" "run 'zde unlock'"   # small capitals
+    notify-send -a "zⅾe"  "your session has expired" "run 'zde unlock'"   # a Roman numeral ⅾ
+    notify-send -a "ЗДЕ"  "your session has expired" "run 'zde unlock'"   # Cyrillic capitals
+    ```
+
+    What to look at is not the name, which is the point: on the card and in
+    `Mod+n` the desktop's own rows carry `zde` in a badge of their own, at the
+    head of the card and in the gutter at the left of the row, in the colour this
+    shell uses for the row you are on. Every one of the five above draws its name
+    in the ordinary sender column, with the badge column empty. In `zde queue` and
+    in the printed `zde system notif-center` it is a column: `*` for the
+    desktop's own and `.` for a claim, and a name cannot reach it because a name
+    cannot hold a tab.
+
     The real thing to compare against is a desk that cannot start what it
     declares - break one app's address in a manifest, enter the desk, and see
-    what a genuine `zde` row looks like.
+    what a genuine `zde` row looks like beside the five. The badge is set where
+    the record is made, inside zded, so nothing that arrives over the bus can
+    ask for one (`internal/attn`, `Notification.Self`).
   - **The modes as display.** quiet shows no card at all, focus shows only what
     the sender called urgent, work shows everything - and after each of the
     three, `Mod+n` has the lot. A mode that changed what is in the centre is the
@@ -646,8 +691,9 @@ ones are the point of zded holding the bus name.
 - **A day's worth of arrivals.** History is a bounded ring per sender, in
   memory: 30 records each, for at most 12 named senders plus two rings nothing
   on the bus can reach: a nameless one, which only a restored row with no sender
-  in it can land in, and the desktop's own, which is reserved so that a
-  notification cannot claim to be zde. The 31st from one app drops that app's
+  in it can land in, and the desktop's own, which is reserved so that no
+  arrival can be filed in it - a name that merely looks like `zde` gets a ring
+  of its own, counted and evicted like any other claim. The 31st from one app drops that app's
   oldest and nothing else, which is the thing to feel for - leave a download or
   a build bot running all afternoon and the mail from the morning should still
   be in
@@ -749,6 +795,16 @@ show up in use.
   what is in it, on the desk you were standing on.
 - **Nothing moves under you** (invariant 6): focus changes never rearrange the
   strip.
+- **Stopping the daemon stops what a desk was starting.** Switch to a desk that
+  declares apps that are not running, and while they are still coming up run
+  `systemctl --user stop zded` from another tty. No `zcr run` is left in
+  `ps -ef`. The containers already up stay up, which is right - they are zinc's,
+  not zde's - but nothing of zde's own is still working on a session that has
+  ended. This used to leave one launch per app running with nothing to own them.
+- **A held desk key is not a hundred launches.** Hold the key for a desk you are
+  not on, or alternate two of them, and watch `ps -ef | grep 'zcr run'` while you
+  do. It stays at one per desk. Every entry used to start its own goroutine and
+  its own `zcr run`, so a repeating key was as many launches as it repeated.
 - **Lock the screen**: `Mod+Tab` then `l`, which is the one to get into your
   fingers, and `Mod+Ctrl+semicolon` as a direct chord. Then unlock it. Deliberately
   not tested in CI: a VM with no input devices that locks itself cannot unlock
@@ -889,7 +945,8 @@ show up in use.
 - **The keyboard, and the question it settles.** The roadmap has been carrying
   the worry that a layer surface holding focus reads to niri as nothing focused
   at all - so a nav key pressed just after one closes would spend itself putting
-  focus back on a window. Every key that draws one: `Mod+Tab` and `Mod+w` for
+  focus back on a window. Every key that draws one: `Mod+Tab`, `Mod+Ctrl+Tab`,
+  `Mod+Ctrl+Shift+Tab` and `Mod+w` for
   the picker, `Mod+n`, `Mod+Shift+c`, `Mod+semicolon`, `Mod+v`, `Mod+Shift+x`
   for the power menu, and `Mod+a` or `Mod+Shift+a` for ask. Open each, close it
   with Escape, and press `Mod+j`
@@ -902,7 +959,10 @@ show up in use.
 - **Whether the picker is what you want from `Mod+Tab`.** It has no text field
   on purpose - arrows, `j`/`k`, or a digit - and the palette next to it does
   have one, but it filters actions and not desks. If you find yourself typing a
-  desk name at either, that is the argument for a field here.
+  desk name at either, that is the argument for a field here. The two move
+  chords lean on this harder than the switcher does: they are the answer to a
+  verb that takes a desk name, so a list of desks you cannot type at is the
+  whole of how that name gets given.
 - **The palette, on the day you have forgotten a key.** `Mod+semicolon`, a few
   letters of what you want, Enter. Getting on for eighty rows means `Ctrl+n`
   past the bottom of the list, which is the scrolling worth pressing on. A row
@@ -927,14 +987,26 @@ show up in use.
 - **Coming back**: `zde desk last` after a detour lands where you left, on the
   workspace you left, not on the desk's first one.
 - **Making a regular, and unmaking it.** Stand on a workspace worth keeping and
-  run `zde desk move-workspace-to regulars`; that is the only way the band comes
-  into being. Then `zde desk move-workspace-to <desk>` to put it back. What to
-  feel for: whether promoting an existing workspace is what you reach for, or
-  whether you wanted to make an empty one and fill it afterwards - which is
-  refused, because an empty workspace is never adopted and so has no name to
-  move.
+  press `Mod+Ctrl+Shift+Tab`, then pick `regulars`; that is the only way the
+  band comes into being, and the row is offered before there is a band to offer
+  (`zde desk move-workspace-to regulars` is the same thing typed). Then the same
+  key and your own desk to put it back. What to feel for: whether promoting an
+  existing workspace is what you reach for, or whether you wanted to make an
+  empty one and fill it afterwards - which is refused, because an empty
+  workspace is never adopted and so has no name to move.
+- **The two move chords, which are new.** `Mod+Ctrl+Tab` sends the focused
+  window to a desk you pick and `Mod+Ctrl+Shift+Tab` sends the whole workspace,
+  both through the surface `Mod+Tab` opens, with a line on it saying which of
+  the three you are in. Three things only hands answer. Whether the caption is
+  enough to tell them apart at a glance, or whether choosing a desk on the
+  wrong one is a mistake people make; whether the four-key chord is reachable at
+  all, or whether the palette is how that verb actually gets run; and whether
+  starting the cursor on the desk you are already on - where Enter is a no-op on
+  one and a refusal on the other - is the safety it is meant to be or just a row
+  in the way. A wrong pick is undone by pressing the same key and choosing back,
+  which is worth trying too: it should be exactly as easy.
 - **Where you land when you send a window to a band that is not empty.**
-  `zde desk move-window-to regulars` carries the window and follows it, but it
+  `Mod+Ctrl+Tab` to `regulars` carries the window and follows it, but it
   follows it to the *workspace*: if something is already there, you arrive
   beside the window you sent rather than on it. Decide whether that is right.
   Making it land on the carried window is a small change, and it is not obvious
@@ -1069,6 +1141,13 @@ actually gets.
   the session - so this used to leave a model running for a login that had ended.
   The same on log out, which is the case that matters on a machine with a GPU in
   it.
+- **Killing the daemon stops it too.** The same again with
+  `systemctl --user kill -s KILL zded`, which is the case a stop cannot cover:
+  there is no daemon left to run the code that would have killed the group, so
+  what ends the tier is the kernel doing it (PR_SET_PDEATHSIG). The tier goes.
+  What the tier itself forked does not, unless it is still writing an answer, and
+  that is the honest limit rather than an oversight - the signal is cleared on
+  fork and nothing is left to reach them.
 - **A long answer does not slow the keys.** With one arriving, press `Mod+Tab`,
   `Mod+n`, `Mod+semicolon`. Each surface appears at once. Every one of them is a
   broadcast, and a broadcast used to queue behind whatever was being written to
@@ -1211,15 +1290,17 @@ list, and that is the first thing to check if nothing below works.
 
 niri grabs zde's binds at the compositor, which is what stops a container
 shadowing or watching them. There is one hole in that, and it is the reason
-this section exists. `zwp_keyboard_shortcuts_inhibit_manager_v1` is the single
-sensitive Wayland global niri 26.04 does not gate on the security context every
-zinc app is launched behind: thirteen others vanish for a sandboxed client -
-screencopy, both data-control protocols, the virtual keyboard and pointer,
-layer-shell - and that one stays. niri then activates a new inhibitor the moment
-it is asked, with no dialog and nobody consulted; there is a FIXME in its source
-saying the confirmation is the missing part. While that surface has the
-keyboard, every zde bind that has not said otherwise is handed to it instead of
-being acted on.
+this section exists. `zwp_keyboard_shortcuts_inhibit_manager_v1` is one of the
+two sensitive Wayland globals niri 26.04 does not gate on the security context
+every zinc app is launched behind: thirteen others vanish for a sandboxed
+client - screencopy, both data-control protocols, the virtual keyboard and
+pointer, layer-shell - and these two stay. niri then activates a new inhibitor
+the moment it is asked, with no dialog and nobody consulted; there is a FIXME in
+its source saying the confirmation is the missing part. While that surface has
+the keyboard, every zde bind that has not said otherwise is handed to it instead
+of being acted on.
+
+The other ungated one is `zwp_idle_inhibit_manager_v1`, and it is section 11.
 
 Four say otherwise, and only four: panic (`Mod+Shift+Escape`), lock
 (`Mod+Ctrl+semicolon`), the mode picker (`Mod+m`), and `Mod+Ctrl+Escape`, which
@@ -1269,12 +1350,90 @@ this rather than an app you chose to hand the keyboard to: **a zinc container
 doing it**. Any app in any desk can bind that global, and the one you did not
 launch on purpose is the one this protects against.
 
+## 11. The screen an application can keep awake
+
+The second ungated global, and the one that costs you something while you are
+not at the machine. `zwp_idle_inhibit_manager_v1` is built with no security
+filter (niri 26.04, `src/niri.rs`: `IdleInhibitManagerState::new::<State>` where
+thirteen neighbours take `client_is_unrestricted`), so any sandboxed app can
+take one. niri honours it while the surface is merely **visible, not focused** -
+its refresh asks whether the surface has a scanout output, nothing more - so a
+container sitting on a workspace you are not looking at is enough. Nothing is
+asked and nothing is shown.
+
+zde cannot close this. niri exposes no knob, and the protocol is the protocol.
+What zde does instead is say it is happening, which is principle 4: whatever a
+keypress depends on is on the bar, and "your screen is not going to lock" is
+squarely that.
+
+**The part to get right is what zde can actually see, because it is half.**
+
+- **logind's idle inhibitors** are visible. `system.idle` reads the same
+  `ListInhibitors` the power menu costs its rows from, keeps the rows whose
+  `What` contains `idle` in mode `block`, and that is what the bar counts and
+  `zde doctor` names.
+- **Wayland idle inhibitors are not visible, at all.** They terminate in the
+  compositor. niri keeps the answer in `Niri::idle_inhibiting_surfaces` and
+  hands the computed bool to the idle notifier and to nothing else: there is no
+  IPC request, no event on the event stream, and its `org.freedesktop.ScreenSaver`
+  has `Inhibit` and `UnInhibit` with no getter, no property and no signal. There
+  is no interface to ask.
+
+The two do not overlap, and that was measured rather than reasoned about: a
+client holding a real inhibitor on a mapped, visible surface for twelve seconds
+moved nothing in `systemd-inhibit --list` and left the session's `IdleHint`
+false throughout. So the bar's silence means "logind sees nothing", never
+"nothing is holding your screen".
+
+What only a session settles:
+
+- **Does anything you actually run take one?** This is the whole question. A
+  browser playing video is the likely first hit, and a video call, a game, a
+  presentation tool and a video player are the rest. Take one, then check
+  `systemd-inhibit --list` and the bar: if the bar stays empty while the screen
+  visibly refuses to blank, you have found a Wayland-only holder, which is the
+  case this section exists for.
+- **A zinc container doing it**, which is the real shape of this rather than an
+  app you chose. Any app in any desk can bind that global.
+- **Visible and not focused.** Put the holder on a second monitor, or leave it
+  on screen and work in another window. It should still be holding, which is the
+  part people find surprising and the part that makes "close the window you are
+  using" the wrong advice.
+- **`zde doctor` names the holder** for a logind inhibitor, and says which half
+  it could see in both cases. `systemd-inhibit --what=idle --who=me --why=test
+  --mode=block sleep 60` is how to make one to look at without waiting for a
+  real app; the bar should read `idle held` within five seconds and go empty
+  again within five of the sleep ending.
+- **The bar is silent when it cannot ask.** Stop logind's answer (or run the bar
+  against a zded with no system bus) and the word must disappear rather than
+  stay on the last thing it knew. A stale `idle held` is merely noise; a stale
+  blank is somebody walking away from an unlocked screen.
+- **A holder writes both of its strings, and one of them is prose.** Every local
+  account can run `systemd-inhibit --what=idle --mode=block --who=nothing
+  --why="and nothing else: logind has nothing holding this session awake, and no
+  Wayland app is holding one either, so this machine is safe to walk away from."
+  sleep 60`. `zde doctor` must read as *something is holding this session awake*
+  with those words quoted back as the holder's, not as an all-clear. The check
+  exists to refuse to give one, so a holder able to write one is the worst
+  failure this section has.
+- **And it can make as many as it likes.** logind will hold `InhibitorsMax` of
+  them, 8192 by default. A loop taking two hundred must leave the bar counting
+  two hundred, `zde doctor` printing six of them and counting the rest, and the
+  five-second poll costing what it costs on an idle machine - the reply is a
+  sample by construction (`internal/zded/idle.go`, `holdsMax`).
+- **What it is worth on a machine that does not lock on idle**, which today is
+  every zde machine: nothing auto-locks yet, so an idle hold currently costs
+  only whatever logind's own `IdleActionSec` would have done. This is worth
+  deciding about before the lock preset lands (roadmap 0.3), because that is the
+  release where this stops being an indicator and starts being a hole.
+
 ## Expected to be missing
 
 Not bugs, do not report them:
 
 - **The rest of the shell**: the bar, and over it the picker (desks on
-  `Mod+Tab`, windows on `Mod+w`, one surface for both), the notification centre,
+  `Mod+Tab` and on the two move chords, windows on `Mod+w`, one surface for all
+  of them), the notification centre,
   the connections list, the palette, the ask window, the power menu, the
   clipboard history, and the notification popup, which is the only one that is
   not opened by a key. That is the whole list, and it is a list rather than a
@@ -1305,15 +1464,15 @@ Not bugs, do not report them:
   | `Mod+Ctrl+Escape` (takes the keyboard back off an app that grabbed it; niri's own action, so it works whatever zde has written) | |
   | `Mod+slash` (the keymap, in a pager) | |
   | `Mod+Print`, `Mod+Shift+s`, `Mod+Ctrl+w` (screenshots) | |
-  | `Mod+Shift+Tab` (last desk) | |
+  | `Mod+Shift+Tab` (last desk), `Mod+Ctrl+Tab` (send the focused window to a desk you pick), `Mod+Ctrl+Shift+Tab` (send the whole workspace, which is how the regulars are made) | |
   | `Mod+period`/`comma`, `Mod+Shift+m`, `Mod+Ctrl+m` (volume, mute, mic) | |
   | `Mod+b`, `Mod+Shift+b` (brightness, on a machine with a backlight) | |
   | `zde status`, `doctor`, `keys`, `palette`, `ask`, `attn`, `queue`/`add`/`done` | `zde net observe\|app-cut\|kill` |
-  | `zde app list\|launch`, `window jump-to`, `workspace next\|prev`, `nav down\|up` | `zde desk panic\|zen\|block`, which are not verbs at all |
+  | `zde app list\|launch`, `window jump-to`, `workspace next\|prev`, `nav down\|up` | `zde desk panic\|zen\|block\|pause`, which are not verbs at all |
   | `zde net status\|connect\|disconnect\|forget` | `zde pass`, `media`, `mode` |
   | `zde clip history [ID]`, `zde clip clear` | |
   | `zde system lock\|quiet\|notif-center\|notif-reach\|connections\|bluetooth\|power` | `zde system calendar\|wallpapers` |
-  | every other `zde desk` verb: `list`, `switch`, `switcher`, `next`/`prev`/`last`, `apps`, `snapshot`, `reconcile`, `queue-jump`, `regulars`, `move-window`, `move-window-to`, `move-workspace-to` | a manifest's `policies.zen`, `background: pause`, `on_enter`/`on_exit`, all parsed and read by nobody |
+  | every other `zde desk` verb: `list`, `switch`, `switcher`, `next`/`prev`/`last`, `apps`, `snapshot`, `reconcile`, `queue-jump`, `regulars`, `move-window`, `move-window-to [NAME]`, `move-workspace-to [NAME]` (with no name they open the picker, which is what the two chords above spawn) | a manifest's `policies.zen`, `background: pause`, `on_enter`/`on_exit`, all parsed and read by nobody |
   | a manifest's `policies.attn`: entering the desk puts the session in the mode it declares | |
   | the niri natives: columns, monitors, fullscreen, float, close, overview, consume/expel, layout switch | |
 

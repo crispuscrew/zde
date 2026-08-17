@@ -200,8 +200,9 @@ Use your own output name from `niri msg outputs`. Then `Mod+Tab` picks a desk,
 `Mod+j`/`Mod+k` walk them, and `Mod+t` opens a terminal.
 
 The regulars - the band reachable from every desk - do not exist until you make
-one: stand on a workspace worth keeping and run
-`zde desk move-workspace-to regulars`.
+one: stand on a workspace worth keeping, press `Mod+Ctrl+Shift+Tab` and pick
+`regulars`, which is offered before there is a band. `zde desk
+move-workspace-to regulars` is the same thing typed.
 
 ## 5. Apps, and the sandbox
 
