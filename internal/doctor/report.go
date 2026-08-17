@@ -63,7 +63,7 @@ const ReportDir = "/var/log/zde"
 // section headings are a page and a half, about 3 KB. Graphics is a verdict, up
 // to cardsMax device lines, fellMax + sawMax log lines at lineMax (32 rows x
 // 300 characters, which is where the row filter bounds them: 10 KB), the
-// environment allowlist, and outputsMax names: under 14 KB. Versions is a dozen
+// environment allowlist, and screensMax names: under 14 KB. Versions is a dozen
 // lines of store paths, which are long: 2 KB. Hardware is DMI, a CPU name, the
 // kernel command line filled across a few rows, and inputsMax device names at a
 // row's bound: 20 KB at its absolute limit and about 2 KB on a laptop. The
@@ -295,7 +295,7 @@ func writeGraphics(b *strings.Builder, g Graphics) {
 		fmt.Fprintf(b, "             the compositor is alive, its sockets are open, and nothing is drawn.\n")
 	case DrewProbably:
 		fmt.Fprintf(b, "  answer     probably yes - nothing in niri's log this boot says it fell back, and\n")
-		fmt.Fprintf(b, "             niri is answering with %d output(s). Nothing here can see a photon, so\n", len(g.Outputs))
+		fmt.Fprintf(b, "             niri has %d screen(s) to draw on. Nothing here can see a photon, so\n", len(g.Screens))
 		fmt.Fprintf(b, "             a black screen with this line is a fault after the renderer.\n")
 	default:
 		fmt.Fprintf(b, "  answer     not known - %s.\n", g.Unsure())
@@ -311,16 +311,21 @@ func writeGraphics(b *strings.Builder, g Graphics) {
 	switch {
 	case g.NiriErr != nil:
 		fmt.Fprintf(b, "  niri       not answering: %s\n", reading(g.NiriErr.Error()))
-	case len(g.Outputs) == 0:
-		fmt.Fprintf(b, "  niri       answering on %s, and listing no outputs at all - a compositor with\n", reading(g.Socket))
-		fmt.Fprintf(b, "             nowhere to draw is a black screen however well its renderer started\n")
+	case len(g.Screens) == 0:
+		fmt.Fprintf(b, "  niri       answering on %s, and it has a screen for none of its outputs - a\n", reading(g.Socket))
+		fmt.Fprintf(b, "             compositor with nowhere to draw is a black screen however well its\n")
+		fmt.Fprintf(b, "             renderer started. niri switching a monitor off itself reads this way\n")
 	default:
 		fmt.Fprintf(b, "  niri       answering on %s\n", reading(g.Socket))
+		// The monitors niri is drawing on and not every connector it lists, for
+		// the reason askNiri gives. So a monitor that is plugged in and dark is
+		// absent from this row, which is the reading rather than a gap in it.
+		//
 		// Each name and then the join, rather than the join and then the
 		// filter: a monitor called "a b" and two monitors called "a" and "b"
 		// are different machines, and one filter over the joined string cannot
 		// keep them apart.
-		fmt.Fprintf(b, "  outputs    %s\n", reading(strings.Join(each(g.Outputs), " ")))
+		fmt.Fprintf(b, "  screens    %s\n", reading(strings.Join(each(g.Screens), " ")))
 	}
 
 	// The cards, one line each. Written even when the verdict was decided

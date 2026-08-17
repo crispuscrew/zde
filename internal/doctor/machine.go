@@ -51,12 +51,13 @@ type Machine struct {
 type Graphics struct {
 	// Socket is where niri says its IPC socket is, empty when nothing said.
 	Socket string
-	// Outputs is the outputs niri has a screen for - the ones it could have
-	// drawn on, which is not every connector with a cable in it (askNiri) - and
-	// NiriErr is why it did not answer. Names only: what is on a screen is
-	// nobody's business but the person's, so nothing here asks niri about
-	// windows (see reportHeader).
-	Outputs []string
+	// Screens is what niri has somewhere to draw on, and NiriErr is why it did
+	// not answer. Not every connector it reports: an output niri has switched
+	// off is still in that reply and is not a place a window can be, and the
+	// difference is the whole of what this reading is for (internal/niri,
+	// Screens). Names only: what is on a screen is nobody's business but the
+	// person's, so nothing here asks niri about windows (see reportHeader).
+	Screens []string
 	NiriErr error
 
 	// Cards is one entry per DRM device node this machine has.
@@ -203,14 +204,14 @@ const (
 	// somebody is reading it for. Two kilobytes is more than any bootloader
 	// writes and a thirtieth of the file's own ceiling.
 	cmdlineMax = 2 << 10
-	// cardsMax, inputsMax and outputsMax bound the three lists a machine
+	// cardsMax, inputsMax and screensMax bound the three lists a machine
 	// supplies. Eight graphics devices is a workstation with two cards and their
 	// render nodes twice over; sixty-four input devices is a machine with a
 	// keyboard, a mouse, a touchpad, a lid switch, a power button and fifty-nine
 	// things nobody has.
 	cardsMax   = 16
 	inputsMax  = 64
-	outputsMax = 16
+	screensMax = 16
 )
 
 // niriUnit is the unit niri's own session runs it under (its shipped
@@ -318,7 +319,7 @@ func gatherMachine(root string, log logReader, self Self) Machine {
 // probeGraphics takes the four readings the answer is made of.
 func probeGraphics(root string, log logReader) Graphics {
 	g := Graphics{Socket: os.Getenv(niri.SocketEnv)}
-	g.Outputs, g.NiriErr = askNiri()
+	g.Screens, g.NiriErr = askNiri()
 	g.Cards, g.CardsErr = probeCards(root)
 	g.Fell, g.Saw, g.LogErr = pickLines(log)
 	for _, name := range graphicsEnv {
@@ -330,16 +331,21 @@ func probeGraphics(root string, log logReader) Graphics {
 
 // askNiri asks the compositor what it has to draw on.
 //
-// Outputs and not windows, and that is a privacy decision rather than an
+// Monitors and not windows, and that is a privacy decision rather than an
 // economy: a window list is titles, and a title is what somebody is reading.
-// An output list is the names of the monitors plugged into the machine, which
-// is hardware.
+// A monitor's name is hardware.
 //
-// Screens and not every connector, because the question this reading answers is
-// whether niri had anywhere to draw. A connector niri has switched off is still
-// a connector and is nothing a workspace can be on (internal/niri, Screens), so
-// counting it here would let a compositor with nothing on any screen come out
-// as "probably yes" - which is the one verdict this file must not get wrong.
+// Screens and not every connector niri reports, because the question this
+// reading answers is whether there is anywhere to draw. niri's Outputs reply is
+// built by walking every connector that has a crtc, so a monitor niri has
+// switched off is still in it - and switching one off is niri's own default
+// when a laptop lid closes (internal/niri, Screens). Counting those would give
+// this file the one answer it must never give: "probably yes" about a session
+// whose only panel niri had turned off, which is a black screen with a clean
+// log and healthy sockets, which is the failure this whole section exists to
+// catch. What is lost with them is the name of a monitor that is plugged in and
+// dark, and a monitor niri is not drawing on cannot be the one somebody is
+// failing to see anything on.
 //
 // Its own dial rather than the daemon's answer, for the reason probeDesks reads
 // the disk instead of asking zded: the session this runs on is often one where
@@ -356,8 +362,8 @@ func askNiri() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(names) > outputsMax {
-		names = names[:outputsMax]
+	if len(names) > screensMax {
+		names = names[:screensMax]
 	}
 	sort.Strings(names)
 	return names, nil
@@ -486,7 +492,7 @@ const (
 	// only one of the three that is a verdict rather than an inference, because
 	// it is the compositor's own word.
 	DrewNo Drew = iota
-	// DrewProbably is no such line, and a compositor answering with outputs.
+	// DrewProbably is no such line, and a compositor answering with a screen.
 	// Deliberately not "yes": nothing here can see a photon, and this file must
 	// not be the thing that talks somebody out of looking further.
 	DrewProbably
@@ -505,7 +511,7 @@ func (g Graphics) Drew() Drew {
 		// compositor answering proves only that it is alive - which is exactly
 		// the state that looks like health and is not.
 		return DrewUnknown
-	case g.NiriErr == nil && len(g.Outputs) > 0:
+	case g.NiriErr == nil && len(g.Screens) > 0:
 		return DrewProbably
 	}
 	return DrewUnknown
@@ -523,8 +529,8 @@ func (g Graphics) Unsure() string {
 		return "niri's own log is the only thing that can say it fell back, and it could not be read"
 	case g.NiriErr != nil:
 		return "nothing in niri's log this boot says it fell back, and niri is not answering, so it cannot be asked either"
-	case len(g.Outputs) == 0:
-		return "niri is answering and lists no outputs, so there is nothing it could have drawn on"
+	case len(g.Screens) == 0:
+		return "niri is answering and has a screen for none of its outputs, so there is nothing it could have drawn on"
 	}
 	return "no reading here says either way"
 }

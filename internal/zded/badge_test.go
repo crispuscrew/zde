@@ -75,7 +75,24 @@ type drawnEvent struct {
 
 func TestNothingOnTheBusCanWearTheDesktopsBadge(t *testing.T) {
 	s, _ := deskThatDeclares(t, "nvim")
-	s.launch = func(context.Context, string) error { return errors.New("no app \"nvim\" defined") }
+	// A desk that cannot start what it declares is the only thing that writes
+	// the desktop's own message (launch.go), so this stub is what makes the one
+	// badged record below.
+	//
+	// The context it is handed is kept rather than dropped. A launch runs under
+	// the daemon's own run context so that what it starts dies with the daemon
+	// (internal/zded, startApps), and a stub that took the parameter and ignored
+	// it would go on compiling against a daemon that had gone back to launching
+	// things nothing can reach. The last assertion in this test puts that
+	// promise to this server.
+	handed := make(chan context.Context, 1)
+	s.launch = func(ctx context.Context, address string) error {
+		select {
+		case handed <- ctx:
+		default: // one desk declaring one app: the first is the one asserted on
+		}
+		return errors.New("no app \"nvim\" defined")
+	}
 	// A listener, so the popup path is drawn as well as the centre: the two
 	// surfaces read different bytes and only one of them is a reply.
 	rec := &recorder{}
@@ -169,6 +186,30 @@ func TestNothingOnTheBusCanWearTheDesktopsBadge(t *testing.T) {
 	}
 	if badged != 1 {
 		t.Errorf("%d popups of %d are drawn as the desktop's own:\n%s", badged, len(popped), rowsFor(popped))
+	}
+
+	// And the launch that wrote that message was handed the daemon's own run
+	// context, which is the other half of the same record: what a real launch
+	// starts is a subprocess in a process group of its own, and this daemon
+	// deciding to end it is the only thing that reaches it (internal/zded,
+	// startApps and stopRuns). Live while the daemon is - a launch handed a
+	// context that was already over would never run, and the message this whole
+	// test reads would not exist - and over once it is closed.
+	var ctx context.Context
+	select {
+	case ctx = <-handed:
+	default:
+		t.Fatal("the desk switch wrote the desktop's message without ever calling launch")
+	}
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("the launch was handed a context that was already over: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if ctx.Err() == nil {
+		t.Error("the daemon has been closed and the context it handed a launch is still live, so " +
+			"what a real launch had started would outlive the daemon that started it")
 	}
 }
 
