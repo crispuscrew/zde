@@ -2,6 +2,7 @@ package clip
 
 import (
 	"bytes"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -378,5 +379,144 @@ func TestClearWipesRatherThanForgets(t *testing.T) {
 		if b != 0 {
 			t.Fatalf("the text survived a clear: %q", kept)
 		}
+	}
+}
+
+// Nothing copied is still readable an hour later, whatever the TTL says.
+//
+// The consequence a TTL holds back is not memory, so measuring memory would be
+// measuring the wrong thing: what it holds back is how long a password lives in
+// a process that runs for the whole session. The thing to assert is therefore a
+// wall-clock one - by this hour, the bytes are zeroes - and the hour is not
+// invented for this test. TTL's own comment names it: "An hour would cover more
+// and would also mean a laptop left alone at a table holds an hour of
+// everything that passed through the clipboard, which is the trade this project
+// settles the other way." So an hour is the number the code has already
+// rejected, and a clipboard history that still holds a password at an hour is
+// one that made the opposite trade without saying so.
+//
+// Deliberately not compared against TTL. TestAnExpiredEntryIsWipedAndNotOnlyUnlisted
+// above asks about TTL minus a minute and TTL plus a second, which pins that
+// expiry happens and wipes rather than delists - and passes just as well at
+// fifteen minutes, at two hours and at a week. This one is the other half.
+//
+// Free of wall-clock cost, because Expire takes the time as an argument: the
+// clock this asks about is the session's, not the test runner's.
+func TestNothingCopiedIsStillReadableAnHourLater(t *testing.T) {
+	var h History
+	// A full ring, so this is about everything the history can be holding and
+	// not about one entry that happened to be old.
+	held := make([][]byte, 0, Max)
+	for i := 0; i < Max; i++ {
+		// Distinct, or Add drops a repeat of the newest and there is nothing
+		// here to expire.
+		secret := text("s3cret-token-" + strconv.Itoa(i))
+		held = append(held, secret)
+		if id := h.Add(secret, now); id == 0 {
+			t.Fatalf("entry %d was not recorded, so this test is not about expiry", i)
+		}
+	}
+	if len(h.Rows(now)) != Max {
+		t.Fatalf("%d rows were recorded, want a full ring of %d", len(h.Rows(now)), Max)
+	}
+
+	const hour = time.Hour
+	h.Expire(now.Add(hour))
+
+	if rows := h.Rows(now.Add(hour)); len(rows) != 0 {
+		t.Errorf("%d entries are still listed %s after they were copied, and the TTL is the "+
+			"promise that a password copied at a table is not still there when somebody else sits down",
+			len(rows), hour)
+	}
+	// The half that makes it a promise rather than a display rule: a history
+	// that only stopped listing these is one a core file still reads.
+	for i, secret := range held {
+		for b := range secret {
+			if secret[b] != 0 {
+				t.Fatalf("entry %d is still in memory %s after it was copied: %q", i, hour, secret)
+			}
+		}
+	}
+}
+
+// The whole clipboard history has a ceiling, and it is TextMax times Max.
+//
+// The consequence is the one TextMax's neighbours already do the arithmetic
+// for: "Fifty entries at TextMax each is 3 MB if every one of them is at its
+// limit" (see Max). That product is what makes an in-memory clipboard history
+// affordable, and it is the argument the package header makes against ever
+// putting this on disk - so it is worth a test that fails when the product
+// stops being a size a daemon can carry, rather than three tests that each
+// prove a trim happened.
+//
+// What the fixture copies is three large things to every ordinary one. Large
+// is 384 KiB, six times the bound: at the bound as it stands Add refuses every
+// one of those whole, so the ring fills with the ordinary 64 KiB copies beside
+// them and holds the 3 MB the arithmetic says. What a person sees instead of a
+// refused entry is a note, and that is the caller's half rather than this one's
+// (internal/zded, take) - a note holds no content, so it is not part of the
+// number being asserted here. Widen TextMax and the same copies are accepted,
+// the ring fills three quarters with them, and the history is the largest thing
+// in the daemon.
+//
+// Three to one rather than one to one because the ratio is what decides how
+// much headroom the ceiling can have. Alternating, a widened ring is half large
+// copies and half small, which lands close enough to the ceiling that the
+// ceiling has to sit almost on top of the true figure to catch it - and a bound
+// test that cannot tolerate a retune is the thing this whole exercise is
+// against.
+//
+// Twelve megabytes is the ceiling: four times the three the package argues for,
+// so deciding that a screenful of code is bigger than it used to be, or that
+// fifty rows is not enough, is a decision somebody can make without this test
+// having an opinion. It catches both terms of the product at eight times.
+//
+// Counted over the ring's own slices rather than through Rows, because Rows
+// hands out previews of two hundred characters and the question here is what
+// the daemon is still holding.
+func TestTheWholeClipboardHistoryHasACeilingHoweverMuchIsCopied(t *testing.T) {
+	var h History
+	// Absolute rather than TextMax times six, for the reason the socket's own
+	// bound test spells its sizes out: a fixture written in terms of the number
+	// it is testing grows to meet whatever that number became.
+	const big = 384 << 10
+	const ordinary = 64 << 10
+	// Copied exactly this long, prefix included. An entry a few bytes over a
+	// bound is refused by it, so a fixture that appended its serial number to a
+	// blob of the right size would be testing the wrong side of the comparison.
+	// The serial also makes every copy distinct, because a repeat of the newest
+	// entry is not a new one and a fixture of identical blobs would record one.
+	copies := 0
+	blob := func(n int) []byte {
+		copies++
+		b := bytes.Repeat([]byte("a"), n)
+		copy(b, strconv.Itoa(copies)+":")
+		return b
+	}
+	// Two hundred rounds of four copies, which is four times the ring as it
+	// stands, so what is left at the end is what the ring chose to keep and not
+	// simply everything that was copied. A number rather than Max times four,
+	// so that widening the ring does not widen the fixture to match it.
+	for i := 0; i < 200; i++ {
+		h.Add(blob(big), now)
+		h.Add(blob(big), now)
+		h.Add(blob(big), now)
+		h.Add(blob(ordinary), now)
+	}
+
+	held := 0
+	for _, e := range h.entries {
+		held += len(e.text)
+	}
+	if held > 12<<20 {
+		t.Errorf("%d copies, three in four of them 384 KiB, left %d entries holding %d MB, "+
+			"past the 12 MB a bounded clipboard history may cost: TextMax times Max is the whole "+
+			"of what this daemon carries for the clipboard, and one of them has stopped being a bound",
+			copies, len(h.entries), held>>20)
+	}
+	// And it is a history rather than an empty one, so the number above is a
+	// ceiling something reached.
+	if len(h.entries) == 0 {
+		t.Error("nothing was kept at all, so the ceiling above is about an empty history")
 	}
 }

@@ -3,6 +3,7 @@ package apps
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -162,5 +163,64 @@ func TestAnAppMapLinkedFromTheStoreIsStillRead(t *testing.T) {
 	}
 	if argv, err := a.Argv("terminal"); err != nil || argv[0] != "foot" {
 		t.Errorf("Argv = %v, %v", argv, err)
+	}
+}
+
+// A core file at this path is refused rather than read.
+//
+// The consequence encoded here is the one bytesMax's comment names: the cap is
+// small "so that something which arrived at this path by accident - a log, a
+// download, a core file - is refused rather than parsed into a map of things to
+// exec". TestSomethingFarTooBigIsNotAnAppMap above proves the refusal happens,
+// and it builds its fixture out of bytesMax and a bit, so it says nothing about
+// where the line is: it passes at 256 KiB and at 256 MB alike. What is asserted
+// here is what the refusal is worth, which is that the file never reaches the
+// daemon's memory.
+//
+// It matters at this path more than at most, because of what the answer is used
+// for. What comes back is exec'd - by the CLI with syscall.Exec, and by the
+// daemon when it starts an ask tier - so the file is read at the two moments
+// where a person is waiting on a keypress, and a core file somebody left here
+// would be a hundred megabytes read on the way to running a terminal.
+//
+// Allocation and not the size of the answer, for the reason the socket's own
+// bound test gives: TotalAlloc is what this call took whether or not it was
+// freed afterwards, and a read that let go of 128 MB afterwards still read it.
+// Sparse, because the question is about memory and writing the file out for
+// real would say nothing more while costing somebody's disk.
+//
+// Eight megabytes is the ceiling, against a little over one that the refusal
+// actually costs - io.ReadAll grows its buffer on the way to the limit, so even
+// a read that stops early has handed out a few hundred kilobytes. Seven times
+// over, so deciding that an app map may be a megabyte is a decision somebody
+// can make without arguing with this test, and 256 MB is caught.
+func TestACoreFileAtThisPathIsNotReadIntoTheDaemon(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "apps.json")
+	const size = 128 << 20
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(size); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	a, err := Load(path)
+	runtime.ReadMemStats(&after)
+	if err == nil {
+		t.Errorf("a %d MB file was read as an app map of %d entries", size>>20, len(a))
+	}
+	if len(a) != 0 {
+		t.Errorf("a %d MB file produced %d things to exec", size>>20, len(a))
+	}
+	if grew := after.TotalAlloc - before.TotalAlloc; grew > 8<<20 {
+		t.Errorf("reading a %d MB file at the app map's path allocated %d MB, and nothing zde "+
+			"reads here is past %d KiB: the file went into the daemon's memory before anything "+
+			"measured it", size>>20, grew>>20, bytesMax>>10)
 	}
 }

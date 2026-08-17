@@ -3,6 +3,8 @@ package zded
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"testing"
@@ -225,6 +227,96 @@ func TestSwitcherListsTheRegulars(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("desks = %v, and the regulars are not among them", sw.Desks)
+	}
+}
+
+// The two move verbs with no name: they ask which desk rather than doing
+// anything, and the event says which verb is asking. The rows are the same rows
+// the switcher shows, so the kind is the only thing telling a shell whether a
+// chosen row switches desk or sends a window there - which is why it is a kind
+// and not a field.
+//
+// Nothing may move here. A key that opened a picker and moved the window as well
+// would be a window in a place nobody chose.
+func TestTheMoveVerbsWithNoNameAskWhichDesk(t *testing.T) {
+	for _, c := range []struct{ method, kind string }{
+		{"desk.move-window-to", EventPickerMoveWindow},
+		{"desk.move-workspace-to", EventPickerMoveWorkspace},
+	} {
+		t.Run(c.method, func(t *testing.T) {
+			f := &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code", output: "DP-1"}
+			s := New("test", nil, f, nil)
+			rec := &recorder{}
+			s.listen(&sink{w: rec})
+
+			resp := s.Dispatch(Request{Method: c.method})
+			if resp.Error != "" {
+				t.Fatalf("%s: %s", c.method, resp.Error)
+			}
+			var got struct{ Event Event }
+			line := strings.TrimSpace(rec.String())
+			if err := json.Unmarshal([]byte(line), &got); err != nil {
+				t.Fatalf("the event is not one line of json: %q", line)
+			}
+			if got.Event.Kind != c.kind {
+				t.Errorf("kind = %q, want %q: a shell cannot tell which verb asked", got.Event.Kind, c.kind)
+			}
+			if got.Event.On != "vshop" {
+				t.Errorf("on = %q, want the desk we are on, which is the row Enter must not spend", got.Event.On)
+			}
+			if len(f.renames) != 0 {
+				t.Errorf("asking which desk moved something: %v", f.renames)
+			}
+		})
+	}
+}
+
+// And the regulars are always among the rows, band or no band. Handing a
+// workspace to it is the only way it ever comes into being (docs/roadmap.md), so
+// a picker over the desks that exist could not do the thing the verb is most
+// needed for - and the answer to "how do I make my regulars" would still be a
+// terminal, which is the gap this closes.
+func TestTheMovePickerOffersTheRegularsBeforeThereAreAny(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code"}, nil)
+
+	var sw Switcher
+	json.Unmarshal(s.Dispatch(Request{Method: "desk.move-workspace-to"}).Ok, &sw)
+	found := false
+	for _, d := range sw.Desks {
+		if d == desk.Regulars {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("desks = %v, and the band nothing else can make is not among them", sw.Desks)
+	}
+	// Once, however the map answers: the band exists here, and a row drawn twice
+	// is a list that disagrees with itself about how many desks there are.
+	m := desk.Rebuild([]desk.Workspace{
+		{Name: "vshop.DP-1.code", Output: "DP-1"},
+		{Name: "regulars.DP-1.comms", Output: "DP-1"},
+	}, []string{"DP-1"})
+	s = New("test", nil, &fakeCompositor{m: m, focused: "vshop.DP-1.code"}, nil)
+	sw = Switcher{}
+	json.Unmarshal(s.Dispatch(Request{Method: "desk.move-window-to"}).Ok, &sw)
+	seen := 0
+	for _, d := range sw.Desks {
+		if d == desk.Regulars {
+			seen++
+		}
+	}
+	if seen != 1 {
+		t.Errorf("desks = %v, want the regulars once", sw.Desks)
+	}
+	// The switcher does not get the row: an empty band is a desk to go to with
+	// no workspace to bring up, which is a row that answers with a refusal.
+	sw = Switcher{}
+	s = New("test", nil, &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code"}, nil)
+	json.Unmarshal(s.Dispatch(Request{Method: "desk.switcher"}).Ok, &sw)
+	for _, d := range sw.Desks {
+		if d == desk.Regulars {
+			t.Errorf("the switcher offers %q, and there is no band to go to", d)
+		}
 	}
 }
 
@@ -528,6 +620,74 @@ func TestOnlySoManyConnectionsMayListen(t *testing.T) {
 	}
 	if !st.Shell {
 		t.Error("something is listening and status says nothing is")
+	}
+}
+
+// A subscriber that stops reading costs a keypress once, and then stops costing
+// it anything.
+//
+// This is the last write on this socket that had no deadline on it. reply took
+// the connection's gate and held it across a write with no deadline either, so
+// a client that subscribed, asked, and then stopped reading parked the read loop
+// in that write for as long as it stayed alive - and neither of the two things
+// that reclaim a connection could touch it. A broadcast keeps a sink that
+// answers errSinkBusy on purpose, because a listener that merely lost a race is
+// not one to stop drawing to (see broadcast), and the connection cap will not
+// choose a listener at all (server.go, admit).
+//
+// Measured against a running daemon: one such connection kept its listener slot
+// through 257 evictions - a full turnover of the table - and took a keypress
+// from 19µs to 200ms, where it stayed for the rest of the session.
+//
+// So the assertion is not that a keypress is cheap while a client is wedged;
+// sendWait says it costs 200ms and that is the accepted price. It is that the
+// price ends: the write runs out of patience, the connection is closed, the read
+// loop ends and the listener goes with it.
+func TestASubscriberThatStopsReadingIsLetGoOf(t *testing.T) {
+	f := &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code", output: "DP-1"}
+	s := New("test", nil, f, nil)
+	path := serve(t, s)
+
+	c, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	// Subscribe, and from here on never read another byte.
+	if _, err := fmt.Fprint(c, "{\"method\":\"events\"}\n"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the client subscribing", func() bool { return s.listeners() == 1 })
+
+	// Ask, and keep asking, without reading any of it: the answers fill the
+	// receive buffer and the read loop parks in the write that cannot finish.
+	// It ends when the daemon closes the connection under it, which is the whole
+	// point of the test.
+	asking := make(chan struct{})
+	go func() {
+		defer close(asking)
+		for i := 0; i < 200000; i++ {
+			if _, err := fmt.Fprint(c, "{\"method\":\"status\"}\n"); err != nil {
+				return
+			}
+		}
+	}()
+
+	waitFor(t, "the daemon letting go of a client that stopped reading",
+		func() bool { return s.listeners() == 0 })
+	select {
+	case <-asking:
+	case <-time.After(10 * time.Second):
+		t.Error("the client is still being answered after the daemon let go of it")
+	}
+
+	// And with it gone, a keypress costs what it costs on an idle daemon rather
+	// than the sendWait it cost every time while the connection was parked.
+	start := time.Now()
+	s.broadcast(Event{Kind: EventPicker, Desks: []string{"vshop"}})
+	if took := time.Since(start); took > sendWait/4 {
+		t.Errorf("a keypress took %v after the parked subscriber was let go of, want nothing like sendWait (%v)",
+			took, sendWait)
 	}
 }
 

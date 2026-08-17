@@ -48,8 +48,23 @@ type Check struct {
 // queue uses: this goes into a bug report to be read by people, and the level
 // is the column an eye runs down. Nothing generated reads it, so nothing is
 // owed a separator.
+//
+// The detail is filtered here, and it takes the row filter rather than the one
+// an error printed on its own takes (internal/attn, Line against Block). Most
+// of what is in this column was written by something else - systemctl's and
+// podman's first line of complaint, zcr's refusal of an app name, a YAML
+// parser's several lines about a manifest, logind's answer off the bus - and
+// this report is one line per check with the level in column one. A detail with
+// a newline in it is a check nobody made, drawn in the column an eye runs down;
+// a detail with an ESC in it drives the terminal somebody pasted the report
+// into. So it is one printable line each, and a manifest that has more wrong
+// with it than fits on one is fixed an edit at a time.
+//
+// Here rather than in each of the twenty places a Check is made, for the reason
+// `zde` filters its errors in one place: a filter per call site is a filter the
+// next check forgets.
 func (c Check) String() string {
-	return fmt.Sprintf("%-5s %-13s %s", c.Level, c.Name, c.Detail)
+	return fmt.Sprintf("%-5s %-13s %s", c.Level, c.Name, attn.Line(c.Detail))
 }
 
 // Report is the whole screen, in the order the checks are printed.
@@ -106,6 +121,7 @@ func Judge(s Session) Report {
 	r = append(r, deskApps(s)...)
 	r = append(r, locker(s))
 	r = append(r, logind(s)...)
+	r = append(r, idle(s)...)
 	r = append(r, journal(s))
 	return r
 }
@@ -241,16 +257,29 @@ func units(s Session) []Check {
 // manifests is one line per desk that could not be read, because that is the
 // answer to "where did my desk go" and a count would send somebody through the
 // directory looking for which one.
+//
+// Except where the readings are for somebody other than the owner, and there it
+// is exactly a count: every entry starts with the manifest's path, a manifest's
+// path is a desk's name, and a file that will not parse is one nothing can read
+// a `private: true` out of - so there is no half of this list that is safe to
+// name (see Session.BadHidden). The count is still a failure and still says the
+// desks are gone, which is the part somebody has to act on.
 func manifests(s Session) []Check {
 	if s.Status == nil {
 		return []Check{{Warn, "manifests", noDaemon}}
 	}
-	if len(s.Status.BadManifests) == 0 {
-		return []Check{{OK, "manifests", "every manifest zded has read parsed"}}
-	}
-	out := make([]Check, 0, len(s.Status.BadManifests))
+	out := make([]Check, 0, len(s.Status.BadManifests)+1)
 	for _, bad := range s.Status.BadManifests {
 		out = append(out, Check{Fail, "manifests", bad})
+	}
+	if s.BadHidden > 0 {
+		out = append(out, Check{Fail, "manifests", fmt.Sprintf(
+			"%d manifest(s) zded read did not parse, so that many desks are not declared. They are not named here,"+
+				" because a manifest is named by its path and a path is a desk name. `zde doctor` in a terminal names them",
+			s.BadHidden)})
+	}
+	if len(out) == 0 {
+		return []Check{{OK, "manifests", "every manifest zded has read parsed"}}
 	}
 	return out
 }
@@ -270,16 +299,25 @@ func manifests(s Session) []Check {
 // there is (docs/delivery.md), so a machine whose desks name apps nobody has
 // defined yet is the ordinary young machine and not a broken one - and a
 // command that exits non-zero everywhere is one nobody reads the output of.
+//
+// Hidden is the entries that were never made, because the readings were
+// gathered for somebody who is not this machine's owner (probeDesks). It gets a
+// line of its own and the all-clear above it is withdrawn when there is one: an
+// "ok" saying no desk names an app this machine cannot start, printed over the
+// top of apps this machine cannot start, is the one failure mode a redaction
+// must not have.
 func deskApps(s Session) []Check {
 	d := s.Desks
 	switch {
 	case d.Err != nil:
 		return []Check{{Warn, "desk apps", "not known: " + d.Err.Error() + d.askedOf()}}
-	case len(d.Unrunnable) == 0:
+	case len(d.Unrunnable) == 0 && d.Hidden == 0:
 		// The directory is named on this line alone, and that is deliberate: it
 		// is the reading that can quietly be about the wrong place, since zded
 		// can be started with another one (cmd/zded, -desks).
 		return []Check{{OK, "desk apps", "no desk in " + d.Dir + " names an app this machine cannot start" + d.askedOf()}}
+	case len(d.Unrunnable) == 0:
+		return []Check{hiddenApps(d)}
 	case d.resolver() == byApps && !d.Configured:
 		// A machine with nothing in zde.apps gets one line and not one per name.
 		// The reason is the same sentence every time and the fix is a single
@@ -289,14 +327,36 @@ func deskApps(s Session) []Check {
 		// Only for that resolver. A zinc app is a YAML file of its own in a
 		// store (docs/delivery.md, layer 2), so there is no one edit to name and
 		// a line each is exactly right: they are that many things to write.
-		return []Check{{Warn, "desk apps", d.Unrunnable[0].Err.Error() + ", and the desks name " +
-			strings.Join(wanted(d.Unrunnable), ", ") + d.askedOf()}}
+		one := Check{Warn, "desk apps", d.Unrunnable[0].Err.Error() + ", and the desks name " +
+			strings.Join(wanted(d.Unrunnable), ", ") + d.askedOf()}
+		if d.Hidden > 0 {
+			// The count still goes on a line of its own, because the names on
+			// this one are the only ones there are: a reader who counted them
+			// would count too few and think they had the whole list.
+			return []Check{one, hiddenApps(d)}
+		}
+		return []Check{one}
 	}
-	out := make([]Check, 0, len(d.Unrunnable))
+	out := make([]Check, 0, len(d.Unrunnable)+1)
 	for _, a := range d.Unrunnable {
 		out = append(out, Check{Warn, "desk apps", a.Desk + " names " + a.App + ": " + a.Err.Error() + d.askedOf()})
 	}
+	if d.Hidden > 0 {
+		out = append(out, hiddenApps(d))
+	}
 	return out
+}
+
+// hiddenApps is the one line that stands for every entry a private desk cost
+// this report, and it is the deliberate limit of the rule: a count, never a
+// name. "Three apps on a desk you declared private could not be started" is a
+// real fault somebody has to be told about without being told which - and a
+// report that dropped those lines in silence would be a report whose all-clear
+// is worth nothing.
+func hiddenApps(d Desks) Check {
+	return Check{Warn, "desk apps", fmt.Sprintf(
+		"%d app(s) on desks that declare private could not be started, and neither those desks nor those apps"+
+			" are named here. `zde doctor` in a terminal names them%s", d.Hidden, d.askedOf())}
 }
 
 // resolver is which of the two answered, and what a Session written down
@@ -402,6 +462,149 @@ func logind(s Session) []Check {
 			"reboot and power off are this session's to use - what a power menu asks for, on a build that has one"}}
 	}
 	return out
+}
+
+// unseen is the half of this question nothing on this machine can answer, said
+// wherever the answer is drawn.
+//
+// It is spelled out rather than summarised because the summary is the mistake:
+// "nothing is holding your screen awake" is what somebody will take away from a
+// clean line here, and that is a claim about two mechanisms when only one of
+// them was asked. The other one is the more likely of the two to be in use and
+// the easier of the two for an app to reach.
+const unseen = "a Wayland app holding zwp_idle_inhibit_manager_v1 never reaches logind and is invisible to " +
+	"every interface zde has: niri hands that global to sandboxed clients unfiltered, honours it while the " +
+	"surface is merely visible rather than focused, and exposes no way to read it back (docs/roadmap.md, the " +
+	"idle inhibitor; docs/verify.md, section 11)"
+
+// idle is whether anything is holding this session's idle timers off, which is
+// whether a screen that would blank, suspend or lock on its own is going to.
+//
+// It is the check most at risk of being read as more than it is, so what it can
+// see is on every line it prints. logind's inhibitor table is the whole of the
+// source, and on a Wayland session that is the smaller half of the mechanism -
+// see unseen, and internal/zded/idle.go for the measurement behind it.
+//
+// A warning and not a failure. A held idle timer is a session somebody can
+// still work in, and on a machine with nothing configured to act on idle it
+// costs nothing at all; what it is worth is that it be visible before somebody
+// walks away from the machine rather than after.
+func idle(s Session) []Check {
+	l := s.Power
+	switch {
+	case l.Absent:
+		return []Check{{Warn, "idle", "nothing owns " + logindName +
+			", so whether something is holding this session awake was never asked - and " + unseen}}
+	case l.Err != nil:
+		// Deliberately not "nothing is holding it". The logind check above has
+		// already given the reason at length, so this one says only what it
+		// means for this question and stops.
+		return []Check{{Warn, "idle", "not known: logind could not be asked, so whether something is " +
+			"holding this session awake is unanswered - and " + unseen}}
+	case l.HoldsErr != nil:
+		return []Check{{Warn, "idle", "logind would not list its inhibitors: " + l.HoldsErr.Error() +
+			" - so this is unanswered, and `systemd-inhibit --list` puts the same question by hand"}}
+	case len(l.Holds) == 0:
+		// The line this whole check exists to word carefully. An empty table is
+		// a true statement about logind and not about the machine.
+		return []Check{{OK, "idle", "logind has nothing holding this session awake - though " + unseen}}
+	}
+	var out []Check
+	for i, h := range l.Holds {
+		if i == holdsShown {
+			// The rest are counted rather than printed. Nothing is claimed to
+			// have been read: the number is logind's own and it is the number a
+			// person needs to know they are looking at a table somebody filled
+			// rather than at their machine (see holdsShown).
+			out = append(out, Check{Warn, "idle", fmt.Sprintf(
+				"and %d more holders logind named, not printed: a table this long is one "+
+					"somebody filled, and `systemd-inhibit --list` is where the whole of it is",
+				len(l.Holds)-holdsShown)})
+			break
+		}
+		out = append(out, Check{Warn, "idle", holder(h) +
+			" - so nothing that acts on this session going idle will fire until it lets go"})
+	}
+	// Last, because it qualifies the list above rather than any one row of it:
+	// what is named is what logind knows, and there is no way to find out
+	// whether anything else is holding the screen as well.
+	out = append(out, Check{Warn, "idle", "and there may be more than logind can see: " + unseen})
+	return out
+}
+
+// holdsShown is how many holders the report prints by name.
+//
+// There is a bound because the number of rows is a stranger's to choose.
+// `systemd-inhibit --what=idle --who=... --why=...` takes both strings from
+// whoever runs it, every local account can run it, and logind's own ceiling is
+// InhibitorsMax, which defaults to 8192. Each row here is two strings at
+// attn.Line's 300 characters, so an unbounded loop is up to 8192 lines and
+// several megabytes of somebody else's prose in a report that is read by people
+// and pasted into bug threads - and, where the report is written to a file with
+// a ceiling on it, several megabytes that push the checks underneath this one
+// off the end.
+//
+// Six, because the question this check answers is "is something holding the
+// screen", and six holders answer it as well as eight thousand do. A machine
+// that is not being played with holds nought or one: a download, a video call,
+// a backup wrapped in `systemd-inhibit`. Six is more than anybody has and few
+// enough that the caveat under them is still on the same screen.
+//
+// The count above the sample is what keeps it honest. A report that printed six
+// and said nothing about the rest would be doing to a person what the crafted
+// row below does: showing a part and letting it read as the whole.
+const holdsShown = 6
+
+// holder is one row of logind's inhibitor table, worded so that it cannot be
+// read as zde's own words.
+//
+// Both strings are a stranger's. `systemd-inhibit --who=... --why=...` takes
+// them from whoever runs it and every local account can run it, so they are the
+// same kind of thing as a notification's summary and get the same filter
+// (internal/attn, Line; internal/zded/power.go, held): one line, printable, cut
+// at 300 characters, so `--why="$(printf '\033[2J')"` cannot clear the terminal
+// the report is printed in.
+//
+// The filter was not enough, and that is what this function is for. The line
+// used to be `<who> is holding this session awake: <why>`, which is a sentence
+// whose subject and whose second clause are both written by the person being
+// reported on. `--who=nothing --why="... logind has nothing holding this
+// session awake, and no Wayland app is holding one either, so this machine is
+// safe to walk away from."` produced a warning that reads as zde's own
+// all-clear, in the one check whose entire purpose is to refuse to give one.
+//
+// Two things stop that now, and it takes both:
+//
+//   - zde's own subject comes first and is not a name anybody chose.
+//     "something is holding this session awake" is true of every row here, it
+//     is the finding, and it survives whatever the strings after it say. The
+//     old shape put a chosen word in the position the eye reads as the fact.
+//   - the strings are quoted, and quoted by strconv.Quote, so a `"` inside them
+//     is escaped rather than closing the quotation. Attribution is the whole
+//     point: what is inside the quotes is attributed out loud to the thing
+//     being reported on, so text that claims to be zde reads as a holder
+//     claiming to be zde, which is itself worth seeing.
+//
+// Quote and not a hand-rolled wrapper because it escapes the two characters
+// that could end the quotation and leaves ordinary Unicode alone - a holder
+// named in Cyrillic is still readable, which QuoteToASCII would not leave it.
+func holder(h Hold) string {
+	line := "something is holding this session awake, and it "
+	// A name that filtered away to nothing is a holder that gave none, and
+	// saying so is better than quoting an empty string at somebody. It is not a
+	// row that goes away: the count is the finding, so a holder with no name is
+	// still one holder.
+	if who := attn.Line(h.Who); who != "" {
+		line += "calls itself " + strconv.Quote(who)
+	} else {
+		line += "gave no name"
+	}
+	if why := attn.Line(h.Why); why != "" {
+		return line + " and gives " + strconv.Quote(why) + " as its reason"
+	}
+	// Said rather than left out: a holder that gave no reason is a holder
+	// nobody can go and close, and the blank is a fact about it.
+	return line + " and gave no reason"
 }
 
 // wanted is every name the desks asked for, once each and in order: what a

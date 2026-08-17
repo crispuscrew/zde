@@ -1,6 +1,7 @@
 package zded
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,8 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -64,7 +68,7 @@ func arrivals(t *testing.T, s *Server, want int) []attn.Record {
 // one and why was a line in a daemon's log.
 func TestADeskThatCannotStartAnAppSaysWhichOneAndWhy(t *testing.T) {
 	s, _ := deskThatDeclares(t, "nvim")
-	s.launch = func(address string) error {
+	s.launch = func(_ context.Context, address string) error {
 		return fmt.Errorf("zcr is not on PATH, so %q cannot be started (programs.zinc.enable)", address)
 	}
 
@@ -83,12 +87,19 @@ func TestADeskThatCannotStartAnAppSaysWhichOneAndWhy(t *testing.T) {
 	if got.Urgent {
 		t.Error("a desk that came up short interrupted a focus mode")
 	}
-	// And it is the desktop that said it, in the one name the sender column
-	// reserves. The whole message is "the thing that tried to start your apps is
-	// telling you it could not", so the column has to be the reserved name and
-	// not a second spelling of it (internal/attn, SelfFrom and claim).
+	// And it is the desktop that said it. Two things say so and they are not the
+	// same thing: the name, which is the word the reservation keeps an app off
+	// (internal/attn, SelfFrom and claim), and the mark, which is what every
+	// surface draws its badge from and what no arrival off the bus can set. The
+	// whole message is "the thing that tried to start your apps is telling you it
+	// could not", and a name that only reads like that word is a message anybody
+	// can send (internal/attn, Notification.Self).
 	if got.From != attn.SelfFrom {
 		t.Errorf("sender is %q, want the reserved name nothing on the bus can take", got.From)
+	}
+	if !got.Self {
+		t.Error("the desktop's own notification is unbadged, so every surface draws it as a claim - " +
+			"and a claim is what a lookalike name sends")
 	}
 }
 
@@ -101,7 +112,7 @@ func TestADeskThatCanStartNoneOfItsAppsIsOneNotification(t *testing.T) {
 		apps = append(apps, fmt.Sprintf("app-%d", i))
 	}
 	s, _ := deskThatDeclares(t, apps...)
-	s.launch = func(address string) error { return errors.New("no such app") }
+	s.launch = func(_ context.Context, address string) error { return errors.New("no such app") }
 
 	if resp := s.Dispatch(Request{Method: "desk.switch", Args: []string{"vshop"}}); resp.Error != "" {
 		t.Fatal(resp.Error)
@@ -130,7 +141,7 @@ func TestADeskThatCanStartNoneOfItsAppsIsOneNotification(t *testing.T) {
 // arrived and one did not, and the notification is about the one.
 func TestADeskSaysNothingAboutTheAppsThatStarted(t *testing.T) {
 	s, _ := deskThatDeclares(t, "browser", "nvim", "term")
-	s.launch = func(address string) error {
+	s.launch = func(_ context.Context, address string) error {
 		if address == "nvim@vshop" {
 			return errors.New("no app \"nvim\" defined")
 		}
@@ -158,7 +169,7 @@ func TestADeskSaysNothingAboutTheAppsThatStarted(t *testing.T) {
 func TestADeskThatIsAlreadyUpSaysNothingOnTheWayBackToIt(t *testing.T) {
 	s, _ := deskThatDeclares(t, "browser", "nvim", "term")
 	tried := make(chan string, 8)
-	s.launch = func(address string) error {
+	s.launch = func(_ context.Context, address string) error {
 		tried <- address
 		// What zinc hands back, wrapped as Run wraps it - the caller's half of
 		// the contract is errors.Is and nothing else.
@@ -191,7 +202,7 @@ func TestADeskThatIsAlreadyUpSaysNothingOnTheWayBackToIt(t *testing.T) {
 // one thing to say.
 func TestOnlyTheAppsThatReallyDidNotStartAreNamed(t *testing.T) {
 	s, _ := deskThatDeclares(t, "browser", "nvim")
-	s.launch = func(address string) error {
+	s.launch = func(_ context.Context, address string) error {
 		if address == "browser@vshop" {
 			return fmt.Errorf("%s run %s: %w", zinc.Runner, address, zinc.ErrAlreadyRunning)
 		}
@@ -216,7 +227,7 @@ func TestOnlyTheAppsThatReallyDidNotStartAreNamed(t *testing.T) {
 func TestADeskWhoseAppsAllStartNotifiesNobody(t *testing.T) {
 	s, _ := deskThatDeclares(t, "browser", "nvim")
 	started := make(chan string, 4)
-	s.launch = func(address string) error {
+	s.launch = func(_ context.Context, address string) error {
 		started <- address
 		return nil
 	}
@@ -241,7 +252,7 @@ func TestADeskWhoseAppsAllStartNotifiesNobody(t *testing.T) {
 // up short. `zde queue` is where they find it (docs/verify.md, section 5).
 func TestWhatADeskCouldNotStartWaitsOnTheQueue(t *testing.T) {
 	s, _ := deskThatDeclares(t, "nvim")
-	s.launch = func(string) error { return errors.New("no app \"nvim\" defined") }
+	s.launch = func(context.Context, string) error { return errors.New("no app \"nvim\" defined") }
 
 	if resp := s.Dispatch(Request{Method: "desk.switch", Args: []string{"vshop"}}); resp.Error != "" {
 		t.Fatal(resp.Error)
@@ -257,8 +268,14 @@ func TestWhatADeskCouldNotStartWaitsOnTheQueue(t *testing.T) {
 	if waiting[0].Text != rec.Text {
 		t.Errorf("the queue says %q and the centre says %q", waiting[0].Text, rec.Text)
 	}
-	if waiting[0].From != launchFrom {
+	if waiting[0].From != attn.SelfFrom {
 		t.Errorf("queued from %q, want the desktop saying it is the sender", waiting[0].From)
+	}
+	// And the badge goes on the queue with it, or `zde queue` is the one surface
+	// where the desktop's row and an app drawing itself like the desktop read
+	// the same (internal/journal, Item.Self).
+	if !waiting[0].Self {
+		t.Error("the queued item is unbadged, so `zde queue` cannot say who wrote it")
 	}
 	// The reason is asked of the record and not of the queue item, because the
 	// journal stopped carrying bodies (internal/journal, Item): a queued line is
@@ -289,7 +306,7 @@ func TestAQuietSessionKeepsWhatADeskCouldNotStartOutOfTheQueueAndNowhereElse(t *
 	if resp := s.setMode(string(attn.Quiet)); resp.Error != "" {
 		t.Fatal(resp.Error)
 	}
-	s.launch = func(string) error { return errors.New("no app \"nvim\" defined") }
+	s.launch = func(context.Context, string) error { return errors.New("no app \"nvim\" defined") }
 
 	if resp := s.Dispatch(Request{Method: "desk.switch", Args: []string{"vshop"}}); resp.Error != "" {
 		t.Fatal(resp.Error)
@@ -329,7 +346,7 @@ func TestASwitchSurvivesANotificationThatCannotBeKept(t *testing.T) {
 	s := New("test", nil, f, manifest.Dir(dir)) // no journal: Arrived refuses
 	logged := watchTheLog(t)
 	tried := make(chan string, 1)
-	s.launch = func(address string) error {
+	s.launch = func(_ context.Context, address string) error {
 		tried <- address
 		return errors.New("no such app")
 	}
@@ -386,7 +403,7 @@ func TestWhatASwitchSaysAboutItsLaunchesIsBoundedLikeAnythingElse(t *testing.T) 
 	t.Run("the summary", func(t *testing.T) {
 		failed := []launchFailure{{Address: strings.Repeat("a", 900), Err: errors.New("no app defined")}}
 		raw := launchSummary("vshop", failed)
-		want := attn.Local(launchFrom, raw, launchBody(failed))
+		want := attn.Local(raw, launchBody(failed))
 		if want.Text == raw {
 			t.Fatal("the fixture never reaches the summary's bound, so this would prove nothing")
 		}
@@ -405,7 +422,7 @@ func TestWhatASwitchSaysAboutItsLaunchesIsBoundedLikeAnythingElse(t *testing.T) 
 			})
 		}
 		raw := launchBody(failed)
-		want := attn.Local(launchFrom, launchSummary("vshop", failed), raw)
+		want := attn.Local(launchSummary("vshop", failed), raw)
 		if want.Body == raw {
 			t.Fatal("the fixture never reaches the body's bound, so this would prove nothing")
 		}
@@ -414,7 +431,7 @@ func TestWhatASwitchSaysAboutItsLaunchesIsBoundedLikeAnythingElse(t *testing.T) 
 			t.Errorf("the history kept %d characters of body, want the %d a notification is clamped to",
 				len([]rune(got.Body)), len([]rune(want.Body)))
 		}
-		if got.From != launchFrom {
+		if got.From != attn.SelfFrom {
 			t.Errorf("from = %q, want the desktop saying it is the sender", got.From)
 		}
 	})
@@ -486,5 +503,173 @@ func TestALaunchFailureIsCutToALineInTheNotification(t *testing.T) {
 	}
 	if n := len([]rune(lines[1])); n > len("browser@vshop: ")+reasonMax+len(" ...") {
 		t.Errorf("one failure took %d characters of the body", n)
+	}
+}
+
+// ---- what a launch is inside, and what bounds how many there are ----------
+
+// fakeRunner puts a `zcr` on PATH that records the pids it starts and then
+// holds, which is what `zcr run <app> --exec` attached to a container looks like
+// from here. It answers with the file those pids are written to.
+//
+// The real launch path rather than a stub for s.launch, because what is under
+// test is the subprocess: a stub that ignores its context proves nothing about a
+// launch that has one, and the whole defect was a launch nothing could reach.
+func fakeRunner(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	pids := filepath.Join(dir, "pids")
+	// Its own pid and the pid of something it forked. The fork is the half that
+	// says whether the kill went to the group or to the one process zde knows.
+	script := "#!/bin/sh\nsleep 60 &\necho \"$$ $!\" >> " + pids + "\nwait\n"
+	if err := os.WriteFile(filepath.Join(dir, zinc.Runner), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// In front of the machine's own PATH rather than instead of it: the script
+	// needs a `sleep`, and a zcr this test wrote is the first thing found either
+	// way.
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return pids
+}
+
+// runnerPids reads back the pids the fake runner has written down so far.
+func runnerPids(t *testing.T, pids string) []int {
+	t.Helper()
+	raw, _ := os.ReadFile(pids)
+	var out []int
+	for _, f := range strings.Fields(string(raw)) {
+		n, err := strconv.Atoi(f)
+		if err != nil {
+			t.Fatalf("the runner wrote %q where a pid belongs", f)
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+// stillAlive counts how many of them are running. Signal 0 is the ask without
+// the signal, which is the only way to put this question to the kernel.
+func stillAlive(pids []int) int {
+	n := 0
+	for _, p := range pids {
+		if syscall.Kill(p, 0) == nil {
+			n++
+		}
+	}
+	return n
+}
+
+// The defect this is here for: a desk launch was a bare goroutine. Not counted
+// in s.runs, not under s.runCtx, and waited for by nobody - so Close returned in
+// 0s with a `zcr run` still going, and the subprocess outlived the daemon.
+func TestALaunchInFlightIsStoppedWithTheDaemon(t *testing.T) {
+	pids := fakeRunner(t)
+	s, _ := deskThatDeclares(t, "nvim")
+
+	if resp := s.Dispatch(Request{Method: "desk.switch", Args: []string{"vshop"}}); resp.Error != "" {
+		t.Fatal(resp.Error)
+	}
+	// Waited for on the fork rather than on the call, because a Close that raced
+	// ahead of exec would prove nothing about what a fork survives.
+	waitFor(t, "the launch forking", func() bool { return len(runnerPids(t, pids)) == 2 })
+	up := runnerPids(t, pids)
+	if n := stillAlive(up); n != 2 {
+		t.Fatalf("the launch had %d of its 2 processes up before the daemon was closed", n)
+	}
+
+	t0 := time.Now()
+	s.Close()
+	took := time.Since(t0)
+	if took > runStopWait {
+		t.Errorf("Close took %v with a launch in flight, past its own ceiling of %v", took, runStopWait)
+	}
+	// Gone, and both of them: the group kill is what reaches the second, which
+	// stands for everything `zcr run` forks. Waited for rather than read once,
+	// because a killed process is a zombie until whoever inherits it reaps it and
+	// signal 0 succeeds against a zombie - what is asserted is that the kill
+	// reached them, not how fast init got round to them.
+	gone := time.Now().Add(5 * time.Second)
+	for stillAlive(up) > 0 {
+		if time.Now().After(gone) {
+			n := stillAlive(up)
+			for _, p := range up {
+				syscall.Kill(p, syscall.SIGKILL) //nolint:errcheck // tidying up after a failure
+			}
+			t.Fatalf("Close returned in %v and %d of the launch's %d processes are still running", took, n, len(up))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// And nothing new starts once it is stopping, which is what keeps s.runs from
+// being added to while Close is waiting on it.
+func TestADeskEnteredWhileTheDaemonIsStoppingStartsNothing(t *testing.T) {
+	s, _ := deskThatDeclares(t, "nvim")
+	var launched atomic.Int64
+	s.launch = func(context.Context, string) error {
+		launched.Add(1)
+		return nil
+	}
+	s.Close()
+	s.startApps("vshop")
+	time.Sleep(100 * time.Millisecond)
+	if n := launched.Load(); n != 0 {
+		t.Errorf("a desk entered after Close started %d apps", n)
+	}
+}
+
+// The bound. One goroutine per desk entry and nothing else: measured, 200
+// entries put 200 `zcr run` subprocesses in flight at once, where a tier is
+// capped at four. What bounds it now is one run per desk, so a key held down
+// between two desks is two (see claimLaunch).
+func TestADeskAlreadyComingUpIsNotStartedAgain(t *testing.T) {
+	s, _ := deskThatDeclares(t, "nvim")
+	// Two desks, so the alternating case is the one measured: with one desk a
+	// dedupe would be indistinguishable from a lock somewhere else.
+	s.desks = fixedDesks{
+		"vshop": {Name: "vshop",
+			Monitors: map[string]manifest.Monitor{"DP-1": {Workspaces: []string{"code"}}},
+			Apps:     []manifest.App{{App: "browser", Monitor: "DP-1", Workspace: "code"}}},
+		"admin": {Name: "admin",
+			Monitors: map[string]manifest.Monitor{"DP-1": {Workspaces: []string{"ops"}}},
+			Apps:     []manifest.App{{App: "term", Monitor: "DP-1", Workspace: "ops"}}},
+	}
+	var inFlight, peak atomic.Int64
+	release := make(chan struct{})
+	s.launch = func(context.Context, string) error {
+		n := inFlight.Add(1)
+		for {
+			old := peak.Load()
+			if n <= old || peak.CompareAndSwap(old, n) {
+				break
+			}
+		}
+		<-release
+		inFlight.Add(-1)
+		return nil
+	}
+
+	const presses = 200
+	const desks = 2
+	for i := range presses {
+		if i%2 == 0 {
+			s.startApps("vshop")
+		} else {
+			s.startApps("admin")
+		}
+	}
+	// Long enough that anything that was going to pile up has.
+	time.Sleep(300 * time.Millisecond)
+	if got := peak.Load(); got > desks {
+		t.Errorf("%d desk entries put %d launches in flight at once, and there are %d desks", presses, got, desks)
+	}
+	if got := s.comingUp(); got > desks {
+		t.Errorf("%d desks are coming up, and there are %d", got, desks)
+	}
+	close(release)
+	waitFor(t, "the launches draining", func() bool { return s.comingUp() == 0 })
+	// And the map holds the desks coming up rather than every desk ever entered.
+	if got := s.comingUp(); got != 0 {
+		t.Errorf("%d desks are still marked as coming up after their launches finished", got)
 	}
 }

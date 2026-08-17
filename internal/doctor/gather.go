@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -46,7 +47,38 @@ type Session struct {
 	Lock   Locker
 	Desks  Desks
 	Power  Logind
+
+	// BadHidden is how many of zded's unreadable manifests were left out
+	// because this gather was for a reader who is not this machine's owner.
+	//
+	// A manifest is named by its path and a path is a desk name (internal/-
+	// manifest, Save writes <desk>.yaml), and a manifest that will not parse is
+	// one nothing can read the `private: true` out of - so there is no way to
+	// leave out the private ones and keep the rest. The count is what survives,
+	// for the reason every count in this file survives: a report that silently
+	// dropped lines is a report whose all-clear cannot be trusted.
+	BadHidden int
 }
+
+// audience is who the readings being gathered are for, and it decides exactly
+// one thing: whether anything a desk declaring `private: true` named may be
+// written down at all.
+//
+// A parameter to the gather rather than a pass over the finished struct, and
+// that is the whole point of it. A pass has to know every field that could
+// carry a desk name - and the field added next will not tell it. Here the
+// question is put where each reading is taken, which is the one place somebody
+// adding a reading is already thinking about where it came from.
+type audience int
+
+const (
+	// owner is the person at the keyboard reading their own screen. `zde
+	// doctor` is theirs: every name on it is one they typed themselves.
+	owner audience = iota
+	// anyone is a file that leaves this machine - the state snapshot, carried
+	// off a disk that will not boot and pasted into a bug report (report.go).
+	anyone
+)
 
 // Desks is what the manifests name, judged against what this machine can
 // actually start. It is the ahead-of-time half of a desk switch: entering a
@@ -75,7 +107,30 @@ type Desks struct {
 	// only that resolver's lines use it (see deskApps).
 	Configured bool
 	// Unrunnable is one entry per app a desk names that nothing here can start.
+	//
+	// Gathered for `anyone`, the entries off a desk that declares private were
+	// never put here at all - see Hidden, and probeDesks, which is where the
+	// question is asked.
 	Unrunnable []DeskApp
+	// Hidden is how many entries that left out of the list above.
+	//
+	// The count and never the names, which is the deliberate limit of the rule:
+	// "three apps on a desk you declared private could not be started" is a
+	// real fault somebody has to be told about without being told which.
+	Hidden int
+	// Private is how many of the manifests declare `private: true`.
+	//
+	// A count and never the names, and it is here rather than being worked out
+	// again wherever it is wanted: the state snapshot leaves everything about
+	// those desks out of the file it writes (report.go, writeDoctor), and a
+	// count is the one thing it may still say - "there is a private desk here
+	// and this file says nothing about it" is what makes the rest of the report
+	// trustworthy rather than merely quiet.
+	//
+	// Nothing prints it in `zde doctor` itself. A terminal is somebody's own
+	// screen on their own machine, and the whole of this check is already in
+	// front of them there.
+	Private int
 }
 
 // The two things on a machine that can answer "is there anything to start under
@@ -122,6 +177,30 @@ type Logind struct {
 	// Can is one entry per verb logind has a question for, in the order the menu
 	// would list them.
 	Can []Can
+	// Holds is what logind says is holding this session's idle timers off: its
+	// own "idle" inhibitors, and nothing else. It is deliberately not called
+	// something like "awake", because the set it describes is much smaller than
+	// that word - see the idle check in doctor.go for what is missing from it
+	// and why nothing here can find out.
+	Holds []Hold
+	// HoldsErr is why the inhibitors could not be listed, when the rest of the
+	// probe worked. Kept apart from Err for the reason every other unknown in
+	// this file is: a question that was never answered is not the answer "no",
+	// and "nothing is holding your screen awake" is the one sentence here that
+	// must never be said on the strength of a call that failed.
+	HoldsErr error
+}
+
+// Hold is one thing logind says is holding idle off, in the words it gave.
+//
+// Who and Why are anybody's: `systemd-inhibit --who=... --why=...` takes two
+// strings from whoever runs it, and every local account can run it. This report
+// is printed to a terminal, so both are put through internal/attn's filter
+// before they reach a line (doctor.go, idle) rather than here, because this
+// struct is the reading and that is the drawing.
+type Hold struct {
+	Who string
+	Why string
 }
 
 // Can is one power verb and logind's own word about it: yes, no, na (the
@@ -144,6 +223,12 @@ type DeskApp struct {
 	Desk string
 	App  string
 	Err  error
+	// Private says the manifest this came from declares `private: true`, which
+	// is what keeps both names out of a file that leaves this machine. An entry
+	// gathered for anyone but the owner never has it set, because an entry off
+	// a private desk was never made (probeDesks): this is here for the terminal,
+	// where the screen is the person's own and every name on it is theirs.
+	Private bool
 }
 
 // Unit is one systemd user unit as systemctl reports it.
@@ -197,9 +282,45 @@ const pamDir = "/etc/pam.d"
 // filesystem that has gone away.
 const probeTimeout = 5 * time.Second
 
+// probeGrace is how long Wait may go on waiting after probeTimeout has fired,
+// or after the program has exited leaving its pipes held.
+//
+// The second half is the one this was written for, and it is the half that made
+// probeTimeout a promise the code did not keep. cmd.Run gives the program's
+// stdout and stderr to pipes exec copies from, and a program that forks hands a
+// copy of both ends to the child - so Wait, which waits for the copying to
+// finish, waits on the fork and not on the program. Measured against a target
+// that answers and leaves a child holding stdout: the five second deadline never
+// returned at all and had to be killed at forty seconds, where the same call
+// with a WaitDelay came back in 2.002s with the answer intact.
+//
+// The first half is the ordinary guard the other exec sites already have
+// (internal/zded/ask.go, askGrace): a program that ignores its deadline is
+// killed rather than waited for.
+//
+// Two seconds because by the time either half fires the answer has been written
+// and what is left is a descriptor nobody will write to, or a process no signal
+// reached. Short matters here more than anywhere: doctor is what somebody runs
+// when the machine is already misbehaving, so each probe's worst case is added
+// to the wait before the one report that would explain it.
+//
+// No process group beside it, unlike a tier's. doctor is a command in a
+// terminal, and a child in a group of its own is a child ctrl+c no longer
+// reaches - which would cost a person the one escape they have from a probe
+// that is taking too long, to save a fork that the deadline above already
+// bounds.
+const probeGrace = 2 * time.Second
+
 // Gather asks everything, and refuses nothing: every probe records what it
 // found or why it could not, and none of them decides what that means.
-func Gather() Session {
+//
+// This one is for the person who ran the command, on their own screen.
+func Gather() Session { return gather(owner) }
+
+// gather is Gather with the reader named. See audience: for anyone but the
+// owner, nothing a desk declaring private named is put into what comes back,
+// which is a different thing from taking it out afterwards.
+func gather(a audience) Session {
 	s := Session{}
 	path, err := zded.DefaultSocket()
 	s.Socket = path
@@ -208,6 +329,7 @@ func Gather() Session {
 	} else {
 		s.Status, s.DialErr = ask(path)
 	}
+	s.hideManifests(a)
 	// Only when it can matter. With zded holding the name there is nothing to
 	// find out, and connecting to the bus to confirm what the daemon just said
 	// would be a second answer that could disagree with the first.
@@ -226,9 +348,32 @@ func Gather() Session {
 	// check reads the apps file itself: the session this is run on is often one
 	// where zded is the thing that is wrong, and a check that could only be made
 	// through it would go blank exactly when it is wanted.
-	s.Desks = probeDesks(manifest.DefaultDir())
+	s.Desks = probeDesks(manifest.DefaultDir(), a)
 	s.Power = probeLogind()
 	return s
+}
+
+// hideManifests takes the daemon's list of manifests it could not read out of
+// the session, for a reader who is not this machine's owner, and leaves the
+// count behind.
+//
+// Every entry on that list begins with a path, and a manifest's path is a
+// desk's name: zded builds them as Path + ": " + Err (internal/manifest,
+// Problem) and a manifest is written as <desk>.yaml. There is no half of the
+// list that is safe to keep, either, because a file that will not parse is one
+// nothing can read a `private: true` out of - the flag is inside the file that
+// did not load.
+//
+// Done here, where the field arrives off the socket, rather than by whatever
+// prints it. That is the whole shape of this fix: the pass that used to do the
+// redaction knew about one field and this was the second of the three it did
+// not know about.
+func (s *Session) hideManifests(a audience) {
+	if a == owner || s.Status == nil {
+		return
+	}
+	s.BadHidden = len(s.Status.BadManifests)
+	s.Status.BadManifests = nil
 }
 
 // probeDesks asks, of every app every desk declares, the question a launch
@@ -247,7 +392,13 @@ func Gather() Session {
 // asks (cmd/zde) and the same thing a switch ends up in (internal/zded,
 // launch). zde.apps stays the answer for a machine without one, because until
 // layer 2 reaches a machine that map is all there is (docs/delivery.md).
-func probeDesks(dir string) Desks {
+//
+// The audience is carried the whole way down because this is the check that
+// names things: a desk, an app, and - when the resolver goes quiet - the app it
+// went quiet about. For anyone but the owner every one of those names is
+// weighed against the manifest it came from as the entry is made, so what comes
+// back has nothing to take out of it later.
+func probeDesks(dir string, a audience) Desks {
 	d := Desks{Dir: dir, Resolver: byApps}
 	// PATH here rather than zded's answer about its own PATH (Status.Zinc), for
 	// the reason the rest of this check is made off the disk: the session this
@@ -280,6 +431,12 @@ func probeDesks(dir string) Desks {
 	names := make([]string, 0, len(desks))
 	for name := range desks {
 		names = append(names, name)
+		// Counted here, where the manifests are already in hand, rather than by
+		// whoever wants the number reading the directory a second time: two
+		// reads of a directory somebody may be editing are two answers.
+		if desks[name].Private {
+			d.Private++
+		}
 	}
 	sort.Strings(names)
 	// One answer per name for the whole directory. Asking zcr is a process, so
@@ -299,20 +456,35 @@ func probeDesks(dir string) Desks {
 			refused, asked := answered[app.App]
 			if !asked {
 				var broken error
-				refused, broken = resolves(d.Resolver, all, app.App)
+				refused, broken = resolves(d.Resolver, all, app.App, a)
 				if broken != nil {
 					// The resolver stopped answering, so what it has said so far
 					// is not a list of bad manifests: it is the beginning of one,
 					// about a machine whose resolver went quiet partway through.
 					// Dropped rather than printed, because a partial list of
 					// faults reads exactly like a complete one.
-					return Desks{Dir: dir, Resolver: d.Resolver, Err: broken}
+					// The private count is carried through, because it is not
+					// part of the partial list being thrown away: it is a fact
+					// about the directory that was read whole.
+					return Desks{Dir: dir, Resolver: d.Resolver, Err: broken, Private: d.Private}
 				}
 				answered[app.App] = refused
 			}
-			if refused != nil {
-				d.Unrunnable = append(d.Unrunnable, DeskApp{Desk: name, App: app.App, Err: refused})
+			if refused == nil {
+				continue
 			}
+			if a != owner && desks[name].Private {
+				// Both halves go, and they go here rather than being written
+				// down and taken out again: naming the app and hiding the desk
+				// would be the same disclosure with a step in front of it, and
+				// an entry that was never made cannot be missed by whoever
+				// writes the next thing that reads this list.
+				d.Hidden++
+				continue
+			}
+			d.Unrunnable = append(d.Unrunnable, DeskApp{
+				Desk: name, App: app.App, Err: refused, Private: desks[name].Private,
+			})
 		}
 	}
 	return d
@@ -325,7 +497,13 @@ func probeDesks(dir string) Desks {
 // line beside the desk that named it. broken is the resolver not answering at
 // all, which is a fact about the machine: written down per app it would blame
 // every desk on it for one wedged program.
-func resolves(resolver string, all apps.Apps, app string) (refused, broken error) {
+//
+// The audience decides whether broken may quote the name. refused is answered
+// about an app the caller already has in hand and can weigh against the desk it
+// came from; broken is thrown at whichever app happened to be asked first,
+// which is a name off a desk nobody chose - so for a reader who is not the
+// owner it is left out, and the sentence says what could not be done instead.
+func resolves(resolver string, all apps.Apps, app string, a audience) (refused, broken error) {
 	if resolver != byZcr {
 		// apps.Argv's own error, alternatives and all: it knows what this
 		// machine does have, which is the other half of the fix.
@@ -352,6 +530,10 @@ func resolves(resolver string, all apps.Apps, app string) (refused, broken error
 			// zcr was on PATH a moment ago and is not answering questions about
 			// apps: it went away, it timed out, or it failed with nothing to
 			// say. None of those is something a manifest did.
+			if a != owner {
+				return nil, fmt.Errorf("%s is on PATH and stopped answering about one of the apps the desks declare: %s"+
+					" - which app is not named here, and `zde doctor` in a terminal names it", byZcr, err)
+			}
 			return nil, fmt.Errorf("%s is on PATH and could not be asked about %q: %s (try `%s where %s`)",
 				byZcr, app, err, byZcr, app)
 		}
@@ -513,7 +695,44 @@ func probeLogind() Logind {
 		l.Can = append(l.Can, c)
 	}
 	l.Session, l.SessionErr = displaySession(ctx, conn)
+	l.Holds, l.HoldsErr = idleHolds(ctx, mgr)
 	return l
+}
+
+// idleHolds is logind's inhibitor table, narrowed to the ones holding idle off.
+//
+// The row is a(ssssuu) and positional on the wire, so it is decoded into a
+// named struct for the reason internal/power decodes it into one: a field out
+// of order here would print one program's name against another's reason.
+//
+// Narrowed on two things. "idle" has to be in the colon-separated What, which
+// is logind's own vocabulary for this and not a guess at it; and the mode has to
+// be block, because a delay inhibitor postpones a suspend by seconds so
+// something can save its work and is not a thing holding a screen awake. Both
+// filters are the same ones internal/power applies, and they are duplicated here
+// on purpose - this package asks logind what is true, that one asks it to do
+// things, and gather.go already keeps its own copy of every logind constant for
+// exactly this reason.
+func idleHolds(ctx context.Context, mgr dbus.BusObject) ([]Hold, error) {
+	var rows []struct {
+		What string
+		Who  string
+		Why  string
+		Mode string
+		UID  uint32
+		PID  uint32
+	}
+	if err := mgr.CallWithContext(ctx, logindMgr+".ListInhibitors", 0).Store(&rows); err != nil {
+		return nil, err
+	}
+	var out []Hold
+	for _, r := range rows {
+		if r.Mode != "block" || !slices.Contains(strings.Split(r.What, ":"), "idle") {
+			continue
+		}
+		out = append(out, Hold{Who: r.Who, Why: r.Why})
+	}
+	return out, nil
 }
 
 // displaySession asks logind for this user's graphical session, which is the
@@ -569,6 +788,9 @@ func run(d time.Duration, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	// What makes the deadline above a deadline (see probeGrace). Without it a
+	// probe whose target forked was not bounded by anything.
+	cmd.WaitDelay = probeGrace
 	err := cmd.Run()
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return stdout.String(), noAnswer{fmt.Sprintf("%s did not answer in %s", name, d)}

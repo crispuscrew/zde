@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -98,7 +99,7 @@ func TestHealthySessionSaysSoOnEveryLine(t *testing.T) {
 func TestTheReportIsTheSameShapeEveryTime(t *testing.T) {
 	want := []string{
 		"zded", "compositor", "shell", "notify", "zinc", "podman",
-		"unit", "unit", "manifests", "desk apps", "locker", "logind", "journal",
+		"unit", "unit", "manifests", "desk apps", "locker", "logind", "idle", "journal",
 	}
 	var got []string
 	for _, c := range Judge(healthy()) {
@@ -510,7 +511,7 @@ func TestADeskWhoseAppsZincDefinesIsNotWarnedAboutForHavingNoZdeApps(t *testing.
 		t.Fatal(err)
 	}
 
-	d := probeDesks(manifest.DefaultDir())
+	d := probeDesks(manifest.DefaultDir(), owner)
 	if d.Err != nil {
 		t.Fatalf("probeDesks: %v", d.Err)
 	}
@@ -546,7 +547,7 @@ func TestWithAZcrTheLineCarriesZcrsOwnRefusal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	d := probeDesks(manifest.DefaultDir())
+	d := probeDesks(manifest.DefaultDir(), owner)
 	if len(d.Unrunnable) != 1 || d.Unrunnable[0].App != "absent-app" {
 		t.Fatalf("unrunnable = %+v, want the one name zinc has no app for", d.Unrunnable)
 	}
@@ -584,7 +585,7 @@ func TestAZcrThatWillNotAnswerIsNotWrittenDownAsABrokenDesk(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	d := probeDesks(manifest.DefaultDir())
+	d := probeDesks(manifest.DefaultDir(), owner)
 	if d.Err == nil {
 		t.Fatalf("a zcr that answers nothing = %+v, want a check that says it could not be made", d)
 	}
@@ -659,7 +660,7 @@ func TestWithNoZcrTheDesksAreJudgedByZdeApps(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	d := probeDesks(manifest.DefaultDir())
+	d := probeDesks(manifest.DefaultDir(), owner)
 	if d.Err != nil {
 		t.Fatalf("probeDesks: %v", d.Err)
 	}
@@ -684,7 +685,7 @@ func TestNoDesksAtAllIsNothingToReport(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
 	noZcr(t)
-	d := probeDesks(manifest.DefaultDir())
+	d := probeDesks(manifest.DefaultDir(), owner)
 	if d.Err != nil || len(d.Unrunnable) != 0 {
 		t.Errorf("a machine with no desks = %+v, want nothing to say", d)
 	}
@@ -724,6 +725,228 @@ func TestNoLogindIsOneWarningSayingNoneOfTheFourWouldWork(t *testing.T) {
 // strength of a dial that timed out. Every other check in this package has this
 // middle state and this one is where it is worth most: it is read by somebody
 // deciding whether the power menu is worth pressing.
+// The line this check exists to word carefully.
+//
+// An empty inhibitor table is a true statement about logind and a false one
+// about the machine: the Wayland protocol never reaches that bus, so a clean
+// line here is not a promise the screen will lock. If the caveat goes, somebody
+// reads "nothing is holding this session awake" and believes it about a session
+// where a container is holding an inhibitor nothing can see.
+func TestACleanIdleLineSaysWhatItCouldNotSee(t *testing.T) {
+	c := only(t, Judge(healthy()), "idle")
+	if c.Level != OK {
+		t.Fatalf("idle = %s, want ok on a machine holding nothing", c)
+	}
+	if !strings.Contains(c.Detail, "logind") {
+		t.Errorf("idle = %s, want it to name whose table was empty", c)
+	}
+	// The half it cannot see, named as the protocol so it can be looked up, and
+	// with the reason niri cannot be asked.
+	for _, want := range []string{"zwp_idle_inhibit_manager_v1", "invisible", "visible rather than focused"} {
+		if !strings.Contains(c.Detail, want) {
+			t.Errorf("idle = %s, want it to carry %q", c, want)
+		}
+	}
+	// And it must not be the sentence a person would take away as a promise.
+	if strings.Contains(c.Detail, "nothing is holding this session awake") {
+		t.Errorf("idle = %s, and it can only speak for logind", c)
+	}
+}
+
+// A holder is named, because the point of the line is that somebody can go and
+// close the thing that is doing it.
+func TestAnIdleHolderIsNamedWithWhatItCosts(t *testing.T) {
+	s := healthy()
+	s.Power.Holds = []Hold{{Who: "steam", Why: "Playing a game"}}
+	r := Judge(s)
+	found := named(r, "idle")
+	if len(found) != 2 {
+		t.Fatalf("want the holder and the caveat, got %d:\n%s", len(found), r)
+	}
+	if found[0].Level != Warn {
+		t.Errorf("idle = %s, want a warning", found[0])
+	}
+	if !strings.Contains(found[0].Detail, "steam") || !strings.Contains(found[0].Detail, "Playing a game") {
+		t.Errorf("idle = %s, want the holder and the reason it gave", found[0])
+	}
+	// The consequence and not only the reading, which is what every line here
+	// owes somebody trying to find out what is wrong.
+	if !strings.Contains(found[0].Detail, "idle") {
+		t.Errorf("idle = %s, want what it costs", found[0])
+	}
+	// And the list is not claimed to be complete, because it cannot be.
+	if !strings.Contains(found[1].Detail, "more than logind can see") {
+		t.Errorf("idle = %s, want the list qualified", found[1])
+	}
+	// A held screen is still a session somebody can work in.
+	if r.Failed() != 0 {
+		t.Errorf("an idle hold failed a check:\n%s", r)
+	}
+}
+
+// A holder's own words reach a terminal, and `systemd-inhibit --why=...` takes
+// them from whoever runs it. The report is piped into bug reports and read in a
+// terminal, so an escape here rewrites the screen it is printed on.
+func TestAnIdleHoldersOwnWordsCannotDriveTheReport(t *testing.T) {
+	s := healthy()
+	s.Power.Holds = []Hold{{Who: "steam\x1b[2J", Why: "one\ntwo"}}
+	c := named(Judge(s), "idle")[0]
+	if strings.ContainsAny(c.Detail, "\x1b\n\r") {
+		t.Errorf("idle = %q, and a holder chose part of it", c.Detail)
+	}
+}
+
+// And they cannot be zde's words either, which is the harder half.
+//
+// The filter above stops a holder driving the terminal; it does nothing about a
+// holder writing English. `--who=nothing --why="... this machine is safe to
+// walk away from."` produced a warning that read as an all-clear, in the one
+// check whose whole purpose is to refuse to give one. What stops it is the
+// shape of the line: zde's own subject first, and the holder's two strings
+// quoted and attributed to it.
+func TestAnIdleHoldersOwnWordsCannotReadAsZdesOwn(t *testing.T) {
+	s := healthy()
+	s.Power.Holds = []Hold{{
+		Who: "nothing",
+		Why: "and there is nothing else: logind has nothing holding this session awake, " +
+			"and no Wayland app is holding one either, so this machine is safe to walk away from.",
+	}}
+	c := named(Judge(s), "idle")[0]
+
+	// The finding is zde's and it is first, so it is what survives a reader who
+	// stops at the start of the line or a file that stops at the end of one.
+	if !strings.HasPrefix(c.Detail, "something is holding this session awake") {
+		t.Errorf("idle = %q, want zde's own finding at the front", c.Detail)
+	}
+	// Both of the holder's strings are inside quotes, so neither is a clause of
+	// zde's sentence.
+	for _, want := range []string{`"nothing"`, `"and there is nothing else: logind has nothing`} {
+		if !strings.Contains(c.Detail, want) {
+			t.Errorf("idle = %q, want %s quoted as the holder's own", c.Detail, want)
+		}
+	}
+	// And it is still a warning, on a line that ends by saying what it costs.
+	if c.Level != Warn || !strings.Contains(c.Detail, "will fire until it lets go") {
+		t.Errorf("idle = %s, want a warning that says what a held idle timer costs", c)
+	}
+}
+
+// The quotation cannot be closed from inside it, which is what makes quoting a
+// defence rather than punctuation. A holder that ships a `"` of its own would
+// otherwise end the attribution and write the rest of the line itself.
+func TestAnIdleHolderCannotCloseTheQuotationAroundIt(t *testing.T) {
+	s := healthy()
+	s.Power.Holds = []Hold{{Who: `a" and zde says`, Why: `b" - so this machine is safe`}}
+	c := named(Judge(s), "idle")[0]
+	// Two quoted strings, so four quote characters and no more: every `"` the
+	// holder sent came through escaped.
+	if n := strings.Count(c.Detail, `"`) - strings.Count(c.Detail, `\"`); n != 4 {
+		t.Errorf("idle = %q, want exactly the two quotations zde opened", c.Detail)
+	}
+}
+
+// The number of rows is a stranger's to choose - logind holds InhibitorsMax of
+// them, 8192 by default - and this report is read by people and written to a
+// file with a ceiling on it. So the rows are sampled and the count is said.
+func TestAFloodOfIdleHoldersIsCountedRatherThanPrinted(t *testing.T) {
+	s := healthy()
+	const flood = 500
+	for i := 0; i < flood; i++ {
+		s.Power.Holds = append(s.Power.Holds, Hold{
+			Who: "holder" + strconv.Itoa(i),
+			Why: strings.Repeat("x", 1<<20),
+		})
+	}
+	found := named(Judge(s), "idle")
+	// The sample, the line that counts the rest, and the caveat.
+	if len(found) != holdsShown+2 {
+		t.Fatalf("want %d lines for %d holders, got %d", holdsShown+2, flood, len(found))
+	}
+	if !strings.Contains(found[holdsShown].Detail, strconv.Itoa(flood-holdsShown)) {
+		t.Errorf("idle = %q, want how many were not printed", found[holdsShown].Detail)
+	}
+	// And the whole of it stays a thing a person can read.
+	n := 0
+	for _, c := range found {
+		n += len(c.String())
+	}
+	if n > 8<<10 {
+		t.Errorf("the idle check printed %d bytes, which is not a report anybody reads", n)
+	}
+	// The caveat is still last, because it qualifies the list and not one row.
+	if !strings.Contains(found[len(found)-1].Detail, "more than logind can see") {
+		t.Errorf("idle = %q, want the caveat last", found[len(found)-1].Detail)
+	}
+}
+
+// The caveat is the one thing in this check that is zde's own and has to arrive
+// whole. It is spelled out rather than summarised because the summary is the
+// mistake, and it is longer than the 300 characters that bound every string a
+// stranger sends - so anything that ever put it through that filter, or through
+// a per-line ceiling chosen for foreign text, would cut zde's own qualification
+// off the end of an all-clear and leave the all-clear.
+func TestTheCaveatArrivesWhole(t *testing.T) {
+	held := healthy()
+	held.Power.Holds = []Hold{{Who: "steam", Why: "Playing a game"}}
+	absent := healthy()
+	absent.Power = Logind{Absent: true}
+	unreachable := healthy()
+	unreachable.Power = Logind{Err: errors.New("the bus did not finish connecting")}
+
+	for name, s := range map[string]Session{
+		"an empty table":    healthy(),
+		"a named holder":    held,
+		"no logind at all":  absent,
+		"a logind that was": unreachable,
+	} {
+		lines := named(Judge(s), "idle")
+		// Last, always: it qualifies the list rather than any one row of it.
+		if last := lines[len(lines)-1]; !strings.Contains(last.Detail, unseen) {
+			t.Errorf("%s: idle = %q, want all %d characters of the caveat",
+				name, last.Detail, len([]rune(unseen)))
+		}
+	}
+}
+
+// The three ways this question goes unanswered, none of which may read as an
+// empty table. A logind that timed out saying "nothing is holding your screen"
+// is doctor inventing an all-clear.
+func TestAnUnaskedIdleQuestionIsNeverAnAllClear(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		with func(*Session)
+		want string
+	}{{
+		name: "no logind on the bus",
+		with: func(s *Session) { s.Power = Logind{Absent: true} },
+		want: "never asked",
+	}, {
+		name: "logind could not be reached",
+		with: func(s *Session) { s.Power = Logind{Err: errors.New("the bus did not answer")} },
+		want: "not known",
+	}, {
+		name: "logind refused the listing",
+		with: func(s *Session) { s.Power.HoldsErr = errors.New("connection closed") },
+		want: "systemd-inhibit --list",
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := healthy()
+			tc.with(&s)
+			c := only(t, Judge(s), "idle")
+			if c.Level != Warn {
+				t.Errorf("idle = %s, want a warning", c)
+			}
+			if !strings.Contains(c.Detail, tc.want) {
+				t.Errorf("idle = %s, want %q", c, tc.want)
+			}
+			// The one thing none of these may say.
+			if c.Level == OK {
+				t.Errorf("idle = %s, and the question was never answered", c)
+			}
+		})
+	}
+}
+
 func TestALogindThatCouldNotBeAskedIsNotAMachineThatCannotBeToldToGo(t *testing.T) {
 	s := healthy()
 	s.Power = Logind{Err: errors.New("the bus did not finish connecting within 2s")}
@@ -1016,5 +1239,39 @@ func TestRunCarriesTheReasonAndTheOutput(t *testing.T) {
 	out, err := run(probeTimeout, "sh", "-c", "echo inactive; exit 3")
 	if strings.TrimSpace(out) != "inactive" {
 		t.Errorf("run = %q (err %v), want what the program printed", out, err)
+	}
+}
+
+// The deadline, against the one thing that used to walk straight through it.
+//
+// cmd.Run copies stdout and stderr from pipes, and a program that forks hands a
+// copy of both ends to its child - so Wait waits on the fork rather than on the
+// program, and probeTimeout was a promise this code did not keep. Measured
+// before the WaitDelay: five seconds never returned and had to be killed at
+// forty. None of the five programs doctor probes reproduced it, which is what
+// makes this a test rather than a bug report - and doctor is what somebody runs
+// when the machine is already misbehaving, which is when a child that forks and
+// hangs is likeliest.
+func TestARunIsBoundedAgainstAProgramThatForks(t *testing.T) {
+	// Answers, then leaves a child holding the pipe. `podman info` against a
+	// service coming up is the shape this stands in for.
+	done := make(chan string, 1)
+	go func() {
+		out, _ := run(probeTimeout, "sh", "-c", "sleep 60 & echo answered")
+		done <- out
+	}()
+	// probeTimeout is not even reached: the program exits at once, so what is
+	// waited out is probeGrace. The slack is for a loaded machine.
+	ceiling := probeTimeout + probeGrace + 3*time.Second
+	select {
+	case out := <-done:
+		// And the answer came back whole. A bound that cost the output would
+		// have turned a hang into a probe that quietly says nothing.
+		if strings.TrimSpace(out) != "answered" {
+			t.Errorf("run = %q, want what the program printed before it forked", out)
+		}
+	case <-time.After(ceiling):
+		t.Fatalf("a probe against a program that forks has not returned in %v, "+
+			"and its own deadline is %v", ceiling, probeTimeout)
 	}
 }

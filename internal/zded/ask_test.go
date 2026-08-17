@@ -21,6 +21,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/crispuscrew/zde/internal/journal"
+	"github.com/crispuscrew/zde/internal/manifest"
 )
 
 // The fake tier is this test binary, run again with a mode after --.
@@ -614,8 +615,8 @@ func TestATierDoesNotOutliveTheDaemonThatStartedIt(t *testing.T) {
 	took := time.Since(start)
 	// The other half of this: a logout that waits on a model is its own bug, so
 	// whatever is added here has a ceiling.
-	if took > askStopWait {
-		t.Errorf("stopping the daemon took %v, above its own ceiling of %v", took, askStopWait)
+	if took > runStopWait {
+		t.Errorf("stopping the daemon took %v, above its own ceiling of %v", took, runStopWait)
 	}
 	// Directly, and not after a poll: Close waits for the run to end, and the run
 	// ends after the tier has been waited for. A test that polled would pass on a
@@ -650,6 +651,134 @@ func tierPid(t *testing.T, path string) int {
 	}
 	t.Fatalf("the tier never said where it was (%s)", path)
 	return 0
+}
+
+// The other way a daemon stops, and the one cmd.Cancel cannot answer: cancelling
+// is code, and a SIGKILL, an OOM kill or the session going down underneath zded
+// leaves none of it to run. A tier and a launch are each in a process group of
+// their own precisely so that the session's own signal misses them, so before
+// PR_SET_PDEATHSIG this was the hole in the tidy stop above. Measured on a
+// running daemon with four tiers: SIGTERM left nothing, SIGKILL left all four
+// under pid 1.
+//
+// Both kinds in one daemon and one kill, because the promise is about the daemon
+// and not about either of them: nothing zded started is still running once zded
+// is not. A real process killed for real, because what is under test is what the
+// kernel does when a process dies, which nothing in-process can stand in for.
+//
+// What this does not assert, because it is not true, is anything about what a
+// tier or a launch has itself forked: PR_SET_PDEATHSIG is cleared on fork, and
+// there is no daemon left to kill the group (see askRun).
+func TestNothingTheDaemonStartedOutlivesItBeingKilled(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "tier")
+	// Every one of these is a t.Setenv, so the daemon below inherits the tier
+	// file and the fake runner through os.Environ.
+	writeTiers(t, map[string][]string{TierProvider: fakeTier("linger", pidFile)})
+	launched := fakeRunner(t)
+	desks := t.TempDir()
+	declared := "name: vshop\nmonitors: { DP-1: { workspaces: [code] } }\napps:\n  - { app: nvim, instance: vshop }\n"
+	if err := os.WriteFile(filepath.Join(desks, "vshop.yaml"), []byte(declared), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	socket := socketPath(t)
+
+	daemon := exec.Command(os.Args[0], "-test.run=^TestSacrificialDaemon$", "--", sacrificeMark, socket, desks)
+	// Its complaints, if it has any, where this test's output goes. Nothing else
+	// of its output: a test binary prints PASS on the way out and this one is not
+	// meant to get there.
+	daemon.Stderr = os.Stderr
+	if err := daemon.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { daemon.Process.Kill(); daemon.Wait() }() //nolint:errcheck // it is already dead by here
+
+	var c *Client
+	for i := 0; i < 500; i++ {
+		var err error
+		if c, err = DialPath(socket); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if c == nil {
+		t.Fatal("the daemon never answered its socket")
+	}
+	defer c.Close()
+	if err := c.Call(MethodAskRun, nil, TierProvider, "something that takes a while"); err != nil {
+		t.Fatalf("ask.run: %v", err)
+	}
+	// A second connection for the switch: the one above is answering a tier, and
+	// one connection takes one question at a time.
+	d, err := DialPath(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if err := d.Call("desk.switch", nil, "vshop"); err != nil {
+		t.Fatalf("desk.switch: %v", err)
+	}
+
+	// Both, written down by the processes themselves, so this is the test knowing
+	// there is something to outlive rather than racing exec.
+	pids := []int{tierPid(t, pidFile)}
+	waitFor(t, "the launch starting", func() bool { return len(runnerPids(t, launched)) > 0 })
+	pids = append(pids, runnerPids(t, launched)[0])
+	for _, p := range pids {
+		if syscall.Kill(p, 0) != nil {
+			t.Fatalf("pid %d was not running before the daemon was killed", p)
+		}
+	}
+
+	if err := daemon.Process.Signal(syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	daemon.Wait() //nolint:errcheck // the error is the signal, which is the point
+	// Polled, unlike the tidy stop: nothing ran on the way out to wait for these,
+	// so what is being measured is the kernel getting round to them.
+	start := time.Now()
+	gone := func() int {
+		n := 0
+		for _, p := range pids {
+			if syscall.Kill(p, 0) == nil {
+				n++
+			}
+		}
+		return n
+	}
+	for i := 0; i < 500 && gone() > 0; i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := gone(); n > 0 {
+		for _, p := range pids {
+			syscall.Kill(p, syscall.SIGKILL) //nolint:errcheck // tidying up after a failure
+		}
+		t.Fatalf("the daemon was killed and %d of the %d processes it started (%v) were still running %v later",
+			n, len(pids), pids, time.Since(start))
+	}
+}
+
+// The daemon the test above kills. Marked like the fake tier, and nothing at all
+// in an ordinary run.
+const sacrificeMark = "zde-sacrificial-daemon"
+
+// TestSacrificialDaemon is a zded when it is run as one: it listens, answers,
+// and waits to be killed. The sleep is a ceiling and not a plan - the test kills
+// it long before - so that a test binary abandoned by a failure elsewhere is not
+// a process somebody finds tomorrow.
+func TestSacrificialDaemon(t *testing.T) {
+	args := flag.Args()
+	if len(args) < 3 || args[0] != sacrificeMark {
+		return
+	}
+	s := New("test", nil, &fakeCompositor{m: twoDesks(), focused: "haven.DP-1.db", output: "DP-1"}, manifest.Dir(args[2]))
+	if err := s.Listen(args[1]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	go s.Serve()
+	time.Sleep(60 * time.Second)
+	os.Exit(0)
 }
 
 // An answer with no end to it is stopped, and said to have been. zded streams
@@ -1201,5 +1330,43 @@ func TestClosingTheConnectionStopsTheTier(t *testing.T) {
 	}
 	if n := s.asking(); n != 0 {
 		t.Errorf("the run ended and the daemon still counts %d tiers running", n)
+	}
+}
+
+// And the answer a looping tier gets to push into the shell has a size, not
+// just a cap.
+//
+// The consequence is not this daemon's memory, which is what makes askMax
+// different from the other bounds in this package: zded streams and forgets, so
+// a tier looping for ever costs zded a 4 KB buffer whatever the number is. What
+// it costs is the window, which "keeps the whole thing in one text item on the
+// thread that draws the bar" - so what has to be asserted is how much text
+// leaves this daemon, measured at the client, which is where the cost lands.
+//
+// TestAnEndlessAnswerIsCappedAndSaysSo above pins that the cap is reached and
+// that the client is told the tier was stopped, and both of its numbers are
+// askMax, so it says the streaming stops somewhere and never where. This one is
+// the absolute half.
+//
+// A megabyte is the ceiling. askMax's own comment measures itself in pages -
+// "a quarter of a megabyte is about forty pages: past that, nothing is being
+// answered any more" - so a megabyte is four times over, about a hundred and
+// sixty pages, and the room to decide that forty pages was mean without this
+// test arguing. Past it, whatever the bar is holding in one text item is not an
+// answer to a question somebody asked.
+func TestALoopingTierCannotPushMoreThanAWindowHoldsIntoTheShell(t *testing.T) {
+	writeTiers(t, map[string][]string{TierProvider: fakeTier("loop")})
+	text, failure := askAll(t, askServer(t), TierProvider, "go on for ever")
+	if len(text) > 1<<20 {
+		t.Errorf("a tier that never stopped got %d KiB of text into the client, past the 1 MiB "+
+			"a window can hold in one text item on the thread that draws the bar",
+			len(text)>>10)
+	}
+	// And it stopped because it was stopped, rather than because the fixture
+	// ran out: a tier that exited on its own would make the number above a
+	// statement about the stand-in.
+	if !strings.Contains(failure, "was stopped") {
+		t.Errorf("the tier was not stopped, so %d KiB is what it chose to say and not what it "+
+			"was allowed to: %q", len(text)>>10, failure)
 	}
 }

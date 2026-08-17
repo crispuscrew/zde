@@ -528,7 +528,35 @@ func (s *Server) askRun(k *sink, args []string) {
 	// Its own process group, so that stopping the tier stops what the tier
 	// started. Killing the one pid zde knows about leaves exactly the children
 	// that were the problem still running, still holding the pipe.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	//
+	// And PR_SET_PDEATHSIG beside it, which covers the stop the group does not.
+	// cmd.Cancel only runs while there is a daemon left to run it, so an orderly
+	// stop was already covered and a SIGKILL, an OOM kill, or the session going
+	// down underneath zded was not - and a tier is in a group of its own
+	// precisely so that the session's own signal cannot reach it. Measured on a
+	// running daemon with four tiers up: SIGTERM left nothing, SIGKILL left all
+	// four reparented to pid 1, and wl-paste, which has had this since the
+	// clipboard was written, died correctly (internal/clip, guard).
+	//
+	// Two caveats, and they decide how this fails rather than whether it works.
+	// The kernel sends the signal when the thread that forked exits rather than
+	// when the process does (golang/go#27505); Go does not retire ordinary Ms,
+	// so in practice that thread lives as long as the daemon, and if one ever
+	// did go early the tier is killed and the surface is told the answer failed,
+	// which is the loud direction rather than the silent one.
+	//
+	// The second is the one to be plain about here, because a tier forks: it is
+	// cleared on fork, so nothing the tier starts inherits it. A shell tier's
+	// background child, a model's worker, the container behind `zcr run --exec`
+	// - none of them are covered, and after a SIGKILL there is no zded left to
+	// send the group the kill that would have been. What does reach them is
+	// zded's fds going with it: a child holding the stdout pipe gets EPIPE at
+	// its next write, so the ones still producing an answer end and only the
+	// ones that have gone quiet stay. Measured either way, on a daemon killed
+	// with four tiers up: a grandchild still writing went with it, and a
+	// grandchild sitting in a sleep was left under pid 1. While zded is alive,
+	// killGroup covers both.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
 	cmd.Cancel = func() error {
 		killGroup(cmd)
 		return nil

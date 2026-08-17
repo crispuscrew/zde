@@ -2,11 +2,13 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -19,7 +21,85 @@ import (
 	"github.com/crispuscrew/zde/internal/keymap"
 	"github.com/crispuscrew/zde/internal/link"
 	"github.com/crispuscrew/zde/internal/zded"
+	"github.com/crispuscrew/zde/internal/zinc"
 )
+
+// The two names this binary answers to besides its own, both for the tests that
+// have to watch real bytes arrive on a real terminal.
+//
+// realArgv makes it the command: TestMain runs main() with the arguments it
+// names. What that buys is the print site. Everything else in this file calls
+// run(), which hands an error back rather than printing one, so the code that
+// decides what an error looks like on a terminal is only ever reached by a
+// process that was started as `zde`.
+//
+// fakeZcr makes it zcr: it prints what the variable holds and exits 1, which is
+// what a zcr refusing an address does (internal/zinc, Where). A program on PATH
+// rather than a stub inside the process, because what these tests are about is
+// text arriving from another program's stderr.
+const (
+	realArgv = "ZDE_TEST_ARGV"
+	fakeZcr  = "ZDE_TEST_ZCR_SAYS"
+)
+
+func TestMain(m *testing.M) {
+	// zcr first. It is this binary under another name and it inherits the
+	// environment of the zde that ran it, realArgv included, so the other order
+	// would make it a second zde launching a third.
+	if said, ok := os.LookupEnv(fakeZcr); ok && filepath.Base(os.Args[0]) == zinc.Runner {
+		fmt.Fprintln(os.Stderr, said)
+		os.Exit(1)
+	}
+	if argv, ok := os.LookupEnv(realArgv); ok {
+		os.Args = append([]string{"zde"}, strings.Fields(argv)...)
+		main()
+		return
+	}
+	os.Exit(m.Run())
+}
+
+// runReal runs the command in a process of its own and gives back what it wrote
+// on each stream, byte for byte - which is what `cat -A` would have shown
+// somebody doing this by hand.
+//
+// Anything in env is appended after the environment this process has, so it
+// wins: the daemon these tests fake is found through XDG_RUNTIME_DIR, which
+// fakeDaemon has already put there.
+func runReal(t *testing.T, argv string, env ...string) (stdout, stderr string, err error) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0])
+	cmd.Env = append(append(os.Environ(), realArgv+"="+argv), env...)
+	var out, said bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &said
+	err = cmd.Run()
+	return out.String(), said.String(), err
+}
+
+// asText is what somebody else's text must look like once zde has printed it:
+// nothing a terminal acts on, and nothing starting a line of its own where zde's
+// own words start.
+//
+// The three characters are the whole of the harm on a terminal. ESC begins every
+// escape sequence there is - a cursor move, a screen clear, a colour that
+// outlives the command, a title bar rewritten to say whatever the sender likes.
+// BEL ends the one that sets the title. CR is how a line already printed is
+// drawn over with another, which is how text hides what was printed above it.
+func asText(t *testing.T, said string) {
+	t.Helper()
+	for _, bad := range []struct {
+		name string
+		r    rune
+	}{{"ESC", 0x1b}, {"BEL", 0x07}, {"CR", '\r'}} {
+		if strings.ContainsRune(said, bad.r) {
+			t.Errorf("%s survived: %q", bad.name, said)
+		}
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(said, "\n"), "\n")[1:] {
+		if !strings.HasPrefix(line, "  ") {
+			t.Errorf("a line after the first starts in column one, where zde's own words start: %q", said)
+		}
+	}
+}
 
 // quiet points os.Stderr at nothing for the length of a test: run() prints the
 // whole usage there when it does not recognise a command, and that is the case
@@ -60,6 +140,15 @@ func TestAPasswordIsNeverACommandLineArgument(t *testing.T) {
 // the screen: what is on the screen is in the scrollback, in tmux's buffer,
 // and in whatever is recording the terminal. If this regresses, the one
 // command whose job is to handle a secret carefully is the one printing it.
+//
+// Both streams are caught, and stdout is the one that matters more. It was not
+// watched here at first, on the reasoning that the prompt goes to stderr - but
+// what is under test is that the secret reaches no stream at all, and a stdout
+// nobody was looking at is where an echo would most plausibly land: `zde net
+// connect vshop > log` is a person redirecting the answer to a file, and a
+// password printed there is a password on the disk. It is also where every
+// other command in this binary writes, so a stray fmt.Println is the ordinary
+// mistake rather than an exotic one.
 func TestASecretIsNotPrintedBackByTheThingThatReadsIt(t *testing.T) {
 	const secret = "correct-horse"
 
@@ -77,11 +166,15 @@ func TestASecretIsNotPrintedBackByTheThingThatReadsIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	answered, err := os.CreateTemp(t.TempDir(), "stdout")
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	oldIn, oldErr := os.Stdin, os.Stderr
-	os.Stdin, os.Stderr = in, said
+	oldIn, oldErr, oldOut := os.Stdin, os.Stderr, os.Stdout
+	os.Stdin, os.Stderr, os.Stdout = in, said, answered
 	got, readErr := readSecret("password for vshop: ")
-	os.Stdin, os.Stderr = oldIn, oldErr
+	os.Stdin, os.Stderr, os.Stdout = oldIn, oldErr, oldOut
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
@@ -97,6 +190,18 @@ func TestASecretIsNotPrintedBackByTheThingThatReadsIt(t *testing.T) {
 	}
 	if strings.Contains(string(written), secret) {
 		t.Errorf("the prompt printed the password back: %q", written)
+	}
+	// And nothing at all on stdout: the prompt belongs on stderr so that a
+	// redirected answer still asks, and the secret belongs on neither.
+	out, err := os.ReadFile(answered.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), secret) {
+		t.Errorf("the password was printed to stdout: %q", out)
+	}
+	if len(out) != 0 {
+		t.Errorf("reading a password wrote %q to stdout, which is where the command's answer goes", out)
 	}
 }
 
@@ -162,16 +267,19 @@ func TestLiveActionsAreTheOnesZdeKnows(t *testing.T) {
 		if len(a.Spawn) == 0 || a.Spawn[0] != "zde" {
 			continue // niri's own, or somebody else's program
 		}
-		// The doctor is the one live verb that does its work in this process
-		// rather than over the socket, so running it here would go and ask
-		// systemd and podman about a machine no test is about.
+		// The doctor and the state snapshot are the two live verbs that do their
+		// work in this process rather than over the socket, so running them here
+		// would go and ask systemd, podman, the journal and this machine's
+		// graphics about a machine no test is about - and the second one would
+		// write a file while doing it.
 		//
 		// Skipped by the argv and not by the action's name, which is the whole
 		// point of the difference: keyed on the name, this exempted whatever
-		// that row spawned, on the one row whose reason for existing is being
-		// reachable only by name. Change the argv and it is checked like the
+		// that row spawned, on the rows whose reason for existing is being
+		// reachable only by name. Change the argv and they are checked like the
 		// rest.
-		if strings.Join(a.Spawn, " ") == "zde doctor" {
+		switch strings.Join(a.Spawn, " ") {
+		case "zde doctor", "zde report":
 			continue
 		}
 		checked++
@@ -363,6 +471,55 @@ func TestAskPanelWithAQuestionOpensThePanelAndRunsNoTier(t *testing.T) {
 	}
 }
 
+// The two verbs that send something to a desk, with the name and without it.
+//
+// Without it is what the chord spawns, and it has to reach the daemon as a
+// request with no arguments: the desk is named by the picker that opens, and a
+// CLI that insisted on the name here would leave the key printing usage to a
+// stderr no keypress has. With no shell to draw one, the same request answers
+// with the desks, and this prints them so the second form has a name to take -
+// which is the whole of the verb on a session whose shell has died.
+func TestTheMoveVerbsAskForADeskWhenNobodyNamedOne(t *testing.T) {
+	for _, verb := range []string{"move-window-to", "move-workspace-to"} {
+		t.Run(verb, func(t *testing.T) {
+			f := fakeDaemon(t, func(req zded.Request) []string {
+				if len(req.Args) == 0 {
+					// Nothing drew it, which is what makes the CLI print.
+					return []string{`{"ok":{"shown":false,"desks":["haven","vshop"],"on":"vshop"}}`}
+				}
+				return []string{`{"ok":["haven.DP-1.code"]}`}
+			})
+
+			said, err := onStdout(t, func() error { return run([]string{"desk", verb}) })
+			if err != nil {
+				t.Fatalf("zde desk %s: %v", verb, err)
+			}
+			got := f.asked()
+			if len(got) != 1 || got[0].Method != "desk."+verb || len(got[0].Args) != 0 {
+				t.Fatalf("sent %+v, want one desk.%s with no arguments", got, verb)
+			}
+			// The list, with the desk you are on marked: it is the row a move
+			// cannot use, and the only thing about a desk list you cannot see
+			// from the list.
+			if !strings.Contains(said, "haven\n") || !strings.Contains(said, "vshop (here)") {
+				t.Errorf("printed %q, want the desks with the one we are on marked", said)
+			}
+
+			// And the name off that list, handed straight back.
+			said, err = onStdout(t, func() error { return run([]string{"desk", verb, "haven"}) })
+			if err != nil {
+				t.Fatalf("zde desk %s haven: %v", verb, err)
+			}
+			if got = f.asked(); len(got) != 2 || len(got[1].Args) != 1 || got[1].Args[0] != "haven" {
+				t.Fatalf("sent %+v, want the name it printed", got)
+			}
+			if !strings.Contains(said, "haven.DP-1.code") {
+				t.Errorf("printed %q, want the workspace it ended on", said)
+			}
+		})
+	}
+}
+
 // The other verb, unchanged, because it is somebody's script: a question
 // written after `oneshot` is answered on the terminal it was typed at, on the
 // provider tier, streamed as it comes. This is the guarantee the panel change
@@ -457,8 +614,16 @@ func TestTheQueuePrintsOneLineAnItemWhateverTheJournalHolds(t *testing.T) {
 	if lines := strings.Count(strings.TrimSuffix(said, "\n"), "\n"); lines != 0 {
 		t.Errorf("one item printed %d lines:\n%q", lines+1, said)
 	}
-	if fields := strings.Count(said, "\t"); fields != 4 {
-		t.Errorf("one item printed %d tabs, want the four between its five columns:\n%q", fields, said)
+	if fields := strings.Count(said, "\t"); fields != 5 {
+		t.Errorf("one item printed %d tabs, want the five between its six columns:\n%q", fields, said)
+	}
+	// The sixth column is the one that says the desktop wrote this, and the item
+	// above is a hand-written line claiming everything it can: a tab is what
+	// separates the columns, and nothing that arrives here can hold one. So the
+	// badge column reads as an app's row, which is what this row is.
+	if got := strings.SplitN(said, "\t", 4); len(got) > 2 && got[2] != "." {
+		t.Errorf("the badge column reads %q for a line the queue was handed, so a queue file could "+
+			"claim the desktop wrote it:\n%q", got[2], said)
 	}
 	if strings.Contains(said, "\x1b") {
 		t.Errorf("the queue printed %q, which still carries an escape", said)
@@ -747,5 +912,166 @@ func TestThePasswordPromptTurnsEchoOffAndPutsItBack(t *testing.T) {
 	}
 	if !echoing(t, slave) {
 		t.Error("the terminal was left echoless after the prompt")
+	}
+}
+
+// Every error this command prints carries somebody else's words. zcr's refusal
+// travels whole because it is the useful half of a failed launch
+// (internal/zinc); zded's errors arrive over the socket as text and are printed
+// exactly as they came (internal/zded, Call), which is how niri's message and
+// logind's get here; a manifest somebody hand-edited is answered by a YAML
+// parser quoting the file back. All of it lands on a terminal through one
+// Fprintln.
+//
+// This is the print-and-continue one: `zde desk apps` asks zcr where each app
+// keeps its state and says once, at the end, why it could not - so the addresses
+// stay the answer. If this regresses, running one command on a machine with a
+// hostile zcr on its PATH is enough to clear the screen or leave the terminal in
+// a colour, and nothing about the command looks like it did that.
+func TestZcrsComplaintCannotDriveTheTerminalZdePrintsItOn(t *testing.T) {
+	fakeDaemon(t, func(req zded.Request) []string {
+		if req.Method != "desk.apps" {
+			return []string{`{"error":"` + req.Method + ` is not what a desk listing asks"}`}
+		}
+		return []string{`{"ok":[{"address":"browser@vshop","place":"vshop.eDP-1.main"}]}`}
+	})
+	bin := t.TempDir()
+	if err := os.Symlink(os.Args[0], filepath.Join(bin, zinc.Runner)); err != nil {
+		t.Fatal(err)
+	}
+	// A refusal with something worth reading in it and every instruction a
+	// terminal takes: clear the screen, set the title, draw over the line above.
+	const says = "zcr: no app \x1b[2J\"browser\" defined\x1b]0;pwned\x07\r\n\ttry: zc list"
+
+	out, said, err := runReal(t, "desk apps", "PATH="+bin, fakeZcr+"="+says)
+	if err != nil {
+		t.Fatalf("zde desk apps: %v\n%s", err, said)
+	}
+	asText(t, said)
+	// The addresses are still the answer, which is why this one prints and
+	// carries on rather than stopping at the first app it could not ask about.
+	if !strings.Contains(out, "browser@vshop") {
+		t.Errorf("the list is %q, and the desk still declares that app", out)
+	}
+	// And the complaint is still legible: the name of the app zcr would not
+	// have, and the advice that is the reason zcr's own words are carried at all
+	// rather than paraphrased.
+	for _, want := range []string{`"browser" defined`, "try: zc list"} {
+		if !strings.Contains(said, want) {
+			t.Errorf("zcr said %q, which no longer contains %q", said, want)
+		}
+	}
+	// The tab zcr indented its advice with is shape and survives. A filter that
+	// folded this to one line would be the row filter, which is the wrong job for
+	// an error somebody reads in order to fix something.
+	if !strings.Contains(said, "\ttry:") {
+		t.Errorf("the indent zcr wrote is gone: %q", said)
+	}
+}
+
+// The other print site: the error that ends the command, in main. A parse error
+// is several lines and legitimately so - a YAML parser answers a hand-edited
+// manifest with a line per field it could not use - so this one keeps its shape
+// where a queue row would be folded flat.
+//
+// Driven through the shortest real path from a string somebody else chose to
+// that Fprintln: apps.json is layer 1's own file, and a name in it is printed
+// into the error for a name that is not there (internal/apps, Argv), list and
+// all, with %v rather than %q.
+func TestTheErrorThatEndsTheCommandKeepsItsShapeAndPrintsNoInstructions(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "zde"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	named, err := json.Marshal(map[string][]string{
+		"editor": {"true"},
+		// One name carrying the lot: the instructions, and a newline with a line
+		// under it that reads exactly like something zde would say.
+		"term\x1b[2J\x07\rgotcha\nzde: nothing is wrong here": {"true"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "zde", "apps.json"), named, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, said, err := runReal(t, "app launch nope", "XDG_CONFIG_HOME="+dir)
+	if err == nil {
+		t.Fatalf("`zde app launch nope` exited 0, and there is no app called that: %q", said)
+	}
+	asText(t, said)
+	// Still the error it was: what was asked for, and what this machine has
+	// instead, which is the other half of the fix.
+	for _, want := range []string{`no app called "nope"`, "editor", "gotcha"} {
+		if !strings.Contains(said, want) {
+			t.Errorf("zde said %q, which no longer contains %q", said, want)
+		}
+	}
+	// And still several lines. A one-line filter here would pass every other
+	// assertion in this test and quietly fold a parse error's line-per-field
+	// into one, which is the thing an error is read for.
+	if strings.Count(strings.TrimSuffix(said, "\n"), "\n") == 0 {
+		t.Errorf("the error was folded onto one line: %q", said)
+	}
+}
+
+// `zde doctor` is the other thing this command prints that it mostly did not
+// write. Nearly every detail in that report came from somewhere else -
+// systemctl's and podman's first line of complaint, zcr's refusal of an app
+// name, a YAML parser about a manifest, logind's answer off the bus - and the
+// report is one line per check with the level in column one, which is the
+// column an eye runs down looking for the word "fail".
+//
+// So it takes the row filter and the errors above take the other one, and the
+// difference is the shape each is: a detail with a newline in it is a line
+// nobody checked, and this report is pasted into bug reports by people who did
+// not run it (internal/doctor, Check.String).
+func TestNoLineOfTheDoctorReportIsOneNobodyChecked(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "zde", "desks"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	named, err := json.Marshal(map[string][]string{
+		"term\x1b[2J\x07\rgotcha\nfail  manifests    every desk is fine": {"true"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "zde", "apps.json"), named, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A desk naming an app this machine has no entry for, which is the check
+	// that prints the list of names it does have.
+	desk := "name: vshop\nmonitors:\n  eDP-1:\n    workspaces:\n      - main\napps:\n  - app: browser\n"
+	if err := os.WriteFile(filepath.Join(dir, "zde", "desks", "vshop.yaml"), []byte(desk), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Nothing on PATH and no daemon answering. Which resolver answers decides
+	// what half this report says, so a machine with a zcr or a zded of its own
+	// would be a different test running (internal/doctor, probeDesks).
+	empty := t.TempDir()
+
+	out, _, err := runReal(t, "doctor", "XDG_CONFIG_HOME="+dir, "XDG_RUNTIME_DIR="+empty, "PATH="+empty)
+	if err == nil {
+		t.Fatalf("zde doctor exited 0 with no daemon answering:\n%s", out)
+	}
+	for _, bad := range []struct {
+		name string
+		r    rune
+	}{{"ESC", 0x1b}, {"BEL", 0x07}, {"CR", '\r'}} {
+		if strings.ContainsRune(out, bad.r) {
+			t.Errorf("%s survived into the report:\n%q", bad.name, out)
+		}
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+		if level, _, _ := strings.Cut(line, " "); level != "ok" && level != "warn" && level != "fail" {
+			t.Errorf("a line of the report is not a check: %q", line)
+		}
+	}
+	// And the check is still the one that was made: which desk, which name, and
+	// what this machine has instead.
+	if !strings.Contains(out, "vshop names browser") || !strings.Contains(out, "gotcha") {
+		t.Errorf("the desk apps line no longer says what to fix:\n%s", out)
 	}
 }

@@ -123,21 +123,59 @@ func TestWorkspaces(t *testing.T) {
 	}
 }
 
-func TestOutputs(t *testing.T) {
+func TestScreens(t *testing.T) {
 	path := fakeNiri(t, `{"Ok":{"Outputs":{
-		"DP-1":{"name":"DP-1","make":"Dell","model":"U2515H"},
-		"HDMI-A-1":{"name":"HDMI-A-1","make":"x","model":"y"}
+		"DP-1":{"name":"DP-1","make":"Dell","model":"U2515H","logical":`+logical+`},
+		"HDMI-A-1":{"name":"HDMI-A-1","make":"x","model":"y","logical":`+logical+`}
 	}}}`)
-	got, err := dial(t, path).Outputs()
+	got, err := dial(t, path).Screens()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 2 {
-		t.Fatalf("Outputs = %v, want two", got)
+		t.Fatalf("Screens = %v, want two", got)
 	}
 	joined := strings.Join(got, ",")
 	if !strings.Contains(joined, "DP-1") || !strings.Contains(joined, "HDMI-A-1") {
-		t.Errorf("Outputs = %v", got)
+		t.Errorf("Screens = %v", got)
+	}
+}
+
+// logical is what niri puts on an output it is showing something on. Every
+// fixture here carries one, because a real niri does: the whole point of the
+// field is the outputs that do not have it.
+const logical = `{"x":0,"y":0,"width":2560,"height":1440,"scale":1.0,"transform":"Normal"}`
+
+// The lid closes with an external monitor attached and niri switches the laptop
+// panel off. The connector still has a crtc, so it is still in the Outputs
+// reply - with no logical output, because niri has no layout monitor for it.
+// It is not a screen, and reading it as one is what turns a migration into a
+// wrongly-detected move.
+func TestScreensDropsADisabledOutput(t *testing.T) {
+	path := fakeNiri(t, `{"Ok":{"Outputs":{
+		"eDP-1":{"name":"eDP-1","current_mode":null,"logical":null},
+		"DP-1":{"name":"DP-1","logical":`+logical+`}
+	}}}`)
+	got, err := dial(t, path).Screens()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "DP-1" {
+		t.Errorf("Screens = %v, want only the output niri is showing something on", got)
+	}
+}
+
+// A niri that says nothing about logical outputs leaves the list empty, and an
+// empty list turns renaming off (internal/desk, Rebuild). The failure has a
+// safe direction and this is it.
+func TestScreensWithoutLogicalIsEmpty(t *testing.T) {
+	path := fakeNiri(t, `{"Ok":{"Outputs":{"DP-1":{"name":"DP-1"}}}}`)
+	got, err := dial(t, path).Screens()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Errorf("Screens = %v, want none rather than a guess", got)
 	}
 }
 
@@ -149,7 +187,8 @@ func TestDeskMap(t *testing.T) {
 			{"id":2,"idx":1,"name":"vshop.DP-1.agent","output":"HDMI-A-1","is_active":false},
 			{"id":3,"idx":2,"name":null,"output":"DP-1","is_active":false}
 		]}}`,
-		`{"Ok":{"Outputs":{"DP-1":{"name":"DP-1"},"HDMI-A-1":{"name":"HDMI-A-1"}}}}`,
+		`{"Ok":{"Outputs":{"DP-1":{"name":"DP-1","logical":`+logical+`},`+
+			`"HDMI-A-1":{"name":"HDMI-A-1","logical":`+logical+`}}}}`,
 	)
 	m, err := dial(t, path).DeskMap()
 	if err != nil {
@@ -169,11 +208,11 @@ func TestDeskMap(t *testing.T) {
 }
 
 // A monitor niri no longer has is what makes a displaced workspace, so the
-// output list has to reach the desk model intact.
+// list of screens has to reach the desk model intact.
 func TestDeskMapUnpluggedMonitor(t *testing.T) {
 	path := fakeNiri(t,
 		`{"Ok":{"Workspaces":[{"id":1,"idx":1,"name":"vshop.DP-1.code","output":"eDP-1"}]}}`,
-		`{"Ok":{"Outputs":{"eDP-1":{"name":"eDP-1"}}}}`,
+		`{"Ok":{"Outputs":{"eDP-1":{"name":"eDP-1","logical":`+logical+`}}}}`,
 	)
 	m, err := dial(t, path).DeskMap()
 	if err != nil {
@@ -184,6 +223,30 @@ func TestDeskMapUnpluggedMonitor(t *testing.T) {
 	}
 	if got := m.Displaced(); len(got) != 1 || got[0].Monitor != "DP-1" {
 		t.Errorf("Displaced = %v, want the workspace with its home intact", got)
+	}
+}
+
+// The lid closes on a docked laptop. niri parks eDP-1's workspaces on DP-1 and
+// switches the panel off, but the connector is still in the Outputs reply - so
+// zde used to see both monitors present, one workspace sitting on the wrong
+// one, and call it a move. The rename that followed wrote DP-1 into the name,
+// which was the only record that the workspace belongs to the laptop panel.
+func TestDeskMapLidClosedIsNotAMove(t *testing.T) {
+	path := fakeNiri(t,
+		`{"Ok":{"Workspaces":[{"id":1,"idx":0,"name":"vshop.eDP-1.code","output":"DP-1"}]}}`,
+		`{"Ok":{"Outputs":{`+
+			`"eDP-1":{"name":"eDP-1","current_mode":null,"logical":null},`+
+			`"DP-1":{"name":"DP-1","logical":`+logical+`}}}}`,
+	)
+	m, err := dial(t, path).DeskMap()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Renames(); len(got) != 0 {
+		t.Errorf("Renames = %v, want none: eDP-1 is off, so this is a migration", got)
+	}
+	if got := m.Displaced(); len(got) != 1 || got[0].Monitor != "eDP-1" {
+		t.Errorf("Displaced = %v, want the workspace with the laptop panel still recorded", got)
 	}
 }
 
@@ -376,14 +439,14 @@ func TestDialWithoutEnv(t *testing.T) {
 }
 
 func TestDialUsesEnv(t *testing.T) {
-	path := fakeNiri(t, `{"Ok":{"Outputs":{"DP-1":{"name":"DP-1"}}}}`)
+	path := fakeNiri(t, `{"Ok":{"Outputs":{"DP-1":{"name":"DP-1","logical":`+logical+`}}}}`)
 	t.Setenv(SocketEnv, path)
 	c, err := Dial()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	if got, err := c.Outputs(); err != nil || len(got) != 1 {
-		t.Errorf("Outputs = %v, %v", got, err)
+	if got, err := c.Screens(); err != nil || len(got) != 1 {
+		t.Errorf("Screens = %v, %v", got, err)
 	}
 }

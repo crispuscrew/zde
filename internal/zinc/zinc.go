@@ -14,10 +14,13 @@
 package zinc
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // Runner is the binary that answers. Not a path: which zcr is on PATH is the
@@ -106,10 +109,34 @@ func parseWhere(out string) (Location, error) {
 // see alreadyRunning for why the words are all there is.
 var ErrAlreadyRunning = errors.New("already running")
 
+// runGrace is how long Wait may go on waiting once the launch has been told to
+// stop, or once it has exited leaving its pipes held.
+//
+// Both halves matter here and the second is the ordinary one: CombinedOutput
+// gives zcr's stdout and stderr to pipes exec copies from, and a program that
+// forks hands a copy of both ends to its child - so Wait, which waits for the
+// copying, waits on whatever was forked rather than on the launch. A launch is
+// the shape most likely to do it, because starting a container is what it is
+// for. Measured on the neighbouring path rather than this one: doctor's probe
+// against a target that forks held a five second deadline open for a full
+// minute (internal/doctor, run).
+//
+// Two seconds because by the time either half fires the answer has been
+// written: what is left is a descriptor nobody is going to write to, or a
+// process that did not go when its group was killed.
+const runGrace = 2 * time.Second
+
 // Run starts one app instance, detached, the way a person would from a shell.
 //
 // --exec because without it zcr prints the launch plan and exits, which from a
 // keypress looks exactly like nothing happening.
+//
+// The context is the daemon's, and it is what makes this stoppable. Without one
+// this was a subprocess with no timeout, no process group and no WaitDelay,
+// started from a goroutine nothing counted: measured, a session that had been
+// closed left the launch it had started running, and it survived the daemon
+// (internal/zded, startApps). Everything below is the shape a tier already has,
+// for the same reasons it has it (internal/zded/ask.go, askRun and killGroup).
 //
 // Nothing here asks first whether it is already running. zinc 0.9.1 made a
 // second launch refuse before it prepares anything - the release before it,
@@ -119,8 +146,36 @@ var ErrAlreadyRunning = errors.New("already running")
 // is where zcr's own words still exist: the sentence is the whole of the
 // evidence, and by the time an error reaches a caller it has been through a
 // %s and there is nothing left to read.
-func Run(address string) error {
-	out, err := exec.Command(Runner, "run", address, "--exec").CombinedOutput()
+func Run(ctx context.Context, address string) error {
+	cmd := exec.CommandContext(ctx, Runner, "run", address, "--exec")
+	// Its own process group, so that stopping the launch stops what the launch
+	// started. Killing the one pid zde knows about leaves the podman client's
+	// own children exactly where they were, which is what a launch has most of.
+	//
+	// And PR_SET_PDEATHSIG, because cmd.Cancel only runs while there is a daemon
+	// left to run it: an orderly stop was already covered by the context, and a
+	// SIGKILL, an OOM kill or the session going down underneath zded was not.
+	// The third copy of this pair in the tree, beside a tier's and the
+	// clipboard's (internal/clip, guard) - a fourth is where it stops being
+	// worth writing out and starts being worth a helper.
+	//
+	// What it does not reach is what zcr itself forks: PR_SET_PDEATHSIG is
+	// cleared on fork, so a container runtime zcr leaves behind is not covered
+	// by it. The group kill is what covers those, and only while zded is alive
+	// to send it. Nor does either reach the container: a `zcr run` client that
+	// dies leaves what it started to podman, which is zinc's to stop and not
+	// zde's (internal/zded, killGroup says the same of a tier).
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			// ESRCH means there was nothing left, which is the outcome this
+			// exists for.
+			syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) //nolint:errcheck // ESRCH is the good case
+		}
+		return nil
+	}
+	cmd.WaitDelay = runGrace
+	out, err := cmd.CombinedOutput()
 	if errors.Is(err, exec.ErrNotFound) {
 		return fmt.Errorf("%s is not on PATH, so %q cannot be started (programs.zinc.enable)", Runner, address)
 	}

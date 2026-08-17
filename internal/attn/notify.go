@@ -11,6 +11,7 @@ package attn
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode"
@@ -47,31 +48,31 @@ const (
 // a sender says is the obvious thing to do.
 const DefaultAction = "default"
 
-// SelfFrom is what the desktop's own messages say sent them, and the one name
-// in that column no app can take: an arrival off the bus that claims it is
-// recorded under the bus's own name for its connection instead (see claim).
+// SelfFrom is the name the desktop's own messages carry, and a name no arrival
+// off the bus can take: a claim that reads as this word is recorded under the
+// bus's own name for its connection instead (see claim and isSelf).
 //
-// Reserved because the column is otherwise a claim and nothing checks it
-// (docs/vision.md, principle 6 - a sender is a claim until it is known by the
-// socket it arrived on). That is defensible for one app impersonating another,
-// which is a lie about a peer; it is not defensible for the desktop's own name,
-// because the whole point of a notification that says "this desk could not
-// start browser@vshop" is that the thing telling you is the thing that tried.
-// Without the reservation, `notify-send -a zde` was that sentence exactly:
-// same column, same shape, same popup with buttons on it, and the session bus
-// is precisely the surface a sandboxed app is given (principle 7).
+// What it is no longer is how anybody tells zde's message from an app's. That
+// is Notification.Self, which is a fact about where a record was made rather
+// than a string it carries, and which the surfaces draw as a badge the sender
+// column cannot reach. The argument for the string having to be enough was that
+// after the reservation "From == SelfFrom" and a second field would be one fact
+// twice; it stopped being one fact the moment a claim that is not this word
+// could be drawn as this word, which is every homoglyph there is or will be.
 //
-// What it buys, said plainly: an arrival cannot be this string, so this string
-// is the desktop. What it does not buy is a defence against a name that merely
-// looks like it - "zde-session", or "zdе" with a Cyrillic е - because that is
-// the general problem of an unverified column and it ends where attribution by
-// channel begins. What a person can rely on is narrower and worth knowing: an
-// impostor is drawn under its bus address (":1.57"), which no app name looks
-// like, on the popup, in the centre, in the queue and in `zde queue`.
+// The reservation stays, and it stays for two things it does buy on its own:
 //
-// It is also a ring the history never evicts, for the same reason the nameless
-// one is not (history.go, nobody): a name that no app can mint is not a name an
-// app can push the count with.
+//   - The ring the history never evicts is keyed on this string (history.go,
+//     unevictable). A name an app could mint would be a ring an app could fill
+//     and a sender bound an app could sit outside of, which is the leak that
+//     bound exists to stop. A lookalike gets a ring of its own, counted and
+//     evictable like every other claim, which is exactly right.
+//   - The word itself does not collide. A badge tells two rows apart when they
+//     are side by side, and two rows both spelling "zde" is still a worse
+//     surface than one. It costs one comparison on the arrival path.
+//
+// What it does not buy is a defence against a name that merely looks like this
+// one, and it never could: see isSelf for the class it closes.
 const SelfFrom = "zde"
 
 // actionsMax is how many of a notification's actions are kept, and it is the
@@ -152,6 +153,27 @@ type Notification struct {
 	// becomes the fallback rather than the answer. Nothing here has to change
 	// for that: the field stays, its source gets better.
 	From string
+	// Self says the desktop made this one. It is the only field on this struct
+	// that is not a claim, and the reason is that there is nowhere on the bus to
+	// claim it from: Notify builds this struct out of its arguments and the spec
+	// has no argument this could come from, so the one thing that sets it is
+	// Local, which is a call inside this process (see Local).
+	//
+	// A second field beside From, where the reservation was once argued to make
+	// one enough, and the reason the argument changed is worth having in front of
+	// whoever reads this next. While a matcher could hold the word, "From ==
+	// SelfFrom" was the same fact as this one and the codebase prefers one field
+	// to two. A matcher cannot hold the word. It folds spellings of it - case,
+	// punctuation, spacing, marks - and every one of "zdе" with a Cyrillic е,
+	// "ｚｄｅ" in fullwidth, "ᴢᴅᴇ" in small capitals, "zⅾe" with a Roman numeral
+	// and "ЗДЕ" walks past it and is drawn indistinguishably from the desktop's
+	// own name in the notification centre and on the popup. Closing that by
+	// matching means a table of confusables that nobody will maintain and that is
+	// one row behind whoever is reading it. So the fact moved off the string: it
+	// is decided here, where an arrival off the bus and a message zde wrote are
+	// two different calls, and it is what the surfaces badge (shell/NotifCenter.qml,
+	// shell/AttnPopup.qml).
+	Self bool
 	// Text is one printable line: the summary, or the first line of the body
 	// when there is no summary.
 	Text string
@@ -195,8 +217,15 @@ type Notification struct {
 // the history with no bound on it - and what zde has to say is usually a
 // program's own complaint, which is one line until the day it is a screen of
 // them (internal/zded, launchesFailed).
-func Local(from, text, body string) Notification {
-	return Notification{From: from, Text: oneLine(text), Body: bodyText(body)}
+//
+// It stamps the name and the mark itself rather than taking either from the
+// caller, and that is what makes "the desktop said this" a fact at creation. A
+// from argument would be a way to mint a badged record under somebody else's
+// name from inside the process, which is the one shape of this bug that a badge
+// would not catch; and the two would then be two decisions that could drift
+// apart, where they are one thing said twice by one line here.
+func Local(text, body string) Notification {
+	return Notification{From: SelfFrom, Self: true, Text: oneLine(text), Body: bodyText(body)}
 }
 
 // Sink is where a notification goes. attn does not own the queue - the journal
@@ -622,11 +651,13 @@ func (s *Server) lookup(k owned) (uint64, bool) {
 // the queue means a person typed it, so an app that sends nothing, or sends a
 // dash, must not land in that column looking hand-written.
 //
-// The desktop's own name is reserved the same way and for the same reason, one
-// step further on: a dash borrowed says a person typed this, and "zde"
-// borrowed says the session itself did (see SelfFrom). The bus's name for a
-// connection is what both fall back to, because the bus hands that out rather
-// than letting the peer choose it.
+// The desktop's own name is taken away the same way and in the same breath: a
+// dash borrowed says a person typed this, and "zde" borrowed puts an app's
+// message beside the desktop's under one word. What that no longer decides is
+// who a person is looking at - the badge does, and it is set where the record
+// is made (see SelfFrom, Notification.Self). The bus's name for a connection is
+// what both fall back to, because the bus hands that out rather than letting the
+// peer choose it.
 func claim(app string, sender dbus.Sender) string {
 	app = oneLine(app)
 	if app == "" || app == "-" || isSelf(app) {
@@ -635,7 +666,7 @@ func claim(app string, sender dbus.Sender) string {
 	return app
 }
 
-// isSelf reports whether a claim would be read as the desktop's own name.
+// isSelf reports whether a claim is a spelling of the desktop's own name.
 //
 // Not a string equality, because the column is read by a person and not by a
 // parser: "ZDE", "[zde]" and "z d e" all arrive at the same word, and a
@@ -643,10 +674,26 @@ func claim(app string, sender dbus.Sender) string {
 // steps around by pressing shift. Case is folded and everything that is not a
 // letter or a digit is dropped, so what is compared is the word somebody reads.
 //
-// It stays narrow on purpose. Only a claim that reduces to exactly this word is
-// taken away: an app called "zdeco", or "zde-helper", reduces to something else
-// and keeps its name. Refusing everything with those three letters in it would
-// be zde renaming other people's apps.
+// That is the class, stated exactly and not a syllable wider: spellings of the
+// word in the letters the word is written in - case, punctuation, spacing,
+// marks, symbols, and any run of those around it. What it does not close is a
+// name built out of different characters that draws the same, and "zdе" with a
+// Cyrillic е is the whole of the demonstration. Neither would normalising help
+// enough to be worth its own answer here: NFKC folds the fullwidth and the
+// Roman-numeral spellings and leaves both Cyrillic ones and the small capitals
+// standing, so it would close two of the five shapes that have actually been
+// sent at this and cost a vendored Unicode table for them. Anything further is
+// a confusable table, which is a file nobody in this tree will keep current and
+// which is one row behind whoever is reading it in any case.
+//
+// So this is a reservation on a word and not a defence of an identity. What
+// carries the identity is Notification.Self, which no string can imitate
+// because it is not a string.
+//
+// It stays narrow the other way too. Only a claim that reduces to exactly this
+// word is taken away: an app called "zdeco", or "zde-helper", reduces to
+// something else and keeps its name. Refusing everything with those three
+// letters in it would be zde renaming other people's apps.
 func isSelf(app string) bool {
 	var b strings.Builder
 	for _, r := range app {
@@ -693,8 +740,69 @@ func urgency(hints map[string]dbus.Variant) byte {
 // where something was dropped - and four copies of a filter is three of them
 // drifting. What it is not is a filter for everything: text that keeps its own
 // shape, an answer with paragraphs and indented code in it, is a different job
-// and is done where it is printed (cmd/zde, plain).
+// and is done by Text below.
 func Line(s string) string { return oneLine(s) }
+
+// Text is foreign text that keeps its own shape on its way to a terminal: what
+// a terminal reads as an instruction taken out, and everything else left
+// exactly as it was written.
+//
+// The other half of Line's job, and the difference is the shape. Line reflows -
+// it folds runs of whitespace and cuts at a bound - because it is making a row.
+// This is for text that has paragraphs and indented code in it: a tier's answer
+// as it streams (cmd/zde, askRun), a parser's complaint about a manifest with
+// its caret under the column that is wrong. So tabs and newlines are shape and
+// stay. A carriage return is not shape: it is how a line is drawn over with
+// another one, which is a way of hiding what was printed rather than of writing
+// anything. Nothing is cut, because there is no row to fit and an error cut off
+// before the path in it is one nobody can act on.
+//
+// The zero-width joiner survives, for the reason clean keeps it: it is
+// unprintable by every test Go has, and a family emoji without it is three
+// people.
+//
+// Here beside Line rather than in the command that first needed it, because
+// three binaries print somebody else's text now and these rune decisions are
+// the ones Line already makes. A second copy is the copy that drifts.
+func Text(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n' || r == '\t' || r == zwj:
+			return r
+		case unicode.IsPrint(r):
+			return r
+		default:
+			return -1
+		}
+	}, s)
+}
+
+// zwj is the zero-width joiner, spelled rather than typed: it is invisible in
+// source, and a rune nobody can see in a filter is one nobody can review.
+const zwj = '\u200d'
+
+// Block is one message on its way to a terminal whole - an error, which is the
+// text zde prints that it least often wrote itself.
+//
+// Text and two things a whole message needs that a stream does not. The first
+// line starts in column one and no other line does, because the lines after it
+// are somebody else's: zcr's output from a failed launch, logind's refusal,
+// niri's message, a parser's several lines about one file. Indented they read
+// as what they are - the rest of this error - and cannot be a second error zde
+// never printed. The indent is two spaces for every line after the first, so
+// whatever a parser lined up under a column of its own is still lined up.
+//
+// A message with nothing printable in it is quoted rather than dropped. It is
+// the one case where this would otherwise print an empty line and exit 1, which
+// tells a person that something failed and nothing about what - so the bytes go
+// out the way Go writes a string it cannot show, escaped and harmless.
+func Block(s string) string {
+	out := strings.TrimSpace(Text(s))
+	if out == "" {
+		return strconv.Quote(s)
+	}
+	return strings.ReplaceAll(out, "\n", "\n  ")
+}
 
 // oneLine makes anything an app sends fit one line of the queue.
 //
@@ -739,7 +847,7 @@ func clean(s string, max int, lines bool) string {
 				gap = " "
 			}
 			continue
-		case r == '‍' || unicode.IsPrint(r):
+		case r == zwj || unicode.IsPrint(r):
 		default:
 			// Something was here. A word boundary is a better guess at what it
 			// meant than joining what sat on either side of it.

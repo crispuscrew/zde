@@ -195,6 +195,60 @@ let
         # environment only after niri has put it there.
         XDG_RUNTIME_DIR=$mgr zde status 2>&1 | tee /tmp/unit-status.txt
         grep -qx 'compositor connected' /tmp/unit-status.txt
+
+        # The state snapshot, written by the unit the target pulled - which is
+        # exactly what a login does on a real machine (zde.debug, nix/home.nix).
+        # It is the one thing on this list written for a session that never
+        # comes up, so what is asserted is that it arrives on a machine with no
+        # GPU and is honest about it rather than failing.
+        report_written() { sctl is-active --quiet zde-report.service; }
+        if ! waitfor 60 report_written; then
+          echo "the session started and nothing wrote a state snapshot:"
+          sctl status zde-report.service || true
+          journalctl --user -u zde-report.service --no-pager | tail -20; exit 1
+        fi
+        snap=$(ls -1 /var/log/zde/zde/*.txt 2>/dev/null | tail -1 || true)
+        if [ -z "$snap" ]; then
+          echo "zde-report.service ran and left no file in /var/log/zde/zde:"
+          ls -la /var/log/zde /var/log/zde/zde 2>&1 || true
+          journalctl --user -u zde-report.service --no-pager | tail -20; exit 1
+        fi
+        echo "the session start wrote $snap"
+        # 0600 and this account's, which is the half of this that matters more
+        # than the feature: it is a file about somebody's machine, sitting on a
+        # disk, in a project written for people who mind about that.
+        mode=$(stat -c %a "$snap"); owner=$(stat -c %U "$snap")
+        [ "$mode" = 600 ] && [ "$owner" = zde ] || {
+          echo "the snapshot is mode $mode and belongs to $owner"; exit 1
+        }
+        for want in graphics versions hardware doctor; do
+          grep -qF "[$want]" "$snap" || {
+            echo "[$want] is missing from $snap:"; cat "$snap"; exit 1
+          }
+        done
+        # The graphics answer, which is the point of the exercise. This VM has
+        # no GPU and its niri is nested under cage rather than started as
+        # niri.service, so the two honest answers are "probably yes" - a
+        # compositor answering with outputs and nothing in a log saying it fell
+        # back - and "not known", which is what no niri.service log to read
+        # looks like. What it must never say is that this machine fell back,
+        # because it never went near a real card.
+        grep -qE '^  answer +(probably yes|not known)' "$snap" || {
+          echo "the graphics answer is not one this machine could honestly give:"
+          sed -n '/^\[graphics\]/,/^$/p' "$snap"; exit 1
+        }
+        # And it says which device the answer is about, on a machine that may
+        # have no card at all: "none" is a reading, a missing line is a bug.
+        grep -qE '^  device +' "$snap" || {
+          echo "the snapshot does not say which device the answer is about:"
+          sed -n '/^\[graphics\]/,/^$/p' "$snap"; exit 1
+        }
+        # The header, because somebody is going to paste this into a bug report
+        # and the two questions they will have - is it safe to send, what is
+        # missing from it - have to be answerable off the file itself.
+        grep -qF 'no notification text' "$snap" || {
+          echo "the snapshot does not say what it does not contain:"; head -30 "$snap"; exit 1
+        }
         # The bar is up and listening, so status has to say so. Waited for rather
         # than asked once: the target starts zded and the bar together, and Qt
         # takes a second or two to reach the socket, so a single question here
@@ -307,6 +361,29 @@ let
         if ! waitfor 20 no_manager; then
           echo "no NetworkManager here and the bar last read '$netread'"; exit 1
         fi
+
+        # The idle hold. Nothing on this VM takes an idle inhibitor, so the two
+        # readings that may appear are "none" - logind answering with an empty
+        # table - and "unknown", which is logind not answering at all.
+        #
+        # Deliberately not waited into "none" the way the mic is waited into it.
+        # The mic's answer is guaranteed here because PipeWire is layer 0's and
+        # does come up; logind's is not, which is exactly why the doctor line
+        # above accepts warn as well as ok (line 12: no logind seat). Demanding
+        # "none" would make this test assert something about the VM's session
+        # management rather than about the widget.
+        #
+        # What it does catch is the two failures that are the widget's own. An
+        # empty string is the IPC call not landing at all, which is how a
+        # function wired to nothing answers; and "held" on a machine where
+        # nothing took an inhibitor is a strip inventing the one fact it exists
+        # to report, which is worse than a strip that says nothing.
+        idleread=$(barq idle)
+        case "$idleread" in
+          none | unknown) ;;
+          "") echo "the bar's idle reading came back empty, so the call never landed"; exit 1 ;;
+          *) echo "nothing holds an idle inhibitor here and the bar reads '$idleread'"; exit 1 ;;
+        esac
 
         # Then the count, against a queue that changes underneath it. "0 0"
         # before, "1 0" after: the poll is two seconds, so both of these wait
@@ -624,6 +701,53 @@ let
           echo "the picker chose a desk and stayed on screen: $(pickerq state)"
           nirimsg --json layers; exit 1
         fi
+        # The same surface again, for the two verbs that send something to a
+        # desk rather than going to one. Their chords spawn the verb with no
+        # name after it, because a desk is called whatever the person called it
+        # and a shipped keymap cannot carry that - so this is the whole of what
+        # Mod+Ctrl+Tab and Mod+Ctrl+Shift+Tab do, and the rows are where the
+        # name comes from.
+        #
+        # What a chosen row means travels as the event's kind, which is why the
+        # kind is asserted rather than the fact that something opened: the rows
+        # are identical to the switcher's, so a surface that came up as "desks"
+        # here is one whose Enter switches desk on a key that was meant to move
+        # a window - the wrong verb, silently, on the desk somebody picked.
+        acked /tmp/move-window-picker.txt zde desk move-window-to || {
+          echo "zde desk move-window-to with no desk named would have printed the desk list instead of opening the picker"
+          exit 1
+        }
+        # Two rows on a machine with one desk: the regulars are offered before
+        # there is a band, since handing something to it is the only way one
+        # ever comes into being. And the cursor starts on probe, the desk we are
+        # already on, so Enter alone moves nothing anywhere.
+        move_picker() { [ "$(pickerq state)" = "open desks-move-window 2 probe" ]; }
+        if ! waitfor 20 move_picker; then
+          echo "the move picker never opened with the right contents: $(pickerq state)"
+          journalctl --user -u zde-bar.service --no-pager | tail -20; exit 1
+        fi
+        [ "$(pickerq dismiss)" = "closed" ] || { echo "dismiss said $(pickerq dismiss)"; exit 1; }
+        if ! waitfor 15 dismissed; then
+          echo "the move picker was dismissed and is still there: $(pickerq state)"
+          nirimsg --json layers; exit 1
+        fi
+
+        # And the workspace one, which is the verb the regulars depend on.
+        acked /tmp/move-workspace-picker.txt zde desk move-workspace-to || {
+          echo "zde desk move-workspace-to with no desk named would have printed the desk list instead of opening the picker"
+          exit 1
+        }
+        move_ws_picker() { [ "$(pickerq state)" = "open desks-move-workspace 2 probe" ]; }
+        if ! waitfor 20 move_ws_picker; then
+          echo "the workspace move picker never opened with the right contents: $(pickerq state)"
+          journalctl --user -u zde-bar.service --no-pager | tail -20; exit 1
+        fi
+        [ "$(pickerq dismiss)" = "closed" ] || { echo "dismiss said $(pickerq dismiss)"; exit 1; }
+        if ! waitfor 15 dismissed; then
+          echo "the workspace move picker was dismissed and is still there: $(pickerq state)"
+          nirimsg --json layers; exit 1
+        fi
+
         # Mod+w, which is the same surface with different rows: zded hands over
         # the open windows, the shell draws them, and choosing one goes to it.
         #
@@ -1036,12 +1160,18 @@ let
         # app, says it did not start, and comes from the desktop rather than
         # from an app - the sender column is otherwise a claim an app makes
         # about itself, and this is the one arrival zde sends itself.
+        #
+        # Column 3 is the half of that a claim cannot reach. The sender in
+        # column 5 is a string, and a string can be drawn to look like "zde" in
+        # a dozen alphabets (internal/attn, Notification.Self); the "*" is set
+        # where the record is made and printed in a column of its own, and
+        # nothing that arrives can hold a tab to reach it.
         launch_said() { zde queue >/tmp/q-launch.txt 2>&1 && grep -q 'did not start' /tmp/q-launch.txt; }
         waitfor 20 launch_said || {
           echo "the switch could not start the desk's app and told nobody:"
           cat /tmp/q-launch.txt /tmp/zded-live.log; exit 1
         }
-        awk -F'\t' '$4=="zde" && $5 ~ /vshop/ && $5 ~ /absent-app@vshop/ && $5 ~ /did not start/ { found=1 }
+        awk -F'\t' '$3=="*" && $5=="zde" && $6 ~ /vshop/ && $6 ~ /absent-app@vshop/ && $6 ~ /did not start/ { found=1 }
              END { exit !found }' /tmp/q-launch.txt || {
           echo "the launch failure reached the queue without saying which desk, which app, or who from:"
           cat /tmp/q-launch.txt; exit 1
@@ -1214,6 +1344,149 @@ let
           echo "doctor says nothing about logind, so nothing says whether this session may power off:"
           cat /tmp/doctor.txt; exit 1
         }
+        # The idle hold, on the same terms and for the same reason: this VM may
+        # or may not have a logind that answers, so the level is not the
+        # assertion and the line being there is.
+        grep -qE '^(ok|warn) +idle ' /tmp/doctor.txt || {
+          echo "doctor says nothing about what is holding this session awake:"
+          cat /tmp/doctor.txt; exit 1
+        }
+        # And whichever way it answered, it has to say what it could not see.
+        # This is the one line in the report a person could read as a promise
+        # that their screen will lock, and it is not one: the Wayland half of
+        # the mechanism is invisible to every interface zde has. A clean line
+        # with the caveat dropped is the failure worth catching from here,
+        # because nothing about it looks wrong.
+        grep -E '^(ok|warn) +idle ' /tmp/doctor.txt | grep -q 'zwp_idle_inhibit_manager_v1' || {
+          echo "doctor's idle line does not say which half of the mechanism it could see:"
+          grep -E '^(ok|warn) +idle ' /tmp/doctor.txt; exit 1
+        }
+        # And the whole of it, not the front. The name above is 22 characters
+        # into a caveat of 340, and every string a stranger sends this report is
+        # cut at 300 - so a filter aimed at foreign text and pointed at this
+        # sentence by mistake would leave the grep above passing on a line whose
+        # qualification had been cut off an all-clear. The last words of it are
+        # what says the caveat arrived.
+        grep -E '^(ok|warn) +idle ' /tmp/doctor.txt | grep -q 'docs/verify.md, section 11)' || {
+          echo "doctor's idle caveat is cut short, so the line reads as more than it is:"
+          grep -E '^(ok|warn) +idle ' /tmp/doctor.txt; exit 1
+        }
+
+        # The state snapshot by hand, with two desks declared: an ordinary one
+        # and one that says private. This is the assertion the whole file is
+        # written around. A private desk is history only (docs/vision.md,
+        # section 3), and this file is meant to be carried off the machine, so
+        # neither the desk's name nor the app on it may be in it - naming the
+        # app and hiding the desk would be the same disclosure with a step in
+        # front of it.
+        printf 'name: report-open
+    monitors:
+      winit: { workspaces: [code] }
+    apps:
+      - { app: absent-app }
+    '       > ~/.config/zde/desks/report-open.yaml
+        printf 'name: report-secret
+    private: true
+    monitors:
+      winit: { workspaces: [code] }
+    apps:
+      - { app: absent-secret-app }
+    '       > ~/.config/zde/desks/report-secret.yaml
+        # And one that will not parse, in the daemon's own desk directory,
+        # because that list comes back over the socket rather than off this
+        # process's disk. Nothing can read a private flag out of a file that did
+        # not load - the flag is inside the file - so the report may name none
+        # of them, and this one's name is a desk's name.
+        #
+        # desk.apps rather than a restart: it re-reads the directory and
+        # remembers what would not parse (internal/zded, rememberProblems),
+        # which is the cheapest way to put a real entry in that list.
+        printf 'name: report-broken\n  monitors: [oh dear\n' > /tmp/desks/report-broken.yaml
+        XDG_STATE_HOME=/tmp/state zde desk apps vshop >/dev/null 2>&1 || true
+        # Eight older files this package would recognise as its own, one it
+        # would not, and one named for a century from now. The bound has to
+        # hold; it has to hold without deleting something somebody copied in
+        # here while debugging, which is the difference between a bound and a
+        # program that deletes things; and it must not be steerable by a name,
+        # which is what the last of these is. Any process running as this
+        # account can write that file, and while rotation kept whatever sorted
+        # highest, one of them was enough to evict a real snapshot on every
+        # write - starting with the one just written.
+        for i in 1 2 3 4 5 6 7 8; do
+          : > "/var/log/zde/zde/2020010''${i}T000000Z-deadbeef.txt"
+        done
+        : > /var/log/zde/zde/notes.txt
+        : > /var/log/zde/zde/29991231T235959Z-ffffffff.txt
+        zde report > /tmp/report-path.txt 2>&1 || {
+          echo "zde report failed:"; cat /tmp/report-path.txt; exit 1
+        }
+        snap2=$(sed -n 's/^wrote //p' /tmp/report-path.txt)
+        [ -n "$snap2" ] && [ -f "$snap2" ] || {
+          echo "zde report wrote no file, and said:"; cat /tmp/report-path.txt; exit 1
+        }
+        for secret in report-secret absent-secret-app report-broken; do
+          if grep -qF "$secret" "$snap2"; then
+            echo "$secret names a desk this file may not name and is in a file meant to leave this machine:"
+            sed -n '/^\[doctor\]/,$p' "$snap2"; exit 1
+          fi
+        done
+        # Counted, though, and still a failure: those desks are not declared and
+        # somebody has to be told, without being told which files.
+        grep -qE '^  fail +manifests +[0-9]+ manifest\(s\)' "$snap2" || {
+          echo "the manifests that would not parse are neither named nor counted:"
+          sed -n '/^\[doctor\]/,$p' "$snap2"; exit 1
+        }
+        # And `zde doctor` on this person's own screen names it, because that
+        # screen is theirs and the path is the file they have to go and open.
+        # Not through a pipe: a manifest that will not parse is a failed check,
+        # so doctor exits non-zero here and pipefail would read that as the
+        # grep having found nothing.
+        zde doctor >/tmp/doctor-broken.txt 2>&1 || true
+        grep -qF 'report-broken.yaml' /tmp/doctor-broken.txt || {
+          echo "doctor in a terminal will not say which manifest to go and fix:"
+          cat /tmp/doctor-broken.txt; exit 1
+        }
+        rm -f /tmp/desks/report-broken.yaml
+        XDG_STATE_HOME=/tmp/state zde desk apps vshop >/dev/null 2>&1 || true
+        # And the desk that declared nothing is still reported, or the redaction
+        # would be a way to silence the check by declaring everything private.
+        grep -qF 'report-open names absent-app' "$snap2" || {
+          echo "the desk that did not declare private was redacted too:"
+          sed -n '/^\[doctor\]/,$p' "$snap2"; exit 1
+        }
+        # A file that silently dropped lines is a file whose all-clear cannot be
+        # trusted, so the count survives even though the names do not.
+        grep -qF '1 app(s) on desks that declare private' "$snap2" || {
+          echo "nothing in the file says something was left out of it:"
+          sed -n '/^\[doctor\]/,$p' "$snap2"; exit 1
+        }
+        # The bound took one out for the one that went in - the oldest - and
+        # exactly one, because a snapshot writer that deletes eight things
+        # because of one write is a tool and a name is all it takes to aim it.
+        # Asserted by name rather than by a count, since the session start
+        # already left one of these here.
+        test -f /var/log/zde/zde/20200101T000000Z-deadbeef.txt && {
+          echo "the oldest snapshot is still here, so the bound did nothing:"
+          ls -la /var/log/zde/zde; exit 1
+        }
+        test -f /var/log/zde/zde/20200102T000000Z-deadbeef.txt || {
+          echo "one write took more than the one file it replaced:"
+          ls -la /var/log/zde/zde; exit 1
+        }
+        # And the three rotation must not touch: a name it could not have
+        # written, something copied in here by hand, and the file zde has just
+        # told somebody it wrote.
+        test -f /var/log/zde/zde/29991231T235959Z-ffffffff.txt || {
+          echo "rotation deleted a file dated after the write, which it cannot have written"; exit 1
+        }
+        test -f /var/log/zde/zde/notes.txt || {
+          echo "rotation deleted a file zde never wrote"; exit 1
+        }
+        test -f "$snap2" || {
+          echo "zde printed the path of a file rotation deleted as it landed: $snap2"; exit 1
+        }
+        rm -f /var/log/zde/zde/29991231T235959Z-ffffffff.txt
+        rm -f ~/.config/zde/desks/report-open.yaml ~/.config/zde/desks/report-secret.yaml
 
         # Mod+t, which is `zde app launch terminal`. The one thing a desktop has
         # to be able to do: until this existed, a session could be entered and
@@ -1680,12 +1953,27 @@ let
         # from haven, and the jump has to cross back.
         zde desk switch vshop >/dev/null
         zde queue add reply to ilya about the invoice 2>&1 | tee /tmp/q-add.txt
-        grep -q 'reply to ilya about the invoice' /tmp/q-add.txt
+        grep -q 'reply to ilya about the invoice' /tmp/q-add.txt || {
+          echo "what came back from queue add is not what was typed:"
+          cat /tmp/q-add.txt; exit 1
+        }
         id=$(cut -f1 /tmp/q-add.txt)
         [ -n "$id" ] || { echo "no id came back"; cat /tmp/q-add.txt; exit 1; }
 
+        # Every assertion in this block says what it wanted and what it got. A
+        # bare `grep -q` under `set -e` ends the script with no message at all,
+        # and the run above it has already scrolled past - which is exactly how
+        # a column added to this listing cost a CI round trip to find.
+        #
+        # The columns are id, urgency, whether the desktop wrote it, desk,
+        # sender, text (cmd/zde, queueList). The third is a dot here and the
+        # fifth is a dash: a reminder somebody typed is neither an app nor the
+        # desktop talking, and it is the dash that says a person wrote it.
         zde queue 2>&1 | tee /tmp/q-list.txt
-        grep -q "^$id	.	vshop	-	reply to ilya" /tmp/q-list.txt
+        grep -q "^$id	.	.	vshop	-	reply to ilya" /tmp/q-list.txt || {
+          echo "the reminder is not id, urgency, badge, desk, sender, text on the desk it was added on:"
+          cat /tmp/q-list.txt; exit 1
+        }
 
         # A second one, newer and on another desk. With one item a queue that
         # went to the newest and one that went to the oldest are the same
@@ -1696,8 +1984,14 @@ let
         id2=$(cut -f1 /tmp/q-add2.txt)
         [ "$id2" != "$id" ] || { echo "both reminders got id $id"; exit 1; }
         zde queue > /tmp/q-list2.txt 2>&1
-        grep -q "^$id	.	vshop	-	" /tmp/q-list2.txt
-        grep -q "^$id2	.	haven	-	look at the build log" /tmp/q-list2.txt
+        grep -q "^$id	.	.	vshop	-	" /tmp/q-list2.txt || {
+          echo "the first reminder is not still waiting on vshop:"
+          cat /tmp/q-list2.txt; exit 1
+        }
+        grep -q "^$id2	.	.	haven	-	look at the build log" /tmp/q-list2.txt || {
+          echo "the second reminder did not land on haven with what was typed:"
+          cat /tmp/q-list2.txt; exit 1
+        }
         # Oldest first, which is the order the jump below follows.
         [ "$(head -1 /tmp/q-list2.txt | cut -f1)" = "$id" ] || {
           echo "the list is not oldest first:"; cat /tmp/q-list2.txt; exit 1
@@ -1706,10 +2000,16 @@ let
         # Standing on haven, where the newer one waits: the jump has to cross
         # back to vshop, because that is where the older one is.
         zde desk queue-jump 2>&1 | tee /tmp/q-jump.txt
-        grep -q 'vshop.winit' /tmp/q-jump.txt
+        grep -q 'vshop.winit' /tmp/q-jump.txt || {
+          echo "the jump did not cross back to the desk the oldest item was added on:"
+          cat /tmp/q-jump.txt; exit 1
+        }
         # Jumping is not finishing: it is still there afterwards.
         zde queue 2>&1 | tee /tmp/q-still.txt
-        grep -q "^$id	" /tmp/q-still.txt
+        grep -q "^$id	" /tmp/q-still.txt || {
+          echo "jumping to the oldest item took it off the queue:"
+          cat /tmp/q-still.txt; exit 1
+        }
 
         # A notification from something that has never heard of zde. This is
         # the whole point of zded being the notification server rather than
@@ -1726,7 +2026,7 @@ let
         # Urgent, on the desk it arrived on, and attributed to what claimed to
         # send it - the claim being all anybody has until zinc gives each app
         # its own bus socket.
-        grep -q '	!	vshop	notify-send	the build failed' /tmp/q-notify.txt || {
+        grep -q '	!	.	vshop	notify-send	the build failed' /tmp/q-notify.txt || {
           echo "the notification arrived wrong:"; cat /tmp/q-notify.txt; exit 1
         }
         nid=$(grep 'the build failed' /tmp/q-notify.txt | cut -f1)
@@ -1734,9 +2034,10 @@ let
         # And in the history, which is the half the queue cannot answer: the
         # queue holds what is still waiting, the history holds what arrived.
         # Nothing is listening here, so Mod+n prints it rather than drawing it -
-        # id, urgency, when, sender, what became of it, text.
+        # id, urgency, whether the desktop wrote it, when, sender, what became
+        # of it, text.
         zde system notif-center 2>&1 | tee /tmp/notif-center.txt
-        grep -q "^$nid	!	.*	notify-send	waiting	the build failed" /tmp/notif-center.txt || {
+        grep -q "^$nid	!	.	.*	notify-send	waiting	the build failed" /tmp/notif-center.txt || {
           echo "the notification arrived and the history does not have it:"
           cat /tmp/notif-center.txt; exit 1
         }
@@ -1752,6 +2053,24 @@ let
           cat /tmp/caps.txt; exit 1
         }
         zde queue done "$nid"
+
+        # And a sender drawn like the desktop's own. The "е" in this one is
+        # Cyrillic: the reservation is on the word zde and cannot be on every
+        # way of drawing that word, so this arrival keeps the name it asked for
+        # and reads exactly like zde's own row in every column but one. The one
+        # is column 3, which says who made the record rather than who claims to
+        # have (internal/attn, Notification.Self) - and nothing off the bus can
+        # reach it, because a name cannot hold a tab.
+        notify-send -a "zdе" "your session has expired" "run 'zde unlock' and type your password"
+        lookalike() { zde queue >/tmp/q-look.txt 2>&1 && grep -q 'session has expired' /tmp/q-look.txt; }
+        if ! waitfor 15 lookalike; then
+          echo "the lookalike never reached the queue:"; cat /tmp/q-look.txt; exit 1
+        fi
+        awk -F'\t' '$6 ~ /session has expired/ && $3=="*" { bad=1 } END { exit bad }' /tmp/q-look.txt || {
+          echo "a notification off the bus is drawn as the desktop's own message:"
+          cat /tmp/q-look.txt; exit 1
+        }
+        zde queue done "$(grep 'session has expired' /tmp/q-look.txt | cut -f1)" >/dev/null
 
         # And the other way out, which is the one that matters on a queue
         # somebody cannot face: one call rather than one per item. Recovery used
@@ -1862,6 +2181,13 @@ pkgs.testers.runNixOSTest {
     # nix/test-host.nix evaluates that branch instead.
     zde.enable = true;
 
+    # The state snapshot, on, so that both halves of it are exercised on a real
+    # NixOS host: layer 0 making a directory per account, and the unit the
+    # session target pulls writing into it. A VM with no GPU is also the one
+    # machine in CI that can prove the graphics answer degrades honestly
+    # instead of guessing, which is the whole reason the file exists.
+    zde.debug.enable = true;
+
     # Only so that shell_interact and a manual login work when debugging this
     # test; most assertions below run as root.
     users.users.zde.password = "zde";
@@ -1896,6 +2222,9 @@ pkgs.testers.runNixOSTest {
       # It writes a file rather than exiting 0, so the test can see that it ran
       # rather than only that nothing complained.
       zde = {
+        # The other half of zde.debug above: this is what writes.
+        debug.enable = true;
+
         apps.lock = [ "${fakeLocker}/bin/swaylock" ];
 
         # One ask tier and only one: the provider. The other two stay unset on
@@ -1920,6 +2249,15 @@ pkgs.testers.runNixOSTest {
         # one yet - so niri accepting a second binds block is load-bearing
         # rather than incidental, and the niri validate below is what keeps it
         # that way.
+        #
+        # This block also goes through nix/niri-local.nix on the way in, which
+        # parses it at build time - and that does not make the check below
+        # redundant. Two different claims: that one is that this text is KDL,
+        # this one is that home-manager put it where niri looks, that the
+        # includes resolve at the real paths, and that the file zded writes
+        # beside it is there and writable. A synthetic tree in a build sandbox
+        # cannot answer any of those; a booted machine is the only thing that
+        # can.
         niri.extraConfig = ''
           binds {
               Mod+Return { spawn "foot"; }
@@ -1954,6 +2292,22 @@ pkgs.testers.runNixOSTest {
       machine.wait_until_succeeds("pgrep -f tuigreet")
       machine.succeed("test -x /run/current-system/sw/bin/niri-session")
       machine.succeed("test -f /run/current-system/sw/share/xdg-desktop-portal/niri-portals.conf")
+
+      # Layer 0's half of the state snapshot: a directory per account that could
+      # have a session, owned by it and 0700. Asserted here rather than only
+      # where the file lands, because these two fail in different ways - a rule
+      # tmpfiles refused leaves no directory and one line in a boot log, and the
+      # session that could not write into it is an hour later and looks like the
+      # writer's fault.
+      machine.succeed("test -d /var/log/zde/zde")
+      assert machine.succeed("stat -c '%U %a' /var/log/zde/zde").strip() == "zde 700"
+      # And one for the other account on this machine, which is what makes it a
+      # directory per account rather than one directory with a name in it.
+      machine.succeed("test -d /var/log/zde/intruder")
+      # Nothing in either yet: nobody has had a session (this test never logs in
+      # graphically), so a file here now would mean something writes one without
+      # a session to describe.
+      assert machine.succeed("ls -A /var/log/zde/zde").strip() == ""
 
       # Layer 2's tools arrived, and the contract zde leans on holds against the
       # real binary. `zcr where` is what zde asks rather than joining that path
