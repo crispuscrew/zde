@@ -163,6 +163,14 @@
           zde-nixos-eval = pkgs.runCommand "zde-nixos-eval" { } ''
             echo ${builtins.unsafeDiscardStringContext testHost.config.system.build.toplevel.drvPath} > "$out"
           '';
+          # The host's own local.kdl, through niri's parser
+          # (nix/niri-local.nix). Named here because zde-nixos-eval above
+          # discards its string context on purpose and so builds nothing: this
+          # is one derivation, and it is the one that would let a machine boot
+          # into a compositor running its own defaults. What it parses is
+          # whatever nix/test-host.nix wrote, which is the block the template
+          # ships and the xkb pair the runbook hands out.
+          zde-niri-local = testHost.config.home-manager.users.zde.xdg.configFile."niri/local.kdl".source;
           # There is deliberately no check for the live image beside this one.
           # It would be dead weight: nix flake check instantiates
           # packages.zde-iso, which is the whole ISO derivation, so a broken

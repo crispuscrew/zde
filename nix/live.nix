@@ -64,6 +64,21 @@
   # hand the backlight to (nix/system.nix), and the brightness keys are on the
   # by-hand list. It was dropped from here once as buying nothing, which was
   # true for exactly as long as those rules were not installed.
+  #
+  # No `wheel`, deliberately, and this is the line somebody will want to change:
+  # the install runbook is all root work, and from this session `sudo -i`
+  # answers "zde is not in the sudoers file". Adding it would take the password
+  # three lines above - plaintext, public, and typed by anyone who picks up the
+  # stick - and make it root. The reasoning under openssh.enable is the same
+  # reasoning: this image hands a real password to a user on purpose, so what
+  # that user can reach has to stay worth handing over. Today the answer to a
+  # cafe network finding it is a session; with wheel it would be the machine.
+  #
+  # The root shell the runbook needs already exists and costs nothing: the
+  # installer profile autologins `nixos` on every console greetd is not holding,
+  # in wheel with passwordless sudo, and greetd holds only the first. So the fix
+  # for "sudo does not work here" is Ctrl+Alt+F2, and docs/install.md opens by
+  # saying so.
   users.users.zde.extraGroups = [
     "networkmanager"
     "video"

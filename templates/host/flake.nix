@@ -122,10 +122,22 @@
                 "zlg"
               ];
 
-              # Host-specific niri: outputs, scale, an xkb layout. This is the
-              # seam for everything zde does not fix.
+              # Host-specific niri: outputs, scale, a window rule. This is the
+              # seam for everything zde does not fix. An xkb layout has its own
+              # option (zde.niri.xkb, docs/install.md section 2) - this is the
+              # rest.
+              #
+              # What goes in the string is KDL, which is not Nix: a node's
+              # children go on their own lines. `output "eDP-1" { scale 2 }`
+              # reads like it should work and is not KDL - the parser wants a
+              # newline or a `;` before the closing brace - and it is what this
+              # template used to ship commented out. A rebuild now refuses it
+              # (nix/niri-local.nix runs niri's own parser over this block), so
+              # the cost of getting it wrong is a build error and not a session.
               # zde.niri.extraConfig = ''
-              #   output "eDP-1" { scale 2 }
+              #   output "eDP-1" {
+              #       scale 2
+              #   }
               # '';
 
               # Set once, at creation, and then never touched (docs/update.md).

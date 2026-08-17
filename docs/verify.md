@@ -111,6 +111,14 @@ and a later `input` block replaces it rather than appending, so writing only the
 swap on an image built from `feat/input-layer` would silently drop
 `fkeys:basic_13-24` and take the band keys with it.
 
+Then check it, because this is the one file in that config nothing built:
+`niri validate -c ~/.config/niri/config.kdl`. A running niri treats a config it
+cannot parse as a warning and keeps its compiled-in defaults, so a stray brace
+here does not announce itself - it comes back as a session where no key works
+at all, including the one that opens a terminal to look. The other three files
+are checked before they are installed (`nix/niri-local.nix`); `dynamic.kdl` is
+writable precisely so that it is not, and that is the trade.
+
 What a VM can answer: the session coming up, the input layer (kanata grabs the
 guest's keyboard, and whether a keysym arrives as F13 or as `XF86Tools` is
 decided entirely inside the guest), notifications, the queue, adoption, the
