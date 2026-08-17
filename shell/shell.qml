@@ -317,6 +317,10 @@ ShellRoot {
             }
             if (msg.event.kind === "picker")
                 root.openPicker(msg.event);
+            else if (msg.event.kind === "picker.move-window")
+                root.openMoveWindow(msg.event);
+            else if (msg.event.kind === "picker.move-workspace")
+                root.openMoveWorkspace(msg.event);
             else if (msg.event.kind === "windows")
                 root.openWindows(msg.event);
             else if (msg.event.kind === "notif-center")
@@ -416,16 +420,47 @@ ShellRoot {
     // about sockets or methods.
     property string pickMethod: "desk.switch"
 
-    // The desks. The note on a row is where you are, because that is the one
-    // thing about a desk list you cannot see from the list.
+    // The desks, for the three verbs that want one named: go there, send the
+    // focused window there, send the whole workspace there. One list, because it
+    // is one question; what differs is the method a chosen row is spent on.
+    //
+    // Three functions rather than one taking the method, so that each name is a
+    // literal where a scan can see it. The method a picker row is sent as is the
+    // one this shell never writes inside a request - it is set here and read at
+    // the choice - and internal/zded's wire test finds it by looking for exactly
+    // this assignment (wire_test.go, methodHandedOnInQML). Passed in as an
+    // argument it is invisible to that scan, which is how the shell would come
+    // to ask for a method zded does not have with every test green.
     function openPicker(ev) {
-        const here = ev.on ?? "";
         root.pickMethod = "desk.switch";
-        root.showPicker(ev, "desks", (ev.desks ?? []).map(d => ({
+        root.showDesks(ev, "desks", "");
+    }
+
+    function openMoveWindow(ev) {
+        root.pickMethod = "desk.move-window-to";
+        root.showDesks(ev, "desks-move-window", "send this window to");
+    }
+
+    function openMoveWorkspace(ev) {
+        root.pickMethod = "desk.move-workspace-to";
+        root.showDesks(ev, "desks-move-workspace", "send this workspace to");
+    }
+
+    // The rows the three of them share. The note on a row is where you are,
+    // because that is the one thing about a desk list you cannot see from the
+    // list - and on a move it is also the row that would be a no-op, which is
+    // where the cursor starts (Picker.qml, show).
+    //
+    // The caption says what choosing a row will do, and it is not decoration:
+    // three verbs draw the same desks on the same surface, so without it the
+    // digit you press means whatever the last key pressed decided.
+    function showDesks(ev, kind, caption) {
+        const here = ev.on ?? "";
+        root.showPicker(ev, kind, (ev.desks ?? []).map(d => ({
                     key: d,
                     label: d,
                     note: d === here ? "here" : ""
-                })), here);
+                })), here, caption);
     }
 
     // The open windows. The app id and the title together, because neither
@@ -437,7 +472,7 @@ ShellRoot {
                     key: String(w.id),
                     label: (w.appId ?? "") + (w.title ? "  " + w.title : ""),
                     note: w.workspace ?? ""
-                })), "");
+                })), "", "");
     }
 
     // What arrived, for the notification center. The rows go over as they came
@@ -507,9 +542,14 @@ ShellRoot {
     // is being looked at, because a picker on every monitor is not a picker. An
     // unknown output falls back to the first screen, which on one monitor is
     // the right answer and on several is at least a screen.
-    function showPicker(ev, kind, rows, here) {
+    //
+    // The caption travels with the rows rather than being set beside this call,
+    // so that every caller has to say what choosing a row means - a surface left
+    // holding the last verb's caption is the same bug as one left holding its
+    // rows.
+    function showPicker(ev, kind, rows, here, caption) {
         root.present(picker, ev);
-        picker.show(kind, rows, here, ev.token ?? "");
+        picker.show(kind, rows, here, ev.token ?? "", caption);
     }
 
     // The ask popup and the ask panel, on the screen being looked at for the

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/crispuscrew/zde/internal/attn"
 	"github.com/crispuscrew/zde/internal/clip"
+	"github.com/crispuscrew/zde/internal/desk"
 	"github.com/crispuscrew/zde/internal/link"
 )
 
@@ -111,6 +113,21 @@ const EventPicker = "picker"
 // not a flag on the picker event: a shell that has never heard of it ignores
 // the line rather than drawing a desk picker with no desks in it.
 const EventWindows = "windows"
+
+// The same desks, for the two verbs that send something to one instead of going
+// there: the focused window, or the whole workspace it is in.
+//
+// Kinds of their own rather than a field on the picker event, and here the
+// reason is sharper than it is for the windows. The rows are identical, so a
+// shell that had never heard of a new field would draw a desk picker that looks
+// exactly right and switch desk when a row was chosen - the wrong verb, silently,
+// on the desk somebody meant to send a window to. Unknown kinds are ignored, so
+// an old shell draws nothing, nothing acknowledges, and the key falls back to
+// printing the list with the name to type (see Switcher.Shown).
+const (
+	EventPickerMoveWindow    = "picker.move-window"
+	EventPickerMoveWorkspace = "picker.move-workspace"
+)
 
 // EventCenter asks it to show the notification center: what arrived, whether
 // the mode let it through, and what became of it.
@@ -730,12 +747,25 @@ type Switcher struct {
 }
 
 // switcher opens the desk picker, or says that nothing could open it.
-func (s *Server) switcher() Response {
+func (s *Server) switcher() Response { return s.deskPicker(EventPicker) }
+
+// deskPicker opens the desks for whichever verb wants one named: going there,
+// or sending the focused window or workspace there.
+//
+// One list and one surface, because it is one question - which desk - and the
+// only thing that differs is what the answer is spent on, which the shell reads
+// off the kind. A verb that takes a desk name has no other way to ask for one
+// from a keyboard: the name is the person's own, so it cannot be in a shipped
+// keymap, and the chord that would carry it does not exist.
+func (s *Server) deskPicker(kind string) Response {
 	m, err := s.niri.DeskMap()
 	if err != nil {
 		return Response{Error: err.Error()}
 	}
 	names := m.DeskNames()
+	if kind != EventPicker {
+		names = withRegulars(names)
+	}
 	if len(names) == 0 {
 		// A fresh login, before anything is named. Advice rather than a bare
 		// refusal, because this is the one time somebody sees it.
@@ -753,7 +783,7 @@ func (s *Server) switcher() Response {
 	defer s.stopAwaiting(token)
 
 	sent := s.broadcast(Event{
-		Kind:   EventPicker,
+		Kind:   kind,
 		Desks:  names,
 		On:     on,
 		Output: output,
@@ -769,4 +799,29 @@ func (s *Server) switcher() Response {
 	case <-time.After(ackWait):
 		return ok(Switcher{Shown: false, Desks: names, On: on})
 	}
+}
+
+// withRegulars puts the regulars among the destinations, which the desk map has
+// only once the band exists.
+//
+// The one row a picker over what exists could not offer, and the one it must:
+// the band is never declared and adoption never names into it, so handing a
+// workspace to it is the only way it ever comes into being (docs/roadmap.md).
+// Left out, the key could not do the thing the verb is most needed for, and the
+// answer to "how do I make my regulars" would still be a terminal.
+//
+// Not done for the switcher, where the same row would be a desk to go to that
+// has nothing in it - niri has no workspace to bring up, so it is a row that
+// answers with a refusal.
+func withRegulars(names []string) []string {
+	for _, n := range names {
+		if n == desk.Regulars {
+			return names
+		}
+	}
+	// Sorted like DeskNames, so a row does not move between two presses of the
+	// key (internal/zded, sortWindows).
+	out := append(append([]string{}, names...), desk.Regulars)
+	sort.Strings(out)
+	return out
 }

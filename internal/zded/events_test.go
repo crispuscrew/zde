@@ -230,6 +230,96 @@ func TestSwitcherListsTheRegulars(t *testing.T) {
 	}
 }
 
+// The two move verbs with no name: they ask which desk rather than doing
+// anything, and the event says which verb is asking. The rows are the same rows
+// the switcher shows, so the kind is the only thing telling a shell whether a
+// chosen row switches desk or sends a window there - which is why it is a kind
+// and not a field.
+//
+// Nothing may move here. A key that opened a picker and moved the window as well
+// would be a window in a place nobody chose.
+func TestTheMoveVerbsWithNoNameAskWhichDesk(t *testing.T) {
+	for _, c := range []struct{ method, kind string }{
+		{"desk.move-window-to", EventPickerMoveWindow},
+		{"desk.move-workspace-to", EventPickerMoveWorkspace},
+	} {
+		t.Run(c.method, func(t *testing.T) {
+			f := &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code", output: "DP-1"}
+			s := New("test", nil, f, nil)
+			rec := &recorder{}
+			s.listen(&sink{w: rec})
+
+			resp := s.Dispatch(Request{Method: c.method})
+			if resp.Error != "" {
+				t.Fatalf("%s: %s", c.method, resp.Error)
+			}
+			var got struct{ Event Event }
+			line := strings.TrimSpace(rec.String())
+			if err := json.Unmarshal([]byte(line), &got); err != nil {
+				t.Fatalf("the event is not one line of json: %q", line)
+			}
+			if got.Event.Kind != c.kind {
+				t.Errorf("kind = %q, want %q: a shell cannot tell which verb asked", got.Event.Kind, c.kind)
+			}
+			if got.Event.On != "vshop" {
+				t.Errorf("on = %q, want the desk we are on, which is the row Enter must not spend", got.Event.On)
+			}
+			if len(f.renames) != 0 {
+				t.Errorf("asking which desk moved something: %v", f.renames)
+			}
+		})
+	}
+}
+
+// And the regulars are always among the rows, band or no band. Handing a
+// workspace to it is the only way it ever comes into being (docs/roadmap.md), so
+// a picker over the desks that exist could not do the thing the verb is most
+// needed for - and the answer to "how do I make my regulars" would still be a
+// terminal, which is the gap this closes.
+func TestTheMovePickerOffersTheRegularsBeforeThereAreAny(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code"}, nil)
+
+	var sw Switcher
+	json.Unmarshal(s.Dispatch(Request{Method: "desk.move-workspace-to"}).Ok, &sw)
+	found := false
+	for _, d := range sw.Desks {
+		if d == desk.Regulars {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("desks = %v, and the band nothing else can make is not among them", sw.Desks)
+	}
+	// Once, however the map answers: the band exists here, and a row drawn twice
+	// is a list that disagrees with itself about how many desks there are.
+	m := desk.Rebuild([]desk.Workspace{
+		{Name: "vshop.DP-1.code", Output: "DP-1"},
+		{Name: "regulars.DP-1.comms", Output: "DP-1"},
+	}, []string{"DP-1"})
+	s = New("test", nil, &fakeCompositor{m: m, focused: "vshop.DP-1.code"}, nil)
+	sw = Switcher{}
+	json.Unmarshal(s.Dispatch(Request{Method: "desk.move-window-to"}).Ok, &sw)
+	seen := 0
+	for _, d := range sw.Desks {
+		if d == desk.Regulars {
+			seen++
+		}
+	}
+	if seen != 1 {
+		t.Errorf("desks = %v, want the regulars once", sw.Desks)
+	}
+	// The switcher does not get the row: an empty band is a desk to go to with
+	// no workspace to bring up, which is a row that answers with a refusal.
+	sw = Switcher{}
+	s = New("test", nil, &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code"}, nil)
+	json.Unmarshal(s.Dispatch(Request{Method: "desk.switcher"}).Ok, &sw)
+	for _, d := range sw.Desks {
+		if d == desk.Regulars {
+			t.Errorf("the switcher offers %q, and there is no band to go to", d)
+		}
+	}
+}
+
 // The subscription over a real socket, because handle is where it lives: a
 // connection that has asked for events keeps answering questions, and events
 // arrive on it in between. Both halves matter - a stream that took the

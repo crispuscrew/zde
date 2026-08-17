@@ -899,7 +899,8 @@ show up in use.
 - **The keyboard, and the question it settles.** The roadmap has been carrying
   the worry that a layer surface holding focus reads to niri as nothing focused
   at all - so a nav key pressed just after one closes would spend itself putting
-  focus back on a window. Every key that draws one: `Mod+Tab` and `Mod+w` for
+  focus back on a window. Every key that draws one: `Mod+Tab`, `Mod+Ctrl+Tab`,
+  `Mod+Ctrl+Shift+Tab` and `Mod+w` for
   the picker, `Mod+n`, `Mod+Shift+c`, `Mod+semicolon`, `Mod+v`, `Mod+Shift+x`
   for the power menu, and `Mod+a` or `Mod+Shift+a` for ask. Open each, close it
   with Escape, and press `Mod+j`
@@ -912,7 +913,10 @@ show up in use.
 - **Whether the picker is what you want from `Mod+Tab`.** It has no text field
   on purpose - arrows, `j`/`k`, or a digit - and the palette next to it does
   have one, but it filters actions and not desks. If you find yourself typing a
-  desk name at either, that is the argument for a field here.
+  desk name at either, that is the argument for a field here. The two move
+  chords lean on this harder than the switcher does: they are the answer to a
+  verb that takes a desk name, so a list of desks you cannot type at is the
+  whole of how that name gets given.
 - **The palette, on the day you have forgotten a key.** `Mod+semicolon`, a few
   letters of what you want, Enter. Getting on for eighty rows means `Ctrl+n`
   past the bottom of the list, which is the scrolling worth pressing on. A row
@@ -937,14 +941,26 @@ show up in use.
 - **Coming back**: `zde desk last` after a detour lands where you left, on the
   workspace you left, not on the desk's first one.
 - **Making a regular, and unmaking it.** Stand on a workspace worth keeping and
-  run `zde desk move-workspace-to regulars`; that is the only way the band comes
-  into being. Then `zde desk move-workspace-to <desk>` to put it back. What to
-  feel for: whether promoting an existing workspace is what you reach for, or
-  whether you wanted to make an empty one and fill it afterwards - which is
-  refused, because an empty workspace is never adopted and so has no name to
-  move.
+  press `Mod+Ctrl+Shift+Tab`, then pick `regulars`; that is the only way the
+  band comes into being, and the row is offered before there is a band to offer
+  (`zde desk move-workspace-to regulars` is the same thing typed). Then the same
+  key and your own desk to put it back. What to feel for: whether promoting an
+  existing workspace is what you reach for, or whether you wanted to make an
+  empty one and fill it afterwards - which is refused, because an empty
+  workspace is never adopted and so has no name to move.
+- **The two move chords, which are new.** `Mod+Ctrl+Tab` sends the focused
+  window to a desk you pick and `Mod+Ctrl+Shift+Tab` sends the whole workspace,
+  both through the surface `Mod+Tab` opens, with a line on it saying which of
+  the three you are in. Three things only hands answer. Whether the caption is
+  enough to tell them apart at a glance, or whether choosing a desk on the
+  wrong one is a mistake people make; whether the four-key chord is reachable at
+  all, or whether the palette is how that verb actually gets run; and whether
+  starting the cursor on the desk you are already on - where Enter is a no-op on
+  one and a refusal on the other - is the safety it is meant to be or just a row
+  in the way. A wrong pick is undone by pressing the same key and choosing back,
+  which is worth trying too: it should be exactly as easy.
 - **Where you land when you send a window to a band that is not empty.**
-  `zde desk move-window-to regulars` carries the window and follows it, but it
+  `Mod+Ctrl+Tab` to `regulars` carries the window and follows it, but it
   follows it to the *workspace*: if something is already there, you arrive
   beside the window you sent rather than on it. Decide whether that is right.
   Making it land on the carried window is a small change, and it is not obvious
@@ -1370,7 +1386,8 @@ What only a session settles:
 Not bugs, do not report them:
 
 - **The rest of the shell**: the bar, and over it the picker (desks on
-  `Mod+Tab`, windows on `Mod+w`, one surface for both), the notification centre,
+  `Mod+Tab` and on the two move chords, windows on `Mod+w`, one surface for all
+  of them), the notification centre,
   the connections list, the palette, the ask window, the power menu, the
   clipboard history, and the notification popup, which is the only one that is
   not opened by a key. That is the whole list, and it is a list rather than a
@@ -1401,15 +1418,15 @@ Not bugs, do not report them:
   | `Mod+Ctrl+Escape` (takes the keyboard back off an app that grabbed it; niri's own action, so it works whatever zde has written) | |
   | `Mod+slash` (the keymap, in a pager) | |
   | `Mod+Print`, `Mod+Shift+s`, `Mod+Ctrl+w` (screenshots) | |
-  | `Mod+Shift+Tab` (last desk) | |
+  | `Mod+Shift+Tab` (last desk), `Mod+Ctrl+Tab` (send the focused window to a desk you pick), `Mod+Ctrl+Shift+Tab` (send the whole workspace, which is how the regulars are made) | |
   | `Mod+period`/`comma`, `Mod+Shift+m`, `Mod+Ctrl+m` (volume, mute, mic) | |
   | `Mod+b`, `Mod+Shift+b` (brightness, on a machine with a backlight) | |
   | `zde status`, `doctor`, `keys`, `palette`, `ask`, `attn`, `queue`/`add`/`done` | `zde net observe\|app-cut\|kill` |
-  | `zde app list\|launch`, `window jump-to`, `workspace next\|prev`, `nav down\|up` | `zde desk panic\|zen\|block`, which are not verbs at all |
+  | `zde app list\|launch`, `window jump-to`, `workspace next\|prev`, `nav down\|up` | `zde desk panic\|zen\|block\|pause`, which are not verbs at all |
   | `zde net status\|connect\|disconnect\|forget` | `zde pass`, `media`, `mode` |
   | `zde clip history [ID]`, `zde clip clear` | |
   | `zde system lock\|quiet\|notif-center\|notif-reach\|connections\|bluetooth\|power` | `zde system calendar\|wallpapers` |
-  | every other `zde desk` verb: `list`, `switch`, `switcher`, `next`/`prev`/`last`, `apps`, `snapshot`, `reconcile`, `queue-jump`, `regulars`, `move-window`, `move-window-to`, `move-workspace-to` | a manifest's `policies.zen`, `background: pause`, `on_enter`/`on_exit`, all parsed and read by nobody |
+  | every other `zde desk` verb: `list`, `switch`, `switcher`, `next`/`prev`/`last`, `apps`, `snapshot`, `reconcile`, `queue-jump`, `regulars`, `move-window`, `move-window-to [NAME]`, `move-workspace-to [NAME]` (with no name they open the picker, which is what the two chords above spawn) | a manifest's `policies.zen`, `background: pause`, `on_enter`/`on_exit`, all parsed and read by nobody |
   | a manifest's `policies.attn`: entering the desk puts the session in the mode it declares | |
   | the niri natives: columns, monitors, fullscreen, float, close, overview, consume/expel, layout switch | |
 

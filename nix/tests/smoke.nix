@@ -701,6 +701,53 @@ let
           echo "the picker chose a desk and stayed on screen: $(pickerq state)"
           nirimsg --json layers; exit 1
         fi
+        # The same surface again, for the two verbs that send something to a
+        # desk rather than going to one. Their chords spawn the verb with no
+        # name after it, because a desk is called whatever the person called it
+        # and a shipped keymap cannot carry that - so this is the whole of what
+        # Mod+Ctrl+Tab and Mod+Ctrl+Shift+Tab do, and the rows are where the
+        # name comes from.
+        #
+        # What a chosen row means travels as the event's kind, which is why the
+        # kind is asserted rather than the fact that something opened: the rows
+        # are identical to the switcher's, so a surface that came up as "desks"
+        # here is one whose Enter switches desk on a key that was meant to move
+        # a window - the wrong verb, silently, on the desk somebody picked.
+        acked /tmp/move-window-picker.txt zde desk move-window-to || {
+          echo "zde desk move-window-to with no desk named would have printed the desk list instead of opening the picker"
+          exit 1
+        }
+        # Two rows on a machine with one desk: the regulars are offered before
+        # there is a band, since handing something to it is the only way one
+        # ever comes into being. And the cursor starts on probe, the desk we are
+        # already on, so Enter alone moves nothing anywhere.
+        move_picker() { [ "$(pickerq state)" = "open desks-move-window 2 probe" ]; }
+        if ! waitfor 20 move_picker; then
+          echo "the move picker never opened with the right contents: $(pickerq state)"
+          journalctl --user -u zde-bar.service --no-pager | tail -20; exit 1
+        fi
+        [ "$(pickerq dismiss)" = "closed" ] || { echo "dismiss said $(pickerq dismiss)"; exit 1; }
+        if ! waitfor 15 dismissed; then
+          echo "the move picker was dismissed and is still there: $(pickerq state)"
+          nirimsg --json layers; exit 1
+        fi
+
+        # And the workspace one, which is the verb the regulars depend on.
+        acked /tmp/move-workspace-picker.txt zde desk move-workspace-to || {
+          echo "zde desk move-workspace-to with no desk named would have printed the desk list instead of opening the picker"
+          exit 1
+        }
+        move_ws_picker() { [ "$(pickerq state)" = "open desks-move-workspace 2 probe" ]; }
+        if ! waitfor 20 move_ws_picker; then
+          echo "the workspace move picker never opened with the right contents: $(pickerq state)"
+          journalctl --user -u zde-bar.service --no-pager | tail -20; exit 1
+        fi
+        [ "$(pickerq dismiss)" = "closed" ] || { echo "dismiss said $(pickerq dismiss)"; exit 1; }
+        if ! waitfor 15 dismissed; then
+          echo "the workspace move picker was dismissed and is still there: $(pickerq state)"
+          nirimsg --json layers; exit 1
+        fi
+
         # Mod+w, which is the same surface with different rows: zded hands over
         # the open windows, the shell draws them, and choosing one goes to it.
         #
