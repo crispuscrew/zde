@@ -31,7 +31,7 @@ func TestWatchReconcilesOnEvents(t *testing.T) {
 	go s.Watch(ctx, func() (<-chan string, error) { return events, nil })
 
 	events <- "WorkspacesChanged"
-	waitFor(t, func() bool { return len(niri.renameCalls()) == 1 })
+	waitFor(t, "the workspace being renamed", func() bool { return len(niri.renameCalls()) == 1 })
 	if got := niri.renameCalls()[0]; got != "vshop.DP-1.code -> vshop.HDMI-A-1.code" {
 		t.Errorf("renamed %q", got)
 	}
@@ -51,7 +51,7 @@ func TestWatchSettlesABurst(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		events <- "WindowOpenedOrChanged"
 	}
-	waitFor(t, func() bool { return niri.mapReads() > 0 })
+	waitFor(t, "the desk map being read", func() bool { return niri.mapReads() > 0 })
 	time.Sleep(20 * settle)
 	if got := niri.mapReads(); got > 2 {
 		t.Errorf("read the world %d times for one burst of five events", got)
@@ -130,14 +130,19 @@ type errNotThere struct{}
 
 func (errNotThere) Error() string { return "no compositor" }
 
-func waitFor(t *testing.T, done func() bool) {
+// waitFor polls until done is true, and names what it was waiting for when it
+// is not. The name is not decoration: this is used from tests whose subject is
+// something settling on a goroutine the test does not own - a rename, a read of
+// the desk map, a flood of connections being dropped - and "timed out waiting"
+// on its own says which test failed and nothing about where.
+func waitFor(t *testing.T, what string, done func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if done() {
 			return
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	t.Fatal("timed out waiting")
+	t.Fatalf("timed out waiting for %s", what)
 }

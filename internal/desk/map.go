@@ -42,9 +42,12 @@ type Conflict struct {
 // read model that any caller can reach into and reorder is not one.
 type Map struct {
 	desks map[string][]Name
-	// at is the output a workspace is on right now, which is not always the
-	// one its name says: an unplugged monitor leaves its workspaces parked on
-	// a survivor with home still recorded in the name (invariant 1).
+	// at is the screen a workspace is on right now, which is not always the
+	// monitor its name says: a monitor that is gone - unplugged, or switched
+	// off by a closing lid - leaves its workspaces parked on a survivor with
+	// home still recorded in the name (invariant 1). Anything that asks "which
+	// screen" has to read this and not the name; reading the name is the whole
+	// of what went wrong in a desk switch focusing one screen twice.
 	at map[string]string
 	// idx is its place in that output's strip, so a band can be walked in the
 	// order the screen has it rather than the order names sort in.
@@ -59,18 +62,24 @@ type Map struct {
 // recovery story: no state of ours is consulted, so a zded that just started
 // and a zded that has been running for a week see the same map.
 //
-// connected is the set of outputs niri currently has. It is what separates a
-// move from a migration: without it, an unplugged monitor looks exactly like
-// the user dragging every one of its workspaces somewhere else, and correcting
-// those names would erase the home monitor of every workspace no manifest
-// declares. Pass nil only when the caller genuinely does not know, which
-// disables renaming rather than guessing.
-func Rebuild(workspaces []Workspace, connected []string) *Map {
+// screens is the set of outputs a workspace can be on right now - the ones niri
+// has a layout monitor for, not every connector that has a cable in it
+// (internal/niri, Screens). The distinction is the whole of this function: an
+// output niri has switched off is still a connector and is no longer a screen,
+// and its workspaces have already been parked elsewhere. Reading the connector
+// list here would make that migration look exactly like the user dragging every
+// one of those workspaces somewhere else, and correcting those names would
+// erase the home monitor of every workspace no manifest declares.
+//
+// Pass nil only when the caller genuinely does not know, which disables
+// renaming rather than guessing. A missing rename is recoverable; a wrong one
+// erases home.
+func Rebuild(workspaces []Workspace, screens []string) *Map {
 	m := &Map{desks: map[string][]Name{}, at: map[string]string{}, idx: map[string]uint8{}}
 
-	isConnected := make(map[string]bool, len(connected))
-	for _, o := range connected {
-		isConnected[o] = true
+	isScreen := make(map[string]bool, len(screens))
+	for _, o := range screens {
+		isScreen[o] = true
 	}
 	// Every name in play, so a rename is never handed a name already in use.
 	taken := map[string]bool{}
@@ -90,16 +99,22 @@ func Rebuild(workspaces []Workspace, connected []string) *Map {
 		switch {
 		case w.Output == "" || w.Output == name.Monitor:
 			// Where it says it is, or niri is not saying.
-		case len(isConnected) == 0:
-			// No output list, so a move and a migration are indistinguishable
+		case len(isScreen) == 0:
+			// No screen list, so a move and a migration are indistinguishable
 			// and renaming would be a guess. A missing rename is recoverable;
 			// a wrong one erases home.
-		case !isConnected[name.Monitor]:
-			// Its monitor is gone and niri parked it on a survivor. The name
-			// still records home, so leave it alone and say where it sits.
+		case !isScreen[name.Monitor]:
+			// Its monitor is not a screen any more - unplugged, or switched
+			// off, which a closing lid does by itself - and niri parked it on a
+			// survivor. The name still records home, so leave it alone and say
+			// where it sits.
 			m.displaced = append(m.displaced, name)
-		case !isConnected[w.Output]:
-			m.conflicts = append(m.conflicts, Conflict{w, "niri reports an output it does not have"})
+		case !isScreen[w.Output]:
+			// A workspace is on a layout monitor by construction, so this is
+			// the gap between two IPC replies: the screen it was on stopped
+			// being one while we were asking. Renaming on a list that has
+			// already moved on is how home gets erased, so decline and say so.
+			m.conflicts = append(m.conflicts, Conflict{w, "niri put it on an output it is no longer showing anything on"})
 		default:
 			// Both monitors are real, so this was a move: correct the name.
 			// Through NewName, because the output is niri's string and not
@@ -144,16 +159,20 @@ func Rebuild(workspaces []Workspace, connected []string) *Map {
 	}
 
 	// A desk's workspaces are kept by monitor, and inside a monitor by the
-	// strip. The monitor comes first because a caller walking one monitor's run
-	// is what a switch does (SwitchPlan), and the strip second because that is
-	// the only order that is a fact rather than an opinion.
+	// strip. The monitor comes first because what gets written out of this list
+	// is written per monitor: a manifest declares a monitor's workspaces
+	// together (internal/manifest, FromMap). The strip comes second because it
+	// is the only order that is a fact rather than an opinion.
 	//
-	// It used to sort names inside the monitor too, and that made two answers
-	// disagree with the screen: a switch with nothing remembered landed on
-	// whichever label sorted first, which is the bottom of the strip as often
-	// as the top - and `zde workspace next` from the bottom does nothing. A
-	// snapshot wrote the same order into a manifest, so a strip reading zsh
-	// then agent came back as agent then zsh.
+	// It used to sort names inside the monitor, and a snapshot wrote that order
+	// into a manifest: a strip reading zsh then agent came back as agent then
+	// zsh. A manifest's first workspace on a monitor is where entering the desk
+	// lands (internal/zded, landingSlots), so writing a desk down moved it.
+	//
+	// A switch does not read this order to choose. It walks the list only to
+	// find which screens the desk is on, and picks out of Band (SwitchPlan).
+	// But Band sorts by the same index, so the desk a snapshot writes down and
+	// the desk a switch brings up have one idea of which end is the top.
 	for d := range m.desks {
 		band := m.desks[d]
 		sort.Slice(band, func(i, j int) bool {
@@ -255,8 +274,9 @@ func (m *Map) Band(desk, output string) []Name {
 
 // Workspaces is every workspace a desk owns, across monitors: by monitor, and
 // down each monitor's strip in the order the screen has it. A snapshot writes
-// that order into a manifest and a switch enters at the front of it, so it is
-// the strip's and not a sort of its own.
+// that order into a manifest, and the manifest's first workspace on a monitor
+// is where entering the desk lands (internal/zded, landingSlots), so it has to
+// be the strip's order and not a sort of its own.
 func (m *Map) Workspaces(desk string) []Name {
 	return append([]Name(nil), m.desks[desk]...)
 }
@@ -276,10 +296,16 @@ func (m *Map) Renames() []Rename { return append([]Rename(nil), m.renames...) }
 // Conflicts is what Rebuild noticed and would not touch.
 func (m *Map) Conflicts() []Conflict { return append([]Conflict(nil), m.conflicts...) }
 
-// Displaced is the workspaces sitting somewhere other than the monitor their
-// name claims, because that monitor is gone. Their names are not lies and must
-// not be corrected: the name is the only record of where the workspace
-// belongs, and invariant 5 puts it back there on replug. A manifest records
-// home too, but only for the workspaces a manifest declares - an adopted one
-// has the name and nothing else.
+// Displaced is the workspaces sitting on a screen other than the monitor their
+// name claims, because that monitor is gone - unplugged, or switched off, which
+// is what a closing lid does to a laptop panel.
+//
+// Their names are not lies and must not be corrected. The name is zde's only
+// record of where the workspace belongs: a manifest records home too, but only
+// for the workspaces it declares, and an adopted one has the name and nothing
+// else. What actually puts a workspace back is niri's, not zde's - niri keeps
+// the output each workspace was opened on and returns it there when that output
+// comes back (Layout::add_output, niri 26.04), which is why leaving the name
+// alone is the whole of zde's job here. See docs/roadmap.md, 0.4, for the one
+// case that record cannot reach.
 func (m *Map) Displaced() []Name { return append([]Name(nil), m.displaced...) }

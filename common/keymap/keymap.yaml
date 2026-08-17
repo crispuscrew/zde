@@ -31,6 +31,25 @@ binds:
   - { action: desk.move-window-prev, key: Mod+Shift+k }
   - { action: desk.move-window-prev, key: Mod+Shift+Up }
   - { action: desk.last, key: Mod+Shift+Tab } # return to previous desk (frequent); pairs with the switcher on Tab
+  # The two verbs that send something to a desk you name. Neither chord carries
+  # the name: a desk is called whatever you called it, so the bind spawns the
+  # verb bare and it opens the picker Mod+Tab already opens, with a line on it
+  # saying what choosing a row now means (internal/zded, deskPicker).
+  #
+  # Tab is the desk cluster, so these are its third and fourth chords, and Ctrl
+  # is what this keymap already uses for a third (Ctrl+m, Ctrl+n, Ctrl+p).
+  # Shift+Tab is the one move-window-to would rather have had - plain Shift is
+  # "bring the window along" everywhere in the grid - and it belongs to desk.last,
+  # which is a key pressed dozens of times a day against one pressed when a
+  # window is on the wrong desk. The frequent one keeps the easy chord.
+  #
+  # The workspace verb then pays for the window one: four keys, all on the left
+  # of the board. It is the rarer and larger act - a whole workspace changes
+  # bands, and it is the only way the regulars come into being at all - so a
+  # chord you have to mean is the right cost, and the palette (Mod+semicolon) is
+  # the way for a hand that will not make it.
+  - { action: desk.move-window-to, key: Mod+Ctrl+Tab }
+  - { action: desk.move-workspace-to, key: Mod+Ctrl+Shift+Tab }
   - { action: desk.queue-jump, key: Mod+u }
   - { action: desk.regulars, key: Mod+r }
   - { action: desk.zen, key: Mod+Shift+z }

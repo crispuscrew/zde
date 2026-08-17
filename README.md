@@ -34,7 +34,8 @@ carrying the sender's own buttons, gone again in a few seconds. That card never
 takes the keyboard on its own: `Mod+Ctrl+n` is the one key that hands it over,
 because a surface that grabbed on every arrival would be taking your keystrokes
 at the choice of any app on the bus. The shell is a bar - the queue, the mode,
-the mic, the link, the battery, the clock - and the surfaces over it: the desk
+the mic, whether something is holding the screen awake, the link, the battery,
+the clock - and the surfaces over it: the desk
 picker and the window jump, the notification centre and that popup, the wifi
 list you join a network from, the palette that runs any action by name and marks
 the ones that do nothing yet, the power menu that says what a log out is

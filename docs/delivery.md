@@ -90,9 +90,22 @@ host's own settings from `zde.niri.extraConfig`; and `dynamic.kdl`, which zded
 writes while the session runs. The first three are read-only symlinks into the
 store, which is exactly why the fourth cannot be - capture-block rules and the
 binds a desk releases have to change without a rebuild, and niri reloads the
-lot when any of them is written. `nix/zde-config.nix` runs `niri validate` over
-the assembled tree at build time, so a broken keymap or a base that does not
-parse fails the build rather than the login.
+lot when any of them is written.
+
+Every one of those three meets niri's own parser before it is a file, because a
+config niri refuses is a warning it carries on past into its compiled-in
+defaults: a session with none of zde's binds, and a default terminal key
+spawning an `alacritty` no zde machine installs. `nix/zde-config.nix` validates
+the assembled tree with the generated half in it, so a broken keymap or a base
+that does not parse fails the build. It cannot cover `local.kdl` - it is one
+derivation shared by the flake package and every host, so it builds that file
+empty - and `local.kdl` is the one a person writes. `nix/niri-local.nix` is
+where the host's own text gets the same parser, called from the home module
+because that is what evaluates a particular machine's `zde.niri.extraConfig`,
+and sourced by it so a rebuild cannot install a file it did not check.
+`dynamic.kdl` is the one that stays unchecked at build time, necessarily: it is
+written while the session runs. zded validates what it writes there; a person
+appending to it by hand has `niri validate` and nothing automatic.
 
 On top of it, layer 0 enables niri and starts it through
 greetd (tuigreet, no graphical display manager), so the machine boots into the

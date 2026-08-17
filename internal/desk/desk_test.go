@@ -184,6 +184,39 @@ func TestWorkspacesFollowTheStrip(t *testing.T) {
 	}
 }
 
+// The one shape where Band's own sort does work the map's cannot, and so the
+// only shape that can pin it. The map keeps a desk's workspaces by monitor and
+// then down the strip, so on any screen showing one monitor's run the two
+// orders are the same and deleting Band's sort changes nothing. A monitor that
+// is gone is the exception: its workspaces are parked on a survivor, the map
+// still keeps the two runs apart by the monitor in their names, and the screen
+// has them interleaved. A scroll follows what the screen has, or it steps over
+// a workspace and then back to it.
+func TestBandInterleavesTwoMonitorsParkedOnOneScreen(t *testing.T) {
+	m := Rebuild([]Workspace{
+		// eDP-1 is a connector and not a screen: the lid is shut, and niri has
+		// parked its workspaces on DP-1 between DP-1's own.
+		{ID: 1, Name: "vshop.DP-1.top", Output: "DP-1", Idx: 0},
+		{ID: 2, Name: "vshop.eDP-1.parked", Output: "DP-1", Idx: 1},
+		{ID: 3, Name: "vshop.DP-1.bottom", Output: "DP-1", Idx: 2},
+	}, []string{"DP-1"})
+	// The map keeps them apart, which is what makes this test say something.
+	var kept []string
+	for _, n := range m.Workspaces("vshop") {
+		kept = append(kept, n.Slot)
+	}
+	if !equal(kept, []string{"top", "bottom", "parked"}) {
+		t.Fatalf("Workspaces = %v, want the two monitors' runs kept apart", kept)
+	}
+	var band []string
+	for _, n := range m.Band("vshop", "DP-1") {
+		band = append(band, n.Slot)
+	}
+	if !equal(band, []string{"top", "parked", "bottom"}) {
+		t.Errorf("Band = %v, want the order the screen has [top parked bottom]", band)
+	}
+}
+
 // Ordinals are numbers, so 2 sorts before 10. Lexical order would have put the
 // strip in an order no human reads.
 func TestBandOrderOrdinals(t *testing.T) {

@@ -805,3 +805,34 @@ func TestNotifyDoesNotRepeatAShortBody(t *testing.T) {
 		t.Errorf("notification = %+v, want the line as the summary and nothing repeated under it", got)
 	}
 }
+
+// The two corners of the filter that prints a whole message - an error, mostly
+// (cmd/zde, complain). What it does on the way to a terminal is proved where it
+// is printed, by a test that runs the command and reads the bytes; these are
+// the two cases that are awkward to arrange from outside and easy to get wrong
+// from inside.
+func TestBlockIndentsWhatFollowsAndNeverPrintsNothing(t *testing.T) {
+	// A parser's answer to a hand-edited file: several lines, with the columns
+	// of the third lined up under the second. The relative shape is what makes
+	// a caret line worth printing, so the indent is the same for every line
+	// after the first.
+	got := Block("manifest: yaml: line 2\n  apps: - app: x\n        ^ here")
+	want := "manifest: yaml: line 2\n    apps: - app: x\n          ^ here"
+	if got != want {
+		t.Errorf("Block indented it as\n%q\nwant\n%q", got, want)
+	}
+	// And nothing after the first line starts where zde's own words start, so
+	// a message cannot end with a line that reads as a second error.
+	for _, line := range strings.Split(got, "\n")[1:] {
+		if !strings.HasPrefix(line, "  ") {
+			t.Errorf("a line starts in column one: %q", got)
+		}
+	}
+	// A message with nothing printable in it is the one case where this would
+	// print an empty line: a person told that something failed and nothing
+	// about what. The bytes go out escaped instead, which is unreadable but
+	// harmless, and unreadable is what they were.
+	if got := Block("\x1b\x07\r\x00"); !strings.Contains(got, `\x1b`) {
+		t.Errorf("Block(escapes only) = %q, want the bytes quoted rather than an empty line", got)
+	}
+}

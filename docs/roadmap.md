@@ -186,7 +186,10 @@ blocks 0.2:
   runbook exists: [`update.md`](update.md)). The state collection landed early
   as `zde doctor`, which is one line per check and no agent at all.
 - update: staleness/CVE collection, agent-drafted re-pin, human signs.
-- resources: `desk.pause`, background policies, per-desk cost widgets.
+- resources: `desk.pause`, background policies, per-desk cost widgets. The
+  action is registered and bound to nothing, so the palette carries the row and
+  says nothing is written behind it; the manifest key `background: pause` is
+  parsed and acted on by nobody until this lands.
 - netview: per-app connections/rates, nft counters (zinc ask 6), `app-cut`.
 - per-project browsers via `Inherits:` (ask 5) + `zde new`.
 - regulars polish: focus-mode comms filtering.
@@ -205,6 +208,21 @@ blocks 0.2:
   is not one you can use - so what is left here is folding bluetooth into that
   surface, the lid and the battery thresholds, and the rest of what a laptop
   is.
+- **Bringing a workspace home when niri cannot.** Re-placing workspaces on
+  their home monitor after a dock is niri's, not zde's: it records the output
+  each workspace was opened on and returns it there when that output comes
+  back (`Layout::add_output`, niri 26.04). zde deliberately does not do this
+  itself. The action exists - `MoveWorkspaceToMonitor { output, reference }` -
+  but performing it *overwrites* niri's record with zde's, and zde's record is
+  the workspace name, which is the weaker of the two: it is the one an unplug
+  can corrupt, and niri's surviving copy is what puts things right when it
+  does. What is genuinely uncovered is the case niri's record cannot reach,
+  because it does not outlive a compositor restart: a workspace whose monitor
+  was away when niri started sits on the survivor under a name that still says
+  home, and nothing will move it when the monitor returns. `desk.Map.Displaced`
+  names exactly that set and has no caller yet; surfacing it in `zde status` is
+  the honest first step, and moving anything is a decision to take after a
+  laptop has been lived with.
 
 Delivery ([`delivery.md`](delivery.md)): the flake skeleton exists; the home
 module grows with each 0.1 component; ISO and `install.sh` after 0.1 is
@@ -227,9 +245,10 @@ turned "when someone has hardware" into something anyone can do this evening.
   keyboard, which is worth remembering before the input layer is asked for
   anything else.
 - keymap, the shortcuts inhibitor: `zwp_keyboard_shortcuts_inhibit_manager_v1`
-  is the one sensitive global niri 26.04 hands to sandboxed clients too - every
-  other manager is built behind its security-context filter and that one is not
-  - and it activates a new inhibitor with no dialog, which niri's own source
+  is one of the two sensitive globals niri 26.04 hands to sandboxed clients too
+  - thirteen other managers are built behind its security-context filter and
+  these two are not (`src/niri.rs`; the other is the idle inhibitor below) - and
+  it activates a new inhibitor with no dialog, which niri's own source
   calls a FIXME. So a focused container can take any zde bind that has not said
   `allow-inhibiting=false`. Four say it: panic, lock, the mode picker, and the
   `Mod+Ctrl+Escape` that ends a grab. What a session has to settle is whether
@@ -237,8 +256,38 @@ turned "when someone has hardware" into something anyone can do this evening.
   anything you actually run grabs the keyboard at all, whether losing `Mod+j`
   to it is tolerable or maddening, and whether the key that gives them back is
   reachable enough for the moment you need it. Upstream may also close this: a
-  confirmation dialog, or the filter that every other global already has, would
+  confirmation dialog, or the filter the other thirteen already have, would
   make the whole question smaller.
+- the idle inhibitor, the second ungated global:
+  `IdleInhibitManagerState::new::<State>` is built with no
+  `client_is_unrestricted` where its thirteen neighbours take one, so a
+  sandboxed app can hold `zwp_idle_inhibit_manager_v1`. Worse than the keyboard
+  one in the part that matters: niri's `refresh_idle_inhibit` honours a surface
+  that is merely **visible, not focused**, so a container on a workspace nobody
+  is looking at keeps the session from ever going idle, with no interaction and
+  nothing shown.
+
+  **zde cannot see it, and that is the finding.** niri exposes it nowhere: not
+  in `niri-ipc`'s `Request`, `Response` or `Event` (checked at 26.4.0 - the only
+  hit for "inhibit" in 2109 lines is the keyboard-shortcuts action), not on the
+  event stream, and its `org.freedesktop.ScreenSaver` has `Inhibit` with no
+  getter. The computed bool goes to the idle notifier and stops.
+
+  So what shipped is the half that is observable, labelled as a half. logind's
+  own `idle` inhibitors are readable and always were - `system.idle` reads the
+  table the power menu already costs its rows from - and that is what the bar's
+  `idle held` counts and what `zde doctor` names. The two mechanisms do not
+  overlap: a Wayland inhibitor on a mapped surface moves nothing in
+  `ListInhibitors` and does not touch the session's `IdleHint`, measured rather
+  than assumed. Every place the reading is drawn says which half it is, because
+  a bar that implied it could see both would be worse than no bar at all.
+
+  What is open: whether anything anybody runs takes a Wayland one in practice
+  ([`verify.md`](verify.md), section 11), and what to do when the lock preset
+  lands in 0.3 - that is the release where this stops being an indicator and
+  starts being a way to keep a screen unlocked. Upstream adding the filter would
+  close it; so would any read-back at all, which is the smaller ask and the one
+  worth opening an issue for.
 - niri config: `nav.*` shelling to zded per keypress feeling instant, and the
   config driving a real compositor. The smoke test settles the static half -
   niri's own parser accepts the tree, its includes resolve, and every emitted
@@ -255,15 +304,19 @@ turned "when someone has hardware" into something anyone can do this evening.
   the regulars and adoption still names into the desk you are on, so this verb
   is the only way the band comes into being - and being a rename in either
   direction, it is also how work leaves a band that would otherwise only fill
-  up. Both of those verbs are the CLI's and nothing else: neither is in the
-  keymap registry, so neither has a chord or a palette row, and the answer to
-  "how do I make my regulars" is `zde desk move-workspace-to regulars` typed in
-  a terminal. That is the part to decide rather than to note, and it is a
-  decision about which keys exist ([`model.md`](model.md), section 6). What is
-  left of the item is the shape of it in use: whether promoting a workspace is
-  the thing people reach for, or whether they want to name an empty one and fill
-  it afterwards, which this refuses because an empty workspace is never adopted
-  and so has no name to move.
+  up. It is a key now, `Mod+Ctrl+Shift+Tab`, with `Mod+Ctrl+Tab` for the window:
+  a terminal was the only way to reach the one verb the band depends on, and a
+  CLI-only action is right for a TTY - the console you go to when the session is
+  broken - and not for a session that is running. Neither chord carries the desk
+  name, because a desk is called whatever you called it: the bind spawns the
+  verb bare and it opens the picker `Mod+Tab` opens, which offers the regulars
+  whether or not there is a band yet. What is left of the item is the shape of it
+  in use: whether promoting a workspace is the thing people reach for, or whether
+  they want to name an empty one and fill it afterwards, which this refuses
+  because an empty workspace is never adopted and so has no name to move - and
+  now also whether one surface with three verbs behind it reads as one thing or
+  as a key you have to check before you press ([`verify.md`](verify.md), a day of
+  work).
 - a single unreadable file in the desks directory taking every manifest with
   it: answered, by failing one file at a time. The loader returns what it read
   and what it could not, `zde doctor` names the files it could not, and the

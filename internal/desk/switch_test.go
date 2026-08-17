@@ -32,12 +32,12 @@ func TestSwitchPlanOnePerMonitor(t *testing.T) {
 // at the workspace that desk's band remembers there.
 func TestLandingStaysOnTheScreen(t *testing.T) {
 	m := twoMonitorDesk()
-	got, ok := Landing(m, "vshop", "DP-1", "code")
+	got, ok := Landing(m, "vshop", "DP-1", map[string]string{"DP-1": "code"})
 	if !ok || got.String() != "vshop.DP-1.code" {
 		t.Errorf("landing = %v %v, want the remembered workspace on DP-1", got, ok)
 	}
 	// Nothing remembered there: the first of the band on that screen.
-	got, ok = Landing(m, "vshop", "DP-1", "")
+	got, ok = Landing(m, "vshop", "DP-1", nil)
 	if !ok || got.String() != "vshop.DP-1.agent" {
 		t.Errorf("landing = %v %v, want the first of the band on DP-1", got, ok)
 	}
@@ -46,8 +46,26 @@ func TestLandingStaysOnTheScreen(t *testing.T) {
 // A desk that owns nothing on this screen has nowhere here to put it, and says
 // so rather than picking another monitor quietly.
 func TestLandingOnADeskNotOnThisScreen(t *testing.T) {
-	if got, ok := Landing(twoMonitorDesk(), "haven", "HDMI-A-1", ""); ok {
+	if got, ok := Landing(twoMonitorDesk(), "haven", "HDMI-A-1", nil); ok {
 		t.Errorf("landing = %v, want none: haven owns nothing on HDMI-A-1", got)
+	}
+}
+
+// The screen a workspace is parked on, not the monitor its name says. A desk
+// whose every workspace belongs to a monitor that is gone is still on the one
+// screen there is, and a window carried to it stays where the person is
+// looking - it used to be sent to another screen on a one-screen machine.
+func TestLandingOnADeskParkedHere(t *testing.T) {
+	m := Rebuild([]Workspace{
+		{Name: "film.HDMI-A-1.player", Output: "DP-1"},
+	}, []string{"DP-1"})
+	got, ok := Landing(m, "film", "DP-1", nil)
+	if !ok || got.String() != "film.HDMI-A-1.player" {
+		t.Errorf("landing = %v %v, want the parked workspace on the screen it is on", got, ok)
+	}
+	// And nothing lands on the monitor it merely used to be on.
+	if got, ok := Landing(m, "film", "HDMI-A-1", nil); ok {
+		t.Errorf("landing = %v, want none: nothing is on HDMI-A-1, it is not a screen", got)
 	}
 }
 
@@ -74,20 +92,26 @@ func TestSwitchPlanIgnoresStaleMemory(t *testing.T) {
 // bottom left `zde workspace next` with nowhere to go and the rest of the desk
 // above the screen. Data where the two answers differ, or the test proves
 // nothing: the strip reads zsh then agent, and the names sort the other way.
+//
+// Against the slot niri put at the top of the strip, and not against Band's own
+// first: the switch picks out of Band, so comparing the two would hold whatever
+// order either of them was in. The other half of the same story - the map
+// keeping that order for what a snapshot writes down - is TestWorkspacesFollowTheStrip.
 func TestSwitchPlanLandsOnTheTopOfTheBand(t *testing.T) {
 	m := Rebuild([]Workspace{
 		{ID: 1, Name: "vshop.DP-1.zsh", Output: "DP-1", Idx: 0},
 		{ID: 2, Name: "vshop.DP-1.agent", Output: "DP-1", Idx: 1},
 	}, []string{"DP-1"})
-	band := m.Band("vshop", "DP-1")
 	plan := SwitchPlan(m, "vshop", nil)
-	if len(plan) != 1 || plan[0] != band[0] {
-		t.Errorf("plan = %v, want the top of the band %v", names(plan), names(band))
+	if len(plan) != 1 || plan[0].Slot != "zsh" {
+		t.Errorf("plan = %v, want the top of the strip [vshop.DP-1.zsh]", names(plan))
 	}
 	// A window carried here comes down by the same rule, or it lands on a
-	// workspace the switch is not looking at.
-	if got, ok := Landing(m, "vshop", "DP-1", ""); !ok || got != band[0] {
-		t.Errorf("landing = %v %v, want the top of the band", got, ok)
+	// workspace the switch is not looking at. Nothing remembered here either,
+	// which is a nil slot map rather than an empty slot: Landing takes the
+	// whole of what a desk remembers now, keyed by the monitor in a name.
+	if got, ok := Landing(m, "vshop", "DP-1", nil); !ok || got.Slot != "zsh" {
+		t.Errorf("landing = %v %v, want the top of the strip", got, ok)
 	}
 }
 
@@ -105,11 +129,66 @@ func TestSwitchPlanEmptyDesk(t *testing.T) {
 func TestSwitchPlanIncludesDisplaced(t *testing.T) {
 	m := Rebuild([]Workspace{
 		{Name: "vshop.DP-1.code", Output: "eDP-1"}, // DP-1 is gone
-		{Name: "vshop.eDP-1.notes", Output: "eDP-1"},
 	}, []string{"eDP-1"})
 	got := names(SwitchPlan(m, "vshop", nil))
-	if !equal(got, []string{"vshop.DP-1.code", "vshop.eDP-1.notes"}) {
+	if !equal(got, []string{"vshop.DP-1.code"}) {
 		t.Errorf("plan = %v, want the displaced workspace focused too", got)
+	}
+}
+
+// One focus per screen, not per monitor named in a name. Two of a desk's
+// workspaces on one screen - which is what an unplug leaves behind - used to be
+// two focus calls, and the second undid the first: the screen ended on whatever
+// the plan listed last, every time.
+func TestSwitchPlanFocusesEachScreenOnce(t *testing.T) {
+	m := Rebuild([]Workspace{
+		{Name: "vshop.DP-1.code", Output: "eDP-1", Idx: 0}, // DP-1 is gone
+		{Name: "vshop.eDP-1.notes", Output: "eDP-1", Idx: 1},
+	}, []string{"eDP-1"})
+	got := names(SwitchPlan(m, "vshop", nil))
+	if !equal(got, []string{"vshop.DP-1.code"}) {
+		t.Errorf("plan = %v, want one workspace for the one screen", got)
+	}
+}
+
+// The screen's own workspace wins over one parked on it, when both are the
+// remembered one for their own monitor. The remembered slot is a fact about a
+// desk and a monitor, not about a screen, so two of them can point at one
+// screen at once.
+func TestSwitchPlanPrefersTheScreensOwn(t *testing.T) {
+	m := Rebuild([]Workspace{
+		{Name: "vshop.DP-1.code", Output: "eDP-1", Idx: 0}, // DP-1 is gone
+		{Name: "vshop.eDP-1.notes", Output: "eDP-1", Idx: 1},
+	}, []string{"eDP-1"})
+	got := names(SwitchPlan(m, "vshop", map[string]string{"DP-1": "code", "eDP-1": "notes"}))
+	if !equal(got, []string{"vshop.eDP-1.notes"}) {
+		t.Errorf("plan = %v, want the screen's own remembered workspace", got)
+	}
+}
+
+// A desk parked entirely on one screen still restores what it remembers there,
+// even though the slot is remembered under a monitor that is not the screen.
+func TestSwitchPlanRestoresAParkedWorkspace(t *testing.T) {
+	m := Rebuild([]Workspace{
+		{Name: "vshop.DP-1.code", Output: "eDP-1", Idx: 0},
+		{Name: "vshop.DP-1.agent", Output: "eDP-1", Idx: 1},
+	}, []string{"eDP-1"})
+	got := names(SwitchPlan(m, "vshop", map[string]string{"DP-1": "agent"}))
+	if !equal(got, []string{"vshop.DP-1.agent"}) {
+		t.Errorf("plan = %v, want the remembered workspace even though it is parked", got)
+	}
+}
+
+// The band's order is niri's strip order, so the switch lands where the strip
+// starts and a scroll from there walks the rest. Names sort the other way here
+// on purpose.
+func TestSwitchPlanLandsOnTheTopOfTheStrip(t *testing.T) {
+	m := Rebuild([]Workspace{
+		{Name: "vshop.DP-1.zsh", Output: "DP-1", Idx: 0},
+		{Name: "vshop.DP-1.agent", Output: "DP-1", Idx: 1},
+	}, []string{"DP-1"})
+	if got := names(SwitchPlan(m, "vshop", nil)); !equal(got, []string{"vshop.DP-1.zsh"}) {
+		t.Errorf("plan = %v, want the top of the strip", got)
 	}
 }
 
