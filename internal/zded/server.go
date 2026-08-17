@@ -1847,7 +1847,14 @@ func (s *Server) Arrived(n attn.Notification) (uint64, error) {
 	}
 	on := s.whereWeAre()
 	rec := attn.Record{
-		From:    n.From,
+		From: n.From,
+		// Carried, never worked out from the name above. What arrived on the bus
+		// cannot set this - there is no argument to Notify it could come from -
+		// and what zde sent itself always does (internal/attn, Local). It is the
+		// whole of what tells a person which of the two is in front of them, so
+		// re-deriving it here from a string would put a lookalike back in the
+		// desktop's chair (internal/attn, Notification.Self).
+		Self:    n.Self,
 		Text:    n.Text,
 		Body:    n.Body,
 		Urgent:  n.Urgent,
@@ -1898,6 +1905,10 @@ func (s *Server) Arrived(n attn.Notification) (uint64, error) {
 			Desk:   rec.Desk,
 			From:   rec.From,
 			Urgent: rec.Urgent,
+			// And the badge with the name, or `zde queue` would be the one
+			// surface left where the desktop's own row and an app drawing itself
+			// like the desktop read the same (internal/journal, Item.Self).
+			Self: rec.Self,
 		})
 		switch {
 		case err == nil:

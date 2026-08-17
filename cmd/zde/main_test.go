@@ -140,6 +140,15 @@ func TestAPasswordIsNeverACommandLineArgument(t *testing.T) {
 // the screen: what is on the screen is in the scrollback, in tmux's buffer,
 // and in whatever is recording the terminal. If this regresses, the one
 // command whose job is to handle a secret carefully is the one printing it.
+//
+// Both streams are caught, and stdout is the one that matters more. It was not
+// watched here at first, on the reasoning that the prompt goes to stderr - but
+// what is under test is that the secret reaches no stream at all, and a stdout
+// nobody was looking at is where an echo would most plausibly land: `zde net
+// connect vshop > log` is a person redirecting the answer to a file, and a
+// password printed there is a password on the disk. It is also where every
+// other command in this binary writes, so a stray fmt.Println is the ordinary
+// mistake rather than an exotic one.
 func TestASecretIsNotPrintedBackByTheThingThatReadsIt(t *testing.T) {
 	const secret = "correct-horse"
 
@@ -157,11 +166,15 @@ func TestASecretIsNotPrintedBackByTheThingThatReadsIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	answered, err := os.CreateTemp(t.TempDir(), "stdout")
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	oldIn, oldErr := os.Stdin, os.Stderr
-	os.Stdin, os.Stderr = in, said
+	oldIn, oldErr, oldOut := os.Stdin, os.Stderr, os.Stdout
+	os.Stdin, os.Stderr, os.Stdout = in, said, answered
 	got, readErr := readSecret("password for vshop: ")
-	os.Stdin, os.Stderr = oldIn, oldErr
+	os.Stdin, os.Stderr, os.Stdout = oldIn, oldErr, oldOut
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
@@ -177,6 +190,18 @@ func TestASecretIsNotPrintedBackByTheThingThatReadsIt(t *testing.T) {
 	}
 	if strings.Contains(string(written), secret) {
 		t.Errorf("the prompt printed the password back: %q", written)
+	}
+	// And nothing at all on stdout: the prompt belongs on stderr so that a
+	// redirected answer still asks, and the secret belongs on neither.
+	out, err := os.ReadFile(answered.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), secret) {
+		t.Errorf("the password was printed to stdout: %q", out)
+	}
+	if len(out) != 0 {
+		t.Errorf("reading a password wrote %q to stdout, which is where the command's answer goes", out)
 	}
 }
 
@@ -589,8 +614,16 @@ func TestTheQueuePrintsOneLineAnItemWhateverTheJournalHolds(t *testing.T) {
 	if lines := strings.Count(strings.TrimSuffix(said, "\n"), "\n"); lines != 0 {
 		t.Errorf("one item printed %d lines:\n%q", lines+1, said)
 	}
-	if fields := strings.Count(said, "\t"); fields != 4 {
-		t.Errorf("one item printed %d tabs, want the four between its five columns:\n%q", fields, said)
+	if fields := strings.Count(said, "\t"); fields != 5 {
+		t.Errorf("one item printed %d tabs, want the five between its six columns:\n%q", fields, said)
+	}
+	// The sixth column is the one that says the desktop wrote this, and the item
+	// above is a hand-written line claiming everything it can: a tab is what
+	// separates the columns, and nothing that arrives here can hold one. So the
+	// badge column reads as an app's row, which is what this row is.
+	if got := strings.SplitN(said, "\t", 4); len(got) > 2 && got[2] != "." {
+		t.Errorf("the badge column reads %q for a line the queue was handed, so a queue file could "+
+			"claim the desktop wrote it:\n%q", got[2], said)
 	}
 	if strings.Contains(said, "\x1b") {
 		t.Errorf("the queue printed %q, which still carries an escape", said)

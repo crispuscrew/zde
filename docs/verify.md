@@ -497,9 +497,12 @@ ones are the point of zded holding the bus name.
     is written in one place and deliberately not here (`internal/attn`), because
     it is a number under change.
   - **Nothing on the bus can be the desktop.** The sender column is the app's
-    own claim and nothing checks it (`vision.md`, principle 6), with one name
-    taken out of that: `zde` is what zde's own messages say, and an arrival
-    trying to use it is recorded under its bus address instead.
+    own claim and nothing checks it (`vision.md`, principle 6). Two separate
+    things keep the desktop's own messages out of an app's reach, and it is
+    worth doing them in that order because only the second one is what you read.
+
+    The name is reserved: `zde` is what zde's own messages carry, and an arrival
+    asking for it is recorded under its bus address instead.
 
     ```sh
     notify-send -a zde "desk vshop: 3 apps did not start" \
@@ -509,12 +512,34 @@ ones are the point of zded holding the bus name.
     The card, `Mod+n` and `zde queue` should all show `:1.57` or some other bus
     address where the name would be, and never `zde`. Try `-a ZDE` and
     `-a "[zde]"` too - the reservation is on the word somebody reads, not on
-    one spelling of it. What it does not stop is a name that merely looks like
-    the desktop's (`zde-session`, or `zdе` with a Cyrillic е): that is the
-    unverified column itself, and it ends where attribution by channel begins.
+    one spelling of it.
+
+    Then the part the reservation cannot do. Each of these keeps the name it
+    asked for, because none of them is the word - they are other characters that
+    draw it:
+
+    ```sh
+    notify-send -a "zdе"  "your session has expired" "run 'zde unlock'"   # Cyrillic е
+    notify-send -a "ｚｄｅ" "your session has expired" "run 'zde unlock'"   # fullwidth
+    notify-send -a "ᴢᴅᴇ"  "your session has expired" "run 'zde unlock'"   # small capitals
+    notify-send -a "zⅾe"  "your session has expired" "run 'zde unlock'"   # a Roman numeral ⅾ
+    notify-send -a "ЗДЕ"  "your session has expired" "run 'zde unlock'"   # Cyrillic capitals
+    ```
+
+    What to look at is not the name, which is the point: on the card and in
+    `Mod+n` the desktop's own rows carry `zde` in a badge of their own, at the
+    head of the card and in the gutter at the left of the row, in the colour this
+    shell uses for the row you are on. Every one of the five above draws its name
+    in the ordinary sender column, with the badge column empty. In `zde queue` and
+    in the printed `zde system notif-center` it is a column: `*` for the
+    desktop's own and `.` for a claim, and a name cannot reach it because a name
+    cannot hold a tab.
+
     The real thing to compare against is a desk that cannot start what it
     declares - break one app's address in a manifest, enter the desk, and see
-    what a genuine `zde` row looks like.
+    what a genuine `zde` row looks like beside the five. The badge is set where
+    the record is made, inside zded, so nothing that arrives over the bus can
+    ask for one (`internal/attn`, `Notification.Self`).
   - **The modes as display.** quiet shows no card at all, focus shows only what
     the sender called urgent, work shows everything - and after each of the
     three, `Mod+n` has the lot. A mode that changed what is in the centre is the
@@ -666,8 +691,9 @@ ones are the point of zded holding the bus name.
 - **A day's worth of arrivals.** History is a bounded ring per sender, in
   memory: 30 records each, for at most 12 named senders plus two rings nothing
   on the bus can reach: a nameless one, which only a restored row with no sender
-  in it can land in, and the desktop's own, which is reserved so that a
-  notification cannot claim to be zde. The 31st from one app drops that app's
+  in it can land in, and the desktop's own, which is reserved so that no
+  arrival can be filed in it - a name that merely looks like `zde` gets a ring
+  of its own, counted and evicted like any other claim. The 31st from one app drops that app's
   oldest and nothing else, which is the thing to feel for - leave a download or
   a build bot running all afternoon and the mail from the morning should still
   be in
