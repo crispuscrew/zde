@@ -1409,8 +1409,9 @@ What only a session settles:
 - **And says it to the end.** The caveat is the longest sentence in that report
   and the half it is about is at the end of it, so `zde doctor | grep idle` has
   to finish with `(docs/roadmap.md, the idle inhibitor; docs/verify.md, section
-  11)`. A line that stops earlier was cut, and a caveat cut off its own
-  all-clear is worse than no caveat: nothing about it looks wrong.
+  11)`. A line that stops earlier was cut, and what a cut caveat leaves behind
+  is an all-clear - which is worse than no caveat at all, because nothing about
+  it looks wrong.
 - **The bar is silent when it cannot ask.** Stop logind's answer (or run the bar
   against a zded with no system bus) and the word must disappear rather than
   stay on the last thing it knew. A stale `idle held` is merely noise; a stale

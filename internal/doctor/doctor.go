@@ -81,11 +81,11 @@ const (
 // is a dump rather than a complaint, and the front of a dump is the part that
 // names the file.
 //
-// It is not the only ceiling, and it is the one that keeps the others honest.
-// The state snapshot bounds the whole file at reportBytesMax and cuts what does
-// not fit (report.go), so an unbounded detail would not merely be long: it
-// would push the checks under it off the end of the file somebody carried away
-// from a machine that will not boot.
+// It is not the only ceiling and it is the one that keeps the other from being
+// spent on a single line. The state snapshot bounds the whole file at
+// reportBytesMax and cuts what does not fit (report.go), so an unbounded detail
+// would not merely be long: it would push the checks under it off the end of
+// the file somebody carried away from a machine that will not boot.
 const detailMax = 2000
 
 // String is the row as it is printed. Fixed columns rather than the tabs the
