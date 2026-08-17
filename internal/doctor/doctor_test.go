@@ -122,6 +122,154 @@ func TestALineIsLevelNameThenDetail(t *testing.T) {
 	}
 }
 
+// The longest line in this report is zde's own, and it is the one that cannot
+// be cut: the idle check says which half of the mechanism it could not see, and
+// that half is at the end of the sentence with the two documents that explain
+// it. Folded onto a queue row it stopped at "and e", so the one check whose
+// whole purpose is to refuse an all-clear printed one with its qualification
+// trailing off - and nothing about the line looked wrong.
+//
+// Every shape the check takes, because the caveat is on all four of them and
+// three of them are longer than the one a healthy machine prints.
+func TestTheIdleCaveatIsPrintedToItsLastWord(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		spoil func(*Session)
+	}{
+		{"logind has nothing holding it", func(*Session) {}},
+		{"nothing owns logind", func(s *Session) { s.Power.Absent = true }},
+		{"logind could not be asked", func(s *Session) { s.Power.Err = errors.New("no system bus") }},
+		{"something is holding it", func(s *Session) {
+			s.Power.Holds = []Hold{{Who: "steam", Why: "playing a game"}}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := healthy()
+			tc.spoil(&s)
+			said := false
+			for _, c := range named(Judge(s), "idle") {
+				line := c.String()
+				if strings.Contains(line, "more characters)") {
+					t.Errorf("an idle line was cut: %q", line)
+				}
+				if strings.Contains(line, unseen) {
+					said = true
+					// The last words of it, said again on their own: this is
+					// what a reader has to reach for the line to mean what it
+					// says, and the smoke test greps for exactly this
+					// (nix/tests/smoke.nix).
+					if !strings.Contains(line, "docs/verify.md, section 11)") {
+						t.Errorf("the caveat lost its docs pointer: %q", line)
+					}
+				}
+			}
+			if !said {
+				t.Errorf("no idle line carries the whole caveat:\n%s", Judge(s))
+			}
+		})
+	}
+}
+
+// detailMax's own arithmetic, held to what it was chosen against: the bound is
+// above the longest sentence this package writes, so that a cut is always
+// somebody else's text. It was 450 characters when the number was picked, and
+// a check that grew past two thousand would be back where this started, with
+// zde's own qualification taken off the end of zde's own sentence.
+func TestNothingZdeWritesInACheckReachesTheBound(t *testing.T) {
+	for _, s := range []Session{spoiled(), healthy()} {
+		for _, c := range Judge(s) {
+			if n := len([]rune(c.Detail)); n >= detailMax {
+				t.Errorf("the %s check writes %d characters, which is past detailMax: %s", c.Name, n, c.Detail)
+			}
+		}
+	}
+}
+
+// spoiled is a session with nothing right with it, so that every check says the
+// longest thing it has to say. Nothing here is another program's words: the
+// point is the length of zde's own sentences.
+func spoiled() Session {
+	s := healthy()
+	s.Status.Zinc, s.Status.Shell, s.Status.Notifications = false, false, false
+	s.Podman = Podman{Rootless: false}
+	s.Lock = Locker{Configured: true, Argv0: "/nix/store/abc-swaylock-1.8/bin/swaylock", Service: "swaylock"}
+	s.Power = Logind{Absent: true}
+	s.Desks.Private = 2
+	return s
+}
+
+// The bound did not go away with the cut, it stopped being silent. A detail is
+// mostly another program's words and nothing outside this repo agrees to be
+// short, so what is printed is bounded - and where it was cut it says so, which
+// is what a queue row's filter would not.
+func TestADetailPastTheBoundIsCutOutLoud(t *testing.T) {
+	line := Check{Fail, "manifests", strings.Repeat("é", detailMax*2)}.String()
+	if n := strings.Count(line, "é"); n != detailMax {
+		t.Errorf("%d characters of the detail were printed, want %d", n, detailMax)
+	}
+	if !strings.Contains(line, "more characters)") {
+		t.Errorf("a detail was cut and does not say so: %q", line)
+	}
+	// Characters and not bytes, the way every bound in this tree counts: a
+	// manifest error in Cyrillic is not half an error.
+	if n := len([]rune(line)); n > detailAt+detailMax+64 {
+		t.Errorf("the line is %d characters, which is past its own bound", n)
+	}
+}
+
+// Almost nothing in this column was written by zde. zcr's refusal is carried
+// whole, a YAML parser answers a hand-edited manifest by quoting the file back,
+// and this report is read in a terminal and pasted into bug threads, where ESC
+// is not a character but the start of an instruction.
+//
+// A newline is now kept rather than folded away, so the second half of this is
+// where it lands. A check's level is in column one; a continuation is twenty
+// characters in, under the detail it continues. Nothing a stranger sends can
+// reach column one, so nothing a stranger sends can be a check nobody made.
+func TestAForeignDetailCannotDriveTheTerminalOrWriteACheckOfItsOwn(t *testing.T) {
+	got := Check{Warn, "desk apps", "zcr: no app \x1b[2Jdefined\x1b]0;pwned\x07\r\n" +
+		"ok    forged        every check on this machine passed\n\ttry: zc list\x00"}.String()
+
+	if strings.ContainsAny(got, "\x1b\r\x00\a") {
+		t.Errorf("something a terminal acts on reached the report: %q", got)
+	}
+	lines := strings.Split(got, "\n")
+	if len(lines) == 1 {
+		t.Fatalf("the detail was folded onto one line: %q", got)
+	}
+	for _, line := range lines[1:] {
+		if !strings.HasPrefix(line, strings.Repeat(" ", detailAt)) {
+			t.Errorf("a continuation is not under the detail column: %q", line)
+		}
+		for _, level := range []Level{OK, Warn, Fail} {
+			if strings.HasPrefix(line, string(level)) {
+				t.Errorf("a stranger wrote a check result: %q", line)
+			}
+		}
+	}
+	// And what somebody would act on is still all there, which is the point of
+	// keeping the shape rather than cutting at the first line.
+	for _, want := range []string{"no app", "defined", "try: zc list"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the filter dropped %q, which is what the line was for: %q", want, got)
+		}
+	}
+}
+
+// A detail that filtered away to nothing is shown as its bytes rather than left
+// blank, for the reason attn.Block shows one: a check that says something is
+// wrong and then says nothing about what is worse than a check that shows a
+// strange string.
+func TestADetailWithNothingPrintableInItIsStillSaid(t *testing.T) {
+	got := Check{Fail, "manifests", "\x00\x1b\a"}.String()
+	if strings.ContainsAny(got, "\x00\x1b\a") {
+		t.Errorf("the bytes were printed rather than escaped: %q", got)
+	}
+	if !strings.Contains(got, `\x1b`) {
+		t.Errorf("a check failed and its line says nothing: %q", got)
+	}
+}
+
 // Warnings must not reach the exit status. Every machine has some today -
 // there is no layer 2 to install zcr from - and a command that always exits
 // non-zero is one nobody reads the output of.

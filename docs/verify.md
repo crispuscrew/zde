@@ -662,16 +662,18 @@ ones are the point of zded holding the bus name.
     zde doctor | cat -A
     ```
 
-    No `^[`, no `^G` and no `^M` in either, and every line of the report still
-    starts with `ok`, `warn` or `fail` - a report is one line per check, and a
-    line that is not one is a check nobody made. What must still be there is
-    what somebody would act on: the app zcr would not have, and in `zde desk
-    apps` the advice it gave and the `^I` it indented that advice with. That one
-    keeps zcr's whole refusal, several lines if it sent several, with everything
-    after the first indented two spaces - a parse error with a caret under the
-    column that is wrong is the shape of the fix, and only the first line of an
-    error starts where zde's own words do. The report takes a program's first
-    line of complaint and no more, which is its own rule and not this one.
+    No `^[`, no `^G` and no `^M` in either, and every line of the report either
+    starts with `ok`, `warn` or `fail` or is a line of spaces down to the detail
+    column - a check starts in column one, the rest of a check is under the
+    detail it continues, and a line that is neither is a check nobody made. What
+    must still be there is what somebody would act on: the app zcr would not
+    have, and in `zde desk apps` the advice it gave and the `^I` it indented that
+    advice with. That one keeps zcr's whole refusal, several lines if it sent
+    several, with everything after the first indented two spaces - a parse error
+    with a caret under the column that is wrong is the shape of the fix, and only
+    the first line of an error starts where zde's own words do. The report takes
+    a program's first line of complaint and no more, which is its own rule about
+    what a check is worth saying and not a bound on the line.
 - **Who can read what you were sent.** One line: `ls -l
   ~/.local/state/zde/journal.jsonl` says `-rw-------`. It has to say that on a
   machine that has been running an earlier zde too, because the mode is set on
@@ -1404,6 +1406,11 @@ What only a session settles:
   --mode=block sleep 60` is how to make one to look at without waiting for a
   real app; the bar should read `idle held` within five seconds and go empty
   again within five of the sleep ending.
+- **And says it to the end.** The caveat is the longest sentence in that report
+  and the half it is about is at the end of it, so `zde doctor | grep idle` has
+  to finish with `(docs/roadmap.md, the idle inhibitor; docs/verify.md, section
+  11)`. A line that stops earlier was cut, and a caveat cut off its own
+  all-clear is worse than no caveat: nothing about it looks wrong.
 - **The bar is silent when it cannot ask.** Stop logind's answer (or run the bar
   against a zded with no system bus) and the word must disappear rather than
   stay on the last thing it knew. A stale `idle held` is merely noise; a stale

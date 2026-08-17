@@ -1019,14 +1019,15 @@ func TestTheErrorThatEndsTheCommandKeepsItsShapeAndPrintsNoInstructions(t *testi
 // `zde doctor` is the other thing this command prints that it mostly did not
 // write. Nearly every detail in that report came from somewhere else -
 // systemctl's and podman's first line of complaint, zcr's refusal of an app
-// name, a YAML parser about a manifest, logind's answer off the bus - and the
-// report is one line per check with the level in column one, which is the
-// column an eye runs down looking for the word "fail".
+// name, a YAML parser about a manifest, logind's answer off the bus - and a
+// check's level is in column one, which is the column an eye runs down looking
+// for the word "fail".
 //
-// So it takes the row filter and the errors above take the other one, and the
-// difference is the shape each is: a detail with a newline in it is a line
-// nobody checked, and this report is pasted into bug reports by people who did
-// not run it (internal/doctor, Check.String).
+// A detail keeps its shape now rather than being folded onto one line, so the
+// assertion is where a line is and no longer how many there are: a check starts
+// in column one and the rest of a check is indented under the detail column, so
+// a stranger's newline buys an indented line and never a check nobody made
+// (internal/doctor, Check.String).
 func TestNoLineOfTheDoctorReportIsOneNobodyChecked(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "zde", "desks"), 0o700); err != nil {
@@ -1064,10 +1065,27 @@ func TestNoLineOfTheDoctorReportIsOneNobodyChecked(t *testing.T) {
 			t.Errorf("%s survived into the report:\n%q", bad.name, out)
 		}
 	}
+	forged := false
 	for _, line := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
-		if level, _, _ := strings.Cut(line, " "); level != "ok" && level != "warn" && level != "fail" {
-			t.Errorf("a line of the report is not a check: %q", line)
+		if level, _, _ := strings.Cut(line, " "); level == "ok" || level == "warn" || level == "fail" {
+			continue
 		}
+		// Not a check, so it has to be the rest of one. The whole of the
+		// defence is that it starts with a space: a line that does not is in
+		// the column a level goes in, and this app name was written to land
+		// there.
+		if !strings.HasPrefix(line, " ") {
+			t.Errorf("a line of the report is neither a check nor the rest of one: %q", line)
+		}
+		if strings.Contains(line, "every desk is fine") {
+			forged = true
+		}
+	}
+	// And the line that tried it is in the report rather than dropped, which is
+	// what makes the indent the answer rather than the cut: somebody looking at
+	// this machine can see the name that did it.
+	if !forged {
+		t.Error("the app name that tried to write a check is not in the report at all")
 	}
 	// And the check is still the one that was made: which desk, which name, and
 	// what this machine has instead.
