@@ -1771,9 +1771,13 @@ func (s *Server) carry(m *desk.Map, target string) (string, error) {
 		return "", err
 	}
 	slots := s.landingSlots(target)
-	landing, onThisScreen := desk.Landing(m, target, monitor, slots[monitor])
+	// The whole slot map, not the one entry for this screen: the slots are
+	// keyed by the monitor in a workspace's name, and a workspace parked here
+	// by an unplug carries a different monitor in its name than the screen it
+	// is sitting on. Landing matches them up.
+	landing, onThisScreen := desk.Landing(m, target, monitor, slots)
 	if !onThisScreen {
-		// The desk owns nothing on this screen, so this is the one case where
+		// The desk has nothing on this screen, so this is the one case where
 		// a window does change monitors. It goes where a switch would enter
 		// the desk, by the same slots, because landing anywhere else would put
 		// it off the screen the switch is about to show.

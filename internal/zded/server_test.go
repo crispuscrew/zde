@@ -583,6 +583,100 @@ func TestDeskSwitch(t *testing.T) {
 	}
 }
 
+// One focus per screen, not per monitor a name mentions. With HDMI-A-1
+// unplugged, both of vshop's workspaces are sitting on DP-1: focusing each of
+// them in turn left the screen showing whichever came last, so the workspace
+// the journal remembered was scrolled off by the switch that restored it.
+func TestDeskSwitchWithAMonitorGoneFocusesTheScreenOnce(t *testing.T) {
+	jrn, err := journal.Open(filepath.Join(t.TempDir(), "j.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jrn.Close()
+	code, err := desk.ParseName("vshop.DP-1.code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := jrn.SetActive(code); err != nil {
+		t.Fatal(err)
+	}
+
+	niri := &fakeCompositor{
+		m: desk.Rebuild([]desk.Workspace{
+			{ID: 1, Name: "vshop.DP-1.code", Output: "DP-1", Idx: 0},
+			{ID: 2, Name: "vshop.HDMI-A-1.aux", Output: "DP-1", Idx: 1}, // parked here
+			{ID: 3, Name: "haven.DP-1.db", Output: "DP-1", Idx: 2},
+		}, []string{"DP-1"}),
+		focused: "haven.DP-1.db",
+		output:  "DP-1",
+	}
+	s := New("test", jrn, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	var plan []string
+	if err := c.Call("desk.switch", &plan, "vshop"); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(niri.focusCalls(), []string{"vshop.DP-1.code"}) {
+		t.Errorf("focused %v, want the one screen brought up once, on what it remembered", niri.focusCalls())
+	}
+	// And nothing was written down about the monitor that is not there: what
+	// vshop had on HDMI-A-1 is still what it will find when it comes back.
+	if got := jrn.State().LastActive["vshop"]["HDMI-A-1"]; got != "" {
+		t.Errorf("LastActive[vshop][HDMI-A-1] = %q, want nothing recorded for a monitor nothing was focused on", got)
+	}
+}
+
+// A window carried to a desk whose workspaces are all parked on this screen
+// stays on this screen. Asking whether the desk owns a workspace whose name
+// says this monitor answered no, and the window went to another screen - on a
+// machine that, with the monitor gone, has one.
+// It lands on what film was left on, too. The journal keys that memory on the
+// monitor in the workspace's name - HDMI-A-1, which is not a screen right now -
+// so looking the slot up by the screen the window is on finds nothing and drops
+// the window at the top of the strip instead.
+func TestMoveWindowToADeskParkedOnThisScreen(t *testing.T) {
+	jrn, err := journal.Open(filepath.Join(t.TempDir(), "j.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jrn.Close()
+	notes, err := desk.ParseName("film.HDMI-A-1.notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := jrn.SetActive(notes); err != nil {
+		t.Fatal(err)
+	}
+
+	niri := &fakeCompositor{
+		m: desk.Rebuild([]desk.Workspace{
+			{ID: 1, Name: "haven.DP-1.db", Output: "DP-1", Idx: 0},
+			{ID: 2, Name: "film.HDMI-A-1.player", Output: "DP-1", Idx: 1}, // parked here
+			{ID: 3, Name: "film.HDMI-A-1.notes", Output: "DP-1", Idx: 2},  // and so is this
+		}, []string{"DP-1"}),
+		focused:       "haven.DP-1.db",
+		output:        "DP-1",
+		focusedWindow: 7,
+	}
+	s := New("test", jrn, niri, nil)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.Call("desk.move-window-to", nil, "film"); err != nil {
+		t.Fatal(err)
+	}
+	if got := niri.carryCalls(); !slices.Equal(got, []string{"film.HDMI-A-1.notes"}) {
+		t.Errorf("carried the window to %v, want the workspace film was left on, on this screen", got)
+	}
+}
+
 // desk.last returns to where the previous switch came from.
 func TestDeskLast(t *testing.T) {
 	jrn, err := journal.Open(filepath.Join(t.TempDir(), "j.jsonl"))
@@ -2032,6 +2126,47 @@ func TestDeskSnapshot(t *testing.T) {
 	}
 	if len(d.Workspaces()) != 2 {
 		t.Errorf("snapshot recorded %v", d.Workspaces())
+	}
+}
+
+// A snapshot taken with the lid down writes the laptop panel, because the map
+// still says so. It is the same fix: nothing renamed the workspace off eDP-1,
+// so the name FromMap reads is still the truth, and the manifest gets home
+// rather than whichever screen survived the lid closing. There is no separate
+// guard here and none is needed - the snapshot writes down the map, and the
+// map is right.
+func TestDeskSnapshotWithTheLidDown(t *testing.T) {
+	dir := manifest.Dir(t.TempDir())
+	niri := &fakeCompositor{
+		m: desk.Rebuild([]desk.Workspace{
+			{ID: 1, Name: "vshop.eDP-1.code", Output: "DP-1"}, // parked by the lid closing
+			{ID: 2, Name: "vshop.DP-1.aux", Output: "DP-1"},
+		}, []string{"DP-1"}), // eDP-1 is a connector, not a screen
+		focused: "vshop.eDP-1.code",
+	}
+	s := New("test", nil, niri, dir)
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	if err := c.Call("desk.snapshot", nil); err != nil {
+		t.Fatal(err)
+	}
+	all, problems, err := dir.All()
+	if err != nil || len(problems) != 0 {
+		t.Fatalf("snapshot wrote something that does not load: %v %v", err, problems)
+	}
+	d, ok := all["vshop"]
+	if !ok {
+		t.Fatal("snapshot wrote nothing that loads as vshop")
+	}
+	if got := d.Monitors["eDP-1"].Workspaces; len(got) != 1 || got[0] != "code" {
+		t.Errorf("eDP-1 got %v, want the workspace that belongs to the laptop panel written under it", got)
+	}
+	if got := d.Monitors["DP-1"].Workspaces; len(got) != 1 || got[0] != "aux" {
+		t.Errorf("DP-1 got %v, want only the workspace that is actually its own", got)
 	}
 }
 
