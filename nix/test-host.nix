@@ -24,6 +24,24 @@
     }
   ];
 
+  # A host that writes its own niri, because that is the half of local.kdl
+  # nothing used to parse (nix/niri-local.nix). Both halves are what the docs
+  # actually hand out: the output block is the one templates/host/flake.nix
+  # ships commented out, and the xkb pair is what docs/install.md section 2
+  # gives a laptop on its first evening. So what CI runs niri's parser over is
+  # what a person is being told to write, rather than a sample nobody copies.
+  home-manager.users.zde.zde.niri = {
+    xkb = {
+      layout = "us,ru";
+      options = "grp:caps_toggle";
+    };
+    extraConfig = ''
+      output "eDP-1" {
+          scale 2
+      }
+    '';
+  };
+
   boot.loader.grub.devices = [ "/dev/sda" ];
   fileSystems."/" = {
     device = "/dev/sda1";

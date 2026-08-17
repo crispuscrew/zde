@@ -47,6 +47,13 @@ PanelWindow {
     // is how a test driving this over IPC can tell a window picker that opened
     // when Mod+Tab was pressed from the desk picker that should have.
     property string kind: ""
+    // What choosing a row will do, in words, where it is not "go there". The
+    // desks look identical whether Enter switches to one or sends the focused
+    // window to it, so the verb has to be on the surface: a picker that says
+    // nothing is one where the digit you press means whatever the last key
+    // pressed decided. Empty for the switcher and the window picker, which are
+    // the two that do what the rows already look like they do.
+    property string caption: ""
     // The key of the row you are already on, where there is one.
     property string on: ""
     property int index: 0
@@ -68,12 +75,13 @@ PanelWindow {
     // grabs focus can do it.
     signal action(string name)
 
-    function show(kind, newRows, here, token) {
+    function show(kind, newRows, here, token, caption) {
         const wasUp = picker.visible;
         picker.kind = kind;
         picker.rows = newRows;
         picker.on = here ?? "";
         picker.token = token ?? "";
+        picker.caption = caption ?? "";
         // Start on the row you are already on, so Enter alone is a no-op rather
         // than a surprise, and one press of Down is the next one. A list with no
         // such row - the windows, where the one you are looking at is not a
@@ -222,7 +230,12 @@ PanelWindow {
             // "pick" rather than "desk": one surface lists the desks on Mod+Tab
             // and the open windows on Mod+w, and a hint that names one of them
             // is wrong half the time it is read.
-            text: "1-9 pick    j k move    l lock    esc close"
+            //
+            // The caption goes on this line rather than above the rows: the
+            // panel's height is the rows plus this, so a header would have to
+            // be added to that sum in a second place to stop it drawing over
+            // the last row.
+            text: (picker.caption === "" ? "" : picker.caption + "    ") + "1-9 pick    j k move    l lock    esc close"
             color: "#7a7f8a"
             font.pixelSize: 11
             font.family: "monospace"

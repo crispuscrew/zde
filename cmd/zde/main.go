@@ -17,7 +17,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	"unicode"
 
 	"golang.org/x/sys/unix"
 
@@ -40,10 +39,30 @@ func main() {
 		return
 	}
 	if err := run(args); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		complain(err)
 		os.Exit(1)
 	}
 }
+
+// complain is every error this command puts in front of a person: the one above
+// that ends the process, and the one place that prints an error and carries on
+// (deskApps).
+//
+// One door rather than a filter at each of the few dozen places that return an
+// error, because of where the words come from. Very little of an error here is
+// zde's own: `zcr` prints its refusal and it is carried whole (internal/zinc,
+// Run); logind's message comes back through the bus; niri's comes back through
+// the daemon, which hands its own errors over the socket as text and they are
+// printed exactly as they arrived (internal/zded, Call); a manifest somebody
+// hand-edited is answered by a YAML parser in several lines. Filtering at each
+// call site is filtering the error paths that exist today, and the next one
+// added is the one that forgets.
+//
+// What it must not cost is legibility. An error is read in order to fix
+// something, so the path, the quoted name and the parser's caret line all have
+// to survive - which is why this is Block and not the one-line filter a queue
+// row takes (internal/attn).
+func complain(err error) { fmt.Fprintln(os.Stderr, attn.Block(err.Error())) }
 
 func run(args []string) error {
 	switch {
@@ -136,8 +155,17 @@ func run(args []string) error {
 		return switchDesk(args[2])
 	case len(args) == 3 && args[0] == "desk" && args[1] == "move-window":
 		return focusDesk("desk.move-window", args[2])
+	// Two arities each, and the short one is what the chord spawns: the desk to
+	// send to is a name only the person standing there knows, so the key asks
+	// for it the way Mod+Tab asks - the picker - and hands the row back through
+	// the same socket. With no shell to draw one, this prints the desks and the
+	// second form takes the name off that list.
+	case len(args) == 2 && args[0] == "desk" && args[1] == "move-window-to":
+		return pickDesk("desk.move-window-to")
 	case len(args) == 3 && args[0] == "desk" && args[1] == "move-window-to":
 		return focusDesk("desk.move-window-to", args[2])
+	case len(args) == 2 && args[0] == "desk" && args[1] == "move-workspace-to":
+		return pickDesk("desk.move-workspace-to")
 	case len(args) == 3 && args[0] == "desk" && args[1] == "move-workspace-to":
 		return focusDesk("desk.move-workspace-to", args[2])
 	case len(args) == 2 && args[0] == "workspace" && (args[1] == "next" || args[1] == "prev"):
@@ -187,6 +215,8 @@ func run(args []string) error {
 		return status()
 	case "doctor":
 		return runDoctor()
+	case "report":
+		return runReport()
 	case "desk list":
 		return deskList()
 	default:
@@ -301,7 +331,7 @@ func deskApps(args []string) error {
 	// to what the desk declares, and repeating one missing binary per app would
 	// bury them.
 	if unanswered != nil {
-		fmt.Fprintln(os.Stderr, unanswered)
+		complain(unanswered)
 	}
 	return nil
 }
@@ -332,6 +362,26 @@ func status() error {
 		shell = fmt.Sprintf("%s (%d listening)", shell, st.Listeners)
 	}
 	fmt.Printf("shell      %s\n", shell)
+	// And how many connections there are at all, which is the question the
+	// listener count only half answers: a flood that opens sockets and never
+	// subscribes leaves "shell no, 0 listening" on a daemon that is one second
+	// from being killed by its own descriptor limit.
+	//
+	// Always printed, and with the ceiling beside it, because this is a number
+	// nobody can act on alone. Five is a shell and this call; 256 of 256 is
+	// somebody else's program, and the difference is only visible if the second
+	// number is on the line. Read from the constant rather than sent down the
+	// wire: it is one bound, in one place, and the two binaries are built
+	// together (internal/zded, ConnectionsMax).
+	conns := fmt.Sprintf("%d of %d", st.Connections, zded.ConnectionsMax)
+	if st.Dropped > 0 {
+		// Once it has happened at all, because it is the only thing left to
+		// find after a flood has stopped: the count goes back to a session's
+		// size and nothing else says the session's own connections were being
+		// closed under it.
+		conns = fmt.Sprintf("%s, %d dropped to make room", conns, st.Dropped)
+	}
+	fmt.Printf("conns      %s\n", conns)
 	fmt.Printf("notify     %s\n", yesno(st.Notifications))
 	// Layer 2: whether the session can run a sandboxed app at all. It is the
 	// whole diagnosis for a desk whose apps do nothing, and it is a fact about
@@ -381,6 +431,63 @@ func runDoctor() error {
 	if n := report.Failed(); n > 0 {
 		return fmt.Errorf("zde doctor: %d of %d checks failed", n, len(report))
 	}
+	return nil
+}
+
+// version is this build of zde, set at link time by the derivation that builds
+// it (nix/zde.nix passes -X main.version to every subPackage). A `go build`
+// with no ldflags says "dev" rather than claiming a release it is not, which is
+// the same bargain cmd/zded makes.
+var version = "dev"
+
+// runReport writes the state snapshot: what this machine looked like, for
+// somebody who will read it off a disk that will not boot (internal/doctor,
+// report.go).
+//
+// A verb of its own and not a mode of `zde doctor`, and the three differences
+// are the argument. What doctor produces is a screen of verdicts for somebody
+// sitting in front of a working session; this produces a file of readings for
+// somebody with no session at all, days later, on another machine. Doctor's
+// exit status is a verdict - non-zero when a check failed - and this one's must
+// not be, because the unit that writes it at login would then go `failed` on
+// exactly the machines it exists for, putting a red herring in `systemctl
+// --failed` on the morning somebody is already debugging a black screen. And a
+// flag on doctor would have to mean "print differently and also write a file
+// and also stop meaning what the exit status meant", which is two commands
+// wearing one name.
+//
+// What it does not do is gather twice: the whole of doctor is a section of the
+// file, judged off one Gather (internal/doctor, WriteReport).
+//
+// It prints the report when it could not write one, which is the shape every
+// surface-backed verb in this file already has - `zde desk switcher` prints the
+// list when no shell is up. A machine with nowhere to write is a machine where
+// somebody typed this into a terminal, and the answer is still the answer.
+//
+// Printed unfiltered, and that is a statement about the report rather than an
+// omission here. This is the ordinary path and not the rare one - every machine
+// that has not turned zde.debug on ends up here - so the file's own contents
+// reach a terminal on the ordinary run, and each of its readings is filtered
+// where it is written down instead (internal/doctor, reading). A filter over
+// the whole text at this point could only be attn.Text, which would leave the
+// newline that forges a heading exactly where it was.
+//
+// The error is a different thing and takes the filter an error takes: it is one
+// message printed on its own in column one, and what is in it came from the
+// filesystem.
+func runReport() error {
+	path, text, err := doctor.WriteReport(doctor.Self{Zde: version})
+	if err == nil {
+		fmt.Println("wrote", path)
+		return nil
+	}
+	fmt.Print(text)
+	// Not an error the process exits on. There is nothing wrong with the report
+	// - it is above - and a non-zero exit here would make the one command that
+	// still works on a broken machine look like another thing that is broken.
+	fmt.Fprintf(os.Stderr, "\nno file written: %s\n"+
+		"%s belongs to root and is made by layer 0 when zde.debug is on (nix/system.nix).\n",
+		attn.Block(err.Error()), doctor.ReportDir)
 	return nil
 }
 
@@ -535,7 +642,13 @@ func askRun(c *zded.Client, tier, question string) error {
 		// Filtered first and then asked about, so that a piece which was
 		// nothing but control characters is a piece that printed nothing - and
 		// does not leave this thinking it ended a line it never wrote.
-		if said := plain(ev.Text); said != "" {
+		//
+		// Text and not Block: this arrives in pieces, and a piece is not a whole
+		// message to indent the lines of. zded hands the bytes over as the tier
+		// produced them and counts them against its own cap while it does
+		// (internal/zded, pump), so the filtering is here, where there is no
+		// bookkeeping to disturb and the reader is known to be a terminal.
+		if said := attn.Text(ev.Text); said != "" {
 			fmt.Print(said)
 			ended = strings.HasSuffix(said, "\n")
 		}
@@ -637,13 +750,14 @@ func notifCenter() error {
 		fmt.Println("nothing has arrived yet")
 		return nil
 	}
-	// id, urgency, when, sender, what became of it, text - tab separated, text
-	// last because it is the only field that can be long. The weekday rather
-	// than a date: the history is bounded at a day or two of use, so a weekday
-	// tells a person which one it was without a column nobody reads.
+	// id, urgency, who it was, when, sender, what became of it, text - tab
+	// separated, text last because it is the only field that can be long. The
+	// weekday rather than a date: the history is bounded at a day or two of use,
+	// so a weekday tells a person which one it was without a column nobody reads.
 	for _, r := range center.Notifications {
-		fmt.Printf("%d\t%s\t%s\t%s\t%s\t%s\n",
-			r.ID, urgentMark(r.Urgent), r.At.Format("Mon 15:04"), dash(r.From), became(r), r.Text)
+		fmt.Printf("%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			r.ID, urgentMark(r.Urgent), selfMark(r.Self), r.At.Format("Mon 15:04"),
+			dash(r.From), became(r), r.Text)
 	}
 	return nil
 }
@@ -675,10 +789,10 @@ func queueList() error {
 	if err := c.Call("queue.list", &q); err != nil {
 		return err
 	}
-	// id, urgency, desk, sender, text - tab separated, text last because it is
-	// the only field that can be long, so a reader splitting on tabs has every
-	// column it wants before it. A dash is "nothing here", which for the
-	// sender means a person typed it.
+	// id, urgency, who it was, desk, sender, text - tab separated, text last
+	// because it is the only field that can be long, so a reader splitting on
+	// tabs has every column it wants before it. A dash is "nothing here", which
+	// for the sender means a person typed it.
 	//
 	// Filtered on the way out as well as on the way in, which is the one place
 	// in this command where that is worth the line. `zde queue add` refuses a
@@ -696,8 +810,9 @@ func queueList() error {
 	// about: every reader of the queue is line-based and column-based, and this
 	// is the reader that is a terminal.
 	for _, it := range q {
-		fmt.Printf("%d\t%s\t%s\t%s\t%s\n",
-			it.ID, urgentMark(it.Urgent), dash(attn.Line(it.Desk)), dash(attn.Line(it.From)), attn.Line(it.Text))
+		fmt.Printf("%d\t%s\t%s\t%s\t%s\t%s\n",
+			it.ID, urgentMark(it.Urgent), selfMark(it.Self), dash(attn.Line(it.Desk)),
+			dash(attn.Line(it.From)), attn.Line(it.Text))
 	}
 	return nil
 }
@@ -708,6 +823,27 @@ func queueList() error {
 func urgentMark(urgent bool) string {
 	if urgent {
 		return "!"
+	}
+	return "."
+}
+
+// selfMark is the column that says whether the desktop wrote this or an app
+// did: "*" for zde's own, "." for a claim (internal/attn, Record.Self).
+//
+// A column of its own rather than a mark inside the sender column, and that is
+// the whole of why it is here. The sender is a string an app chooses, so
+// anything drawn inside it can be sent by the thing it is meant to distinguish:
+// an app that calls itself "* zde" would wear the mark. It cannot reach this
+// column, because these listings are tab separated and a sender name cannot
+// hold a tab - everything printed here has been through attn.Line or the
+// arrival path's own cleaning, and both fold a tab into a space.
+//
+// One character and in the shape urgentMark already set, because both listings
+// are read by people at a terminal and by whatever they pipe them into, and a
+// column that is sometimes empty is a column that shifts the ones after it.
+func selfMark(self bool) string {
+	if self {
+		return "*"
 	}
 	return "."
 }
@@ -1062,44 +1198,6 @@ func dash(s string) string {
 	return s
 }
 
-// plain is a piece of somebody else's text on its way to this terminal: what a
-// terminal reads as an instruction taken out, and everything else left exactly
-// as it was written.
-//
-// It exists for the tier's answer (see askRun), which is the one thing this
-// command prints that arrives as a stream from a program somebody else wrote.
-// zded hands those bytes over as the tier produced them and counts them against
-// its own cap while it does (internal/zded, pump); filtering there would mean a
-// cap counting a different number of bytes than the tier sent, on the path that
-// is already doing the delicate part - holding back a character whose last byte
-// has not arrived. Here there is no bookkeeping to disturb, and here is also the
-// only place that knows what it is writing into. If a second surface ever needs
-// the same protection, this moves to the daemon and both get it.
-//
-// Not the filter the notification path uses, and the difference is the job.
-// That one reflows: it folds runs of whitespace and cuts at a bound, because it
-// is making a row. This is an answer to a question, and an answer has
-// paragraphs and indented code in it - so the shape stays and only what a
-// terminal would act on goes. Tabs and newlines are shape. A carriage return is
-// not: it is how a line is drawn over with another one, which is a way of
-// hiding what was printed rather than of writing anything.
-//
-// The zero-width joiner survives, for the reason internal/attn keeps it: it is
-// unprintable by every test Go has, and a family emoji without it is three
-// people.
-func plain(s string) string {
-	return strings.Map(func(r rune) rune {
-		switch {
-		case r == '\n' || r == '\t' || r == '‍':
-			return r
-		case unicode.IsPrint(r):
-			return r
-		default:
-			return -1
-		}
-	}, s)
-}
-
 // call is a verb with nothing to print: it worked, or it says why not.
 func call(method string, args ...string) error {
 	c, err := zded.Dial()
@@ -1114,14 +1212,24 @@ func call(method string, args ...string) error {
 // this prints nothing; without one, the key still has to do something, so it
 // prints the list it would have shown - which is what it did before there was
 // a picker at all.
-func switcher() error {
+func switcher() error { return pickDesk("desk.switcher") }
+
+// pickDesk asks for the desks on behalf of whichever verb wants one named -
+// going there, or sending the focused window or workspace there. One surface and
+// one printed list, because it is one question, and the verb that asked is what
+// the chosen row is spent on (internal/zded, deskPicker).
+//
+// The printed fallback is the whole of what a move verb does on a session with
+// no shell: it names the desks and marks the one you are on, and `zde desk
+// move-window-to NAME` is the same command with the answer in it.
+func pickDesk(method string) error {
 	c, err := zded.Dial()
 	if err != nil {
 		return err
 	}
 	defer c.Close()
 	var sw zded.Switcher
-	if err := c.Call("desk.switcher", &sw); err != nil {
+	if err := c.Call(method, &sw); err != nil {
 		return err
 	}
 	if sw.Shown {
@@ -1668,6 +1776,15 @@ func usage() {
                          whether the screen lock could accept a password.
                          Non-zero when something failed, so it is worth piping
                          into a bug report
+  zde report             write down what this machine looks like: the graphics
+                         device and whether niri ever reached a renderer on it,
+                         the versions, the hardware, and the whole of doctor.
+                         It lands in /var/log/zde, 0600, one file per boot, for
+                         the failure nothing else survives - a black screen with
+                         no terminal to ask anything from. Needs zde.debug on;
+                         with nowhere to write it prints the report instead.
+                         No notification text, no clipboard, no queue, no window
+                         titles, and nothing about a desk declared private
   zde desk list          the desks that exist right now
   zde desk switcher      open the picker; prints the list when no shell is up
   zde app launch NAME    run what this machine calls that (Mod+t, Mod+e)
@@ -1779,15 +1896,22 @@ func usage() {
   zde nav down|up        the window along the stack, else the desk beside this
   zde desk move-window next|prev
                          carry the focused window to the desk beside, and go
-  zde desk move-window-to NAME
-                         carry the focused window to that desk
-  zde desk move-workspace-to NAME
+  zde desk move-window-to [NAME]
+                         carry the focused window to that desk (Mod+Ctrl+Tab).
+                         With no name it opens the desk picker and the row you
+                         choose is the destination; prints the desks when no
+                         shell is up, and the name goes here
+  zde desk move-workspace-to [NAME]
                          hand this whole workspace to that desk, which is how
                          the regulars are made and how work comes back out
+                         (Mod+Ctrl+Shift+Tab). The same two forms, and the
+                         picker offers the regulars whether or not the band
+                         exists yet - it comes into being by being chosen
   zde desk next          the desk after this one, wrapping (regulars excluded)
   zde desk prev          the desk before this one, wrapping
   zde queue              what is waiting, oldest first
-                         (id, urgency, desk, sender, text - tab separated)
+                         (id, urgency, * for the desktop's own, desk, sender,
+                         text - tab separated)
   zde queue add TEXT     make something wait, on the desk you are on
   zde queue done ID      it is not waiting any more
   zde attn [MODE]        the attn mode, or set it: work queues everything,
@@ -1799,8 +1923,9 @@ func usage() {
                          key you reach for when you need silence now
   zde system notif-center
                          what arrived (Mod+n); prints the history when no
-                         shell is up - id, urgency, when, sender, whether it
-                         is waiting, done or silent, and the text
+                         shell is up - id, urgency, * for the desktop's own,
+                         when, sender, whether it is waiting, done or silent,
+                         and the text
   zde system notif-reach put the keyboard on the newest popup (Mod+Ctrl+n), so
                          its sender's buttons can be pressed. A popup never
                          takes the keyboard on its own, which is why this key

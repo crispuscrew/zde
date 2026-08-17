@@ -52,6 +52,12 @@ PanelWindow {
     // back from the snapshot rather than arriving here, restored and
     // bodyClipped (internal/attn, snapshot.go). Those two are what stops this
     // surface drawing yesterday's history as though it were this session's.
+    //
+    // And `self`, which is the one field here that is not a claim: it says zded
+    // made the record rather than an app on the bus, and it is what the badge on
+    // each row is bound to (see the delegate). Everything else about a sender is
+    // a string the sender chose, "zde" included - which is why this surface
+    // never decides who wrote a row by reading the name.
     property var rows: []
     property int index: 0
 
@@ -61,6 +67,12 @@ PanelWindow {
     // asking would be a binding loop.
     readonly property int rowHeight: 26
     readonly property int rowGap: 2
+    // The gutter every row starts after, wide enough for the badge word in this
+    // list's monospace 13. Fixed, and kept even on the rows that have no badge,
+    // so the desktop's mark stands in a column of its own that the text of a row
+    // never reaches - a name is a string an app chose, and a mark drawn inside
+    // the same run as that string is a mark an app can send.
+    readonly property int badgeWidth: 34
     // The three lines under the list - the body, the actions and the hint -
     // with the margins around them. Leave one out of the sum and the last row
     // draws underneath it.
@@ -216,6 +228,19 @@ PanelWindow {
     function became(r) {
         const what = r.dismissed ? "done" : (r.queued ? "waiting" : "silent");
         return r.restored ? what + " · earlier" : what;
+    }
+
+    // The row, without the part the badge draws.
+    //
+    // The sender is left out entirely when zded made the record, because the
+    // badge beside it is already saying so and in a place nothing an app sends
+    // can reach. Drawing "zde" here as well would put the same fact in two
+    // places, one of which is a string - and a person reading two places for one
+    // fact ends up trusting the wrong one, which is exactly the failure a name
+    // built out of Cyrillic letters is for (internal/attn, Notification.Self).
+    function line(r) {
+        const who = r.self === true ? "" : (r.from ? r.from : "-");
+        return center.when(r) + "  " + (r.urgent ? "! " : "  ") + (who === "" ? "" : who + "  ") + r.text;
     }
 
     // The clock time it arrived. A day and a time would be more precise and
@@ -512,17 +537,45 @@ PanelWindow {
                     onClicked: center.index = row.index
                 }
 
+                // Who wrote it, where nothing an app sends can be drawn: the
+                // desktop's own rows say "zde" here in the colour this surface
+                // uses for the thing you are on, and every other row leaves the
+                // gutter empty.
+                //
+                // Bound to the record's mark and never to its name. The name is
+                // the sender's own claim, and a claim can be drawn like "zde"
+                // without being it - "zdе" with a Cyrillic е and four others
+                // were sent at this surface over a real session bus and each one
+                // was indistinguishable from the desktop's own row (internal/attn,
+                // Notification.Self carries the whole of it). Reserving the word
+                // stops the word being taken and cannot stop the word being
+                // drawn, so what a person reads has to come from something an
+                // app cannot write: this element's own literal, in this
+                // element's own column.
+                Text {
+                    id: badge
+
+                    anchors.left: parent.left
+                    anchors.leftMargin: 8
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: center.badgeWidth
+                    text: row.modelData.self === true ? "zde" : ""
+                    color: "#e5a23d"
+                    font.pixelSize: 13
+                    font.family: "monospace"
+                    textFormat: Text.PlainText
+                }
+
                 // The row: when it came, whether it said it was urgent, who
                 // sent it, and what it said. No leading number any more - the
                 // digits press this row's actions now, and a number in front of
                 // a row somebody cannot press with it is a number that lies.
                 Text {
-                    anchors.left: parent.left
-                    anchors.leftMargin: 8
+                    anchors.left: badge.right
                     anchors.right: mark.left
                     anchors.rightMargin: 8
                     anchors.verticalCenter: parent.verticalCenter
-                    text: center.when(row.modelData) + "  " + (row.modelData.urgent ? "! " : "  ") + (row.modelData.from ? row.modelData.from : "-") + "  " + row.modelData.text
+                    text: center.line(row.modelData)
                     elide: Text.ElideRight
                     // Dimmed once it is done, so the list reads as what is left
                     // rather than as everything that ever happened.

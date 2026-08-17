@@ -1,11 +1,15 @@
 package zinc
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestAddress(t *testing.T) {
@@ -135,7 +139,7 @@ func TestRunHandsBackTheRefusalAsSomethingACallerCanRecognise(t *testing.T) {
 	}
 	t.Setenv("PATH", dir)
 
-	err := Run("browser@work")
+	err := Run(context.Background(), "browser@work")
 	if !errors.Is(err, ErrAlreadyRunning) {
 		t.Fatalf("Run said %v, want something errors.Is can tell is the refusal", err)
 	}
@@ -145,11 +149,97 @@ func TestRunHandsBackTheRefusalAsSomethingACallerCanRecognise(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, Runner), []byte(broken), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	err = Run("browser@work")
+	err = Run(context.Background(), "browser@work")
 	if errors.Is(err, ErrAlreadyRunning) {
 		t.Fatal("an app nobody has defined was reported as one that is already up")
 	}
 	if err == nil || !strings.Contains(err.Error(), "no app") {
 		t.Fatalf("Run said %v, want what the runner said about it", err)
 	}
+}
+
+// A launch is a subprocess, and the daemon that started it has to be able to end
+// it. Before the context this took no cancel, no timeout, no process group and
+// no WaitDelay: a session that ended left the launch running and it survived the
+// daemon.
+//
+// Two things are asserted and the second is the one a plain Kill would fail: the
+// call comes back, and what the runner forked is gone with it. A launch forks by
+// definition - it is a client for a container runtime - so a kill that reached
+// only the pid zde knows about would leave exactly the process that mattered.
+func TestRunIsEndedByItsContext(t *testing.T) {
+	dir := t.TempDir()
+	pids := filepath.Join(dir, "pids")
+	// Its own pid and one it forked, then it holds.
+	script := "#!/bin/sh\nsleep 60 &\necho \"$$ $!\" >> " + pids + "\nwait\n"
+	if err := os.WriteFile(filepath.Join(dir, Runner), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// In front of the machine's own PATH rather than instead of it: the script
+	// needs a `sleep`, and this Runner is the first one found either way.
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, "browser@work") }()
+
+	// Waited for on the fork rather than on the call: a cancel that arrived
+	// before exec had forked would prove nothing about reaching a fork.
+	deadline := time.Now().Add(10 * time.Second)
+	var up []int
+	for time.Now().Before(deadline) {
+		up = alivePids(t, pids)
+		if len(up) == 2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(up) != 2 {
+		t.Fatalf("the runner started %d processes, want the client and what it forked", len(up))
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not come back when its context was cancelled")
+	}
+	// Waited for rather than read once: a killed process is a zombie until
+	// whoever inherits it reaps it, and signal 0 succeeds against a zombie. What
+	// is being asserted is that the kill reached them, not how fast init got
+	// round to it.
+	gone := time.Now().Add(5 * time.Second)
+	for {
+		left := 0
+		for _, p := range up {
+			if syscall.Kill(p, 0) == nil {
+				left++
+			}
+		}
+		if left == 0 {
+			return
+		}
+		if time.Now().After(gone) {
+			for _, p := range up {
+				syscall.Kill(p, syscall.SIGKILL) //nolint:errcheck // tidying up after a failure
+			}
+			t.Fatalf("%d of the launch's %d processes were still running after it was cancelled", left, len(up))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// alivePids reads the pids the fake runner wrote down.
+func alivePids(t *testing.T, path string) []int {
+	t.Helper()
+	raw, _ := os.ReadFile(path)
+	var out []int
+	for _, f := range strings.Fields(string(raw)) {
+		n, err := strconv.Atoi(f)
+		if err != nil {
+			t.Fatalf("the runner wrote %q where a pid belongs", f)
+		}
+		out = append(out, n)
+	}
+	return out
 }

@@ -151,19 +151,27 @@ func TestNotifyBoundsTheLength(t *testing.T) {
 // (internal/zded, TestWhatASwitchSaysAboutItsLaunchesIsBoundedLikeAnythingElse):
 // nothing here can tell whether anybody called this at all.
 func TestLocalClampsWhatZdeHandsIt(t *testing.T) {
-	n := Local("zde", strings.Repeat("s", summaryMax*2), strings.Repeat("b", bodyMax*2))
+	n := Local(strings.Repeat("s", summaryMax*2), strings.Repeat("b", bodyMax*2))
 	if got := len([]rune(n.Text)); got != summaryMax {
 		t.Errorf("summary kept %d characters, want %d", got, summaryMax)
 	}
 	if got := len([]rune(n.Body)); got != bodyMax {
 		t.Errorf("body kept %d characters, want %d", got, bodyMax)
 	}
-	if n.From != "zde" {
+	if n.From != SelfFrom {
 		t.Errorf("from = %q, want the desktop saying it is the sender", n.From)
+	}
+	// And the mark, which is the half of that a sender cannot imitate: the name
+	// is a word an arrival can be drawn to look like, and this is not a word
+	// (see Notification.Self). Both come from this one call, so neither can be
+	// set without the other.
+	if !n.Self {
+		t.Error("what zde sends itself is unbadged, so every surface has nothing but the name to " +
+			"tell it from an app that drew itself like the name")
 	}
 	// And the body keeps its lines, because it is a list of what went wrong
 	// and one line per thing is the shape of it.
-	if body := Local("zde", "two", "one\ntwo").Body; body != "one\ntwo" {
+	if body := Local("two", "one\ntwo").Body; body != "one\ntwo" {
 		t.Errorf("body = %q, want its lines as they were written", body)
 	}
 }
@@ -803,5 +811,36 @@ func TestNotifyDoesNotRepeatAShortBody(t *testing.T) {
 	}
 	if got := sink.got[0]; got.Text != "the build failed" || got.Body != "" {
 		t.Errorf("notification = %+v, want the line as the summary and nothing repeated under it", got)
+	}
+}
+
+// The two corners of the filter that prints a whole message - an error, mostly
+// (cmd/zde, complain). What it does on the way to a terminal is proved where it
+// is printed, by a test that runs the command and reads the bytes; these are
+// the two cases that are awkward to arrange from outside and easy to get wrong
+// from inside.
+func TestBlockIndentsWhatFollowsAndNeverPrintsNothing(t *testing.T) {
+	// A parser's answer to a hand-edited file: several lines, with the columns
+	// of the third lined up under the second. The relative shape is what makes
+	// a caret line worth printing, so the indent is the same for every line
+	// after the first.
+	got := Block("manifest: yaml: line 2\n  apps: - app: x\n        ^ here")
+	want := "manifest: yaml: line 2\n    apps: - app: x\n          ^ here"
+	if got != want {
+		t.Errorf("Block indented it as\n%q\nwant\n%q", got, want)
+	}
+	// And nothing after the first line starts where zde's own words start, so
+	// a message cannot end with a line that reads as a second error.
+	for _, line := range strings.Split(got, "\n")[1:] {
+		if !strings.HasPrefix(line, "  ") {
+			t.Errorf("a line starts in column one: %q", got)
+		}
+	}
+	// A message with nothing printable in it is the one case where this would
+	// print an empty line: a person told that something failed and nothing
+	// about what. The bytes go out escaped instead, which is unreadable but
+	// harmless, and unreadable is what they were.
+	if got := Block("\x1b\x07\r\x00"); !strings.Contains(got, `\x1b`) {
+		t.Errorf("Block(escapes only) = %q, want the bytes quoted rather than an empty line", got)
 	}
 }
