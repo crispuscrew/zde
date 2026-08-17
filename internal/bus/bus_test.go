@@ -198,3 +198,71 @@ func (p *countingPipe) wasClosed() bool {
 	defer p.mu.Unlock()
 	return p.closed
 }
+
+// And the bound is a number, not just a mechanism: a wedged bus gives the
+// keypress back in time for it to still be answered.
+//
+// The consequence here is not memory and not a descriptor. It is a keypress.
+// zded answers each keybind on one socket and a client gives a call five
+// seconds (internal/zded, Client.Call), so what Within decides is whether a
+// person pressing Mod+Shift+x against a system bus that accepts and then says
+// nothing gets a power menu or gets nothing. That is measured rather than
+// imagined: the same two seconds is what internal/zded, noLogindFor was written
+// about - "the key did nothing for two seconds, every time, for the rest of the
+// session, and the surface it draws is the one whose whole job is to still work
+// when the session has gone wrong."
+//
+// Every test above passes Connect its own `within`, which is right for what
+// they ask - they are about the mechanism, and a mechanism is best tested at
+// fifty milliseconds. Not one of them can see the constant, so Within can be
+// two seconds or ten minutes and this package stays green. This is the test
+// that goes through System, which is the caller that has the constant in it.
+//
+// Four seconds is the ceiling, and it is the client's five with room left for
+// the answer to arrive: a connect that spent the whole five would leave nothing
+// for the call it was opened to make, and a caller that has already gone is not
+// somebody you can answer.
+//
+// It costs two seconds of real time on a passing run, which is the bound itself
+// and is the one place in this package where that is unavoidable. It cannot be
+// injected away without making the test about something else: `within` is
+// already a parameter, and a test that passed its own would be a fourth test of
+// Connect rather than the first test of Within. Written so that a failure is
+// fast whatever the constant became - the deadline is a select and not a
+// measurement taken after the fact, or a bound widened to ten minutes would be
+// ten minutes of a test run finding out.
+func TestABusThatSaysNothingGivesTheKeypressBackInTimeToAnswerIt(t *testing.T) {
+	t.Setenv("DBUS_SYSTEM_BUS_ADDRESS", blackhole(t))
+
+	const patience = 4 * time.Second
+	type answer struct {
+		conn *dbus.Conn
+		err  error
+	}
+	// Buffered, so the goroutine finishes and lets go of whatever it opened
+	// even when this test has already given up on it.
+	got := make(chan answer, 1)
+	start := time.Now()
+	go func() {
+		conn, err := System()
+		got <- answer{conn, err}
+	}()
+
+	select {
+	case a := <-got:
+		if a.conn != nil {
+			a.conn.Close() //nolint:errcheck // it is being given up on
+			t.Fatal("a bus that never said anything came back as connected")
+		}
+		if a.err == nil {
+			t.Fatal("a bus that never said anything came back with no connection and no error")
+		}
+		if took := time.Since(start); took > patience {
+			t.Errorf("the system bus took %s to give up, and a client waits five: a keypress "+
+				"against a wedged bus is one that never comes back", took)
+		}
+	case <-time.After(patience):
+		t.Fatalf("the system bus had not given up after %s, and a client waits five seconds: "+
+			"every keybind that asks logind or bluez is a keypress that does nothing", patience)
+	}
+}

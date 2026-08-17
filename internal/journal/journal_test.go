@@ -733,6 +733,16 @@ func TestWaitingHandsBackACopy(t *testing.T) {
 // Checked after a compaction as well, because compaction writes a new file and
 // renames it over this one: a mode set only at Open would hold until the
 // journal got long enough to be rewritten, and then quietly stop holding.
+//
+// 0600 and 0700 are written out here rather than compared against journalMode
+// and stateDirMode. Somebody will want to tidy that up: please do not. A test
+// that measures a file against the constant the file was made from passes for
+// every value of the constant - setting journalMode to 0644 and stateDirMode to
+// 0755 leaves this green, and leaves every notification summary on the machine
+// readable by anybody with an account on it. The numbers are the promise (see
+// journalMode, which argues for these two and no others), so the numbers are
+// what the tests below say. internal/attn's snapshot test spells 0600 out for
+// the same reason.
 func TestTheJournalAndTheDirectoryZdeMakesForItAreReadableByNobodyElse(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "state", "zde")
 	path := filepath.Join(dir, "journal.jsonl")
@@ -741,17 +751,17 @@ func TestTheJournalAndTheDirectoryZdeMakesForItAreReadableByNobodyElse(t *testin
 		t.Fatal(err)
 	}
 
-	if got := mode(t, path); got != journalMode {
-		t.Errorf("a new journal is %04o, and anything wider than %04o is somebody else's read of your notifications", got, journalMode)
+	if got := mode(t, path); got != 0o600 {
+		t.Errorf("a new journal is %04o, and anything wider than 0600 is somebody else's read of your notifications", got)
 	}
-	if got := mode(t, dir); got != stateDirMode {
-		t.Errorf("the directory zde made for it is %04o, want %04o", got, stateDirMode)
+	if got := mode(t, dir); got != 0o700 {
+		t.Errorf("the directory zde made for it is %04o, want 0700", got)
 	}
 
 	if err := j.Compact(); err != nil {
 		t.Fatal(err)
 	}
-	if got := mode(t, path); got != journalMode {
+	if got := mode(t, path); got != 0o600 {
 		t.Errorf("a compacted journal is %04o: the rewrite widened it back to what anybody can read", got)
 	}
 }
@@ -779,11 +789,12 @@ func TestAJournalAnEarlierZdeLeftReadableIsTightenedWhenItIsOpened(t *testing.T)
 	}
 
 	j := open(t, path)
-	if got := mode(t, path); got != journalMode {
+	// Literals, for the reason given above the test before this one.
+	if got := mode(t, path); got != 0o600 {
 		t.Errorf("a journal that was already there is still %04o, so every notification an earlier zde wrote down is still readable by anybody with an account here", got)
 	}
-	if got := mode(t, filepath.Dir(path)); got != stateDirMode {
-		t.Errorf("zde's own state directory is still %04o, want %04o", got, stateDirMode)
+	if got := mode(t, filepath.Dir(path)); got != 0o700 {
+		t.Errorf("zde's own state directory is still %04o, want 0700", got)
 	}
 	// And it is still the journal it was. Tightening a file is not a reason to
 	// forget what somebody owes.
@@ -814,8 +825,11 @@ func TestADirectorySomebodyElseNamedIsLeftAlone(t *testing.T) {
 	if got := mode(t, shared); got != 0o755 {
 		t.Errorf("a directory zde was pointed at is now %04o: it took a shared directory private on its way past", got)
 	}
-	if got := mode(t, path); got != journalMode {
-		t.Errorf("the journal in it is %04o, want %04o wherever it was put", got, journalMode)
+	// And 0600 as a literal, for the reason given two tests above: this is the
+	// case the mode matters most in, because the directory around it is one
+	// anybody can list.
+	if got := mode(t, path); got != 0o600 {
+		t.Errorf("the journal in it is %04o, want 0600 wherever it was put", got)
 	}
 }
 
@@ -856,6 +870,11 @@ func TestAJournalWrittenByAnEarlierZdeLosesTheNotificationBodiesInIt(t *testing.
 // tightens the target, and a session's worth of notification summaries is
 // appended to a file somebody else chose. ELOOP instead, and the target is
 // left exactly as it was found.
+//
+// What this cannot say is which refusal did it. Two of them stand between Open
+// and the far end of a link, and Open fails identically with either one gone -
+// so on its own this test is green while the read side follows links and reads
+// somebody else's file into the daemon. The two below take them one at a time.
 func TestASymlinkAtTheJournalItselfIsRefusedRatherThanFollowed(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "somebody-elses.jsonl")
@@ -885,6 +904,100 @@ func TestASymlinkAtTheJournalItselfIsRefusedRatherThanFollowed(t *testing.T) {
 	}
 	if string(raw) != "theirs\n" {
 		t.Errorf("the far end of the link now holds %q: zde wrote through the symlink", raw)
+	}
+}
+
+// The read side refuses a symlink on its own, ahead of anything the write side
+// does.
+//
+// Asked of replay rather than of Open, because Open cannot tell the two
+// refusals apart. A symlink at the name fails it either way and with the same
+// ELOOP, so the test above passes with the read side following links - and the
+// difference the two make is the whole of what this one is for: with replay
+// following, the far end of the link is read into the daemon and replayed into
+// this session's state, and only then does the write open refuse. The desk
+// positions, the queue and the mode would all have come out of a file somebody
+// else named. Half a defence, and the half that runs first.
+func TestTheReadSideOfTheJournalRefusesASymlinkOfItsOwnAccord(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "somebody-elses.jsonl")
+	if err := os.WriteFile(target, []byte(`{"kind":"lastdesk","desk":"theirs"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "journal.jsonl")
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+
+	j := &Journal{path: path, state: newState()}
+	err := j.replay()
+	if err == nil {
+		t.Fatal("the replay followed a symlink at the journal, so what it found at the far end is this session's state")
+	}
+	if !errors.Is(err, syscall.ELOOP) {
+		t.Errorf("replay of a symlink = %v, want ELOOP: refused for being a link, before anything about the far end was read", err)
+	}
+	if j.state.LastDesk != "" || j.entries != 0 {
+		t.Errorf("state = %+v after %d entries: the far end was read in and applied", j.state, j.entries)
+	}
+}
+
+// And the write side refuses one too, which is not the same defence twice.
+//
+// Called directly for the reason above, and for one more: once replay refuses a
+// symlink, none ever reaches this open through Open, and a compaction has just
+// renamed a regular file over the name. So nothing in the package's behaviour
+// changes when the flag goes, and the only way to hold on to it is to call the
+// open that carries it.
+//
+// What it is depth against is a name that becomes a link between the read and
+// the write. That is worth the two lines because of what O_CREATE does through
+// a dangling one: it does not refuse, it makes the far end, and a session of
+// notification summaries is then appended to a file somebody else named in a
+// directory of their choosing.
+func TestTheWriteSideOfTheJournalRefusesASymlinkOfItsOwnAccord(t *testing.T) {
+	dir := t.TempDir()
+
+	// A link with nothing at the far end, which is the case with something to
+	// lose: without the flag this open succeeds and creates it.
+	target := filepath.Join(dir, "not-there-yet.jsonl")
+	dangling := filepath.Join(dir, "journal.jsonl")
+	if err := os.Symlink(target, dangling); err != nil {
+		t.Fatal(err)
+	}
+	f, err := openForAppend(dangling)
+	if err == nil {
+		f.Close()
+		t.Fatal("opened the journal for writing through a symlink")
+	}
+	if !errors.Is(err, syscall.ELOOP) {
+		t.Errorf("the write open of a symlink = %v, want ELOOP", err)
+	}
+	if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the far end of the link is there: the open created a file at a name somebody else chose")
+	}
+
+	// And one whose far end is already a file, which is the case where what is
+	// written to belongs to somebody.
+	theirs := filepath.Join(dir, "theirs.jsonl")
+	if err := os.WriteFile(theirs, []byte("theirs\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "second.jsonl")
+	if err := os.Symlink(theirs, link); err != nil {
+		t.Fatal(err)
+	}
+	f, err = openForAppend(link)
+	if err == nil {
+		f.Close()
+		t.Fatal("opened the journal for writing through a symlink to a file that was already there")
+	}
+	raw, err := os.ReadFile(theirs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "theirs\n" {
+		t.Errorf("the far end of the link now holds %q", raw)
 	}
 }
 
@@ -949,8 +1062,10 @@ func TestAStateDirectoryThatIsItselfASymlinkStillWorks(t *testing.T) {
 	if err := j.SetLastDesk("vshop"); err != nil {
 		t.Fatal(err)
 	}
-	if got := mode(t, filepath.Join(onTheOtherDisk, "journal.jsonl")); got != journalMode {
-		t.Errorf("the journal through a linked directory is %04o, want %04o", got, journalMode)
+	// 0600 as a literal, for the reason given above
+	// TestTheJournalAndTheDirectoryZdeMakesForItAreReadableByNobodyElse.
+	if got := mode(t, filepath.Join(onTheOtherDisk, "journal.jsonl")); got != 0o600 {
+		t.Errorf("the journal through a linked directory is %04o, want 0600", got)
 	}
 }
 
@@ -1000,6 +1115,48 @@ func TestTheOwnerOfAJournalIsReadOffTheOpenDescriptor(t *testing.T) {
 	f.Close()
 	if got := ownerOf(f); got != -1 {
 		t.Errorf("ownerOf = %d on a descriptor that cannot answer, want -1 so that it counts as somebody else's", got)
+	}
+}
+
+// And the two above are joined: tighten asks the descriptor who owns the file,
+// rather than answering its own question.
+//
+// The split that made chmodRefused and ownerOf testable left the line that puts
+// them together tested by nothing, and that line is where the decision actually
+// happens. Written as `chmodRefused(path, err, os.Getuid(), os.Getuid())` it
+// says every refused chmod is a filesystem that cannot hold a mode, and a
+// journal belonging to another account is then appended to instead of refused -
+// with both of the tests above still green, because both of them still pass
+// their own arguments in by hand.
+//
+// A closed descriptor is what a test can arrange. A journal owned by somebody
+// else needs a second account and this runs on one; a closed file gives the same
+// two inputs the fatal branch is made of - a chmod that fails, and a descriptor
+// that cannot say whose the file is - and ownerOf answers -1 for it, which
+// equals no uid. So the answer has to be the fatal one, and that is fail-closed
+// rather than incidental: a file zde cannot identify is not one to start
+// appending somebody's notifications to.
+func TestAJournalWhoseOwnerCannotBeReadIsRefusedRatherThanWrittenTo(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "journal.jsonl")
+	// Made wide, and said twice past the umask, so that a chmod landing on the
+	// name would show.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	if err := tighten(f, path); err == nil {
+		t.Error("tighten passed a journal it could not read the owner of, so zde is now writing to a file it cannot say belongs to this account")
+	}
+	// And the file was left as it was found, which is the other half of working
+	// off the descriptor: the name is not what gets chmodded, or the tightening
+	// would land on whatever the name has come to point at since.
+	if got := mode(t, path); got != 0o644 {
+		t.Errorf("the file is %04o: the chmod went to the path rather than to the descriptor that was opened", got)
 	}
 }
 
@@ -1080,4 +1237,82 @@ func mode(t *testing.T, path string) os.FileMode {
 		t.Fatal(err)
 	}
 	return fi.Mode().Perm()
+}
+
+// A flood leaves a journal a restart can shorten, and that is what the cap
+// bought.
+//
+// The consequence chosen here is the file and not the queue, because the file
+// is what the incident was: a flood filled a 16 GB tmpfs and took every shell
+// on the machine with it. The queue being long is a nuisance; the queue being
+// long on disk, in a file that is only ever rewritten when a daemon starts, is
+// the thing that ran a machine out of space. So what is asserted is the size of
+// the journal after a compaction - which is exactly the "49 MB compacted to
+// 49 MB" that QueueMax's comment says used to happen, measured rather than
+// described.
+//
+// An absolute ceiling and not a comparison against QueueMax, which is the whole
+// point: TestTheQueueHasACeilingAndTheOldestSurvivesIt above pins which end
+// gives way, and it queues QueueMax items to do it, so the number can be
+// anything at all and that test still passes. This one fails when the number
+// stops being one a disk can hold.
+//
+// Eight megabytes, against the two and a half QueueMax's own arithmetic
+// arrives at for a thousand items at their ceiling. Three times over, so that
+// deciding a queue may hold two or three thousand things is a decision somebody
+// can make without this test arguing about it, and eight times over is caught.
+//
+// The items are as large as an item gets: a summary and a sender at the 300
+// characters each that internal/zded clamps them to, written in an alphabet
+// that costs four bytes a character. Nothing in this package clamps them - the
+// caller does - so building them here is the only way to ask what the worst
+// case costs.
+func TestAFloodLeavesAJournalThatCompactsToSomethingADiskCanHold(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "journal.jsonl")
+	j := open(t, path)
+
+	// Four bytes a character, and 300 of them, which is what a queued line is
+	// at its ceiling. An emoji in a notification summary is not an exotic case.
+	wide := strings.Repeat("\U0001F642", 300)
+	// Spelled as a number rather than as QueueMax times eight, so that widening
+	// the cap does not widen the flood along with it: a fixture written in
+	// terms of the bound it is testing grows to meet whatever the bound became,
+	// and here it would also mean eight thousand fsynced appends on the way.
+	const flood = 8001
+	refused := 0
+	for i := 0; i < flood; i++ {
+		_, err := j.Queue(Item{Text: wide, From: wide, Desk: "vshop"})
+		switch {
+		case err == nil:
+		case errors.Is(err, ErrQueueFull):
+			refused++
+		default:
+			t.Fatalf("queueing %d of %d: %v", i, flood, err)
+		}
+	}
+	// The rewrite a restart does, which is the only thing that ever shortens
+	// this file: Compact has no other caller in the tree, and it runs at Open.
+	if err := j.Compact(); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Size() > 8<<20 {
+		t.Errorf("%d arrivals left a journal of %d MB after the compaction a restart does, "+
+			"past the 8 MB a bounded queue can cost: this is the file that filled a 16 GB tmpfs",
+			flood, fi.Size()>>20)
+	}
+	// And the queue is still a queue, so the size above is a ceiling something
+	// reached rather than a journal that lost what was owed.
+	if len(j.Waiting()) == 0 {
+		t.Error("nothing is waiting after the flood, so the size above is about an empty queue")
+	}
+	// Said after the size, and not instead of it: a cap so high that eight
+	// thousand arrivals never reach it is a cap that no flood a machine can
+	// produce will ever meet, which is the same fault as having none.
+	if refused == 0 {
+		t.Errorf("%d arrivals and none of them was refused, so nothing here is capping anything", flood)
+	}
 }

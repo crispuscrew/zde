@@ -54,8 +54,13 @@ PanelWindow {
     id: popup
 
     // What is on the screen, newest first. A card is one arrival narrowed to
-    // what a toast draws: id, from, text, body, urgent, actions, more - and
-    // `until`, which is the wall-clock instant it stops being worth showing.
+    // what a toast draws: id, from, self, text, body, urgent, actions, more -
+    // and `until`, which is the wall-clock instant it stops being worth showing.
+    //
+    // `self` is the one of those that is not the sender's own claim: it says
+    // zded made the record rather than an app on the bus, and it is what the
+    // badge on the card is bound to. The name beside it is a string an app
+    // chose, "zde" included (internal/attn, Notification.Self).
     //
     // A plain array rather than a model, because it is three items long and
     // every change to it replaces the whole thing: QML re-reads a property that
@@ -95,6 +100,12 @@ PanelWindow {
     readonly property int cardHeight: 86
     readonly property int gap: 8
     readonly property int footerHeight: 22
+    // The gutter the card's first line starts after, wide enough for the badge
+    // word in this surface's monospace 11. Kept on every card, badge or not, so
+    // that the mark has a column an arrival's own text never reaches: a name is
+    // a string an app chose, and a mark drawn in the same place as that string
+    // is a mark an app can send.
+    readonly property int badgeWidth: 30
 
     // invoke(id, key) presses one of a notification's actions; drop(id) takes it
     // off. Both go to zded over the socket - this surface knows nothing about
@@ -110,6 +121,10 @@ PanelWindow {
         const card = {
             id: String(r.id),
             from: r.from ? String(r.from) : "",
+            // Taken as a boolean rather than as whatever arrived, so that a
+            // field that is missing, empty or a string reads as "an app sent
+            // this" - which is the safe way for this one to be wrong.
+            self: r.self === true,
             text: r.text ? String(r.text) : "",
             body: r.body ? String(r.body) : "",
             urgent: urgent,
@@ -124,7 +139,10 @@ PanelWindow {
         // worth saying: two different messages from one app inside five seconds
         // show as the later one. Both are in the history, which is where the
         // earlier one is read.
-        const same = next.findIndex(c => c.from === card.from);
+        // The mark counts as part of who this is, or the desktop's card and an
+        // app's card would be one card whenever the two names matched - which
+        // is a thing an app chooses, since the name is its own claim.
+        const same = next.findIndex(c => c.from === card.from && c.self === card.self);
         if (same >= 0)
             next.splice(same, 1);
         next.unshift(card);
@@ -419,14 +437,45 @@ PanelWindow {
                         onClicked: popup.on = card.modelData.id
                     }
 
+                    // The desktop's own badge, in a column of its own at the
+                    // head of the card, drawn from this element's literal and
+                    // never from anything that arrived.
+                    //
+                    // A card off the bus can say it is called "zde" in any
+                    // number of alphabets that draw the same three letters -
+                    // "zdе" with a Cyrillic е, "ｚｄｅ" in fullwidth, "ᴢᴅᴇ" in
+                    // small capitals - and each of them lands in the name beside
+                    // this, where it belongs. What it cannot do is make this
+                    // element draw anything, because the only thing it is bound
+                    // to is a mark zded set when it made the record
+                    // (internal/attn, Notification.Self).
+                    Text {
+                        id: badge
+
+                        anchors.top: parent.top
+                        anchors.left: parent.left
+                        anchors.margins: 8
+                        width: popup.badgeWidth
+                        text: card.modelData.self ? "zde" : ""
+                        color: "#e5a23d"
+                        font.pixelSize: 11
+                        font.family: "monospace"
+                        textFormat: Text.PlainText
+                    }
+
                     Text {
                         id: who
 
                         anchors.top: parent.top
-                        anchors.left: parent.left
+                        anchors.left: badge.right
                         anchors.right: parent.right
-                        anchors.margins: 8
-                        text: (card.modelData.urgent ? "! " : "") + (card.modelData.from === "" ? "-" : card.modelData.from)
+                        anchors.topMargin: 8
+                        anchors.rightMargin: 8
+                        // The name is left out when the badge is up: it is the
+                        // reserved word either way (internal/attn, SelfFrom), and
+                        // the same fact in two places, one of them a string, is
+                        // the arrangement a lookalike walks through.
+                        text: (card.modelData.urgent ? "! " : "") + (card.modelData.self ? "" : (card.modelData.from === "" ? "-" : card.modelData.from))
                         elide: Text.ElideRight
                         color: card.modelData.urgent ? "#e5484d" : "#7a7f8a"
                         font.pixelSize: 11
