@@ -151,19 +151,27 @@ func TestNotifyBoundsTheLength(t *testing.T) {
 // (internal/zded, TestWhatASwitchSaysAboutItsLaunchesIsBoundedLikeAnythingElse):
 // nothing here can tell whether anybody called this at all.
 func TestLocalClampsWhatZdeHandsIt(t *testing.T) {
-	n := Local("zde", strings.Repeat("s", summaryMax*2), strings.Repeat("b", bodyMax*2))
+	n := Local(strings.Repeat("s", summaryMax*2), strings.Repeat("b", bodyMax*2))
 	if got := len([]rune(n.Text)); got != summaryMax {
 		t.Errorf("summary kept %d characters, want %d", got, summaryMax)
 	}
 	if got := len([]rune(n.Body)); got != bodyMax {
 		t.Errorf("body kept %d characters, want %d", got, bodyMax)
 	}
-	if n.From != "zde" {
+	if n.From != SelfFrom {
 		t.Errorf("from = %q, want the desktop saying it is the sender", n.From)
+	}
+	// And the mark, which is the half of that a sender cannot imitate: the name
+	// is a word an arrival can be drawn to look like, and this is not a word
+	// (see Notification.Self). Both come from this one call, so neither can be
+	// set without the other.
+	if !n.Self {
+		t.Error("what zde sends itself is unbadged, so every surface has nothing but the name to " +
+			"tell it from an app that drew itself like the name")
 	}
 	// And the body keeps its lines, because it is a list of what went wrong
 	// and one line per thing is the shape of it.
-	if body := Local("zde", "two", "one\ntwo").Body; body != "one\ntwo" {
+	if body := Local("two", "one\ntwo").Body; body != "one\ntwo" {
 		t.Errorf("body = %q, want its lines as they were written", body)
 	}
 }
