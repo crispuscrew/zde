@@ -44,10 +44,28 @@ roll back and does nothing about a disk you have already reformatted.
 
 A machine that boots UEFI (nearly everything since about 2012), the live image,
 and about twenty minutes. Build the image and write it to a stick as in
-[`verify.md`](verify.md), boot it, and log in at the greeter as **zde / zde**.
+[`verify.md`](verify.md), and boot it.
 
-Everything below is typed in that session. Open a terminal with **Mod+Return**
-(the live image binds it; a real install uses `Mod+t`).
+## Where to type it
+
+**Press `Ctrl+Alt+F2`.** That is a text console, and the image logs you into it
+as `nixos` with no password and with passwordless `sudo`. Sections 1 to 3 are
+all root work, and that is the account with root on it.
+
+Not the greeter's session. `zde / zde` on the first console is the desktop, and
+the `zde` user is deliberately not in `wheel`: its password is printed in this
+document, so anything it could `sudo` would be root for everyone who has read
+the repo. `sudo -i` there answers `zde is not in the sudoers file`, and the
+first command of section 1 is where you would find that out.
+
+Both are up at once, so nothing is lost by that. `Ctrl+Alt+F1` goes back to the
+desktop - **Mod+Return** opens a terminal in it, which is the image's own bind
+and not zde's - and `Ctrl+Alt+F2` returns to the install. Look at zde on the
+one, install it from the other.
+
+If the machine has no cable, join a wifi network before section 2: `nmtui` runs
+from the console, and `nixos` is in the `networkmanager` group. NetworkManager
+is a system service, so a connection made on either console is there on both.
 
 ## 1. The disk
 
@@ -129,6 +147,13 @@ While you are in those two files:
   zde.niri.xkb.layout = "us,ru";
   zde.niri.xkb.options = "grp:caps_toggle";
   ```
+
+  Those two and `zde.niri.extraConfig` are the same file in the end
+  (`~/.config/niri/local.kdl`), and a rebuild runs niri's own parser over it
+  before it will install it. So a mistake in there is a build that stops and
+  prints the line, which is the point: niri treats a config it cannot parse as
+  a warning and carries on with its own defaults, and a session running niri's
+  defaults has none of zde's keys in it.
 
 ## 3. Install
 
@@ -248,6 +273,14 @@ manifest edited while the session runs wants a reconcile before the pin bites.
 
 It will. In descending order of how much it hurts:
 
+- **No key does anything.** Not one bind, and `Mod+Return` opens nothing either.
+  That is niri running its own compiled-in config rather than zde's: it treats a
+  config it cannot parse as a warning and carries on, and its default terminal
+  key spawns an `alacritty` this system does not install. `niri validate -c
+  ~/.config/niri/config.kdl` from a text console (`Ctrl+Alt+F2`) names the file
+  and the line. Of the four files there, three are built and were parsed before
+  they were installed; the one that was not is `dynamic.kdl`, which is the one
+  anything writes to by hand. Empty it and log back in.
 - **A key did nothing.** On a machine you have just installed, the likeliest one
   is `Mod+e`: nothing is configured to be an editor until you say so (section
   4). `zde app list` settles it in one line, since it prints what this machine
@@ -290,9 +323,10 @@ It will. In descending order of how much it hurts:
   doing now - the desk you are on, how many things are queued, and whether the
   shell, the notification name and zinc are there.
 
-  Then `Ctrl+Alt+F2` is a text console you can log into with the same password:
-  `journalctl --user -u zded`, `systemctl --user restart zded`, and
-  `systemctl --user restart zde-bar`.
+  Then `Ctrl+Alt+F2` is a text console. On the installed machine it is your own
+  user and your own password - there is no autologin here, that belonged to the
+  live image - and from it: `journalctl --user -u zded`,
+  `systemctl --user restart zded`, and `systemctl --user restart zde-bar`.
 - **A rebuild broke the session.** `sudo nixos-rebuild switch --rollback`, or
   pick the previous generation in the boot menu. This is why NixOS is the
   reference platform, and it is worth doing once on purpose before you need it.
