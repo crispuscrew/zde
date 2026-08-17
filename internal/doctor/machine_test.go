@@ -1,11 +1,15 @@
 package doctor
 
 import (
+	"bufio"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/crispuscrew/zde/internal/niri"
 )
 
 // The two lines docs/verify.md names as the tell for the most misleading
@@ -34,7 +38,7 @@ func noLog(err error) logReader {
 func drawing() Graphics {
 	return Graphics{
 		Socket:  "/run/user/1000/niri.wayland-1.sock",
-		Outputs: []string{"eDP-1"},
+		Screens: []string{"eDP-1"},
 		Cards:   []Card{{Node: "/dev/dri/card0", Driver: "amdgpu", PCI: "1002:1636"}},
 	}
 }
@@ -103,15 +107,85 @@ func TestACompositorWithNoFallbackLineIsNotCalledCertain(t *testing.T) {
 // A compositor that is up, has a clean log and has nowhere to put a window is
 // a black screen too, and it is the one state a check for "niri is answering"
 // reads as health.
-func TestACompositorWithNoOutputsIsNotAnAllClear(t *testing.T) {
+//
+// The reading is the screens and not every connector niri lists, which is what
+// makes this state reachable on an ordinary laptop rather than only on a machine
+// with nothing plugged in: niri switches the panel off by itself when the lid
+// closes, and the connector stays in its Outputs reply (internal/niri, Screens).
+// Counted off that reply, a session drawing on nothing would read here as one
+// drawing on one monitor, and this file would have talked somebody out of
+// looking further.
+func TestACompositorWithNoScreenIsNotAnAllClear(t *testing.T) {
 	g := drawing()
-	g.Outputs = nil
+	g.Screens = nil
 	if g.Drew() != DrewUnknown {
-		t.Fatalf("a compositor with no outputs reads as %v", g.Drew())
+		t.Fatalf("a compositor with nowhere to draw reads as %v", g.Drew())
 	}
-	if !strings.Contains(g.Unsure(), "no outputs") {
+	if !strings.Contains(g.Unsure(), "a screen for none of its outputs") {
 		t.Errorf("the reason does not name the missing reading: %q", g.Unsure())
 	}
+}
+
+// And the reading itself, over a socket, against a niri answering the way a
+// laptop with its lid shut answers.
+//
+// Through Dial and the wire rather than against a stub, because what this pins
+// is which question this file puts to niri and not how the answer is parsed.
+// niri's Outputs reply names every connector that has a crtc, including one it
+// has switched off itself; the screens are the ones it has somewhere to put a
+// window (internal/niri, Screens). Every sentence in the graphics section is
+// about whether there was anywhere to draw, so the two sets differ exactly
+// where this file's answer is decided - and a test that read the same method
+// name this file calls would agree with it about the name and prove nothing
+// about the meaning.
+func TestTheMonitorsAreTheOnesNiriHasAScreenFor(t *testing.T) {
+	t.Setenv(niri.SocketEnv, fakeNiri(t, `{"Ok":{"Outputs":{`+
+		`"eDP-1":{"name":"eDP-1","logical":null},`+
+		`"DP-1":{"name":"DP-1","logical":{"x":0,"y":0,"width":2560,"height":1440,"scale":1.0,"transform":"Normal"}}`+
+		`}}}`))
+	got, err := askNiri()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "DP-1" {
+		t.Errorf("the report names %v, want only the monitor niri has a screen for: the panel it "+
+			"switched off when the lid closed is still in the reply and is not somewhere a window can be", got)
+	}
+}
+
+// fakeNiri is a niri that answers each request with the next reply and then
+// stops listening. One line in, one line out, which is the whole protocol.
+func fakeNiri(t *testing.T, replies ...string) string {
+	t.Helper()
+	// Its own short directory: a unix socket path is capped near 108 bytes and
+	// a Go temp directory under a long TMPDIR has spent most of that already.
+	dir, err := os.MkdirTemp("", "niri")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "s")
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close(); os.RemoveAll(dir) })
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		r := bufio.NewReader(conn)
+		for _, rep := range replies {
+			if _, err := r.ReadBytes('\n'); err != nil {
+				return
+			}
+			if _, err := conn.Write([]byte(rep + "\n")); err != nil {
+				return
+			}
+		}
+	}()
+	return path
 }
 
 // niri's other words about devices are kept as context and must never be read
