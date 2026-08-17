@@ -608,12 +608,14 @@ const requestMax = 1 << 20
 //
 // The arithmetic, and it is set by what a session really opens:
 //
-//   - The shell holds four, one per Dialer in shell/shell.qml: the bar's poll,
-//     the event stream, the ask window's, and the network surface's. They are
-//     four on purpose - an answer arriving in pieces must not sit in front of
-//     the acknowledgement a picker is waiting for.
-//   - A shell being restarted holds eight for the moment before the daemon
-//     reads EOF on the old four, and every home-manager switch restarts it.
+//   - The shell holds five, one per Dialer in shell/shell.qml: the bar's poll,
+//     the event stream, the ask window's, the network surface's, and the idle
+//     hold's. They are five on purpose - an answer arriving in pieces must not
+//     sit in front of the acknowledgement a picker is waiting for, and a
+//     connection that asks one question and nothing else needs no way of
+//     telling one reply from another.
+//   - A shell being restarted holds ten for the moment before the daemon
+//     reads EOF on the old five, and every home-manager switch restarts it.
 //   - A `zde` verb dials, asks and exits, so a terminal costs one connection for
 //     the length of one call and a keybind costs the same. Half a dozen
 //     terminals and a leader key is another handful.
@@ -667,17 +669,17 @@ const ConnectionsMax = 256
 // way to hold that many while looking thin is to spread them over processes -
 // which costs a process each, not a byte each.
 //
-// What that buys, said plainly. The shell holds four connections in one process
+// What that buys, said plainly. The shell holds five connections in one process
 // (shell/shell.qml, one Dialer each) and a `zde` verb holds one for the length
 // of a call. A flood in one process is the largest holder in the table from its
-// fifth connection onwards, so every connection it opens past the cap takes out
+// sixth connection onwards, so every connection it opens past the cap takes out
 // one of its own - "a flood pays for its own slots", now a statement about the
 // flood rather than about how quiet it is. To take a session connection instead
 // it must hold the table with processes that each hold fewer than the shell's
-// four, which is 84 processes for 252 slots, forked and kept alive, and it must
-// keep them asking. That is the price, and it is the honest ceiling on this: a
-// program that can fork 84 processes as this user can do worse things to the
-// session than close a socket.
+// five, so four apiece across the 251 slots the shell is not holding, which is
+// 63 processes, forked and kept alive, and it must keep them asking. That is the
+// price, and it is the honest ceiling on this: a program that can fork 63
+// processes as this user can do worse things to the session than close a socket.
 //
 // A listener is not a candidate at all. Measured on its own traffic the event
 // stream is the quietest connection zded has - it says `events` once at login
@@ -817,7 +819,7 @@ func (s *Server) handle(conn net.Conn) {
 		return
 	}
 	// Who is on the other end, which is how the connection cap tells a session's
-	// four connections from somebody's four hundred (see admit). Set before this
+	// five connections from somebody's four hundred (see admit). Set before this
 	// sink is in any table, which is what makes it safe to read without a lock.
 	k.pid = pid
 	defer s.unlisten(k)
