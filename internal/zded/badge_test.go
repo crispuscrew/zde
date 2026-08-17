@@ -85,10 +85,10 @@ func TestNothingOnTheBusCanWearTheDesktopsBadge(t *testing.T) {
 	// it would go on compiling against a daemon that had gone back to launching
 	// things nothing can reach. The last assertion in this test puts that
 	// promise to this server.
-	launched := make(chan context.Context, 1)
+	handed := make(chan context.Context, 1)
 	s.launch = func(ctx context.Context, address string) error {
 		select {
-		case launched <- ctx:
+		case handed <- ctx:
 		default: // one desk declaring one app: the first is the one asserted on
 		}
 		return errors.New("no app \"nvim\" defined")
@@ -197,7 +197,7 @@ func TestNothingOnTheBusCanWearTheDesktopsBadge(t *testing.T) {
 	// test reads would not exist - and over once it is closed.
 	var ctx context.Context
 	select {
-	case ctx = <-launched:
+	case ctx = <-handed:
 	default:
 		t.Fatal("the desk switch wrote the desktop's message without ever calling launch")
 	}

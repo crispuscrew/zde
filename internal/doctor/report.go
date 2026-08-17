@@ -314,7 +314,7 @@ func writeGraphics(b *strings.Builder, g Graphics) {
 	case len(g.Screens) == 0:
 		fmt.Fprintf(b, "  niri       answering on %s, and it has a screen for none of its outputs - a\n", reading(g.Socket))
 		fmt.Fprintf(b, "             compositor with nowhere to draw is a black screen however well its\n")
-		fmt.Fprintf(b, "             renderer started. A monitor niri has switched off reads like this\n")
+		fmt.Fprintf(b, "             renderer started. niri switching a monitor off itself reads this way\n")
 	default:
 		fmt.Fprintf(b, "  niri       answering on %s\n", reading(g.Socket))
 		// The monitors niri is drawing on and not every connector it lists, for
