@@ -68,6 +68,69 @@ func TestAnInhibitorOnSleepStopsASuspendAndNotAReboot(t *testing.T) {
 	}
 }
 
+// The two questions logind's What field answers are separate, and each has to
+// be wrong on its own before the other notices.
+//
+// The bar reads HoldingIdle and the power menu reads Blocking, off the one
+// table, and the failure this pins is either of them widening into the other.
+// If an idle inhibitor started standing in the way of a suspend, the menu would
+// warn about something that was never going to stop it; if a sleep inhibitor
+// started reading as an idle hold, the bar would say the screen will not lock
+// because a download is running, which is the sentence that teaches somebody to
+// ignore the word.
+func TestASleepInhibitorAndAnIdleInhibitorAreDifferentQuestions(t *testing.T) {
+	sleep := Block{What: "sleep", Who: "chromium", Why: "Playing audio"}
+	idle := Block{What: "idle", Who: "steam", Why: "Playing a game"}
+
+	if sleep.HoldsIdle() {
+		t.Error("an inhibitor on sleep reads as holding the screen awake")
+	}
+	if !idle.HoldsIdle() {
+		t.Error("an inhibitor on idle does not read as holding the screen awake")
+	}
+	if idle.Stands(Suspend) || idle.Stands(Reboot) || idle.Stands(PowerOff) {
+		t.Error("an idle inhibitor reads as standing in the way of a power action")
+	}
+
+	// The colon is a list and one inhibitor can be both, which is what logind's
+	// own vocabulary allows and what a browser playing a video actually takes.
+	both := Block{What: "idle:sleep", Who: "firefox"}
+	if !both.HoldsIdle() || !both.Stands(Suspend) {
+		t.Error("idle:sleep is not read as holding both")
+	}
+	// And a substring is not a member. "idlewild" would be a different word.
+	if (Block{What: "idlewild"}).HoldsIdle() {
+		t.Error("a What that merely starts with idle reads as an idle hold")
+	}
+}
+
+// What the bar draws comes off this, so an empty answer and a wrong one cost
+// the same: the widget is silent either way, and silence is what a machine with
+// nothing holding the screen looks like.
+func TestHoldingIdleIsEveryIdleInhibitorAndOnlyThose(t *testing.T) {
+	st := State{Blocks: []Block{
+		{What: "sleep", Who: "chromium", Why: "Playing audio"},
+		{What: "idle", Who: "steam", Why: "Playing a game"},
+		{What: "shutdown", Who: "packagekit"},
+		{What: "idle:sleep", Who: "firefox", Why: "Playing video"},
+	}}
+	got := st.HoldingIdle()
+	if len(got) != 2 {
+		t.Fatalf("HoldingIdle found %d holders, want 2: %v", len(got), got)
+	}
+	// In the order logind gave them, and carrying the words with them: the who
+	// and the why are the whole of what doctor prints.
+	if got[0].Who != "steam" || got[1].Who != "firefox" {
+		t.Errorf("HoldingIdle = %v, want steam then firefox", got)
+	}
+	if got[1].Why != "Playing video" {
+		t.Errorf("the reason was dropped: %q", got[1].Why)
+	}
+	if len(State{}.HoldingIdle()) != 0 {
+		t.Error("an empty state names a holder")
+	}
+}
+
 // The refusal is the whole point of this surface, and there are two of them.
 //
 // logind's own, for a block inhibitor, arrives as "Operation denied due to

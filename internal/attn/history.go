@@ -138,6 +138,14 @@ const nobody = ""
 // silence what zde says about itself, by sending twelve notifications, is worth
 // more to somebody than the ring it costs to stop it.
 //
+// On the name and not on Record.Self, and the difference is what each of the
+// two is for. The badge says who a person is looking at; this says which ring a
+// record is filed in, and a ring is a bound. Keyed on the badge, an arrival with
+// no badge and the name "zde" would file into the exempt ring anyway, and a name
+// that merely looks like "zde" gets a ring of its own here either way - counted
+// against SendersMax and evicted like any other claim, which is exactly what it
+// should be. So this stays the reservation's own job (notify.go, SelfFrom).
+//
 // Two names and not a rule, because it is two names. A list is what a caller
 // can read and a predicate is what a caller has to trust.
 func unevictable(from string) bool { return from == nobody || from == SelfFrom }
@@ -156,6 +164,22 @@ type Record struct {
 	// It is also which ring this record lives in, which is why the number of
 	// distinct ones is bounded (see SendersMax).
 	From string `json:"from,omitempty"`
+	// Self says the desktop made this one, and it is the field every surface
+	// that draws a sender has to read before it draws the name above: a claim
+	// that is drawn like "zde" is a claim, and this is not (see
+	// Notification.Self for why the name cannot carry it and what was tried).
+	//
+	// On the wire, because the surfaces are the point. The centre and the popup
+	// draw it as a badge of their own rather than as text inside the sender
+	// column, since anything drawn inside that column is a string an app can
+	// send (shell/NotifCenter.qml, shell/AttnPopup.qml); `zde attn center` and
+	// `zde queue` give it a column, since an app's name cannot hold a tab.
+	//
+	// Set where the record is made and never worked out from From. Reading it
+	// back off the name would be the string being the fact again, one layer
+	// down, and would hand any lookalike the badge it walked past the
+	// reservation for.
+	Self bool `json:"self,omitempty"`
 	// Text is the summary, on one line: it is what the queue and the row show.
 	Text string `json:"text"`
 	// Body is the rest of the message with its line breaks, up to bodyMax

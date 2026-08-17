@@ -241,17 +241,25 @@ func WriteSnapshot(path string, records []Record) error {
 // restored record is are set here rather than read, so that a file cannot claim
 // its rows are live.
 //
-// One thing is not re-checked, and it is a choice rather than an oversight: a
-// row here may say it came from zde (notify.go, SelfFrom). The reservation is
-// about the bus, which is the surface a sandboxed app is given (docs/vision.md,
-// principle 7), and this file is 0600 in the session's own state directory - so
-// writing a row into it takes the person's own uid, which is the same thing
-// that could edit the journal, replace the binary, or send the notification
-// from a shell. What it would buy an editor is small in any case: the row comes
-// back marked restored, which every surface draws as a thing whose buttons are
-// gone with the session that received it. Rewriting the name instead would cost
-// something real - zde's own messages about a desk that could not start would
-// come back under a bus address that means nothing after a reboot.
+// Two things are not re-checked, and both are choices rather than oversights: a
+// row here may say it came from zde (notify.go, SelfFrom), and a row here may
+// carry the badge that says the desktop made it (history.go, Record.Self). The
+// reservation and the badge are both about the bus, which is the surface a
+// sandboxed app is given (docs/vision.md, principle 7), and this file is 0600 in
+// the session's own state directory - so writing a row into it takes the
+// person's own uid, which is the same thing that could edit the journal, replace
+// the binary, or send the notification from a shell. What it would buy an editor
+// is small in any case: the row comes back marked restored, which every surface
+// draws as a thing whose buttons are gone with the session that received it.
+//
+// Clearing either would cost something real, and the badge more than the name.
+// zde's own messages about a desk that could not start would come back under a
+// bus address that means nothing after a reboot, and they would come back
+// unbadged - which is to say drawn exactly as an app claiming the desktop's name
+// is drawn, in the one file that is meant to answer "what did I miss" across a
+// restart. A mark that survives a reboot for the real thing and not for the
+// impostor is worth more than a file that is hardened against the uid that owns
+// it.
 func ReadSnapshot(path string) ([]Record, error) {
 	// "Unreadable" above includes a path that is not a file at all, and that
 	// one had to be made true rather than assumed. A plain os.Open of a FIFO
