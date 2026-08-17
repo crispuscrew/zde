@@ -206,8 +206,10 @@ type Server struct {
 	niri    Compositor
 	desks   Desks
 	// launch starts one app instance. A field so a test can watch what a switch
-	// asks for without a container runtime under it.
-	launch func(address string) error
+	// asks for without a container runtime under it. It takes the run's context,
+	// because what it starts is a subprocess and the daemon has to be able to
+	// end it (internal/zinc, Run).
+	launch func(ctx context.Context, address string) error
 	// spawn runs what a bind would have run, for the palette. A field for the
 	// same reason launch is one: what the palette starts is the thing worth
 	// asserting, and a test should not have to start a terminal to see it.
@@ -298,13 +300,19 @@ type Server struct {
 	noLogind   error
 	noLogindAt time.Time
 
-	// The tier runs in flight (ask.go). A run is a subprocess in a process group
-	// of its own, deliberately, so that stopping it stops what it started - and
-	// that same choice is why the session's own signal never reaches it. Without
-	// something here, `systemctl --user stop zded` left the tier and everything
-	// it forked running under pid 1: measured, a shell tier and its `sleep 600`
-	// still there eighteen seconds after the daemon exited, and a local tier is
-	// a model that can be holding a GPU.
+	// The subprocess runs in flight: the tiers (ask.go) and the desk launches
+	// (startApps). A run is a subprocess in a process group of its own,
+	// deliberately, so that stopping it stops what it started - and that same
+	// choice is why the session's own signal never reaches it. Without something
+	// here, `systemctl --user stop zded` left the tier and everything it forked
+	// running under pid 1: measured, a shell tier and its `sleep 600` still
+	// there eighteen seconds after the daemon exited, and a local tier is a
+	// model that can be holding a GPU.
+	//
+	// The launches were outside all of it until they were put here, and on a
+	// path that starts more processes than a tier does: measured, Close returned
+	// in 0s with a launch subprocess still running, and the subprocess survived
+	// the daemon.
 	//
 	// runCtx is the parent of every run's context, so cancelling it runs each
 	// cmd.Cancel and kills each group. runs is how Close knows when they have
@@ -326,6 +334,10 @@ type Server struct {
 	// group and cannot be read: what Close needs is to know when they have all
 	// gone, and what a new run needs is to know how many there are.
 	asks int
+	// launching is the desks whose apps are being started right now, and it is
+	// the whole of what bounds the launches (startApps says why one per desk is
+	// the right unit and why there is no number beside it).
+	launching map[string]struct{}
 	// conns is every connection this daemon is holding, which is the population
 	// ConnectionsMax is a ceiling on (see admit). Separate from subs, because
 	// the two questions are different: subs is who is being broadcast to, and
@@ -341,13 +353,14 @@ type Server struct {
 	tokens  uint64
 }
 
-// askStopWait is how long Close waits for the tiers to go. They are sent a kill
-// to the whole process group rather than asked politely, so this is the time it
-// takes a dead process to be reaped and a goroutine to unwind, which is
-// milliseconds - and it is a ceiling rather than a delay. Bounded at all
-// because the alternative is a logout that waits on a model: whatever a tier
-// does with a signal, the session ends.
-const askStopWait = 2 * time.Second
+// runStopWait is how long Close waits for the tiers and the desk launches to
+// go. They are sent a kill to the whole process group rather than asked
+// politely, so this is the time it takes a dead process to be reaped and a
+// goroutine to unwind, which is milliseconds - and it is a ceiling rather than a
+// delay. Bounded at all because the alternative is a logout that waits on a
+// model, or on podman: whatever a subprocess does with a signal, the session
+// ends.
+const runStopWait = 2 * time.Second
 
 // New builds the daemon.
 //
@@ -448,18 +461,19 @@ func (s *Server) Serve() error {
 	}
 }
 
-// Close stops listening, gives up the radio, and stops the tiers.
+// Close stops listening, gives up the radio, and stops the tiers and the
+// launches.
 //
 // The radio first, and outside s.mu: it is a bus connection with a pairing
 // agent exported on it, and one left behind is an agent for a session that has
 // ended - bluetoothd would keep calling it and every question would time out
 // into a refusal nobody was asked for.
 //
-// The tiers last, and after the listener rather than before it, so that nothing
-// new can be asked while this waits for what is already running. Bounded (see
-// askStopWait), and safe to call twice: the whole of what this daemon can leave
-// behind is a subprocess, and the caller that ends the process has to be able to
-// end them too whichever way it got here.
+// The subprocesses last, and after the listener rather than before it, so that
+// nothing new can be asked while this waits for what is already running.
+// Bounded (see runStopWait), and safe to call twice: the whole of what this
+// daemon can leave behind is a subprocess, and the caller that ends the process
+// has to be able to end them too whichever way it got here.
 func (s *Server) Close() error {
 	s.closeRadio()
 	// And the popup pump, once and never twice: Close is reached from a signal
@@ -500,15 +514,16 @@ func (s *Server) startRun(k *sink, args []string) {
 	}()
 }
 
-// stopRuns ends every tier this daemon started and waits, briefly, to see them
-// go.
+// stopRuns ends every subprocess this daemon started - the tiers and the desk
+// launches - and waits, briefly, to see them go.
 //
 // The cancel is what does it: each run's context has runCtx as its parent, and
 // cancelling reaches cmd.Cancel, which kills the process group rather than the
-// one pid - which is the whole reason the group exists (see askRun). The wait is
-// only so that the process does not exit out from under the kill it has just
-// sent; a group that has been killed is gone, so the ceiling is there for the
-// case that is not true rather than for the ordinary one.
+// one pid - which is the whole reason the group exists (see askRun, and
+// internal/zinc Run). The wait is only so that the process does not exit out
+// from under the kill it has just sent; a group that has been killed is gone, so
+// the ceiling is there for the case that is not true rather than for the
+// ordinary one.
 func (s *Server) stopRuns() {
 	s.mu.Lock()
 	s.runStop()
@@ -519,14 +534,15 @@ func (s *Server) stopRuns() {
 		s.runs.Wait()
 		close(gone)
 	}()
-	t := time.NewTimer(askStopWait)
+	t := time.NewTimer(runStopWait)
 	defer t.Stop()
 	select {
 	case <-gone:
 	case <-t.C:
-		// Said rather than swallowed: what is left is a tier that did not die
-		// when its group was killed, which is a thing worth finding in a log.
-		fmt.Fprintf(os.Stderr, "zded: a tier was still running %v after being stopped\n", askStopWait)
+		// Said rather than swallowed: what is left is a tier or a launch that
+		// did not die when its group was killed, which is a thing worth finding
+		// in a log.
+		fmt.Fprintf(os.Stderr, "zded: something it started was still running %v after being stopped\n", runStopWait)
 	}
 }
 
@@ -2379,6 +2395,14 @@ func (s *Server) switchFrom(target, from string) Response {
 // seconds, and the switch it belongs to is a keypress. The person is already
 // looking at the desk while these arrive.
 //
+// Counted and cancellable, through claimLaunch and s.runs, which is the same
+// machinery a tier goes through (startRun) and for the same reason: what this
+// starts is a subprocess in a process group of its own, so nothing the session
+// does on the way out reaches it except this daemon deciding to. It used to be a
+// bare `go func` - not in s.runs, not under s.runCtx, waited for by nobody -
+// and measured, Close returned in 0s with a launch still in flight and its
+// subprocess outlived the daemon.
+//
 // Where a pinned window lands is niri's, from the rules written just before
 // (rules.go). An app the manifest does not pin, or one whose window cannot be
 // recognised before it exists, still lands where niri opens windows.
@@ -2392,36 +2416,123 @@ func (s *Server) startApps(target string) {
 		return
 	}
 	apps := d.Apps
+	if !s.claimLaunch(target) {
+		return
+	}
 	go func() {
-		var failed []launchFailure
-		for _, app := range apps {
-			address := zinc.Address(app.App, app.Instance)
-			err := s.launch(address)
-			if err == nil {
-				continue
-			}
-			if errors.Is(err, zinc.ErrAlreadyRunning) {
-				// The ordinary case, and the reason this is a check rather than
-				// a line in the log: zinc refuses a second launch of an app that
-				// is up, so every switch back to a desk you were on this session
-				// refuses once per app it declares. Counting that as a failure
-				// made a healthy machine say "3 apps did not start" for pressing
-				// a key twice, and the notification people learn to ignore is the
-				// one that cries wolf. Nothing to say about it either: the desk
-				// declares the app and the app is running, which is the state the
-				// switch was asking for.
-				continue
-			}
-			// Every real one in the daemon's log, whole: it is one app on one
-			// desk, and taking the switch down over it would make an unbuildable
-			// image cost somebody their whole desk.
-			log.Printf("zded: starting %s: %v", address, err)
-			failed = append(failed, launchFailure{Address: address, Err: err})
-		}
-		// And once, in front of the person, because a log is not somewhere
-		// anybody looks while they are working (launch.go).
-		s.launchesFailed(target, failed)
+		defer s.runs.Done()
+		defer s.releaseLaunch(target)
+		s.launchApps(s.runCtx, target, apps)
 	}()
+}
+
+// claimLaunch takes the desk's one place to be launching in, counts it as a run
+// in flight, or says no.
+//
+// Two refusals in one, and each answers a different question:
+//
+//   - The daemon is stopping. Same as startRun: refused once runCtx is
+//     cancelled, and claimed under the same mu, which together are what keep the
+//     count from being raised while stopRuns is waiting on it.
+//   - This desk is already coming up. A second entry has nothing to do - the run
+//     in flight is walking that same list of apps, and zinc refuses a second
+//     launch of an app that is already up - so it is the same "nothing changed"
+//     the caller's own `was != target` check is making one level up.
+//
+// And that per-desk claim is the whole of the bound on launches, deliberately.
+// The unbounded thing was never the apps: launchApps walks a desk's apps one at
+// a time on one goroutine, so a desk declaring twenty of them is twenty launches
+// in a row rather than twenty at once, and a desk may legitimately declare
+// twenty. What was unbounded was desk entries - one goroutine per entry, so a
+// key repeating was as many as it repeated. Measured, 200 entries put 200
+// launches in flight at once, where asksMax caps a tier at four.
+//
+// With one run per desk, what can be in flight is one per desk this machine
+// declares: a number set by the files somebody wrote, like the number of apps
+// in one of them, and 2 rather than 200 for the measured case. A constant beside
+// it would have to be a queue - a launch past the cap cannot be refused, because
+// a refused launch is a window that never appears and nothing said about it -
+// and a queue is where one wedged podman becomes every later desk not starting
+// anything. Nothing here can tell a stuck image pull from a slow one, so the
+// ceiling is left where a person set it rather than where zde guessed.
+func (s *Server) claimLaunch(target string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.runCtx.Err() != nil {
+		return false
+	}
+	if _, up := s.launching[target]; up {
+		return false
+	}
+	if s.launching == nil {
+		s.launching = make(map[string]struct{})
+	}
+	s.launching[target] = struct{}{}
+	s.runs.Add(1)
+	return true
+}
+
+// releaseLaunch gives the desk's place back. Deleted rather than left false, so
+// the map holds the desks coming up and not every desk ever entered.
+func (s *Server) releaseLaunch(target string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.launching, target)
+}
+
+// comingUp is how many desks are launching their apps right now. For the tests,
+// for the same reason asking is there for them: a bound nobody can count is a
+// bound nobody can check.
+func (s *Server) comingUp() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.launching)
+}
+
+// launchApps starts one desk's apps, one after another, and says once what did
+// not start.
+func (s *Server) launchApps(ctx context.Context, target string, apps []manifest.App) {
+	var failed []launchFailure
+	for _, app := range apps {
+		if ctx.Err() != nil {
+			// The daemon is stopping, so the rest of this desk is not going to
+			// start and nobody is there to be told: the apps left would each
+			// fail instantly against a cancelled context, and a logout is not
+			// the moment to post "4 apps did not start" about a desk nobody is
+			// looking at any more.
+			return
+		}
+		address := zinc.Address(app.App, app.Instance)
+		err := s.launch(ctx, address)
+		if err == nil {
+			continue
+		}
+		if errors.Is(err, zinc.ErrAlreadyRunning) {
+			// The ordinary case, and the reason this is a check rather than
+			// a line in the log: zinc refuses a second launch of an app that
+			// is up, so every switch back to a desk you were on this session
+			// refuses once per app it declares. Counting that as a failure
+			// made a healthy machine say "3 apps did not start" for pressing
+			// a key twice, and the notification people learn to ignore is the
+			// one that cries wolf. Nothing to say about it either: the desk
+			// declares the app and the app is running, which is the state the
+			// switch was asking for.
+			continue
+		}
+		if ctx.Err() != nil {
+			// The launch this daemon just killed on its way out. It failed
+			// because it was stopped, which is not a failure to report.
+			return
+		}
+		// Every real one in the daemon's log, whole: it is one app on one
+		// desk, and taking the switch down over it would make an unbuildable
+		// image cost somebody their whole desk.
+		log.Printf("zded: starting %s: %v", address, err)
+		failed = append(failed, launchFailure{Address: address, Err: err})
+	}
+	// And once, in front of the person, because a log is not somewhere
+	// anybody looks while they are working (launch.go).
+	s.launchesFailed(target, failed)
 }
 
 // SyncRules puts the desks' placement into niri's dynamic config (rules.go).

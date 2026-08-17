@@ -1018,3 +1018,37 @@ func TestRunCarriesTheReasonAndTheOutput(t *testing.T) {
 		t.Errorf("run = %q (err %v), want what the program printed", out, err)
 	}
 }
+
+// The deadline, against the one thing that used to walk straight through it.
+//
+// cmd.Run copies stdout and stderr from pipes, and a program that forks hands a
+// copy of both ends to its child - so Wait waits on the fork rather than on the
+// program, and probeTimeout was a promise this code did not keep. Measured
+// before the WaitDelay: five seconds never returned and had to be killed at
+// forty. None of the five programs doctor probes reproduced it, which is what
+// makes this a test rather than a bug report - and doctor is what somebody runs
+// when the machine is already misbehaving, which is when a child that forks and
+// hangs is likeliest.
+func TestARunIsBoundedAgainstAProgramThatForks(t *testing.T) {
+	// Answers, then leaves a child holding the pipe. `podman info` against a
+	// service coming up is the shape this stands in for.
+	done := make(chan string, 1)
+	go func() {
+		out, _ := run(probeTimeout, "sh", "-c", "sleep 60 & echo answered")
+		done <- out
+	}()
+	// probeTimeout is not even reached: the program exits at once, so what is
+	// waited out is probeGrace. The slack is for a loaded machine.
+	ceiling := probeTimeout + probeGrace + 3*time.Second
+	select {
+	case out := <-done:
+		// And the answer came back whole. A bound that cost the output would
+		// have turned a hang into a probe that quietly says nothing.
+		if strings.TrimSpace(out) != "answered" {
+			t.Errorf("run = %q, want what the program printed before it forked", out)
+		}
+	case <-time.After(ceiling):
+		t.Fatalf("a probe against a program that forks has not returned in %v, "+
+			"and its own deadline is %v", ceiling, probeTimeout)
+	}
+}

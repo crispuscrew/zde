@@ -1,6 +1,7 @@
 package zded
 
 import (
+	"context"
 	"errors"
 	"net"
 	"os"
@@ -191,7 +192,7 @@ func wireServer(t *testing.T) (*Server, *theMachine) {
 	// an action - so these are here for the method that does: `zcr run` on a zde
 	// machine really does start a container, and the palette really does start a
 	// terminal, and both would happen behind a test that looked like it passed.
-	s.launch = func(address string) error {
+	s.launch = func(_ context.Context, address string) error {
 		machine.note("started the app " + address)
 		return errors.New("nothing starts a container from a unit test")
 	}

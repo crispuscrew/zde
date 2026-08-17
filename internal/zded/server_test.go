@@ -3,6 +3,7 @@ package zded
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -2886,7 +2887,7 @@ func TestSwitchStartsTheDesksApps(t *testing.T) {
 	s := New("test", jrn, f, manifest.Dir(dir))
 
 	started := make(chan string, 4)
-	s.launch = func(address string) error {
+	s.launch = func(_ context.Context, address string) error {
 		started <- address
 		return nil
 	}
