@@ -6,12 +6,12 @@
 // those rows on it.
 //
 // One surface for all four. They differ in what a row says, in what choosing
-// one means, and - for the three that draw the same desks - in a line of words
-// saying which of them you are in the middle of (caption, below). None of that
-// is this surface's business: it is handed rows and a caption, and it hands
-// back the key of the row that was chosen. A second copy of the keyboard
-// handling, the focus dance and the click targets would be a second place for
-// any of them to stop working, and the copies would drift.
+// one means, and - for the two moves, which draw the same desks the switcher
+// does - in a line of words saying what choosing will do (caption, below).
+// None of that is this surface's business: it is handed rows and a caption, and
+// it hands back the key of the row that was chosen. A second copy of the
+// keyboard handling, the focus dance and the click targets would be a second
+// place for any of them to stop working, and the copies would drift.
 //
 // It is the first thing zde draws that takes the keyboard, which is a question
 // the roadmap has been carrying: a layer surface holding focus reads to niri as
