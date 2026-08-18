@@ -3,6 +3,7 @@ package doctor
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -223,7 +224,7 @@ func TestTheMonitorsAreTheOnesNiriHasAScreenFor(t *testing.T) {
 		`"eDP-1":{"name":"eDP-1","logical":null},`+
 		`"DP-1":{"name":"DP-1","logical":{"x":0,"y":0,"width":2560,"height":1440,"scale":1.0,"transform":"Normal"}}`+
 		`}}}`))
-	got, err := askNiri()
+	got, _, err := askNiri()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,16 +234,62 @@ func TestTheMonitorsAreTheOnesNiriHasAScreenFor(t *testing.T) {
 	}
 }
 
+// A machine with more outputs than the list may hold is counted the way niri
+// counted it: the bound is on the names and never on the number. Sixteen
+// outputs is unusual and not absurd - a video wall, a capture rig, a couple of
+// DP-MST chains - and a snapshot telling somebody with a black screen that niri
+// has sixteen screens when it named twenty is a reading they cannot check,
+// because they are reading it on another machine.
+//
+// And the row carrying the names says where it stopped, which is what this file
+// does with every other cut reading (see lineMax, and cut).
+func TestScreensPastTheBoundAreCountedAndTheCutIsSaid(t *testing.T) {
+	const outputs = screensMax + 4
+	var named []string
+	for i := 1; i <= outputs; i++ {
+		name := fmt.Sprintf("DP-%d", i)
+		named = append(named, `"`+name+`":{"name":"`+name+`","logical":`+
+			`{"x":0,"y":0,"width":2560,"height":1440,"scale":1.0,"transform":"Normal"}}`)
+	}
+	t.Setenv(niri.SocketEnv, fakeNiri(t, `{"Ok":{"Outputs":{`+strings.Join(named, ",")+`}}}`))
+
+	got, more, err := askNiri()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != screensMax || more != outputs-screensMax {
+		t.Fatalf("%d names and %d more, want %d names and %d more: the reading has to carry what "+
+			"the bound took off it, or nothing downstream can say how many screens there were",
+			len(got), more, screensMax, outputs-screensMax)
+	}
+
+	g := drawing()
+	g.Screens, g.ScreensMore = got, more
+	text := section(t, renderGraphics(g), secGraphics)
+	if !strings.Contains(text, fmt.Sprintf("niri has %d screen(s)", outputs)) {
+		t.Errorf("the answer counts the list it was cut to and not the screens niri named:\n%s", text)
+	}
+	if !strings.Contains(text, fmt.Sprintf("... (%d more)", outputs-screensMax)) {
+		t.Errorf("the screens row stops without saying it was cut, so it reads as the whole "+
+			"of what niri has:\n%s", text)
+	}
+}
+
 // Two snapshots of one machine differ where the machine differs and nowhere
 // else, because a diff is what they are for. Screens ranges a Go map, so
 // without the sort in askNiri the screens row moves between two readings of an
 // unchanged machine and reads as a monitor having moved.
 //
-// Twelve readings of eight outputs: Go randomises where a range of a small map
-// starts, so twelve agreeing by luck is about one in eight billion.
+// Past screensMax, because that is where it is easiest to lose: cut before the
+// sort, two readings keep a different sixteen of one machine's outputs, so the
+// row is a different set of monitors and not the same set reordered.
+//
+// Twelve readings, because Go randomises where a range of a map starts and one
+// reading proves nothing.
 func TestTwoReadingsOfOneMachineNameItsScreensTheSameWay(t *testing.T) {
 	var outputs []string
-	for _, name := range []string{"DP-1", "DP-2", "DP-3", "HDMI-A-1", "HDMI-A-2", "eDP-1", "eDP-2", "DVI-D-1"} {
+	for i := 1; i <= screensMax+4; i++ {
+		name := fmt.Sprintf("DP-%d", i)
 		outputs = append(outputs, `"`+name+`":{"name":"`+name+`","logical":`+
 			`{"x":0,"y":0,"width":2560,"height":1440,"scale":1.0,"transform":"Normal"}}`)
 	}
@@ -251,7 +298,7 @@ func TestTwoReadingsOfOneMachineNameItsScreensTheSameWay(t *testing.T) {
 	var first []string
 	for i := 0; i < 12; i++ {
 		t.Setenv(niri.SocketEnv, fakeNiri(t, reply))
-		got, err := askNiri()
+		got, _, err := askNiri()
 		if err != nil {
 			t.Fatal(err)
 		}

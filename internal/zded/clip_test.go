@@ -37,11 +37,16 @@ type fakeClipboard struct {
 	// writeCalls is how many writes were started, which is not len(wrote): a
 	// write that is still going has not been recorded there yet.
 	writeCalls int
-	changes    chan struct{}
+	// writeStarts rings when one has been started, because writeCalls on its
+	// own is not observable from a connection: a put runs on a goroutine of its
+	// own (see clipPutOn), so nothing a client hears back is ordered against
+	// the write it is being told about.
+	writeStarts chan struct{}
+	changes     chan struct{}
 }
 
 func newFakeClipboard() *fakeClipboard {
-	return &fakeClipboard{changes: make(chan struct{}, 1)}
+	return &fakeClipboard{writeStarts: make(chan struct{}, 1), changes: make(chan struct{}, 1)}
 }
 
 // offer is an application taking the selection, and the ring that follows it.
@@ -87,6 +92,10 @@ func (f *fakeClipboard) Write(text []byte) error {
 	// test asks of this is how many writes were started and not how many
 	// finished.
 	f.writeCalls++
+	select {
+	case f.writeStarts <- struct{}{}:
+	default:
+	}
 	if hold := f.writeBlocks; hold != nil {
 		f.mu.Unlock()
 		<-hold
@@ -370,6 +379,14 @@ func TestOneClipboardWriteAtATimePerConnection(t *testing.T) {
 	}
 	if !strings.Contains(resp.Error, "still putting") {
 		t.Errorf("the second request answered %q, want a refusal naming what it is waiting for", resp.Error)
+	}
+	// The refusal says the claim was held, and nothing about how far the write
+	// holding it has got. So the count is read once that write exists.
+	select {
+	case <-f.writeStarts:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the first request was neither refused nor written, so nothing is holding the claim " +
+			"the second one was refused for")
 	}
 	f.mu.Lock()
 	started := f.writeCalls
