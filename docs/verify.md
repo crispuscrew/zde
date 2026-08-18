@@ -833,9 +833,9 @@ ones are the point of zded holding the bus name.
   and `zde status` names the file. Copy the manifest to a second filename and
   leave `private:` out of the copy: two files naming one desk would otherwise
   settle the flag by which filename sorts first, so both are refused while the
-  pair is there. And `zde desk snapshot` of a private desk should write a
-  manifest that still says `private: true`, because that file is the one zde
-  itself could have used to un-declare the desk.
+  pair is there. And `zde desk snapshot` of a desk some manifest already
+  declares is refused, naming that file: the manifest holding `private: true`
+  is not one zde can write over.
 - **What the doubt costs, said out loud.** On a machine that declares a private
   desk, an arrival zde cannot place on any desk is kept in memory and nothing
   else - it could have come in on the private one, and there is no finding out
