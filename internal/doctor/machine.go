@@ -22,6 +22,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -70,8 +71,11 @@ type Graphics struct {
 	// verbatim. Verbatim because a paraphrase of a compositor's log line is a
 	// sentence somebody then cannot search the web for.
 	Fell []string
-	// Saw is the rest of what niri said about renderers, devices and outputs,
-	// bounded. It is context for a verdict rather than part of it.
+	// Saw is the rest of what niri said about a renderer and the devices under
+	// one, bounded. It is context for a verdict rather than part of it, and what
+	// counts as being about a renderer is a short list of that word's company
+	// rather than anything broader - see sawSigns, and the header these lines
+	// are described by (report.go, reportHeader).
 	Saw []string
 	// LogErr is why the log could not be read, which on this machine is a
 	// reading too: no journalctl, no journal, or a unit that never existed.
@@ -162,8 +166,8 @@ type Hardware struct {
 	// nvidia_drm.modeset=0 are both in it and both are a black screen, and
 	// neither leaves a trace anywhere else on this list.
 	//
-	// With the disk out of it - see kernelCmdline. Every parameter is here and
-	// the values that name a filesystem are not.
+	// Narrowed - see kernelCmdline. Every parameter's name is here; the value
+	// is here for the ones that decide what can be drawn, and for nothing else.
 	Cmdline string
 
 	// Inputs is what the kernel calls each input device, which is the answer to
@@ -250,6 +254,20 @@ var fellSigns = []string{
 // context, never as a verdict. A line matching one of these and none of the
 // fellSigns is niri talking about a device, which is what somebody reading this
 // cold wants under the answer.
+//
+// Every sign here is a renderer's word, and that is a bound rather than a house
+// style. These lines go into the file whole, in niri's own words, and the header
+// says what they are about (report.go, reportHeader) - so what matches decides
+// what leaves this machine, and a sign broad enough to catch a line that is not
+// about a renderer catches whatever else that line was carrying.
+//
+// "output" was on this list and is not any more. niri uses the word for a
+// monitor, for a block of the config file and for anything it prints about
+// either, so it matched lines the header could not honestly describe - and the
+// question it was here to answer is already answered better one row up, by
+// asking niri which screens it has rather than by grepping its log for the word
+// (askNiri). What that costs is a line about a connector that says nothing about
+// a renderer, on a machine where niri is not answering either.
 var sawSigns = []string{
 	"renderer",
 	"gpu",
@@ -257,7 +275,6 @@ var sawSigns = []string{
 	"egl",
 	"gbm",
 	"/dev/dri",
-	"output",
 }
 
 // graphicsEnv is every variable that can change what a compositor renders with,
@@ -627,58 +644,130 @@ func probeHardware(root string) Hardware {
 	return h
 }
 
-// diskParams are the kernel parameters whose value is the identity of a
-// filesystem rather than an instruction to the kernel.
+// keptParams are the kernel parameters whose value this file writes down, and
+// it is an allowlist because the thing it guards cannot be listed.
 //
-// root= and resume= are a UUID or a device path, rd.luks.* and cryptdevice= are
-// the encrypted volume this machine unlocks at boot, and resume_offset= is
-// where in it the swap file starts. Every one of them travels with the file and
-// none of them can cause or explain a black screen: the parameters that do -
-// nomodeset, nvidia_drm.modeset=0, a module blacklist, an i915 option - are on
-// the same line and are kept, along with everything else, including parameters
-// this list has never heard of.
-var diskParams = []string{
-	"root",
-	"resume",
-	"resume_offset",
-	"cryptdevice",
-	"rd.luks.uuid",
-	"rd.luks.name",
-	"rd.lvm.lv",
-	"rd.md.uuid",
-	"rd.dm.uuid",
+// It was a denylist of nine names - root=, resume=, resume_offset=, cryptdevice=
+// and five rd.* - on the reasoning that those are a filesystem's identity and
+// everything else on the line is an instruction to the kernel. The reasoning was
+// right about those nine and wrong about the line. A netbooted machine carries
+// BOOTIF= with the MAC of the NIC it booted from, ip= with an address, a netmask
+// and this machine's hostname, and nfsroot= with a server; a machine that
+// unlocks a disk from a key file carries rd.luks.key= with the path to it;
+// systemd.machine_id= is the one identifier the header promises twice over is
+// not here; and systemd.setenv= sets any variable at all, which is exactly the
+// place the header says an API key would be. Not one of the nine covers any of
+// them, and that is not an oversight anybody fixes by adding nine more: a
+// denylist keeps the promises somebody thought of, and this file's whole value
+// is a promise about the ones nobody thought of.
+//
+// Inverted, then, and the balance it strikes is the one the old list already
+// struck: the parameter's name always stays and only its value goes. "This
+// machine netboots" and "this machine resumes from something" are facts about
+// how it boots and may well matter; the MAC it netboots from and the volume it
+// resumes from are a serial number for somebody. A person reading the file sees
+// the parameter was there.
+//
+// What is on the list is what decides what can be drawn, plus the few that
+// explain a session that never started at all. What the inversion costs is a
+// parameter that would have explained a black screen and that nobody put here:
+// its name is in the file and its value reads <removed>, so the reader knows
+// there is something to go and ask about rather than being told nothing. That is
+// the same deal root= has had since the first draft of this file.
+var keptParams = []string{
+	// The connector, the mode, and the console the kernel draws on.
+	"video",
+	"vga",
+	"fbcon",
+	"console",
+	// A driver kept out of the machine on purpose, which is the commonest
+	// deliberate cause of a black screen there is.
+	"modprobe.blacklist",
+	"module_blacklist",
+	"initcall_blacklist",
+	// The firmware and bus knobs a graphics workaround is usually written as.
+	"acpi_backlight",
+	"acpi_osi",
+	"iommu",
+	"intel_iommu",
+	"amd_iommu",
+	"pci",
+	"pcie_aspm",
+	// And why there might have been no session to draw into.
+	"systemd.unit",
+	"systemd.log_level",
+	"loglevel",
+	"plymouth.enable",
 }
 
-// kernelCmdline is /proc/cmdline with the disk taken out of it.
+// keptPrefixes are the module namespaces every option of which is kept.
 //
-// The parameter's name stays and only its value goes, which is the whole
-// balance of it: "this machine resumes from something" is a fact about how it
-// boots and may well matter, and which volume it resumes from is a serial
-// number for the disk. A person reading the file sees the parameter was there.
+// A module parameter is <module>.<name>=<value>, and the module is the part that
+// decides whether it belongs here: i915.enable_psr, amdgpu.dc and
+// nvidia_drm.modeset are three spellings of the same answer, and no list of
+// whole names would keep up with the next one. Both spellings of the nvidia
+// modules are here because both get typed - the module is nvidia_drm and the
+// parameter is as often written nvidia-drm.
+var keptPrefixes = []string{
+	"drm.",
+	"i915.",
+	"xe.",
+	"amdgpu.",
+	"radeon.",
+	"nouveau.",
+	"nvidia.",
+	"nvidia_drm.",
+	"nvidia-drm.",
+	"nvidia_modeset.",
+	"nvidia-modeset.",
+	"nvidia_uvm.",
+	"simpledrm.",
+}
+
+// kernelCmdline is /proc/cmdline with every value this file does not name taken
+// off it.
 //
-// Prefix-matched on the name before the first "=", so root=UUID=..., root=/dev/-
-// nvme0n1p2 and root=LABEL=nixos are all the same parameter and all go. A bare
-// word with no "=" is not a value to remove and is left alone: `ro`, `quiet`
-// and `nomodeset` are the shape of most of this line.
+// Three rules, in the order they are applied.
+//
+// A word with no "=" in it is kept whole. `ro`, `quiet`, `nomodeset` and
+// `boot.shell_on_fail` are the shape of most of what explains a black screen,
+// and a parameter with no value has nothing in it to be somebody's identity.
+//
+// A parameter whose name is on keptParams, or that begins with one of
+// keptPrefixes, is kept whole. That is nomodeset's company: the driver options,
+// the blacklists and the video= that decide what gets drawn.
+//
+// Everything else keeps its name and loses its value, as `name=<removed>`.
+//
+// Matched on the name before the first "=", so root=UUID=..., root=/dev/-
+// nvme0n1p2 and root=LABEL=nixos are one parameter and go the same way.
 func kernelCmdline(s string) string {
 	fields := strings.Fields(s)
 	for i, f := range fields {
 		name, _, ok := strings.Cut(f, "=")
-		if !ok {
+		if !ok || keptParam(name) {
 			continue
 		}
-		for _, p := range diskParams {
-			if name == p {
-				// One word, with no space in it, because the line it goes back
-				// into is read as words: a placeholder with a sentence in it
-				// would be four more parameters as far as anything reading this
-				// is concerned. What it means is in the file's own header.
-				fields[i] = name + "=<removed>"
-				break
-			}
-		}
+		// One word, with no space in it, because the line it goes back into is
+		// read as words: a placeholder with a sentence in it would be four more
+		// parameters as far as anything reading this is concerned. What it means
+		// is in the file's own header.
+		fields[i] = name + "=<removed>"
 	}
 	return strings.Join(fields, " ")
+}
+
+// keptParam is whether this parameter's value is one the file writes down.
+func keptParam(name string) bool {
+	if slices.Contains(keptParams, name) {
+		return true
+	}
+	for _, p := range keptPrefixes {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // cpuInfo is the processor's own name for itself and how many the kernel sees.

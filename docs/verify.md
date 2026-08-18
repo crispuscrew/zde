@@ -240,9 +240,9 @@ From then on, every session start leaves a file at
 
 UTC, then the first eight characters of the boot id. Eight files are kept, 64
 KiB each, 0600 and yours. It holds the graphics answer, the versions, the
-hardware and the whole of `zde doctor`; it holds no notification text, no
-clipboard, nothing from the queue, no window titles and nothing that names a
-desk declared `private: true`.
+hardware, the lines niri itself logged about a renderer this boot, and the whole
+of `zde doctor`; it holds no notification text, no clipboard, nothing from the
+queue, no window titles and nothing that names a desk declared `private: true`.
 
 **Read the header before you send it to anybody**, because the file itself is
 the list of what is in it and this paragraph is not. It is an inventory of a
@@ -250,10 +250,16 @@ machine, so it identifies one: the make and model, the motherboard, the
 processor, your account name and paths under your home directory, the store
 path of the running system - which on NixOS has your hostname in it - and every
 input device the kernel names, which is your keyboard and equally a security
-key, a tablet or the virtual keyboard a remote-desktop program creates. One
-thing is narrowed rather than listed: the kernel command line keeps every
-parameter and drops the values that name a disk, because `root=` cannot explain
-a black screen and `nomodeset`, on the same line, explains half of them.
+key, a tablet or the virtual keyboard a remote-desktop program creates.
+
+Two things are narrowed rather than listed. The kernel command line keeps every
+parameter's *name* and only the values that decide what gets drawn - `nomodeset`
+and the other words that carry no value at all, a module blacklist, a driver
+option, `video=` - so `root=`, `ip=`, `BOOTIF=` and `systemd.setenv=` appear on
+the line with `<removed>` where the disk, the address, the MAC and the variable
+were. And whatever is holding the session awake is counted and never named,
+because logind takes an inhibitor's name from the command line of the program
+that set it; `zde doctor`, in a terminal on your own machine, does name it.
 
 `zde report` writes one by hand at any time - from a terminal, or from
 Ctrl+Alt+F2 on a machine whose tty1 is black. That is the first thing to try,

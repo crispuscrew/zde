@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/godbus/dbus/v5"
+
 	"github.com/crispuscrew/zde/internal/bus"
 	"github.com/crispuscrew/zde/internal/manifest"
 	"github.com/crispuscrew/zde/internal/zded"
@@ -45,6 +47,10 @@ func healthy() Session {
 		Desks: Desks{Dir: "/home/u/.config/zde/desks", Resolver: byZcr, Configured: true},
 		Power: Logind{
 			Session: "2",
+			// Named, because this is the session `zde doctor` gathers on the
+			// person's own screen: the holders below arrive with their words in
+			// them, and the snapshot's half of that is asserted in report_test.
+			Named: true,
 			Can: []Can{
 				{What: "suspend", Answer: "yes"},
 				{What: "reboot", Answer: "yes"},
@@ -933,6 +939,98 @@ func TestAnIdleHolderIsNamedWithWhatItCosts(t *testing.T) {
 	}
 }
 
+// And they reach a file, which is the half this check was missing.
+//
+// `systemd-inhibit --who=` defaults, says its own manual page, "to the command
+// line string" of whatever ran it - so an ordinary backup puts a path under
+// somebody's home directory, the host it is copying to and the name of the file
+// it is copying into logind's table, and every one of those went verbatim into
+// a snapshot written to be pasted into a bug report. Neither string can cause
+// or explain a black screen.
+//
+// So they are not gathered at all for a reader who is not the owner, which is
+// the rule the private desks already had and the field nobody had applied it to
+// (gather.go, audience). Asserted at the reading rather than at the row,
+// because that is where the fix is: a name that was never put in the struct is
+// one no later pass has to know about.
+func TestAnIdleHoldersWordsAreNotGatheredForAnybodyButTheOwner(t *testing.T) {
+	rows := []inhibitor{
+		{What: "idle:sleep", Mode: "block", UID: 1000, PID: 4211,
+			Who: "rsync -a /home/alice/Documents/divorce-papers/ backup.example.net:/srv/alice",
+			Why: "Scheduled backup of /home/alice"},
+		{What: "idle", Mode: "block", UID: 1000, PID: 4300,
+			Who: "/home/alice/bin/record-session.sh", Why: "recording"},
+		// Neither of these is holding idle off, and neither is the audience's
+		// business: the narrowing happens first and is the same for both.
+		{What: "sleep", Mode: "block", Who: "systemd-sleep", Why: "not idle"},
+		{What: "idle", Mode: "delay", Who: "saver", Why: "a delay is not a hold"},
+	}
+
+	// The owner's own screen: their machine, their words, and the next thing
+	// they do is go and stop one of these.
+	own := heldIdle(rows, owner)
+	if len(own) != 2 {
+		t.Fatalf("heldIdle for the owner = %d rows, want the two holding idle off", len(own))
+	}
+	if !strings.Contains(own[0].Who, "divorce-papers") || !strings.Contains(own[0].Why, "/home/alice") {
+		t.Errorf("`zde doctor` on the owner's own screen hid what is holding their screen: %+v", own[0])
+	}
+
+	// And a file that leaves the machine: the same rows, counted, with nothing
+	// of anybody's prose in them.
+	all := heldIdle(rows, anyone)
+	if len(all) != len(own) {
+		t.Fatalf("heldIdle for anyone = %d rows and the owner got %d: the count is the finding", len(all), len(own))
+	}
+	for i, h := range all {
+		if h.Who != "" || h.Why != "" {
+			t.Errorf("row %d carries a stranger's words into a file that leaves the machine: %+v", i, h)
+		}
+	}
+}
+
+// The row that is drawn from those readings. A holder that may not be named is
+// still a holder, and this is the check whose whole purpose is to refuse to
+// give an all-clear it cannot support - so a redaction that turned into one
+// would be the worst outcome available here.
+func TestHoldersThatMayNotBeNamedAreCountedAndStillAWarning(t *testing.T) {
+	s := healthy()
+	s.Power.Named = false
+	s.Power.Holds = []Hold{{}, {}, {}}
+
+	found := named(Judge(s), "idle")
+	if len(found) != 2 {
+		t.Fatalf("want the finding and the caveat, got %d:\n%s", len(found), Judge(s))
+	}
+	if found[0].Level != Warn {
+		t.Errorf("idle = %s, want a warning of the same weight a named holder gets", found[0])
+	}
+	// The count, which is the finding.
+	if !strings.Contains(found[0].Detail, "3 thing(s)") {
+		t.Errorf("idle = %s, want how many are holding it", found[0])
+	}
+	// Never an all-clear, in either of the two shapes one could take.
+	for _, wrong := range []string{"nothing holding this session awake", "nothing is holding"} {
+		if strings.Contains(found[0].Detail, wrong) {
+			t.Errorf("idle = %s, and three holders were reported as none", found[0])
+		}
+	}
+	// What it costs, and where the answer is - because a file that talked
+	// somebody out of looking further would be worse than no file.
+	for _, want := range []string{"until they let go", "systemd-inhibit --list", "zde doctor"} {
+		if !strings.Contains(found[0].Detail, want) {
+			t.Errorf("idle = %s, want %q on the line", found[0], want)
+		}
+	}
+	// And the caveat is still last, because it qualifies the finding.
+	if !strings.Contains(found[1].Detail, "more than logind can see") {
+		t.Errorf("idle = %s, want the caveat last", found[1])
+	}
+	if Judge(s).Failed() != 0 {
+		t.Errorf("an idle hold nobody may name failed a check:\n%s", Judge(s))
+	}
+}
+
 // A holder's own words reach a terminal, and `systemd-inhibit --why=...` takes
 // them from whoever runs it. The report is piped into bug reports and read in a
 // terminal, so an escape here rewrites the screen it is printed on.
@@ -1241,7 +1339,7 @@ func TestNoLogindAnswerIsEverAFailure(t *testing.T) {
 // apart (gather.go, probeLogind).
 func TestABusThatAnswersWithNoLogindOnItIsTheVerdictAndNotAReading(t *testing.T) {
 	busWithNobodyOnIt(t)
-	l := probeLogind()
+	l := probeLogind(owner)
 	if l.Err != nil {
 		t.Fatalf("probeLogind against a bus that answered = %v, want its answer", l.Err)
 	}
@@ -1260,7 +1358,15 @@ func TestABusThatAnswersWithNoLogindOnItIsTheVerdictAndNotAReading(t *testing.T)
 // internal/link's fake NetworkManager is one (fakebus_test.go): what is being
 // asserted here is what the other end says, and the seam is the same single
 // environment variable, so no production code learns it is being tested.
-func busWithNobodyOnIt(t *testing.T) {
+func busWithNobodyOnIt(t *testing.T) { privateBus(t) }
+
+// privateBus starts that daemon and answers with the address it is listening
+// on, having already pointed this test's own environment at it.
+//
+// The address comes back so that a test can put something on the bus as well as
+// ask about an empty one: the two callers below are "there is no logind here"
+// and "there is a logind and this is what it says".
+func privateBus(t *testing.T) string {
 	t.Helper()
 	const daemon = "dbus-daemon"
 	if _, err := exec.LookPath(daemon); err != nil {
@@ -1306,7 +1412,100 @@ func busWithNobodyOnIt(t *testing.T) {
 		cmd.Process.Signal(os.Interrupt) //nolint:errcheck // it is going away either way
 		cmd.Wait()                       //nolint:errcheck // its exit status is not this test's business
 	})
-	t.Setenv("DBUS_SYSTEM_BUS_ADDRESS", strings.TrimSpace(line))
+	addr := strings.TrimSpace(line)
+	t.Setenv("DBUS_SYSTEM_BUS_ADDRESS", addr)
+	return addr
+}
+
+// logindFake is the handful of calls probeLogind puts to logind, and nothing
+// else. A real bus and a real decode rather than a Logind written down by hand,
+// because what is being asserted is that the audience reaches the wire: the two
+// strings are on the rows logind sent and the question is whether they are still
+// there when the probe has finished with them.
+type logindFake struct{ rows []inhibitor }
+
+func (*logindFake) CanSuspend() (string, *dbus.Error)  { return "yes", nil }
+func (*logindFake) CanReboot() (string, *dbus.Error)   { return "yes", nil }
+func (*logindFake) CanPowerOff() (string, *dbus.Error) { return "yes", nil }
+
+func (f *logindFake) ListInhibitors() ([]inhibitor, *dbus.Error) { return f.rows, nil }
+
+func (*logindFake) GetUser(uid uint32) (dbus.ObjectPath, *dbus.Error) {
+	return dbus.ObjectPath("/org/freedesktop/login1/user/_1000"), nil
+}
+
+// userFake is that user object's one property: the graphical session, as the
+// (id, path) pair logind answers with.
+type userFake struct{}
+
+func (userFake) Get(iface, prop string) (dbus.Variant, *dbus.Error) {
+	return dbus.MakeVariant(struct {
+		ID   string
+		Path dbus.ObjectPath
+	}{"2", "/org/freedesktop/login1/session/_32"}), nil
+}
+
+// busWithLogindOn puts that fake on a bus of this test's own and hands back
+// nothing: the seam is the environment variable, so no production code learns
+// it is being tested (see busWithNobodyOnIt).
+func busWithLogindOn(t *testing.T, rows []inhibitor) {
+	t.Helper()
+	addr := privateBus(t)
+	conn, err := dbus.Connect(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() }) //nolint:errcheck // the test is over
+	if err := conn.Export(&logindFake{rows: rows}, logindPath, logindMgr); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Export(userFake{}, "/org/freedesktop/login1/user/_1000", "org.freedesktop.DBus.Properties"); err != nil {
+		t.Fatal(err)
+	}
+	reply, err := conn.RequestName(logindName, dbus.NameFlagDoNotQueue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply != dbus.RequestNameReplyPrimaryOwner {
+		t.Fatalf("the fake could not take %s on its own bus", logindName)
+	}
+}
+
+// The whole probe, end to end, against a logind that answers. This is the line
+// that says which of the two the readings are for, and it is one line away from
+// the call that takes them - so it is asserted where a mistake in it would
+// actually show: in what came back off the wire.
+func TestTheProbeTakesAHoldersWordsForTheOwnerAndForNobodyElse(t *testing.T) {
+	rows := []inhibitor{{
+		What: "idle", Mode: "block", UID: 1000, PID: 4211,
+		Who: "rsync -a /home/alice/Documents/divorce-papers/ backup.example.net:/srv/alice",
+		Why: "Scheduled backup of /home/alice",
+	}}
+	busWithLogindOn(t, rows)
+
+	own := probeLogind(owner)
+	if own.Err != nil {
+		t.Fatalf("probeLogind against a logind that answered = %v", own.Err)
+	}
+	if !own.Named || len(own.Holds) != 1 || !strings.Contains(own.Holds[0].Who, "divorce-papers") {
+		t.Fatalf("the owner's own screen did not get the holder logind named: %+v", own)
+	}
+
+	all := probeLogind(anyone)
+	if all.Named {
+		t.Error("a gather for a file that leaves the machine says its holders are named")
+	}
+	if len(all.Holds) != 1 {
+		t.Fatalf("probeLogind for anyone = %d holds, want the count to survive", len(all.Holds))
+	}
+	if all.Holds[0].Who != "" || all.Holds[0].Why != "" {
+		t.Errorf("a holder's own words came off the wire into a file that leaves the machine: %+v", all.Holds[0])
+	}
+	// And the check drawn from it says the count and no name at all.
+	c := named(Judge(Session{Power: all}), "idle")[0]
+	if !strings.Contains(c.Detail, "1 thing(s)") || strings.Contains(c.Detail, "divorce-papers") {
+		t.Errorf("idle = %s", c)
+	}
 }
 
 // The probe half. Every check here has to work on a machine where the thing is
@@ -1316,7 +1515,7 @@ func busWithNobodyOnIt(t *testing.T) {
 func TestTheLogindProbeAnswersOnAMachineWithNoSystemBus(t *testing.T) {
 	t.Setenv("DBUS_SYSTEM_BUS_ADDRESS", "unix:path="+filepath.Join(t.TempDir(), "no-bus-here"))
 	start := time.Now()
-	l := probeLogind()
+	l := probeLogind(owner)
 	if l.Err == nil {
 		t.Fatalf("probeLogind against nothing = %+v, want the absence said out loud", l)
 	}

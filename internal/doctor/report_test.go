@@ -84,6 +84,9 @@ func TestTheSnapshotIsWrittenWhenNothingIsUp(t *testing.T) {
 // and what is missing from it.
 func TestTheHeaderSaysWhatIsAndIsNotInTheFile(t *testing.T) {
 	text := renderReport(dark(), darkMachine(), noon)
+	// Read as sentences rather than as lines: the header is filled to a column
+	// and a promise is the sentence, wherever the fill happens to break it.
+	head := unwrapped(text[:strings.Index(text, secGraphics)])
 	for _, promise := range []string{
 		"no notification text",
 		"no clipboard content",
@@ -91,14 +94,206 @@ func TestTheHeaderSaysWhatIsAndIsNotInTheFile(t *testing.T) {
 		"no window titles",
 		"private",
 		"allowlist",
+		// The three the file used to make and break. A snapshot carries the
+		// niri lines it is judged off, so the header says which journal is in
+		// it rather than that none is; it counts what is holding the session
+		// awake and does not name it; and the command line keeps a name whose
+		// value it has taken.
+		"No journal but the niri lines above",
+		"counted and never named",
+		"<removed>",
 	} {
-		if !strings.Contains(text, promise) {
-			t.Errorf("the header does not say the file has no %s:\n%s", promise, text[:1200])
+		if !strings.Contains(head, promise) {
+			t.Errorf("the header does not say %q:\n%s", promise, head)
 		}
+	}
+	// And it does not make the promises the file cannot keep. Each of these was
+	// in the header while the file did the opposite.
+	for _, broken := range []string{
+		"no journal content",
+	} {
+		if strings.Contains(head, broken) {
+			t.Errorf("the header still promises %q, which this file does not do:\n%s", broken, head)
+		}
+	}
+	// The bound on the journal half is printed from the bound itself, so the
+	// sentence cannot go stale when the number moves.
+	if !strings.Contains(head, fmt.Sprintf("up to %d lines", fellMax+sawMax)) {
+		t.Errorf("the header does not say how much of the journal is in the file:\n%s", head)
 	}
 	if !strings.Contains(text, noon.Format(time.RFC3339)) {
 		t.Error("the file does not say when it was taken")
 	}
+}
+
+// unwrapped is the header as its sentences rather than as its rows, so that a
+// test about what this file promises is not also a test about where the fill
+// put a newline.
+func unwrapped(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+// The header and the file have to agree about the journal, and for a while they
+// did not: the header promised "no journal content" a few lines under a list
+// saying the file holds "the lines niri itself logged about renderers this
+// boot". One of the two had to give, and it was the promise - those lines
+// are the evidence the answer at the top of the file was read off, and a
+// snapshot that answered "niri says it never drew, now go and read the journal"
+// would be one more thing to do on the machine that will not boot.
+//
+// So this pins the shape of the decision rather than the words: the lines are
+// in the file, and the header says so.
+func TestTheHeaderAdmitsTheNiriLinesTheFileCarries(t *testing.T) {
+	m := darkMachine()
+	m.Graphics.LogErr = nil
+	m.Graphics.Fell = []string{"Error creating renderer for primary GPU: no allocator available for device"}
+	m.Graphics.Saw = []string{"Trying to initialize EGL on /dev/dri/card0"}
+	text := renderReport(dark(), m, noon)
+	head := unwrapped(text[:strings.Index(text, secGraphics)])
+
+	// Whole and in niri's own words, because a paraphrase of a compositor's log
+	// line is a sentence nobody can then search the web for.
+	for _, line := range append(m.Graphics.Fell, m.Graphics.Saw...) {
+		if !strings.Contains(text, line) {
+			t.Errorf("the evidence the answer was read off is not in the file: %q", line)
+		}
+	}
+	// So the header may not say the file has none of it, and it has to say what
+	// a person is being asked to skim before they paste.
+	if strings.Contains(head, "no journal content") {
+		t.Errorf("the header denies the journal lines the file is carrying:\n%s", head)
+	}
+	for _, want := range []string{"in niri's own words", "journal content", "before you send this"} {
+		if !strings.Contains(head, want) {
+			t.Errorf("the header does not say %q, so the file is carrying it silently:\n%s", want, head)
+		}
+	}
+}
+
+// The other reading a stranger writes, in the file rather than at the check.
+//
+// logind takes an inhibitor's name from the command line of whatever set it -
+// `man systemd-inhibit`: --who= "defaults to the command line string" - so an
+// ordinary backup wrapped in systemd-inhibit put a home directory, a remote
+// host and a filename into a file whose header promises "No command line but
+// the kernel's own". The audience mechanism covered desks and manifests and
+// never reached this field.
+func TestNothingHoldingTheSessionAwakeIsNamedInTheFile(t *testing.T) {
+	rows := []inhibitor{{
+		What: "idle", Mode: "block", UID: 1000, PID: 4211,
+		Who: "rsync -a /home/alice/Documents/divorce-papers/ backup.example.net:/srv/alice",
+		Why: "Scheduled backup of /home/alice",
+	}}
+	s := dark()
+	// Gathered the way the snapshot gathers it, so this is the state the probe
+	// produces rather than one written down by hand.
+	s.Power = Logind{Session: "2", Holds: heldIdle(rows, anyone)}
+	text := renderReport(s, darkMachine(), noon)
+
+	for _, secret := range []string{
+		"divorce-papers", "backup.example.net", "/home/alice", "rsync", "Scheduled backup",
+	} {
+		if strings.Contains(text, secret) {
+			t.Errorf("%q came out of another program's command line and is in the file:\n%s",
+				secret, section(t, text, secDoctor))
+		}
+	}
+	// The finding survives, because a file that silently dropped it is a file
+	// whose all-clear cannot be trusted.
+	doc := section(t, text, secDoctor)
+	if !strings.Contains(doc, "1 thing(s)") {
+		t.Errorf("nothing says the session is being held awake at all:\n%s", doc)
+	}
+	// The same machine on the person's own screen, which is the whole reason
+	// this is an audience and not a redaction.
+	own := Judge(Session{Power: Logind{Named: true, Holds: heldIdle(rows, owner)}}).String()
+	if !strings.Contains(own, "divorce-papers") {
+		t.Errorf("`zde doctor` on the owner's own screen hides what is holding their screen awake:\n%s", own)
+	}
+}
+
+// The one line that applies this file's whole privacy design, tested through
+// the door it is behind.
+//
+// WriteReport is what a session start runs (cmd/zde, report) and it was called
+// by no test at all - its only caller anywhere is cmd/zde/main.go. Every privacy
+// test in this file enters at renderReport or at gather(anyone) directly, so
+// `s := gather(anyone)` was pinned by nothing: changed to gather(owner) it
+// leaves the whole suite green and puts private desk names, the apps on them,
+// the paths of the manifests that would not parse and the resolver's quoted app
+// name into a file written to a disk and pasted into bug reports.
+//
+// So this one goes in at WriteReport, off manifests on a disk, and reads the
+// file back from where it landed rather than asserting on the text that came
+// back - because the file is the thing that leaves the machine.
+func TestTheSnapshotWrittenToDiskNamesNothingOffAPrivateDesk(t *testing.T) {
+	withDesks(t,
+		"work.yaml", "name: work\nmonitors: { DP-1: { workspaces: [code] } }\napps:\n  - { app: browser }\n",
+		"therapy.yaml", "name: therapy\nprivate: true\nmonitors: { DP-1: { workspaces: [code] } }\napps:\n  - { app: journal-app }\n")
+	withZcr(t)
+	offTheMachine(t)
+	intoTemp(t)
+
+	path, text, err := WriteReport(Self{Zde: "0.1.0"})
+	if err != nil {
+		t.Fatalf("WriteReport: %v", err)
+	}
+	onDisk, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("the snapshot said it wrote %s: %v", path, err)
+	}
+	if string(onDisk) != text {
+		t.Error("the file on the disk is not the text WriteReport answered with")
+	}
+	for _, secret := range []string{"therapy", "journal-app"} {
+		if bytes.Contains(onDisk, []byte(secret)) {
+			t.Errorf("%q is on a desk declared private and is in the file on the disk:\n%s",
+				secret, section(t, string(onDisk), secDoctor))
+		}
+	}
+	// The desk that declared nothing is still reported, or the redaction would
+	// be a way to silence the check by declaring everything private - and a
+	// gather that answered nothing at all would pass the loop above.
+	if !bytes.Contains(onDisk, []byte("work names browser")) {
+		t.Errorf("the ordinary desk was redacted too, so this file proves nothing:\n%s",
+			section(t, string(onDisk), secDoctor))
+	}
+	// And the count survives, which is what makes the rest of the file
+	// trustworthy rather than merely quiet.
+	if !bytes.Contains(onDisk, []byte("1 desk(s) declare private")) {
+		t.Errorf("nothing in the file says a private desk was left out of it:\n%s",
+			section(t, string(onDisk), secDoctor))
+	}
+}
+
+// intoTemp points the snapshot writer at a directory of this test's own, made
+// the way layer 0 makes the real one: per account, and already there, because
+// writeReport deliberately creates nothing (nix/system.nix).
+func intoTemp(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	was := ReportDir
+	t.Cleanup(func() { ReportDir = was })
+	ReportDir = dir
+	if err := os.MkdirAll(filepath.Join(dir, whoami()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// offTheMachine points every probe that would otherwise reach outside this test
+// at somewhere that is not there.
+//
+// WriteReport gathers for real, which is the point of testing it, and it runs on
+// somebody's own working machine: the session bus, the system bus and zded's
+// socket are all live there. A test that asked them would be reading the
+// developer's own session into a temporary file and would answer differently on
+// every machine it ran on. PATH is already a directory of the test's own by the
+// time this is called (withZcr), which is what stops journalctl, systemctl,
+// loginctl and podman being the real ones.
+func offTheMachine(t *testing.T) {
+	t.Helper()
+	dead := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", dead)
+	t.Setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path="+filepath.Join(dead, "no-session-bus"))
+	t.Setenv("DBUS_SYSTEM_BUS_ADDRESS", "unix:path="+filepath.Join(dead, "no-system-bus"))
 }
 
 // A desk that declares private is history only (docs/vision.md, section 3), and
@@ -290,7 +485,14 @@ func TestNoReadingCanForgeAHeadingOrACheck(t *testing.T) {
 			Env:  []EnvVar{{Name: "LIBGL_ALWAYS_SOFTWARE", Value: forge, Set: true}},
 		},
 		Versions: Versions{
-			Zde: "0.1.0", Niri: forge, Kernel: forge, OS: forge,
+			// Zde is this binary's own, set at link time, and is the one string
+			// in these three sections nothing else can have written. Zded is not:
+			// it arrives as JSON over a socket in this account's runtime
+			// directory, which anything running as this account can answer on -
+			// and it was left empty here, so this test took the "not answering"
+			// branch and never reached the row that printed it raw.
+			Zde: "0.1.0", Zded: forge,
+			Niri: forge, Kernel: forge, OS: forge,
 			Revision: forge, Booted: forge, Current: forge,
 		},
 		Hardware: Hardware{

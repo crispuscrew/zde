@@ -49,7 +49,17 @@ import (
 // directory has to be given an owner, and an owner set to the wrong name is a
 // snapshot that is silently never written on the one machine somebody set the
 // option for.
-const ReportDir = "/var/log/zde"
+//
+// A var and not a const, and only a test ever assigns it. It was a const, and
+// the cost of that was the defect below it: WriteReport is the door a session
+// start comes through and there was no way to run it anywhere but /var/log/zde,
+// so every test of this file entered at renderReport or at gather instead - and
+// the one line that decides who this file's readings are gathered for was
+// covered by nothing at all. It could be changed from anyone to owner with the
+// whole suite green, and that change puts private desk names, the apps on them,
+// the paths of manifests that would not parse and the resolver's quoted app
+// name into a file written to a disk and pasted into bug reports.
+var ReportDir = "/var/log/zde"
 
 // reportsMax is how many are kept, and reportBytesMax bounds one of them.
 //
@@ -60,7 +70,9 @@ const ReportDir = "/var/log/zde"
 // bounded is the same defect with a slower clock.
 //
 // One file is what the sections below add up to. The header and the four
-// section headings are a page and a half, about 3 KB. Graphics is a verdict, up
+// section headings are two pages, about 4 KB - it grew when the header stopped
+// making three promises the file underneath it was not keeping, and the length
+// is the cost of the file saying what is in it rather than gesturing at it. Graphics is a verdict, up
 // to cardsMax device lines, fellMax + sawMax log lines at lineMax (32 rows x
 // 300 characters, which is where the row filter bounds them: 10 KB), the
 // environment allowlist, and screensMax names: under 14 KB. Versions is a dozen
@@ -174,14 +186,31 @@ const (
 // account name, and twenty-seven input devices by name - one of which said out
 // loud that there is remote-access software on the machine. Every one of those
 // is either the point of the file or the cost of the reading beside it, so what
-// changed is not what is captured but what the file admits to carrying. The one
-// exception is the kernel command line, which is narrowed: root= and resume=
-// name a disk and can explain nothing about a black screen, while nomodeset,
-// which is on the same line, explains most of them.
+// changed is not what is captured but what the file admits to carrying.
 //
-// Every promise in it is kept by something above or beside it: the allowlist
-// (graphicsEnv), the outputs-and-never-windows rule (askNiri), the disk
-// identities taken out of the command line (kernelCmdline), and the private
+// Two readings are narrowed rather than admitted to, because admitting to them
+// would cost the file the thing it is for. The kernel command line keeps every
+// parameter's name and the value of the ones that decide what gets drawn
+// (machine.go, keptParams), so nomodeset survives and the MAC a machine
+// netboots from does not. And whatever is holding this session awake is counted
+// rather than named (gather.go, Logind.Named), because logind takes an
+// inhibitor's name from the command line of the program that set it - which is
+// how a backup running out of somebody's home directory came to be written down
+// here with the path it was copying.
+//
+// One reading is admitted to rather than narrowed, and it is the only one: the
+// lines niri itself logged about a renderer. They are journal content, the
+// paragraph below promised there was none, and the list above it said they were
+// here - so one of the two had to give. They stay because they are the
+// evidence the first line of the file was read off, and because a snapshot that
+// answered "niri says it never drew, go and read the journal" would be one more
+// thing to do on the machine that will not boot. What changed is that the
+// sentence about them says what a person is being asked to skim before they
+// paste, and that the lines picked up are held to the word the sentence uses
+// (machine.go, sawSigns).
+//
+// Every other promise is kept by something above or beside it: the allowlist
+// (graphicsEnv), the outputs-and-never-windows rule (askNiri), and the private
 // desks that are counted and never named (gather.go, audience).
 const reportHeader = `zde state snapshot
 %s
@@ -196,13 +225,21 @@ that will not boot.
 What is in it, exactly. Readings, and this is the whole list of them, because
 somebody is going to paste this file into a bug report:
 
-  - the graphics device nodes, the drivers bound to them and the chip ids, and
-    the lines niri itself logged about renderers this boot
+  - the graphics device nodes, the drivers bound to them and the chip ids
+  - up to %d lines niri itself logged this boot, whole and in niri's own words:
+    the ones saying it could not reach a renderer, and the ones naming a
+    renderer, a GPU, DRM, EGL, GBM or /dev/dri. That is journal content, and it
+    is the only journal content here - it is in the file because it is the
+    evidence the answer at the top was read off. Read it before you send this
   - the make and model of this machine, its motherboard and its processor, the
     memory the kernel sees, and whether it booted through UEFI or BIOS
-  - the kernel command line, with the values that name a disk removed - root=,
-    resume= and the like - and every other parameter kept, because nomodeset is
-    on that line too and it is the answer to half the black screens there are
+  - the kernel command line: every parameter's name, and the value of the ones
+    that decide what can be drawn - a module blacklist, an i915 or nvidia_drm
+    option, video=, console=, systemd.unit=. Every word carrying no value at
+    all is kept, because nomodeset is one of those and it is the answer to half
+    the black screens there are. Every other value reads <removed>, so you can
+    see that root=, ip=, BOOTIF= or systemd.setenv= was on the line without the
+    disk, the address, the MAC or the variable that came after it
   - every input device the kernel names. That is your keyboard, and it is
     equally a security key, a tablet, a games controller, or the virtual
     keyboard a remote-desktop program creates: whatever is attached is here
@@ -223,10 +260,14 @@ What is never in it: no notification text, no clipboard content, nothing
 waiting in the queue, and no window titles - nothing here asks the compositor
 what is on a screen. Nothing about the network: no MAC address, no IP address,
 no wifi name. No machine-id, no firmware serial numbers, no monitor serial
-numbers. No command line but the kernel's own, no journal content, and nothing
-out of your niri config. The environment is an allowlist of the dozen variables
-that change what a compositor renders with, and never the environment itself,
-which is where an API key would be.
+numbers. No command line but the kernel's own: nothing here says what any
+program on this machine was started with, and whatever is holding this session
+awake is counted and never named, because logind takes an inhibitor's name from
+the command line of the program that set it. No journal but the niri lines
+above - no other unit's, and nothing out of your niri config except where one
+of those lines quotes it. The environment is an allowlist of the dozen
+variables that change what a compositor renders with, and never the environment
+itself, which is where an API key would be.
 
 A desk that declares ` + "`private: true`" + ` is counted and never named, and neither are
 the apps on it nor the manifest file that would have named it.
@@ -242,7 +283,10 @@ is mounted somewhere else.
 // machine that is none of them.
 func renderReport(s Session, m Machine, now time.Time) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, reportHeader, now.Format(time.RFC3339))
+	// The bound is printed from the bound itself, because the header is a
+	// promise about how much of somebody's journal is in the file and a promise
+	// with a number typed into it goes stale the first time the number moves.
+	fmt.Fprintf(&b, reportHeader, now.Format(time.RFC3339), fellMax+sawMax)
 	b.WriteByte('\n')
 
 	// Graphics first, and that is deliberate: it is the question somebody
@@ -408,7 +452,15 @@ func writeVersions(b *strings.Builder, v Versions) {
 	if v.Zded == "" {
 		fmt.Fprintf(b, "  zded       not answering, so its version is not known\n")
 	} else {
-		fmt.Fprintf(b, "  zded       %s\n", v.Zded)
+		// A reading and not orNone, which is the difference this row got wrong.
+		// zde's own version is set at link time and nothing else can touch it;
+		// the daemon's arrives as JSON over a socket, and a socket in this
+		// account's runtime directory is a thing any process running as this
+		// account can answer on. Printed raw it was the one scalar in the three
+		// machine sections that skipped the filter, and a crafted version string
+		// opened a second [doctor] heading and put an escape into a file that is
+		// printed straight to a terminal.
+		fmt.Fprintf(b, "  zded       %s\n", reading(v.Zded))
 		if v.Zde != "" && v.Zded != v.Zde {
 			// Worth a line of its own: a rebuild replaces the binary and leaves
 			// the running daemon where it was, so these two disagreeing means
