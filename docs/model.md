@@ -68,8 +68,16 @@ The bar shows the friendly part.
    X; fresh dynamic workspaces are named into the active band.
 4. Workspace scrolling is clamped to the active desk's band; crossing desks
    is always an explicit desk-level action.
-5. Desk switch restores each monitor's last-active workspace; on hotplug the
-   manifest re-places workspaces on their home monitors.
+5. Desk switch restores each monitor's last-active workspace. On hotplug the
+   workspaces go home, but niri is what takes them: it records the output each
+   was opened on and returns it there when that output comes back
+   (`Layout::add_output`). zde issues no move and the manifest re-places
+   nothing - zde's whole part is that the name keeps saying home while the
+   monitor is away, so the record survives the unplug. The case niri cannot
+   cover is a niri that restarted while the monitor was gone, since its record
+   does not outlive the session: those workspaces stay on the survivor with a
+   truthful name and nothing moves them ([`roadmap.md`](roadmap.md), 0.4;
+   [`verify.md`](verify.md), the lid).
 6. Focus changes never rearrange anything; layout changes are explicit.
 
 ## 5. Desk manifests
@@ -176,7 +184,7 @@ name.
 | audio | `vol-up`, `vol-down`, `mute`, `app-vol`, `sink-switch`, `app-sink`, `mic-mute` |
 | net | `observe`, `kill` (global toggle, loud bar state), `app-cut <app>` |
 | modes | `menu` (pick a mode), `normal`, `window`, `kb-mouse`, `one-hand`, `passthrough` |
-| system | `lock`, `lock-preset` (switch BEFORE lock), `power`, `quiet` (toggle), `attn <mode>` (work / focus / quiet by name; the CLI has it, no key is free for it), `connections` (wifi, and the link you are on; `forget` drops a saved network), `bluetooth` (the radio, what is around it, and pairing; no key of its own, since a second chord for half of one surface is a key to remember for no reason), `calendar`, `wallpapers`, `brightness-up`/`brightness-dn`, `help`, `notif-center`, `doctor`, `report` (write the state snapshot down for a session that will not come up; needs `zde.debug`, and no key of its own - the day it is wanted there is nobody at the keyboard), `update`, `layout-switch` (native) |
+| system | `lock`, `lock-preset` (switch BEFORE lock), `power`, `quiet` (toggle), `attn <mode>` (work / focus / quiet by name; the CLI has it, no key is free for it), `connections` (wifi, and the link you are on; `forget` drops a saved network), `bluetooth` (the radio, what is around it, and pairing; no key of its own, since a second chord for half of one surface is a key to remember for no reason), `calendar`, `wallpapers`, `brightness-up`/`brightness-dn`, `help`, `notif-center`, `notif-reach` (put the keyboard on the newest popup, which is the only way a popup ever takes it), `shortcut-grab` (native; hand the focused app zde's keys, or take them back - the one key an app holding a shortcuts inhibitor can never swallow), `doctor`, `report` (write the state snapshot down for a session that will not come up; needs `zde.debug`, and no key of its own - the day it is wanted there is nobody at the keyboard), `update`, `layout-switch` (native) |
 
 Launch placement: manifest pin first; else adoption (focused workspace,
 current scroll position, active desk); guest mode restricts launching to the

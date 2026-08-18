@@ -576,11 +576,21 @@ func (n *notifications) CloseNotification(sender dbus.Sender, id uint32) *dbus.E
 // GetCapabilities says what this server does, and only that (docs/roadmap.md,
 // cross-cutting: where a mechanism is partial, say so).
 //
-// "actions" is claimed because every action a sender declares is offered to the
-// person: the notification center lists them with their own labels, a keypress
-// each, and the default is what Enter means. It was not claimed while only the
-// default could be invoked, because the capability promises the whole list and
-// half a list is a promise apps would send buttons against.
+// "actions" is claimed because the list a sender declares is offered to the
+// person and not only the default: the notification center lists them with
+// their own labels, a keypress each, and the default is what Enter means. It
+// was not claimed while only the default could be invoked, because the
+// capability promises the whole list and half a list is a promise apps would
+// send buttons against.
+//
+// Not a promise that every one arrives, and the difference is what keeps this
+// honest. Three kinds of key are dropped on the way in - past the ninth, longer
+// than a row can hold, or spelled with something oneLine would rewrite (see
+// takeActions, actionsMax) - and each is dropped rather than tidied because a
+// renamed key is a button that lies. What is dropped is counted, and every
+// surface that draws these says how many it could not reach, so an app reading
+// this capability is promised the whole list is *offered* rather than that
+// nine is unbounded.
 //
 // It is a claim about immediacy too, since the popup: an arrival puts a card on
 // the screen with those same buttons on it, and takes itself away (shell,

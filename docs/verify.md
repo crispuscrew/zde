@@ -1558,7 +1558,7 @@ Not bugs, do not report them:
   | `Mod+Shift+Tab` (last desk), `Mod+Ctrl+Tab` (send the focused window to a desk you pick), `Mod+Ctrl+Shift+Tab` (send the whole workspace, which is how the regulars are made) | |
   | `Mod+period`/`comma`, `Mod+Shift+m`, `Mod+Ctrl+m` (volume, mute, mic) | |
   | `Mod+b`, `Mod+Shift+b` (brightness, on a machine with a backlight) | |
-  | `zde status`, `doctor`, `keys`, `palette`, `ask`, `attn`, `queue`/`add`/`done` | `zde net observe\|app-cut\|kill` |
+  | `zde status`, `doctor`, `report`, `keys`, `palette`, `ask`, `attn`, `queue`/`add`/`done`/`clear` | `zde net observe\|app-cut\|kill` |
   | `zde app list\|launch`, `window jump-to`, `workspace next\|prev`, `nav down\|up` | `zde desk panic\|zen\|block\|pause`, which are not verbs at all |
   | `zde net status\|connect\|disconnect\|forget` | `zde pass`, `media`, `mode` |
   | `zde clip history [ID]`, `zde clip clear` | |
