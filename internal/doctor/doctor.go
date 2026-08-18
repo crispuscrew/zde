@@ -334,6 +334,10 @@ func podman(s Session) Check {
 // never a failure: a daemon started by hand answers just as well, which is
 // what the tests and anybody debugging this do, so the state is context for
 // the lines above rather than a verdict of its own.
+//
+// One exception: an optional unit that is inactive is reported and not warned
+// about, because that word cannot be told from one nothing installed (see
+// Unit.Optional). Every other state of it reads as any other unit's.
 func units(s Session) []Check {
 	out := make([]Check, 0, len(s.Units))
 	for _, u := range s.Units {
@@ -342,6 +346,9 @@ func units(s Session) []Check {
 			out = append(out, Check{Warn, "unit", u.Name + ": " + u.Err.Error()})
 		case u.State == "active":
 			out = append(out, Check{OK, "unit", u.Name + " active"})
+		case u.Optional && u.State == "inactive":
+			out = append(out, Check{OK, "unit", u.Name + " inactive: it is installed only where zde.debug is on, " +
+				"and systemd says the same word for a unit that is not there as for one that has not run"})
 		default:
 			out = append(out, Check{Warn, "unit", u.Name + " " + u.State})
 		}

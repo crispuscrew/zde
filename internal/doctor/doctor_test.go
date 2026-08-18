@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -33,9 +34,13 @@ func healthy() Session {
 			Notifications: true,
 			Zinc:          true,
 		},
+		// The three a login starts, in the state an ordinary machine has them:
+		// the two that always run, and the snapshot unit that is only installed
+		// where zde.debug is on (see loginUnits).
 		Units: []Unit{
 			{Name: "zded", State: "active"},
 			{Name: "zde-bar", State: "active"},
+			{Name: "zde-report", State: "inactive", Optional: true},
 		},
 		Podman: Podman{Rootless: true},
 		Lock: Locker{
@@ -105,7 +110,7 @@ func TestHealthySessionSaysSoOnEveryLine(t *testing.T) {
 func TestTheReportIsTheSameShapeEveryTime(t *testing.T) {
 	want := []string{
 		"zded", "compositor", "shell", "notify", "zinc", "podman",
-		"unit", "unit", "manifests", "desk apps", "locker", "logind", "idle", "journal",
+		"unit", "unit", "unit", "manifests", "desk apps", "locker", "logind", "idle", "journal",
 	}
 	var got []string
 	for _, c := range Judge(healthy()) {
@@ -582,6 +587,124 @@ func TestUnitsAreNeverAFailure(t *testing.T) {
 	if r.Failed() != 0 {
 		t.Errorf("a unit that is not up failed %d checks:\n%s", r.Failed(), r)
 	}
+}
+
+// Every user unit the home module installs is one doctor asks systemd about.
+//
+// Read off nix/home.nix rather than written out again here, because a second
+// copy of the list is a second thing to forget. The consequence is what is
+// asserted and not the list: for each unit that file installs, a machine where
+// it has failed has a warning naming it. The names only - what each unit is for
+// is the module's business.
+func TestAFailedUnitALoginStartsIsAWarningThatNamesIt(t *testing.T) {
+	for _, name := range unitsTheHomeModuleInstalls(t) {
+		s := healthy()
+		s.Units = nil
+		for _, u := range loginUnits {
+			state := "active"
+			if u.Name == name {
+				state = "failed"
+			}
+			s.Units = append(s.Units, Unit{Name: u.Name, State: state, Optional: u.Optional})
+		}
+		var found *Check
+		for _, c := range named(Judge(s), "unit") {
+			if strings.Contains(c.Detail, name) {
+				found = &c
+				break
+			}
+		}
+		if found == nil {
+			t.Errorf("%s failed and the report does not mention it, so the one thing that "+
+				"could have said so is a unit doctor never asks about:\n%s", name, Judge(s))
+			continue
+		}
+		if found.Level != Warn {
+			t.Errorf("%s failed and reads as %s", name, *found)
+		}
+	}
+}
+
+// And the state that is not a complaint. systemd answers "inactive" for a unit
+// that was never written as well as for one that has not run, so on a machine
+// without zde.debug the snapshot unit is reported and not warned about. Failure
+// is still a warning.
+func TestAUnitOnlyDebugMachinesHaveIsNotAComplaintWhenItIsAbsent(t *testing.T) {
+	s := healthy()
+	c := unitNamed(t, Judge(s), "zde-report")
+	if c.Level != OK {
+		t.Errorf("an ordinary machine warns about a unit it never asked for: %s", c)
+	}
+	if !strings.Contains(c.Detail, "zde.debug") {
+		t.Errorf("the line does not say why the word is not a complaint: %s", c)
+	}
+
+	// And it buys the unit nothing else. A snapshot that ran and failed is a
+	// warning like any other, which is the whole reason it is on the list.
+	for i := range s.Units {
+		if s.Units[i].Name == "zde-report" {
+			s.Units[i].State = "failed"
+		}
+	}
+	if c := unitNamed(t, Judge(s), "zde-report"); c.Level != Warn {
+		t.Errorf("a snapshot unit that failed reads as %s", c)
+	}
+}
+
+// unitNamed is the one unit row about a given unit.
+func unitNamed(t *testing.T, r Report, name string) Check {
+	t.Helper()
+	var out []Check
+	for _, c := range named(r, "unit") {
+		if strings.Contains(c.Detail, name) {
+			out = append(out, c)
+		}
+	}
+	if len(out) != 1 {
+		t.Fatalf("want one unit row naming %s, got %d:\n%s", name, len(out), r)
+	}
+	return out[0]
+}
+
+// unitsTheHomeModuleInstalls is the names under systemd.user.services in
+// nix/home.nix: the block found by its assignment, the names one indent inside
+// it. Anything it cannot make sense of fails rather than answering with none,
+// because a test that found no units and passed would check nothing.
+func unitsTheHomeModuleInstalls(t *testing.T) []string {
+	t.Helper()
+	path := filepath.Join("..", "..", "nix", "home.nix")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("the home module cannot be read, so nothing here can be checked against it: %v", err)
+	}
+	lines := strings.Split(string(data), "\n")
+	start := -1
+	for i, l := range lines {
+		if strings.TrimSpace(l) == "systemd.user.services = {" {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatalf("%s no longer assigns systemd.user.services in one block, so this test cannot "+
+			"find the units a login starts and doctor's list is unchecked", path)
+	}
+	indent := strings.Repeat(" ", len(lines[start])-len(strings.TrimLeft(lines[start], " "))+2)
+	name := regexp.MustCompile(`^` + indent + `([a-zA-Z][a-zA-Z0-9_-]*) = `)
+	var out []string
+	for _, l := range lines[start+1:] {
+		if strings.TrimRight(l, " ") == strings.TrimSuffix(indent, "  ")+"};" {
+			break
+		}
+		if m := name.FindStringSubmatch(l); m != nil {
+			out = append(out, m[1])
+		}
+	}
+	if len(out) < 2 {
+		t.Fatalf("%s reads as installing %v, which is not a list of user units - the block has "+
+			"moved or been reshaped and this test needs to be taught the new one", path, out)
+	}
+	return out
 }
 
 // The journal skips entries it cannot read rather than refusing to open

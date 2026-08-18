@@ -870,6 +870,80 @@ func TestAMachineWithNoBootIdStillGetsASnapshot(t *testing.T) {
 	}
 }
 
+// And a boot id that is there and is not one. A name rotate does not match is a
+// file nothing ever removes, at one per session start under /var/log.
+//
+// The bound is what is asserted and not the shape of the name: a name that looks
+// right proves nothing about whether rotation acts on it. So this writes more
+// snapshots than the directory keeps and counts what is left.
+func TestABootIdThatIsNotOneStillLeavesADirectoryRotationCanKeepUp(t *testing.T) {
+	dir := userDir(t)
+	for i := 0; i < reportsMax+3; i++ {
+		if _, err := writeReport(filepath.Dir(dir), "snapshot\n", noon.Add(time.Duration(i)*time.Minute), "ZZZZZZZZ"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if left := namesIn(t, dir); len(left) > reportsMax {
+		t.Errorf("%d snapshots are on the disk against a bound of %d - the boot id put them under "+
+			"names rotation does not match, so nothing will ever take one out again:\n%v",
+			len(left), reportsMax, left)
+	}
+}
+
+// The boot id is the tail of a path, so a string with a separator in it decides
+// where the file goes. Without the check it does not in fact escape - the
+// timestamp in front of it is a path element too, and absorbs the first ".." -
+// which is an accident to assert against rather than rely on.
+//
+// Only procfs feeds this on the real path, so it is a fence and not a hole.
+func TestABootIdCannotSendTheSnapshotOutOfItsDirectory(t *testing.T) {
+	dir := userDir(t)
+	parent := filepath.Dir(dir)
+	path, err := writeReport(parent, "snapshot\n", noon, "../../pwned")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := filepath.Dir(path); got != dir {
+		t.Errorf("the snapshot was written to %s, and this account's directory is %s", got, dir)
+	}
+	if !reportName.MatchString(filepath.Base(path)) {
+		t.Errorf("the name is %q, which this package would not rotate", filepath.Base(path))
+	}
+}
+
+// And the reading itself: what /proc says is a boot id only if it is shaped like
+// one. Empty is the word this function already has for "the kernel did not say",
+// and something that is not hex is no handle for `journalctl --list-boots`
+// either, which is the whole reason the id is in the name.
+func TestABootIdIsWhatTheKernelWroteAndNotWhateverWasInTheFile(t *testing.T) {
+	for _, tc := range []struct {
+		name, wrote, want string
+	}{
+		{"the real thing", "5f1a2b3c-7d8e-4f01-9a2b-3c4d5e6f7a8b\n", "5f1a2b3c"},
+		{"not hex at all", "ZZZZZZZZ-ZZZZ-ZZZZ-ZZZZ-ZZZZZZZZZZZZ\n", ""},
+		{"hex with a stray character in the eight", "5f1a2b3g-7d8e-4f01-9a2b-3c4d5e6f7a8b\n", ""},
+		{"upper case, which journalctl never prints", "5F1A2B3C-7D8E-4F01-9A2B-3C4D5E6F7A8B\n", ""},
+		{"a path", "../../pwned\n", ""},
+		{"nothing at all", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			proc := filepath.Join(root, "proc", "sys", "kernel", "random")
+			if err := os.MkdirAll(proc, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if tc.wrote != "" {
+				if err := os.WriteFile(filepath.Join(proc, "boot_id"), []byte(tc.wrote), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := bootID(root); got != tc.want {
+				t.Errorf("boot_id %q reads as %q, want %q", tc.wrote, got, tc.want)
+			}
+		})
+	}
+}
+
 // userDir makes the directory layer 0 would have made for this account, and
 // answers with it. writeReport is given its parent, the way the real one is
 // given /var/log/zde.

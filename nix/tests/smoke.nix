@@ -233,10 +233,26 @@ let
         # back - and "not known", which is what no niri.service log to read
         # looks like. What it must never say is that this machine fell back,
         # because it never went near a real card.
-        grep -qE '^  answer +(probably yes|not known)' "$snap" || {
+        # `|| true` because pipefail is on: a section with no answer line would
+        # end the script here saying nothing, and the check below says it.
+        answer=$(sed -n '/^\[graphics\]/,/^$/p' "$snap" | grep -E '^  answer +' | head -1 || true)
+        printf '%s\n' "$answer" | grep -qE '^  answer +(probably yes|not known)' || {
           echo "the graphics answer is not one this machine could honestly give:"
           sed -n '/^\[graphics\]/,/^$/p' "$snap"; exit 1
         }
+        # The verdict alone is not enough, because a compositor answering with a
+        # screen for none of its outputs also reads "not known" - and that is the
+        # black screen this section exists to catch, not a reading it is missing.
+        # The string below is doctor's own sentence, pinned from the other side
+        # by a Go test that constructs the state and reads this line out of this
+        # file (internal/doctor, TestTheSmokeGuardRefusesTheBlackScreen).
+        blackscreen='has a screen for none of its outputs' # pinned: graphics-black-screen
+        case "$answer" in
+          *"$blackscreen"*)
+            echo "the snapshot says niri is answering and has nowhere to draw, which is the"
+            echo "black screen this section exists to catch and not a reading it is missing:"
+            sed -n '/^\[graphics\]/,/^$/p' "$snap"; exit 1 ;;
+        esac
         # And it says which device the answer is about, on a machine that may
         # have no card at all: "none" is a reading, a missing line is a bug.
         grep -qE '^  device +' "$snap" || {
@@ -1512,6 +1528,14 @@ let
         #
         # Held by wrapping the command that reads it, so the inhibitor is taken
         # and released by one process and there is nothing left running here.
+        #
+        # A second after the report above, because a snapshot is named for the
+        # boot and the time to the second, and O_EXCL refuses the second one of
+        # any second rather than writing over the first (internal/doctor,
+        # TestASnapshotNeverWritesOverOne). Nothing between the two calls takes
+        # a second on its own, so without this they land in the same one
+        # whenever the boundary happens to fall after both.
+        sleep 1
         systemd-inhibit --what=idle --who=/home/zde/secret-backup.sh \
           --why='copying /home/zde/private-notes' \
           zde report > /tmp/report-held.txt 2>&1 || {

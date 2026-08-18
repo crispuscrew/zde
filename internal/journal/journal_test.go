@@ -480,6 +480,50 @@ func TestQueueIDsSurviveCompaction(t *testing.T) {
 	}
 }
 
+// The desktop's badge, through the write that rebuilds every queued line.
+//
+// Self is the one field of an item no app on the bus can ask for (see
+// Item.Self). Compaction writes each queued entry again from the state in
+// memory, and Open compacts whenever the replay passes compactAt, so a field
+// missing from that write is a badge the queue loses at the next restart.
+//
+// Both items, because the badge alone passes on a compaction that stamps every
+// line with Self.
+func TestTheDesktopsOwnBadgeSurvivesACompaction(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "j.jsonl")
+	j, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.Queue(Item{Text: "this desk could not start nvim", Desk: "vshop", From: "zde", Self: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.Queue(Item{Text: "your build finished", Desk: "vshop", From: "zde"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Compact(); err != nil {
+		t.Fatal(err)
+	}
+	j.Close()
+
+	j, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	q := j.State().Queue
+	if len(q) != 2 {
+		t.Fatalf("queue after the compaction = %+v, want both items", q)
+	}
+	if !q[0].Self {
+		t.Errorf("the desktop's own item came back as %+v: after a compaction it is drawn "+
+			"exactly like an app that calls itself zde, which is what the badge exists to prevent", q[0])
+	}
+	if q[1].Self {
+		t.Errorf("an app's item came back badged as the desktop's own: %+v", q[1])
+	}
+}
+
 // An entry that cannot be an item is counted, not shown: a blank row with id 0
 // looks like the queue's own fault, and doctor reports the count.
 func TestQueueSkipsEntriesThatAreNotItems(t *testing.T) {

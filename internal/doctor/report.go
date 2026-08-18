@@ -101,6 +101,14 @@ const (
 	reportBytesMax = 64 << 10
 )
 
+// bootHex is the shape of a boot id in a snapshot's name: eight lower-case hex
+// characters, which is what the kernel writes and journalctl prints.
+//
+// One expression, read by every place that decides the shape. The name a file is
+// written under and the name rotation will match have to agree, or the bound on
+// the directory is not a bound.
+const bootHex = `[0-9a-f]{8}`
+
 // reportName is what a file in that directory is called, and the only thing
 // this package will ever delete.
 //
@@ -110,11 +118,16 @@ const (
 // the boot id, because that is the string `journalctl --boot=` takes: this file
 // and the journal beside it are two halves of one answer, and the name is how a
 // person pairs them without guessing at times.
-var reportName = regexp.MustCompile(`^\d{8}T\d{6}Z-[0-9a-f]{8}\.txt$`)
+var reportName = regexp.MustCompile(`^\d{8}T\d{6}Z-` + bootHex + `\.txt$`)
+
+// bootShape is the same eight characters on their own, for deciding whether a
+// string may be part of a filename at all.
+var bootShape = regexp.MustCompile(`^` + bootHex + `$`)
 
 // bootID is the kernel's own id for this boot, cut to its first eight
 // characters. Empty when the kernel does not say, which is a container rather
-// than a machine.
+// than a machine - and empty as well when what it said is not a boot id, for
+// which see bootHex.
 //
 // Eight and not thirty-two because of what it is for. It is not an argument -
 // journalctl's `-b` takes the whole id and refuses a prefix ("Failed to add
@@ -129,7 +142,7 @@ var reportName = regexp.MustCompile(`^\d{8}T\d{6}Z-[0-9a-f]{8}\.txt$`)
 // two spellings of the same id is exactly the confusion this is meant to remove.
 func bootID(root string) string {
 	id := strings.ReplaceAll(firstLine(readFile(filepath.Join(root, "proc", "sys", "kernel", "random", "boot_id"))), "-", "")
-	if len(id) < 8 {
+	if len(id) < 8 || !bootShape.MatchString(id[:8]) {
 		return ""
 	}
 	return id[:8]
@@ -707,7 +720,13 @@ func orNone(s string) string {
 // middle of the section somebody needed. Removed, and then a retry in the same
 // second works too, which O_EXCL had otherwise made impossible.
 func writeReport(dir, text string, now time.Time, boot string) (string, error) {
-	if boot == "" {
+	// The name has to be one rotate will match, or this file is outside the
+	// bounds this package keeps (see bootHex). Checked here as well as at the
+	// read, because the boot id is the tail of a filepath.Join: a string with a
+	// separator in it decides where the file goes and not only what it is
+	// called. The zeroes are what a machine with no boot id gets, and mean the
+	// same thing - this file cannot be paired with a boot.
+	if !bootShape.MatchString(boot) {
 		boot = "00000000"
 	}
 	dir = filepath.Join(dir, whoami())
