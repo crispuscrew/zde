@@ -478,13 +478,16 @@ func TestSenderCannotLookHandTyped(t *testing.T) {
 	}
 }
 
-// The same question asked of all 1114112 code points, because the bug was a
-// rune nobody had thought of and the next one will be too.
+// The same question walked over the whole code space, because the bug was a
+// rune nobody had thought of and the next one will be too: all 1114112 code
+// points bar the 2048 surrogate halves, which are not characters.
 //
 // A claim is either taken away or kept, and a kept one has to be a name: there
 // has to be something in it a person can see, and that something must not be
 // the dash. Sent as the whole claim and on either side of a dash, which is how
-// it arrives - notify-send -a "$(printf -- '-‍')" is one shell line.
+// it arrives - notify-send -a "$(printf -- '-<zwj>')" is one shell line, with
+// the joiner spelled here rather than typed for the reason the const is
+// (notify.go, zwj): a rune nobody can see in a comment is one nobody reviews.
 //
 // visible is written out here rather than borrowed from notify.go on purpose.
 // A test that called drawn would agree with the code by construction and would
