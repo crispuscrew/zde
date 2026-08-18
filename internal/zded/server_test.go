@@ -3857,3 +3857,279 @@ func TestAShellIsNotDroppedInTheGapBeforeItSubscribes(t *testing.T) {
 		t.Errorf("%d connections held under a flood, want the cap of %d", n, ConnectionsMax)
 	}
 }
+
+// ---- what one connection can make the daemon spend ------------------------
+
+// One connection cannot make the daemon spend a goroutine on every line it
+// sends, whatever the line says.
+//
+// Two methods are answered off the read loop, and rightly: ask.run runs a tier
+// and clip.history <id> puts an entry back through wl-copy, so both take as long
+// as something outside zde takes and a keypress must not be what waits for them.
+// What went off the loop with them was the loop's own back-pressure - one reply
+// at a time, on the goroutine that read the line - and nothing replaced it. The
+// goroutine was spawned before the request had been looked at, so asksMax and
+// sink.asking bounded the work and not the goroutines; and since every refused
+// goroutine still ends in a reply, each one parked for up to replyWait against a
+// client that is not reading, with a timer apiece.
+//
+// Measured on a running zded over a real socket, one connection, no tier
+// configured and nothing ever started: 400,000 ask.run lines - 17.9 MiB on the
+// wire - took the daemon from 3 goroutines to 399,867 and its RSS from 8.7 MB to
+// 2.26 GB, and the same in clip.history took it to 399,756 and 2.15 GB. The
+// connection cap saw none of it, because it is one connection. The control on
+// the same harness is what this test is written to: 400,000 `status` lines,
+// answered on the read loop, moved the daemon by nothing and closed the
+// connection after 13,107 of them, which is back-pressure working.
+//
+// What is asserted is that ceiling under the load rather than the constants
+// behind it. What the daemon may hold for one connection is its read loop, the
+// clipboard put it has in flight, and a share of the asksMax runs - three, at
+// today's numbers. A hundred is that with room for the runtime's own workers and
+// for a method nobody has written yet that starts one goroutine per connection,
+// and it is four thousand times below what one connection bought before.
+func TestOneConnectionCannotSpawnAGoroutinePerLine(t *testing.T) {
+	// A tier file of this test's own, and an empty one: no tier configured is
+	// the case that was measured and the cheapest one for a caller, since every
+	// line is refused before anything can be spent on it. It is also what keeps
+	// this test off whatever the developer running it has configured.
+	writeTiers(t, map[string][]string{})
+
+	// Enough that the old shape is unmistakable - it was one goroutine each -
+	// and few enough that the writing is over well inside the deadline below.
+	const lines = 20 << 10
+	const room = 100
+
+	for _, tc := range []struct{ name, line string }{
+		{MethodAskRun, `{"method":"ask.run","args":["provider","hi"]}`},
+		{MethodClip, `{"method":"clip.history","args":["1"]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
+			path := serve(t, s)
+			c, err := net.Dial("unix", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+
+			// Counted from here, so that what is measured is what the lines cost
+			// and not what a connection costs.
+			before := runtime.NumGoroutine()
+			sent := make(chan int, 1)
+			go func() {
+				w := bufio.NewWriterSize(c, 1<<16)
+				n := 0
+				for ; n < lines; n++ {
+					if _, err := fmt.Fprintln(w, tc.line); err != nil {
+						break
+					}
+				}
+				w.Flush() //nolint:errcheck // a short write is the back-pressure, and it is expected here
+				sent <- n
+			}()
+
+			// Sampled while the lines are arriving rather than after them,
+			// because what is wrong here drains on its own: every goroutine the
+			// old shape made left at its own replyWait, so a count taken six
+			// seconds later was 33 on the daemon that had just been holding
+			// 399,867.
+			peak := before
+			deadline := time.Now().Add(time.Minute)
+			for done := false; !done; {
+				if n := runtime.NumGoroutine(); n > peak {
+					peak = n
+				}
+				select {
+				case <-sent:
+					done = true
+				case <-time.After(time.Millisecond):
+				}
+				if !done && time.Now().After(deadline) {
+					t.Fatalf("%d lines were still being written a minute later, with the daemon up %d goroutines",
+						lines, runtime.NumGoroutine()-before)
+				}
+			}
+			if n := runtime.NumGoroutine(); n > peak {
+				peak = n
+			}
+			if grew := peak - before; grew > room {
+				t.Errorf("one connection sending %d lines of %s took the daemon up by %d goroutines, "+
+					"past the %d one connection may cost: the read loop is spawning rather than answering",
+					lines, tc.name, grew, room)
+			}
+		})
+	}
+}
+
+// And the caller is still told, which is the half a bound is worthless without:
+// a refusal that arrives as silence is a client waiting for an answer that is
+// never coming, and the whole reason ask.run is answered by the connection it
+// arrived on is that somebody is sitting in front of it.
+func TestAnAskRefusedBeforeItStartsStillSaysWhy(t *testing.T) {
+	writeTiers(t, map[string][]string{})
+	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
+	path := serve(t, s)
+
+	p := dialPeer(t, path)
+	// Twice on the one connection, because a refusal that costs the caller its
+	// connection is not one it can act on.
+	for i := 0; i < 2; i++ {
+		line := p.ask(t, `{"method":"ask.run","args":["provider","hi"]}`)
+		if !strings.Contains(line, "no provider tier") {
+			t.Fatalf("ask %d on a machine with no tier was answered %q", i, strings.TrimSpace(line))
+		}
+	}
+	// And the connection is still a connection afterwards.
+	if line := p.ask(t, `{"method":"status"}`); !strings.Contains(line, `"ok"`) {
+		t.Errorf("the connection was answered %q after two refusals", strings.TrimSpace(line))
+	}
+}
+
+// The connection that pays for its own slot hears the sentence before its
+// socket goes.
+//
+// handle's first deferred statement is conn.Close, so the sentence was being
+// said on a goroutine started one line above a return: the close fired
+// immediately and took the descriptor out from under the write. Measured with
+// the table arranged so that every dial took this branch: 0 of 20 dials heard
+// anything and all 20 got a bare EOF - which is the "cap that silently is not
+// one" the branch exists to avoid, and a bare EOF sends somebody to the journal
+// looking for a daemon that never died.
+//
+// The table is arranged rather than reached, because reaching it needs 256
+// listeners and tiers against the 20 those caps allow between them (events.go,
+// listenersMax; ask.go, asksMax). Every dial after that is a real one over the
+// real socket, which is the half nothing covered: the test beside this one calls
+// admit directly and never goes through handle, so the race lived in the three
+// lines between them.
+//
+// Twenty dials rather than one, because one dial hearing the sentence is a
+// scheduler's decision and twenty is a measurement.
+func TestTheConnectionThatPaysForItsOwnSlotIsToldBeforeItEnds(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
+	path := serve(t, s)
+
+	s.mu.Lock()
+	s.conns = map[*sink]struct{}{}
+	s.subs = map[*sink]struct{}{}
+	for i := 0; i < ConnectionsMax; i++ {
+		c := &sink{pid: 4242}
+		s.conns[c] = struct{}{}
+		s.subs[c] = struct{}{}
+	}
+	s.mu.Unlock()
+
+	const dials = 20
+	told, left := 0, 0
+	for i := 0; i < dials; i++ {
+		p := dialPeer(t, path)
+		line, err := p.hear(10 * time.Second)
+		if err != nil || !strings.Contains(line, "make room") || !strings.Contains(line, "dial again") {
+			continue
+		}
+		told++
+		// And then it ends, because this is not a connection the daemon kept.
+		if _, err := p.hear(10 * time.Second); err == nil {
+			left++
+		}
+	}
+	if told != dials {
+		t.Errorf("%d of %d connections that paid for their own slot were closed with nothing said", dials-told, dials)
+	}
+	if left != 0 {
+		t.Errorf("%d of the %d that were told were left open afterwards", left, told)
+	}
+}
+
+// The connections the cap has to skip are the ones with a tier running, and
+// there are never more of them than there are tiers.
+//
+// admit skips a connection with sink.asking set, and says why in one sentence:
+// "Bounded the same way: asksMax allows four across the whole daemon". That was
+// not a bound at all. asking was set before the daemon's own place had been
+// claimed and cleared by a deferred store, so it was also set for the whole of
+// the refusal a connection gets when there is no place free - and that refusal
+// is a reply, which parks for up to replyWait against a client that is not
+// reading. Measured against a daemon with a tier configured and 256 connections
+// asking and never reading: 103 of them exempt at once, while the number the
+// comment names sat at four for the whole run.
+//
+// What that buys an attacker is the far end of the connection cap: exempt
+// connections are the ones admit cannot choose, and a table it cannot choose
+// from is a table where the connection dialling in pays for its own slot - which
+// is the shell, dialling again after a switch.
+//
+// So what is asserted is the sentence itself, under the load that broke it:
+// however many connections are asking, no more than asksMax of them are exempt.
+// The connections do not read, and they send more than a receive buffer holds,
+// because a refusal that is taken instantly is a refusal that holds the flag for
+// microseconds and proves nothing.
+func TestNoMoreConnectionsAreExemptFromTheCapThanThereAreTiers(t *testing.T) {
+	// A tier that holds the place it took, the way a model loading weights
+	// does, so that the connections behind it meet the daemon at its cap.
+	dir := t.TempDir()
+	writeTiers(t, map[string][]string{TierProvider: fakeTier("linger", filepath.Join(dir, "tier"))})
+	s := New("test", nil, &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code"}, nil)
+	path := serve(t, s)
+
+	// Eight times asksMax, so that most of them are refused, and enough lines
+	// each to fill the socket both ways: about 425 KB of buffer between the two
+	// ends, against refusals of about ninety bytes.
+	const askers = asksMax * 8
+	const lines = 20 << 10
+	for i := 0; i < askers; i++ {
+		c, err := net.Dial("unix", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		go func() {
+			w := bufio.NewWriterSize(c, 1<<16)
+			for j := 0; j < lines; j++ {
+				if _, err := fmt.Fprintln(w, `{"method":"ask.run","args":["provider","hold on"]}`); err != nil {
+					return
+				}
+			}
+			w.Flush() //nolint:errcheck // the daemon not taking it is what this test is about
+		}()
+	}
+	waitFor(t, "the daemon filling every place it runs a tier in", func() bool { return s.asking() == asksMax })
+
+	// Sampled rather than read once, because what was wrong is a window: the
+	// flag was set across a reply, so how many connections are inside it at any
+	// instant is the scheduler's answer and the peak is the measurement.
+	peak, runs := 0, 0
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if n := exemptConns(s); n > peak {
+			peak = n
+		}
+		if n := s.asking(); n > runs {
+			runs = n
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if peak > asksMax {
+		t.Errorf("%d connections were exempt from the connection cap at once while %d tiers ran, "+
+			"and admit's whole reason for skipping them is that asksMax bounds how many there can be",
+			peak, runs)
+	}
+	if peak == 0 {
+		t.Error("no connection was ever exempt, so this run proved nothing about the bound")
+	}
+}
+
+// exemptConns is how many of the connections in the table admit would have to
+// skip because a tier is running on them (see admit).
+func exemptConns(s *Server) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for c := range s.conns {
+		if c.asking.Load() {
+			n++
+		}
+	}
+	return n
+}

@@ -488,8 +488,16 @@ func waitForLog(t *testing.T, spy *logSpy, want string) {
 // zcr hands back everything the runner printed, and a failed image build is a
 // screen of it. One line per failure, bounded, because the alternative is a
 // notification body made of one app's stack trace.
+//
+// The fixture is spelled as a number rather than as reasonMax times something,
+// and that is the difference between a bound test and a tautology: written as
+// reasonMax*2, widening the bound widened the complaint with it and widened the
+// ceiling on the line as well, so every number in this test moved together and
+// reasonMax could be eight times larger with it green. Four thousand characters
+// is what a failed image build actually prints, and it does not move.
 func TestALaunchFailureIsCutToALineInTheNotification(t *testing.T) {
-	long := strings.Repeat("x", reasonMax*2)
+	const printed = 4000
+	long := strings.Repeat("x", printed)
 	body := launchBody([]launchFailure{
 		{Address: "nvim@vshop", Err: errors.New("Error: short line\nError: preparing container\nmore\nand more")},
 		{Address: "browser@vshop", Err: errors.New(long)},
@@ -501,8 +509,38 @@ func TestALaunchFailureIsCutToALineInTheNotification(t *testing.T) {
 	if !strings.HasPrefix(lines[0], "nvim@vshop: Error: short line") || !strings.HasSuffix(lines[0], "...") {
 		t.Errorf("line = %q, want the first line of the complaint and a mark that there was more", lines[0])
 	}
-	if n := len([]rune(lines[1])); n > len("browser@vshop: ")+reasonMax+len(" ...") {
-		t.Errorf("one failure took %d characters of the body", n)
+	// A quarter of a notification body, which is attn's bodyMax of 4000
+	// characters (internal/attn, notify.go). Absolute, and it is the arithmetic
+	// reasonMax's own comment makes: "the total bound alone would let the first
+	// complaint eat the space the other three needed to be named at all". Four
+	// failures are what launchesNamed allows, so a quarter each is the largest
+	// one may be and still leave room for the other three.
+	if n := len([]rune(lines[1])); n > 1000 {
+		t.Errorf("one failure took %d characters of a body that holds 4000 and has four failures to name", n)
+	}
+}
+
+// And that is the consequence, said as the thing somebody sees: four apps that
+// all failed with a screenful each are four apps named in the card.
+//
+// The one that matters, because a launch that fails usually fails for the same
+// reason as the three beside it - no layer 2 on this machine, a registry that
+// cannot be reached - so the case is not one long complaint but four, and a body
+// made of the first one is a card that says nothing about the rest.
+func TestFourAppsThatFailWithAScreenfulEachAreAllNamed(t *testing.T) {
+	screenful := errors.New(strings.Repeat("Error: preparing container: pulling image: connection refused. ", 100))
+	var failed []launchFailure
+	for _, app := range []string{"nvim", "browser", "terminal", "mail"} {
+		failed = append(failed, launchFailure{Address: app + "@vshop", Err: screenful})
+	}
+	// Through attn.Local, because that is what clamps the body on its way to
+	// the card and the question is what survives the clamp (launch.go,
+	// launchesFailed).
+	body := attn.Local(launchSummary("vshop", failed), launchBody(failed)).Body
+	for _, app := range []string{"nvim", "browser", "terminal", "mail"} {
+		if !strings.Contains(body, app+"@vshop") {
+			t.Errorf("%s failed and the card does not name it: one complaint ate the body\n%s", app, body)
+		}
 	}
 }
 

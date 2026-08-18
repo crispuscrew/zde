@@ -55,8 +55,8 @@ const (
 const askFile = "ask.json"
 
 // MethodAskRun runs a tier. Answered by the connection it arrives on rather
-// than by the dispatcher, because the answer is not one reply (see askRun and
-// handle).
+// than by the dispatcher, because the answer is not one reply (see askOn,
+// askRun and handle).
 const MethodAskRun = "ask.run"
 
 // askTimeout bounds one answer. A tier that never returns would otherwise leave
@@ -364,34 +364,30 @@ func (s *Server) asking() int {
 	return s.asks
 }
 
-// askRun runs the tier and streams what it says back to the one connection that
-// asked for it.
+// askOn is everything about an ask.run that happens on the connection's own
+// read loop: what the request says, whether there is a tier to run it on, and
+// whether there is a place free to run it in. Only a run that has all three
+// leaves this goroutine (see startRun).
 //
-// To that connection and not to every listener, which is the difference between
-// an answer and an announcement: a question asked on the local tier because it
-// is nobody else's business has no business arriving at every surface that
-// happens to be subscribed.
+// The split is the bound, and it is the read loop's own back-pressure put back.
+// ask.run was answered by a bare `go` off the read loop, which is one goroutine
+// per line read with nothing between the line and the spawn: asksMax and
+// sink.asking bounded the work and not the goroutines, so every refused ask
+// still cost a goroutine, and every refusal ended in a reply that parks for up
+// to replyWait against a client that is not reading. Measured on a running zded
+// with no tier configured and nothing to run: one connection, 400,000 lines and
+// 17.9 MiB on the wire, took the daemon from 3 goroutines to 399,867 and its RSS
+// from 8.7 MB to 2.26 GB, and not one tier ever started. The same 400,000 lines
+// of `status`, answered on the read loop, moved it by nothing and closed the
+// connection after 13,107 - which is what back-pressure looks like: the answers
+// pile up in the client's receive buffer, the read loop parks in the write, and
+// replyWait ends the connection.
 //
-// In pieces rather than in one reply at the end, because an answer arrives over
-// seconds and a window that shows nothing until the last token is a window that
-// looks broken - which is the failure mode this whole component is arranged to
-// design out. The pieces are events, because that is the line shape zded already
-// pushes and every client here already knows how to tell from a reply.
-//
-// In its own goroutine, because the connection it arrives on has other work to
-// do meanwhile: the shell acknowledges a picker on the connection it asked on,
-// and a twenty second answer holding the read loop would mean Mod+Tab printing a
-// list for the whole of it. zded answers every keybind, and none of them may
-// wait for this.
-//
-// Nothing is written down anywhere. There is no history by default
-// (docs/vision.md, section 2), and the way to have none is to write none: no
-// journal entry, no cache, no transcript. What the surface shows is in the
-// surface, and closing it is what forgetting is. The turns before a question
-// arrive with it, from the surface that is showing them, so that stays true
-// once a panel is a conversation: the daemon reads them, hands them to one
-// process, and has forgotten them by the time the answer ends.
-func (s *Server) askRun(k *sink, args []string) {
+// So every refusal here is written by the goroutine that read the line, and a
+// goroutine exists only once there is a slot for the work in it. What one
+// connection can spend on this method is one reply at a time, whatever it sends,
+// and what the daemon can spend is asksMax runs.
+func (s *Server) askOn(k *sink, args []string) {
 	// A tier, a question, and then the conversation before it in pairs: what
 	// was asked, what came back, oldest first. Pairs rather than a role on each
 	// one, because a role that travels as data is a role something in an answer
@@ -439,26 +435,73 @@ func (s *Server) askRun(k *sink, args []string) {
 			overKiB(len(doc)), askContextMax>>10)})
 		return
 	}
-	// One answer at a time down one connection (see sink.asking). Claimed after
-	// the request has been read and understood, so that a second ask with a tier
-	// nobody configured still hears about the tier - the more useful of the two
-	// things wrong with it.
-	if !k.asking.CompareAndSwap(false, true) {
+	// One answer at a time down one connection (see sink.asking). Read here and
+	// set below, after the daemon's own claim, which is the order the exemption
+	// in admit needs: a connection with asking set is skipped when the table is
+	// full, on the stated ground that asksMax bounds how many there can be, and
+	// that is only true of a flag no connection carries without a place to run
+	// in. Set first, it was carried through a refusal's reply as well -
+	// measured, 256 connections that ask and do not read left 103 of them exempt
+	// at once while the daemon ran the four tiers asksMax allows.
+	//
+	// Read and then set rather than compared and swapped, because this is the
+	// connection's own read loop and a read loop reads one line at a time: this
+	// is the only place that sets it true, so nothing can take the place between
+	// the two lines. The run goroutine clears it, and a clear arriving in
+	// between is the answer this one is about to give being right anyway.
+	if k.asking.Load() {
 		k.reply(Response{Error: "this connection is still answering the last question: wait for it, or ask on another"})
 		return
 	}
-	defer k.asking.Store(false)
 	// And one at a time across the daemon, however many connections ask (see
-	// asksMax). After the per-connection claim rather than before, so that a
-	// connection asking twice hears which of the two it is doing wrong.
+	// asksMax). Before the per-connection flag rather than after, and the
+	// connection asking twice still hears which of the two it is doing wrong
+	// because the check above came first.
 	if !s.claimAsk() {
 		k.reply(Response{Error: fmt.Sprintf("%d tiers are already running, which is every one zded runs at once: wait for one to answer", asksMax)})
 		return
 	}
+	k.asking.Store(true)
+	if !s.startRun(k, tier, argv, doc) {
+		// Nothing was started, so nothing will release these.
+		k.asking.Store(false)
+		s.releaseAsk()
+		k.reply(Response{Error: "zded is stopping, so there is nothing to ask it"})
+	}
+}
+
+// askRun runs the tier and streams what it says back to the one connection that
+// asked for it. Everything it needs has already been read, checked and claimed
+// on that connection's read loop (see askOn), and both claims are given back
+// here whichever way the run ends.
+//
+// To that connection and not to every listener, which is the difference between
+// an answer and an announcement: a question asked on the local tier because it
+// is nobody else's business has no business arriving at every surface that
+// happens to be subscribed.
+//
+// In pieces rather than in one reply at the end, because an answer arrives over
+// seconds and a window that shows nothing until the last token is a window that
+// looks broken - which is the failure mode this whole component is arranged to
+// design out. The pieces are events, because that is the line shape zded already
+// pushes and every client here already knows how to tell from a reply.
+//
+// In its own goroutine, because the connection it arrives on has other work to
+// do meanwhile: the shell acknowledges a picker on the connection it asked on,
+// and a twenty second answer holding the read loop would mean Mod+Tab printing a
+// list for the whole of it. zded answers every keybind, and none of them may
+// wait for this.
+//
+// Nothing is written down anywhere. There is no history by default
+// (docs/vision.md, section 2), and the way to have none is to write none: no
+// journal entry, no cache, no transcript. What the surface shows is in the
+// surface, and closing it is what forgetting is. The turns before a question
+// arrive with it, from the surface that is showing them, so that stays true
+// once a panel is a conversation: the daemon reads them, hands them to one
+// process, and has forgotten them by the time the answer ends.
+func (s *Server) askRun(k *sink, tier string, argv []string, doc string) {
+	defer k.asking.Store(false)
 	defer s.releaseAsk()
-	// Started, said first, so a client reading its connection in order never
-	// meets a piece of an answer before it has been told there is one coming.
-	k.reply(ok("asking"))
 
 	// Under the daemon's own context rather than Background, so that a session
 	// ending is one of the things that ends a run. The tier is in a process

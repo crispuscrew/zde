@@ -83,10 +83,23 @@ type Power struct {
 // time, for the rest of the session, and the surface it draws is the one whose
 // whole job is to still work when the session has gone wrong.
 //
-// A minute rather than the five the network side keeps. Five is bought there by
-// seventeen thousand dials a day; here it buys a handful, and what it costs is
-// a person who has just started logind being told an old answer. A minute
-// collapses any burst of presses, which is what a burst of presses is.
+// A minute rather than the five the network side keeps, and the arithmetic
+// behind that has been rewritten once already because the first version of it
+// stopped being true.
+//
+// It used to read "five is bought there by seventeen thousand dials a day; here
+// it buys a handful". That was a sentence about a surface nothing polled, and
+// `system.idle` is polled now: the bar asks it on the same five-second clock as
+// the link (shell/shell.qml, its own Dialer). So on a machine with no logind the
+// dials are 1,440 a day rather than a handful - the poll finds the answer stale
+// once a minute and refreshes it - against the 288 the network side's five
+// minutes buys, and against the 17,280 either of them saves.
+//
+// A minute all the same, and now for the only reason left: it is how long
+// somebody who has just started logind waits to be believed, and five would be
+// five. What a minute no longer costs is a keypress, because the dial is not
+// made under the lock any more (see logins) - 1,440 dials a day of a bus that is
+// not there is a socket connect that fails, and nothing else waits for it.
 const noLogindFor = time.Minute
 
 // logins is logind, opened the first time something asks and kept. The same
@@ -103,15 +116,34 @@ const noLogindFor = time.Minute
 // again. A connect that ran out of time arrives here as an absence too
 // (internal/power, Open), which is the same answer for the same reason.
 //
-// The lock is held across the dial on purpose. Presses two to forty of a burst
-// wait behind the first one's two seconds rather than starting two seconds of
-// their own, and by the time they have it there is an answer here for them.
+// The lock is not held across the dial, and the burst the first version of this
+// was written about is still collapsed - by one dial at a time rather than by
+// one lock. The difference is who waits for it.
+//
+// powerMu guards the fields here and nothing else, so its hold time is a few
+// field reads. Held across the dial, it was bounded by bus.Within instead -
+// two seconds set by something outside this process - and every caller of
+// logins() queued behind whichever one happened to dial. That was defensible
+// while the only caller was a chord somebody pressed. It is not now: `system.idle`
+// is on the bar's five-second poll (shell/shell.qml), so on a machine with no
+// logind a poll takes the lock for two seconds every noLogindFor, and the
+// surface behind the lock is the power menu - the one whose whole job is to work
+// when the session has gone wrong.
+//
+// So: one dial in flight, in s.dialing, and the callers that arrive while it is
+// out do not all wait for it. A caller that has an answer to give takes it - the
+// remembered absence, one dial out of date, which is a better answer for a
+// keypress than two seconds of nothing and the same answer at the end of them.
+// A caller with nothing to give waits on the dial, because there is nothing else
+// honest to say. Presses two to forty of a burst still cost one dial between
+// them, which is what the lock was there for.
 func (s *Server) logins() (power.Manager, error) {
 	s.powerMu.Lock()
-	defer s.powerMu.Unlock()
 	if s.logind != nil {
 		if alive, ok := s.logind.(interface{ Alive() bool }); !ok || alive.Alive() {
-			return s.logind, nil
+			m := s.logind
+			s.powerMu.Unlock()
+			return m, nil
 		}
 		if closer, ok := s.logind.(interface{ Close() error }); ok {
 			closer.Close() //nolint:errcheck // it is already the connection that stopped working
@@ -121,22 +153,60 @@ func (s *Server) logins() (power.Manager, error) {
 	if !s.noLogindAt.IsZero() && time.Since(s.noLogindAt) < noLogindFor {
 		// In the words the last dial used, so that a person reading the row
 		// gets what actually went wrong rather than a summary of it.
-		return nil, s.noLogind
+		err := s.noLogind
+		s.powerMu.Unlock()
+		return nil, err
 	}
+	if d := s.dialing; d != nil {
+		if s.noLogind != nil {
+			// One dial out of date and this instant, rather than fresh and two
+			// seconds from now (see above).
+			err := s.noLogind
+			s.powerMu.Unlock()
+			return nil, err
+		}
+		s.powerMu.Unlock()
+		<-d.done
+		return d.m, d.err
+	}
+	d := &dial{done: make(chan struct{})}
+	s.dialing = d
 	open := s.openPower
 	if open == nil {
 		open = power.Open
 	}
+	s.powerMu.Unlock()
+
 	m, err := open()
+
+	s.powerMu.Lock()
 	if err != nil {
+		// Only the absence is remembered (see above), and a dial that failed
+		// some other way leaves nothing behind to be believed.
 		if errors.Is(err, power.ErrNoLogind) {
 			s.noLogind, s.noLogindAt = err, time.Now()
 		}
-		return nil, err
+	} else {
+		s.noLogind, s.noLogindAt = nil, time.Time{}
+		s.logind = m
 	}
-	s.noLogind, s.noLogindAt = nil, time.Time{}
-	s.logind = m
-	return m, nil
+	d.m, d.err = m, err
+	s.dialing = nil
+	s.powerMu.Unlock()
+	// After the fields, so that a caller woken by this finds the answer already
+	// written down rather than a dial that has just finished and no manager.
+	close(d.done)
+	return m, err
+}
+
+// dial is one attempt to reach logind, and what it found. It exists so that the
+// callers arriving during an attempt can be told what it found without every one
+// of them making an attempt of its own (see logins). Written once, by the
+// goroutine that made it, before the channel closes; read only after.
+type dial struct {
+	done chan struct{}
+	m    power.Manager
+	err  error
 }
 
 // powerMenu opens the surface, or says that nothing could open it - the same

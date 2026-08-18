@@ -295,10 +295,15 @@ type Server struct {
 	logind    power.Manager
 	openPower func() (power.Manager, error)
 	// What the last dial said when there was no logind to reach, and when it
-	// said it. Somebody leaning on the power key is not a poll, but it is
-	// enough dials to be worth not making (power.go, noLogindFor).
+	// said it. The bar polls `system.idle` on a five-second clock, so on a
+	// machine with no logind this is what keeps the dials to one a minute
+	// (power.go, noLogindFor).
 	noLogind   error
 	noLogindAt time.Time
+	// The dial that is out right now, if one is, so that a burst costs one
+	// between them and nothing waits on the lock while it is made (power.go,
+	// logins).
+	dialing *dial
 
 	// The subprocess runs in flight: the tiers (ask.go) and the desk launches
 	// (startApps). A run is a subprocess in a process group of its own,
@@ -493,25 +498,35 @@ func (s *Server) Close() error {
 	return err
 }
 
-// startRun runs a tier in its own goroutine and counts it as in flight, or
-// refuses because this daemon is stopping.
+// startRun runs a tier in its own goroutine and counts it as in flight, and
+// says whether it did. A daemon that is stopping does not, and the caller that
+// took the claims gives them back (see askOn).
 //
 // Counted under mu, and refused once runCtx is cancelled, which together are
 // what keep the count from being raised while stopRuns is waiting on it: after
-// the cancel there is no path that adds another.
-func (s *Server) startRun(k *sink, args []string) {
+// the cancel there is no path that adds another. What is counted here is a run
+// that is going to happen, which is the other half of that promise - until this
+// took a claimed run rather than a line off the socket, every refused ask was
+// added to the wait group too, and stopRuns waited runStopWait for a pile of
+// goroutines that were not running anything.
+//
+// The reply comes before the goroutine exists, so that a client reading its
+// connection in order never meets a piece of an answer before it has been told
+// there is one coming.
+func (s *Server) startRun(k *sink, tier string, argv []string, doc string) bool {
 	s.mu.Lock()
 	if s.runCtx.Err() != nil {
 		s.mu.Unlock()
-		k.reply(Response{Error: "zded is stopping, so there is nothing to ask it"})
-		return
+		return false
 	}
 	s.runs.Add(1)
 	s.mu.Unlock()
+	k.reply(ok("asking"))
 	go func() {
 		defer s.runs.Done()
-		s.askRun(k, args)
+		s.askRun(k, tier, argv, doc)
 	}()
+	return true
 }
 
 // stopRuns ends every subprocess this daemon started - the tiers and the desk
@@ -694,6 +709,16 @@ const ConnectionsMax = 256
 // person is sitting in front of the answer. Bounded the same way: asksMax
 // allows four across the whole daemon (ask.go, claimAsk).
 //
+// That last sentence had to be made true. sink.asking was set before the
+// daemon's own claim was taken and cleared by a deferred store, so it was also
+// set for the whole of the refusal a connection gets when there is no place
+// free - a reply that parks for up to replyWait against a client that is not
+// reading. Measured against a daemon with a tier configured: 256 connections
+// asking and never reading left 103 of them exempt at once, while the number
+// this comment names stayed at four. It is set after the claim now (ask.go,
+// askOn), so the exempt connections are the ones holding a place and asksMax is
+// the count.
+//
 // The exempt connections still count towards what their process is holding.
 // They are connections it holds, and a process that parks sixteen listeners is
 // exactly the one whose other connections should go first - which is also what
@@ -838,22 +863,40 @@ func (s *Server) handle(conn net.Conn) {
 		// program that lost this connection was holding one of them or two
 		// hundred says whose fault it was.
 		//
-		// On a goroutine of its own, because the sentence is bounded at sendWait
-		// and the connection that has just arrived is the one that would pay it.
-		// That connection may be the shell dialling again into a full table, and
-		// 200ms is the whole of ackWait. The goroutine writes one line to a
-		// connection already out of the table and ends inside sendWait.
-		go out.drop(fmt.Sprintf(
+		// The same sentence either way, and which goroutine says it is the whole
+		// of the difference below.
+		reason := fmt.Sprintf(
 			"zded closed this connection to make room: it was holding %d, which is every one it keeps, and of the %d open from this process this was the one that had gone longest without asking anything. zded is running - dial again",
-			ConnectionsMax, held))
+			ConnectionsMax, held)
 		if out == k {
 			// Every other connection in the table was exempt, so this one paid
 			// for its own slot (see admit). It needs 256 listeners and tiers to
 			// happen, against the 20 those caps allow, and it is handled rather
 			// than asserted because the alternative if that ever stops being
 			// true is a cap that silently is not one.
+			//
+			// Said on this goroutine and not on one of its own, because the
+			// descriptor is this goroutine's: the first deferred statement in
+			// this function is conn.Close, so a `go out.drop(...)` one line
+			// above a return is a sentence racing the close of the socket it is
+			// being written to, and it loses. Measured with the table prefilled
+			// so that every dial took this branch: 0 of 20 dials heard it, all
+			// 20 got a bare EOF - which is the "cap that silently is not one"
+			// this branch exists to avoid. And nothing is waiting on this
+			// goroutine: the connection it reads for is the one being closed, so
+			// the sendWait the sentence costs is paid by the caller being told
+			// and by nobody else.
+			out.drop(reason)
 			return
 		}
+		// On a goroutine of its own, because the sentence is bounded at sendWait
+		// and the connection that has just arrived is the one that would pay it.
+		// That connection may be the shell dialling again into a full table, and
+		// 200ms is the whole of ackWait. The goroutine writes one line to a
+		// connection already out of the table and ends inside sendWait - and the
+		// descriptor it writes to is somebody else's, which is what makes this
+		// safe here and not in the branch above.
+		go out.drop(reason)
 	}
 
 	// A scanner rather than a reader, for the cap: bufio.Scanner is what takes
@@ -899,15 +942,24 @@ func (s *Server) handle(conn net.Conn) {
 		if req.Method == MethodAskRun {
 			// Answered by the connection, like events, and for a stronger
 			// reason: the answer is a stream of lines to this connection alone,
-			// and it takes as long as a model takes. In a goroutine so that this
-			// read loop keeps answering meanwhile - the shell acknowledges a
-			// picker on the connection it asks on, and a twenty second answer
-			// must not be what Mod+Tab waits for.
+			// and it takes as long as a model takes. The part that takes that
+			// long goes in a goroutine so that this read loop keeps answering
+			// meanwhile - the shell acknowledges a picker on the connection it
+			// asks on, and a twenty second answer must not be what Mod+Tab waits
+			// for.
 			//
-			// Through startRun rather than a bare go, so that the daemon knows
-			// what it has started: a tier is a subprocess in a process group of
-			// its own, and nothing else would stop it when the session ends.
-			s.startRun(k, req.Args)
+			// Only that part, and not the whole method, which is the difference
+			// between a bound and a hope: what the request says, whether there
+			// is a tier, and whether there is a place free are all decided here
+			// on this goroutine, so a caller sending nothing but refusals gets
+			// one refusal at a time and pays this loop's own back-pressure for
+			// it rather than a goroutine a line (see askOn).
+			//
+			// And a run that does start goes through startRun rather than a bare
+			// go, so that the daemon knows what it has started: a tier is a
+			// subprocess in a process group of its own, and nothing else would
+			// stop it when the session ends.
+			s.askOn(k, req.Args)
 			continue
 		}
 		if req.Method == MethodClip && len(req.Args) == 1 {
@@ -923,8 +975,10 @@ func (s *Server) handle(conn net.Conn) {
 			//
 			// The same reasoning ask.run is off this loop for, at a smaller size:
 			// the answer takes as long as something outside zde takes, and a
-			// keypress must not be what waits for it.
-			go s.clipPutOn(k, req.Args[0])
+			// keypress must not be what waits for it. And the same split, for
+			// the same reason: the claim is taken here, on this goroutine, so
+			// that only a put that is going to happen costs one (see clipPutOn).
+			s.clipPutOn(k, req.Args[0])
 			continue
 		}
 		k.reply(s.Dispatch(req))
@@ -1023,9 +1077,9 @@ func (s *Server) Dispatch(req Request) Response {
 		question := ""
 		if len(req.Args) == 1 {
 			// Trimmed here rather than in the window, so that what the surface
-			// draws and what a tier is handed are the same string: askRun trims
+			// draws and what a tier is handed are the same string: askOn trims
 			// too, and a question that arrived on stdin brings a newline with
-			// it. Refused when that leaves nothing, in the words askRun uses -
+			// it. Refused when that leaves nothing, in the words askOn uses -
 			// an empty question is the one thing no tier can be asked.
 			question = strings.TrimSpace(req.Args[0])
 			if question == "" {

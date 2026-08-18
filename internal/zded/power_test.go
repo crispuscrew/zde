@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -417,7 +418,10 @@ func TestThePowerKeyAgainstAWedgedBusCostsNothingPermanentAndAsksOnce(t *testing
 func TestOnlyAnAbsenceIsRememberedAndNotAnyOtherFailure(t *testing.T) {
 	s, l, _ := powerServer(t)
 	tries := 0
-	// Called only under powerMu, which is what makes counting it here safe.
+	// One press at a time below, which is what makes counting it here safe.
+	// Not the lock: logins() gave up holding powerMu across the dial, so a
+	// counter here is only safe because these two presses are sequential (see
+	// TestABurstOfPressesStillCostsOneDial for the concurrent one).
 	s.openPower = func() (power.Manager, error) {
 		tries++
 		if tries == 1 {
@@ -504,5 +508,111 @@ func TestALogindThatAnswersWithAnErrorStillDrawsTheMenu(t *testing.T) {
 	}
 	if why := choice(t, p, "poweroff").Why; why == "" {
 		t.Error("logind would not answer and the poweroff row says nothing about it")
+	}
+}
+
+// The power chord does not wait behind the bar's poll.
+//
+// `system.idle` went onto the bar's five-second clock (shell/shell.qml), and it
+// reaches logind through the same logins() the power menu does. With powerMu
+// held across the dial, a poll that found the remembered absence stale held that
+// lock for as long as a system bus takes to give up - bus.Within, two seconds -
+// and a chord pressed inside that window waited for it, on the one surface whose
+// whole job is to work when the session has gone wrong. On a machine with no
+// logind that is 1,440 dials a day to land in.
+//
+// What is asserted is not how long the chord took, which is a number this
+// machine decides. It is that the chord was answered while the poll's dial was
+// still out: the dial is held open by this test until the menu has been drawn,
+// so an answer at all is an answer that did not wait for it.
+func TestThePowerChordIsNotHeldUpByTheBarsDialForLogind(t *testing.T) {
+	s, _, _ := powerServer(t)
+	dialing := make(chan struct{})
+	release := make(chan struct{})
+	var out sync.Once
+	s.openPower = func() (power.Manager, error) {
+		out.Do(func() { close(dialing) })
+		<-release
+		return nil, power.ErrNoLogind
+	}
+	// A machine that had no logind the last time anything looked, long enough
+	// ago that the next caller goes and looks again. Written down rather than
+	// waited for: noLogindFor is a minute and a test is not.
+	s.noLogind = power.ErrNoLogind
+	s.noLogindAt = time.Now().Add(-2 * noLogindFor)
+
+	// The bar's poll, which is what finds the answer stale and dials.
+	polled := make(chan Response, 1)
+	go func() { polled <- s.idleHold() }()
+	<-dialing
+
+	// And the chord, while that dial is still out. Dispatched on a goroutine and
+	// read back here, because a t.Fatal on a goroutine of its own is not one.
+	pressed := make(chan Response, 1)
+	go func() { pressed <- s.Dispatch(Request{Method: "system.power"}) }()
+	select {
+	case resp := <-pressed:
+		close(release)
+		if resp.Error != "" {
+			t.Fatalf("system.power: %s", resp.Error)
+		}
+		var p Power
+		if err := json.Unmarshal(resp.Ok, &p); err != nil {
+			t.Fatal(err)
+		}
+		if len(p.Choices) != 5 {
+			t.Errorf("the menu drew %d rows on a machine with no logind, want all five", len(p.Choices))
+		}
+		if why := choiceIn(p.Choices, "poweroff").Why; why == "" {
+			t.Error("the poweroff row says nothing about a logind that is not there")
+		}
+	case <-time.After(20 * time.Second):
+		close(release)
+		t.Fatal("the power chord was still waiting for the poll's dial to come back, which is what " +
+			"holding powerMu across the dial costs the one surface that has to work when the session has not")
+	}
+	<-polled
+}
+
+// And a burst still costs one dial between them, which is what holding the lock
+// across it used to buy: presses two to forty of a burst joined the first one's
+// two seconds rather than starting two seconds of their own. Nothing is bought
+// by not holding the lock if the answer is forty dials.
+func TestABurstOfPressesStillCostsOneDial(t *testing.T) {
+	s, l, _ := powerServer(t)
+	var dials atomic.Int64
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var out sync.Once
+	s.openPower = func() (power.Manager, error) {
+		dials.Add(1)
+		out.Do(func() { close(started) })
+		<-release
+		return l, nil
+	}
+
+	const presses = 40
+	press := func(w *sync.WaitGroup) {
+		defer w.Done()
+		s.Dispatch(Request{Method: "system.power"})
+	}
+	var pressed sync.WaitGroup
+	pressed.Add(1)
+	go press(&pressed)
+	// The first one is out before the rest arrive, which is what a burst is:
+	// somebody leaning on the key, not forty presses in the same instant.
+	<-started
+	for i := 1; i < presses; i++ {
+		pressed.Add(1)
+		go press(&pressed)
+	}
+	// Long enough that a press which was going to dial for itself has, and
+	// bounded so that a daemon which never answers fails here rather than hangs.
+	time.Sleep(200 * time.Millisecond)
+	close(release)
+	pressed.Wait()
+
+	if n := dials.Load(); n != 1 {
+		t.Errorf("%d presses cost %d dials, want the one they wait on between them", presses, n)
 	}
 }

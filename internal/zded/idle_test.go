@@ -130,14 +130,25 @@ func TestAHolderWithNoPrintableNameIsStillCounted(t *testing.T) {
 //
 // The count is what may not be bounded with it. A surface cannot recover "there
 // are 200" from a list of six, and the count is the one thing the strip draws.
+//
+// The rows are in an alphabet that costs four bytes a character, which is the
+// alphabet holdsMax's own arithmetic is written in - "each row is two strings at
+// attn.Line's 300 characters, which in an alphabet costing four bytes a
+// character is 2.4 KB". Written in ASCII, the wire assertion below was decorative:
+// six rows came to about 2 KB and so did forty-eight, so holdsMax could be
+// widened eight times with this test green. In this alphabet six rows are 14 KB
+// against the 32 KB ceiling, and forty-eight are 115 KB.
 func TestAFloodOfIdleHoldersIsSampledAndStillCountedInFull(t *testing.T) {
 	s, l, _ := powerServer(t)
 	const flood = 200
+	// Past attn.Line's bound several times over, so that what is measured is
+	// the clamp and not the fixture.
+	prose := strings.Repeat("🙂", 1<<10)
 	for i := 0; i < flood; i++ {
 		l.state.Blocks = append(l.state.Blocks, power.Block{
 			What: "idle",
-			Who:  "holder" + strconv.Itoa(i),
-			Why:  strings.Repeat("x", 1<<20),
+			Who:  "holder" + strconv.Itoa(i) + " " + prose,
+			Why:  prose,
 		})
 	}
 
@@ -150,14 +161,26 @@ func TestAFloodOfIdleHoldersIsSampledAndStillCountedInFull(t *testing.T) {
 	}
 	// In logind's own order, because no rule for choosing among them could be
 	// one somebody could not aim.
-	if got.Holds[0].Who != "holder0" {
-		t.Errorf("holds[0] = %q, want the first logind named", got.Holds[0].Who)
+	if !strings.HasPrefix(got.Holds[0].Who, "holder0 ") {
+		t.Errorf("holds[0] = %q, want the first logind named", firstRunes(got.Holds[0].Who, 16))
 	}
 	// And the whole answer stays small enough to send on a five-second clock.
+	// An absolute ceiling and not one counted off holdsMax: the question is what
+	// the bar is handed every five seconds for the life of a session, and 32 KB
+	// is about twenty times what a real machine's nought or one holder produces.
 	wire := s.Dispatch(Request{Method: "system.idle"}).Ok
 	if len(wire) > 32<<10 {
 		t.Errorf("system.idle answered %d bytes, which is not a thing to send every five seconds", len(wire))
 	}
+}
+
+// firstRunes is the head of a string, for a failure message about one that is
+// three thousand characters long.
+func firstRunes(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n]) + "..."
+	}
+	return s
 }
 
 // The count is the number of holders and not the number of rows sent, on a

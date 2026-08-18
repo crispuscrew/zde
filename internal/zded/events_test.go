@@ -623,6 +623,52 @@ func TestOnlySoManyConnectionsMayListen(t *testing.T) {
 	}
 }
 
+// And the number a keypress fans out to has a size, not only a constant.
+//
+// The test above is written against listenersMax at every point, fixture
+// included, so it says the cap is reached and never where: it passes at sixteen
+// and it passes at a thousand. What has to hold absolutely is what one keypress
+// costs, and that is the listener count itself - broadcast starts one goroutine
+// and does one write per listener, every time anything is drawn (see broadcast),
+// and each of them may cost sendWait against a client that is not reading.
+//
+// Sixty-four is the ceiling and the arithmetic is listenersMax's own. Exactly
+// one thing subscribes today: the shell's one events connection. A shell being
+// restarted holds two for the moment before the daemon reads EOF on the old one.
+// Sixteen was that with room for surfaces nobody has written yet. Sixty-four is
+// four times over - room for that decision to be revisited twice - and it is the
+// point past which "a keypress fans out to a handful of goroutines" stops being
+// a true sentence about this daemon.
+//
+// Eight times the cap ask, which is the mutation this is written against.
+func TestAKeypressFansOutToNoMoreThanAHandfulOfListeners(t *testing.T) {
+	s := New("test", nil, &fakeCompositor{m: twoDesks(), focused: "vshop.DP-1.code"}, nil)
+	path := serve(t, s)
+
+	const asked = 128
+	for i := 0; i < asked; i++ {
+		c, err := DialPath(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		// Refused is the expected answer for most of them, and it is the
+		// sentence the test above pins; here only how many got in matters.
+		c.Call(MethodEvents, nil) //nolint:errcheck // the refusal is the point
+	}
+
+	const handful = 64
+	if n := s.listeners(); n > handful {
+		t.Errorf("%d connections subscribing left %d listeners, so every keypress fans out to %d "+
+			"goroutines and %d writes of up to sendWait each", asked, n, n, n)
+	}
+	// And the fan-out is that number rather than a number this test guessed: a
+	// broadcast reaches every listener, so what it reports is what it walked.
+	if sent := s.broadcast(Event{Kind: EventPicker, Desks: []string{"vshop"}}); sent > handful {
+		t.Errorf("one event reached %d listeners, past the %d a keypress may cost", sent, handful)
+	}
+}
+
 // A subscriber that stops reading costs a keypress once, and then stops costing
 // it anything.
 //
