@@ -235,7 +235,16 @@ type Server struct {
 	// that reaches it is a flood, so a message per arrival would be the flood
 	// again in the log - and the state it describes is visible in `zde queue`
 	// for as long as it lasts, which is where somebody would look anyway.
-	saidQueueFull sync.Once
+	//
+	// saidSenderFull is the same restraint for the other refusal, and it is a
+	// second Once rather than a share of the first because the two say different
+	// things and one of them is far easier to reach. A sender at its own share
+	// is one app misbehaving and the rest of the session unaffected; the queue at
+	// its ceiling is everything refused. Sharing a Once would mean the first app
+	// to loop silenced the log line for the state that actually matters
+	// (internal/journal, ErrSenderFull against ErrQueueFull).
+	saidQueueFull  sync.Once
+	saidSenderFull sync.Once
 
 	// The clipboard side (clip.go). clips is what was copied - bounded, in
 	// memory, and expiring on its own, for the reasons internal/clip gives at
@@ -1222,6 +1231,15 @@ func (s *Server) Dispatch(req Request) Response {
 			return Response{Error: "queue.done takes one id"}
 		}
 		return s.queueDone(req.Args[0])
+	case "queue.clear":
+		if len(req.Args) != 0 {
+			// No argument, because there is no half of this. A filter - by
+			// sender, by desk, by age - is a thing to add when something wants
+			// one, and an argument silently ignored is how a person empties the
+			// queue while believing they emptied part of it.
+			return Response{Error: "queue.clear takes no arguments: it empties the whole queue"}
+		}
+		return s.queueClear()
 	case "attn.mode":
 		// One verb, read and write, for the reason window.jump-to has two
 		// arities: it is the same question - what is the mode - asked and
@@ -1914,8 +1932,8 @@ func (s *Server) Arrived(n attn.Notification) (uint64, error) {
 		case err == nil:
 			rec.ID, rec.Queued = it.ID, true
 		case errors.Is(err, journal.ErrQueueFull):
-			// Not a failure of the arrival. The queue has a ceiling now
-			// (internal/journal, queueMax) and this session is at it, which is
+			// Not a failure of the arrival. The queue has a ceiling
+			// (internal/journal, QueueMax) and this session is at it, which is
 			// a statement about how much is already waiting and not about this
 			// notification: it is recorded, it draws its popup, and it takes an
 			// id below exactly as one a mode kept off the queue does. What it
@@ -1924,6 +1942,16 @@ func (s *Server) Arrived(n attn.Notification) (uint64, error) {
 			s.saidQueueFull.Do(func() {
 				log.Printf("zded: %v. What arrives from now on is shown and recorded, "+
 					"and not added to it", err)
+			})
+		case errors.Is(err, journal.ErrSenderFull):
+			// The same answer for the arrival, and a different fact about the
+			// session: this sender has filled its own share, or everything with
+			// a sender has filled theirs between them, and nothing else on the
+			// queue is affected - which is the whole point of the shares
+			// (internal/journal, PerSenderMax and Reserved). Its own line
+			// because the name in it is the thing to go and look at.
+			s.saidSenderFull.Do(func() {
+				log.Printf("zded: %v. The rest of the queue is untouched, and `zde queue` is what it holds", err)
 			})
 		default:
 			return 0, err
@@ -2103,6 +2131,50 @@ func (s *Server) queueDone(id string) Response {
 		w.Dismissed(n)
 	}
 	return ok([]string{})
+}
+
+// queueClear empties the queue and answers with how many things were on it.
+//
+// The way out of a queue somebody cannot face, and the way out of one a flood
+// filled before this zde had shares in it: the alternative was `zde queue done`
+// a thousand times, which is not a way out, it is the reason nobody would take
+// it (internal/journal, Clear).
+//
+// Every id it drops is dismissed in the history and told to whoever sent it, for
+// the reason queueDone does both: an app blocked on its own notification's
+// closure has no other way to learn it is gone, and a center still showing a row
+// as waiting after the queue let go of it is the two halves of attn disagreeing
+// about one arrival.
+func (s *Server) queueClear() Response {
+	if s.jrn == nil {
+		return Response{Error: "no journal, so nothing is waiting"}
+	}
+	// Read before the clear, because after it there is nothing to read. Not
+	// under one lock with it: the journal is what decides, and an item queued
+	// between these two lines is one this call is simply not about.
+	waiting := s.jrn.Waiting()
+	n, err := s.jrn.Clear()
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	w := s.watcher()
+	for _, it := range waiting {
+		s.history.Dismiss(it.ID)
+		if w != nil {
+			w.Dismissed(it.ID)
+		}
+	}
+	return ok(Cleared{Count: n})
+}
+
+// Cleared is what queue.clear answers: how many things stopped waiting.
+//
+// A number and not an empty answer, because this is the one verb whose whole
+// effect is invisible afterwards - the queue it emptied is gone - and "cleared
+// 214" is the difference between a person knowing what they did and a person
+// wondering whether it worked.
+type Cleared struct {
+	Count int `json:"count"`
 }
 
 // queueJump goes to where the oldest thing waiting is waiting.

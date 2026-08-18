@@ -103,8 +103,16 @@ func (s *Server) actions() []Action {
 // A missing file is not an error. It means layer 1 has never been activated, or
 // this is a zde built by hand; the actions are still every action zde has, and
 // what is not known is which keys reach them.
+//
+// Nor is anything else the read can say. Every failure lands in the same place -
+// the keys are not known and the actions still are - and that is what makes the
+// read through keymap.ReadText load-bearing rather than tidy: a FIFO at
+// $XDG_CONFIG_HOME/zde/keymap.txt used to leave this parked in the kernel with
+// no writer coming, on the goroutine serving palette.list or palette.run, so the
+// palette key never opened, `zde keys` hung, and each call leaked a goroutine
+// and a descriptor that closing the socket could not take back.
 func known() []keymap.Action {
-	data, err := os.ReadFile(keymap.TextPath())
+	data, err := keymap.ReadText()
 	if err != nil {
 		data = nil
 	}

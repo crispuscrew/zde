@@ -2074,10 +2074,21 @@ let
         }
         zde queue done "$(grep 'session has expired' /tmp/q-look.txt | cut -f1)" >/dev/null
 
-        zde queue done "$id"
-        zde queue done "$id2"
+        # And the other way out, which is the one that matters on a queue
+        # somebody cannot face: one call rather than one per item. Recovery used
+        # to be `zde queue done` a thousand times, and a journal written before
+        # the queue had any bounds can still hold more than the ceiling.
+        #
+        # The count is the assertion. A clear whose effect cannot be checked
+        # afterwards - the list it dropped is gone - is one that has to say what
+        # it did, and "2" here is the two still waiting from further up.
+        cleared=$(zde queue clear)
+        [ "$cleared" = "2" ] || { echo "zde queue clear said '$cleared', want the 2 that were waiting"; exit 1; }
         zde queue 2>&1 | tee /tmp/q-empty.txt
         [ ! -s /tmp/q-empty.txt ] || { echo "the queue did not empty:"; cat /tmp/q-empty.txt; exit 1; }
+        # Twice is a person checking, not an error.
+        again=$(zde queue clear)
+        [ "$again" = "0" ] || { echo "clearing an empty queue said '$again'"; exit 1; }
 
         # Mod+w with nothing listening, which is this zded: the session target
         # was stopped long ago, so there is no shell here. The key still has to

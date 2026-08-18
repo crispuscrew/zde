@@ -408,7 +408,13 @@ func TestANotificationArrivingWhileTheDeskChangesIsNotARace(t *testing.T) {
 	go func() {
 		<-start
 		for i := 0; i < 50; i++ {
-			if _, err := s.Arrived(attn.Notification{From: "ci", Text: "the build failed"}); err != nil {
+			// A sender each, so that all fifty reach the queue and the count
+			// below still means what it meant. One name fifty times is refused
+			// after thirty now, on purpose and by a different mechanism
+			// (internal/journal, PerSenderMax) - and a test about a torn read
+			// should not be the one that trips over it.
+			from := "ci-" + strconv.Itoa(i)
+			if _, err := s.Arrived(attn.Notification{From: from, Text: "the build failed"}); err != nil {
 				arriving <- err
 				return
 			}

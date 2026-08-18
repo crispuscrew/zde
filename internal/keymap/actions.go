@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/crispuscrew/zde/internal/plainfile"
 )
 
 // Action is one thing a person can ask zde to do by name: what it is called,
@@ -142,3 +144,35 @@ func TextPath() string {
 	}
 	return filepath.Join(os.Getenv("HOME"), ".config", "zde", "keymap.txt")
 }
+
+// textMax bounds the cheatsheet.
+//
+// It is a line per bind and the keymap has under two hundred of them, which is
+// a few kilobytes; the generated file on a full install is about six. 256 KiB is
+// forty times the largest anybody could mean and small enough that something
+// which arrived at this path by accident - a log, a download, a core file - is
+// refused rather than parsed into a list of keys.
+const textMax = 256 << 10
+
+// ReadText is the cheatsheet, as both readers of it want it.
+//
+// One function for the palette and for `zde keys`, because they read the same
+// file for the same reason and the care it needs is the same care. A missing
+// file is left as os.ErrNotExist for the caller: the palette treats it as a
+// machine whose layer 1 has never been activated and carries on, and the CLI
+// says so in those words, and neither answer belongs here.
+//
+// Through internal/plainfile, which is the treatment every other startup read
+// in this tree already takes and this one was missed out of. The path is
+// $XDG_CONFIG_HOME/zde/keymap.txt - a name in a directory the account can write
+// - and a plain os.ReadFile of a FIFO does not fail, it waits in the kernel for
+// a writer that never comes. That was not a slow palette: `known` is called by
+// palette.list and by palette.run, on zded's own goroutine per connection, so
+// one `mkfifo` there meant the palette key never opened, `zde keys` hung, and
+// every palette.list leaked a goroutine and a descriptor for the life of the
+// daemon - closing the socket cannot wake a goroutine parked in a read.
+//
+// Symlinks at the last component are followed on purpose: home-manager writes
+// this file as a link into the nix store, so refusing one would refuse the
+// ordinary install (internal/plainfile, Open).
+func ReadText() ([]byte, error) { return plainfile.Read(TextPath(), textMax) }

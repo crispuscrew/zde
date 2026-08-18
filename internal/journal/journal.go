@@ -22,6 +22,7 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/crispuscrew/zde/internal/attn"
 	"github.com/crispuscrew/zde/internal/desk"
 	"github.com/crispuscrew/zde/internal/plainfile"
 )
@@ -99,26 +100,110 @@ const compactAt = 1000
 // one. So the bound this really buys is the one that was missing: after it, a
 // restart shortens the journal to something with a ceiling.
 //
-// Deliberately not enforced on replay. A journal written before this cap can
-// hold more, and refusing to load it would delete what somebody already owes to
-// enforce a number invented afterwards. It loads whole, and nothing new is
-// taken until it drains.
+// It is the ceiling on the file and on the memory, and it is not on its own a
+// bound on anything else. Who may spend it is PerSenderMax and Reserved, below.
+//
+// Deliberately not enforced on replay, and neither are the two below. A journal
+// written before these caps can hold more, and refusing to load it would delete
+// what somebody already owes to enforce a number invented afterwards. It loads
+// whole, and nothing new is taken until it drains - and `zde queue clear` is
+// what drains it in one call rather than a thousand (see Clear).
 const QueueMax = 1000
 
-// ErrQueueFull is the cap being reached, told apart from a journal that could
-// not be written.
+// PerSenderMax is how many things one sender may have waiting at once.
+//
+// The bound above was a bound on the queue and not on anybody in it, which
+// means it was a bound the first caller to reach it spent on everybody else.
+// One app on the session bus filled all thousand places through Notify, with
+// nothing authenticating it, and after that a second app was refused, an urgent
+// arrival was refused, and a person typing `zde queue add` was refused. The
+// number was right and the shape of it was the whole failure: a queue with a
+// ceiling and no shares is a queue whose ceiling belongs to whoever gets there
+// first.
+//
+// internal/attn had already answered this for the half of attn that is the
+// history - a ring of records for each of a bounded number of senders - against
+// exactly this threat, and this file had taken the number without the argument.
+//
+// What is deliberately not taken from there is eviction, and that is the
+// difference between the two halves. The history is what already happened, so
+// dropping its oldest record costs a row nobody was going to read. The queue is
+// what you still owe, and its promise is that what interrupted you is worth as
+// much tomorrow morning as it was last night (see State.Queue). Dropping an
+// item is breaking that promise quietly, and it is also the flood winning: a
+// chatty program would erase everything real you owed and then hold the list
+// itself. So this bounds by refusing, as the ceiling always did. What changes is
+// whose room is being refused - one sender's own, and nobody else's.
+//
+// Thirty, which is the number the history keeps per sender and for a related
+// reason: an arrival makes both a queue item and a history record, and a queue
+// holding more of one sender's items than that sender's ring could show would be
+// owing things this session can no longer look up. Thirty is a day or two of one
+// ordinary app, and it is far past what anybody acts on - and a refusal here is
+// not a lost notification, because an arrival the queue has no room for is still
+// recorded, still draws its popup and still takes an id (see ErrSenderFull).
+const PerSenderMax = 30
+
+// Reserved is how much of QueueMax nothing off the bus can spend.
+//
+// A per-sender bound alone is a bound on a name, and a name is free: From is the
+// sender's own claim and nothing verifies it (internal/attn, Notification.From).
+// An app that varies what it calls itself mints a share per variation, which is
+// the same leak one level up - and thirty-four names would have had the whole
+// thousand and refused a person again.
+//
+// So a part of the queue is kept for the entries the bus cannot produce, and the
+// reason it is a real reservation rather than a wish is that the emptiness of
+// From is not a claim anybody can make. A notification that gives no app name,
+// or gives "-", or gives "zde", is recorded under the bus's own name for its
+// connection instead, and the bus hands that out rather than letting the peer
+// choose it (internal/attn, claim). So an item with no sender is a person who
+// typed `zde queue add`, and an item from attn.SelfFrom is the desktop's own
+// message about a desk that could not start its apps - and nothing on the bus
+// can be either.
+//
+// The same two names internal/attn refuses to evict, for the same argument
+// (history.go, unevictable): a name no app can mint is not part of the leak the
+// bound exists to stop, and leaving zde's own in the count is the bound working
+// for the attacker - "this desk could not start three of its apps" is one item,
+// the cheapest thing on the machine, so a flood would refuse the desktop's own
+// words first.
+//
+// A hundred, and it is a number that has to be reachable rather than one that
+// gets used: nobody types a hundred reminders. What it costs is a tenth of a
+// ceiling that is already ten times what a queue can be and still be one.
+const Reserved = 100
+
+// ErrQueueFull is the whole queue at its ceiling, told apart from a journal that
+// could not be written.
 //
 // Its own error because the two want opposite answers. A write that failed
 // means the daemon cannot record anything and the arrival should fail; a full
 // queue means this session already has more waiting than it can act on, and the
 // notification still has to land - it is recorded, it draws its popup, and it
 // gets its id. Only its place in the queue is refused.
+//
 // The text is the whole message rather than a label, because one of the two
 // callers hands it straight to a person: `zde queue add` on a full queue prints
 // this and nothing else, and "the queue is full" with no number and no way out
 // of it is the kind of refusal somebody has to go and read the source about.
+// This is also the only refusal a person can ever be given, because the other
+// two are about senders and a person is not one - so it is the only one whose
+// words have to work in a terminal.
 var ErrQueueFull = fmt.Errorf("%d things are already waiting, which is as many as the queue holds: "+
-	"`zde queue` is the list, and `zde queue done <id>` is how it gets shorter", QueueMax)
+	"`zde queue` is the list, `zde queue done <id>` is how it gets shorter, "+
+	"and `zde queue clear` empties it", QueueMax)
+
+// ErrSenderFull is a sender being refused its own share, or everything with a
+// sender being refused theirs.
+//
+// Told apart from the one above because it means something different to whoever
+// reads the log: this queue is not full, this sender's part of it is, and the
+// rest of the session is unaffected. Nobody types their way to this one - a
+// person's entries have no sender - so unlike ErrQueueFull it is written for a
+// daemon's log rather than for a terminal, and what it is wrapped in says which
+// name and which number.
+var ErrSenderFull = errors.New("what it sent is shown and recorded, and does not go on the queue")
 
 // entry is one line of the journal.
 type entry struct {
@@ -153,6 +238,7 @@ const (
 	kindRenamed  = "renamed"  // a workspace was renamed, so entries move with it
 	kindQueued   = "queued"   // something is waiting, and which desk it waits on
 	kindDone     = "done"     // it is not waiting any more
+	kindCleared  = "cleared"  // nothing is waiting any more: the whole queue at once
 	kindLastID   = "lastid"   // the highest queue id handed out, so none repeats
 	kindMode     = "mode"     // what arrivals are allowed to do (internal/attn)
 	kindBorrowed = "borrowed" // the desk whose declared mode is in force, and the mode it displaced
@@ -529,6 +615,13 @@ func (j *Journal) apply(e entry) {
 				break
 			}
 		}
+	case kindCleared:
+		// Everything queued before this line, and nothing after it: the replay
+		// is in order, so one entry is the whole of what a thousand `done` lines
+		// used to be. The ids are not given back - lastID is untouched - because
+		// an id is spent when it is handed out and a number reused would let an
+		// app close something somebody typed (see ClaimID).
+		j.state.Queue = nil
 	case kindRenamed:
 		j.applyRename(e)
 	default:
@@ -683,18 +776,8 @@ func (j *Journal) Queue(it Item) (Item, error) {
 	// same number, and the second thing to wait would finish the first.
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	// The newest is what gives way, and not the oldest.
-	//
-	// Something has to at the cap, and the two directions are not equally
-	// honest. The queue's promise is that what interrupted you is worth as much
-	// tomorrow morning as it was last night (see State.Queue), so dropping the
-	// oldest to make room would mean one chatty program could quietly erase
-	// every real thing you owed - which is the shape of failure principle 3 is
-	// about. Refusing the newest keeps every promise about what is already
-	// there, and it makes the flood the thing that is refused rather than the
-	// thing that wins.
-	if len(j.state.Queue) >= QueueMax {
-		return Item{}, ErrQueueFull
+	if err := j.roomFor(it.From); err != nil {
+		return Item{}, err
 	}
 	it.ID = j.lastID + 1
 	if err := j.recordLocked(entry{
@@ -705,6 +788,69 @@ func (j *Journal) Queue(it Item) (Item, error) {
 	}
 	return it, nil
 }
+
+// roomFor is the three bounds, asked in the order of what they mean. Called
+// with the lock held.
+//
+// The newest is what gives way at every one of them, and never the oldest.
+// Something has to give at a cap and the two directions are not equally honest.
+// The queue's promise is that what interrupted you is worth as much tomorrow
+// morning as it was last night (see State.Queue), so dropping the oldest to make
+// room would mean one chatty program could quietly erase every real thing you
+// owed - which is the shape of failure principle 3 is about. Refusing the newest
+// keeps every promise about what is already there, and it makes the flood the
+// thing that is refused rather than the thing that wins.
+//
+// There is no sweep and no age at which an item goes, and that is decided rather
+// than missing. A queue that deleted what you owed because it got old would be a
+// list you cannot trust, which is a list nobody reads; and it would be a second
+// way for a flood to cost somebody a real item, since the thing quietly removed
+// is whatever has been waiting longest and that is the thing that mattered most.
+// What empties a queue is a person deciding to (see Clear).
+//
+// A walk over the queue per call, up to QueueMax comparisons of a string. It is
+// on the arrival path and it is not worth avoiding: the same critical section
+// then fsyncs a line to the disk, which is four or five orders of magnitude more
+// than this, and a counter kept beside the slice would be a second copy of the
+// queue's shape to disagree with it across replay, compaction and Done.
+func (j *Journal) roomFor(from string) error {
+	if len(j.state.Queue) >= QueueMax {
+		return ErrQueueFull
+	}
+	// Nothing on the bus can be either of these names, so neither is part of
+	// what the shares below are protecting anybody from (see Reserved).
+	if ours(from) {
+		return nil
+	}
+	held, mine := 0, 0
+	for _, it := range j.state.Queue {
+		if ours(it.From) {
+			continue
+		}
+		held++
+		if it.From == from {
+			mine++
+		}
+	}
+	if mine >= PerSenderMax {
+		return fmt.Errorf("%s already has %d things waiting, which is one sender's whole share of the queue: %w",
+			from, PerSenderMax, ErrSenderFull)
+	}
+	if held >= QueueMax-Reserved {
+		return fmt.Errorf("%d of the queue's %d places are taken by things with a sender, "+
+			"which is as many as they hold between them: %w", held, QueueMax, ErrSenderFull)
+	}
+	return nil
+}
+
+// ours is an entry nothing off the bus could have made: one a person typed, and
+// the desktop's own.
+//
+// attn's constant rather than the same word spelled twice here, which is the
+// argument internal/zded/launch.go makes about the same string: the name is
+// reserved on the way in from the bus, and a reservation guarded under one
+// spelling while the sender used another is a defence with nothing behind it.
+func ours(from string) bool { return from == "" || from == attn.SelfFrom }
 
 // ClaimID hands out an id without queueing anything, and records that it is
 // spent.
@@ -737,6 +883,40 @@ func (j *Journal) SetMode(mode string) error {
 // is not waiting any more either way, which is what was asked for.
 func (j *Journal) Done(id uint64) error {
 	return j.record(entry{Kind: kindDone, ID: id})
+}
+
+// Clear takes everything off the queue and answers with how many went.
+//
+// It exists because the way out of a full queue was a thousand calls. The bounds
+// above make a flood cost one sender's share instead of the whole list, but they
+// are refusals and refusals do not shorten anything: a queue that filled up
+// before this zde, or one a person let grow, still has to be emptied, and
+// `zde queue done <id>` a thousand times is not a way out - it is the reason
+// nobody would take it.
+//
+// One entry and one fsync, not one per item. That is the point of it and it is
+// also what makes it honest across a restart: a thousand `done` lines can be
+// torn in the middle and replay to half a cleared queue, where one line either
+// landed or did not.
+//
+// Everything, including what a person typed themselves. A clear that kept some
+// of it would be zde deciding which of somebody's own obligations were the real
+// ones, and there is nothing here that could decide that. This is a verb a
+// person types, and the count comes back so that what it cost is said rather
+// than assumed.
+func (j *Journal) Clear() (int, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	n := len(j.state.Queue)
+	if n == 0 {
+		// Nothing written for nothing done: this is reachable from a key, and a
+		// line and an fsync per press of it is a file growing for no reason.
+		return 0, nil
+	}
+	if err := j.recordLocked(entry{Kind: kindCleared}); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 // Renamed tells the journal a workspace changed name, so any position

@@ -2724,6 +2724,74 @@ func TestQueueDone(t *testing.T) {
 	}
 }
 
+// One call empties the whole thing, and says how much it emptied.
+//
+// The way out of a queue that has got away from somebody. It was a thousand
+// calls, which is not a way out, and a journal written before the queue had any
+// bounds at all can still hold more than the ceiling - the replay does not trim
+// it on purpose (internal/journal, QueueMax).
+func TestQueueClearEmptiesItAndSaysHowMuch(t *testing.T) {
+	s, jrn, _ := queueTestServer(t, "vshop.DP-1.code")
+	for i := 0; i < 5; i++ {
+		if _, err := jrn.Queue(journal.Item{Text: "owed", Desk: "vshop"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	var cleared Cleared
+	if err := c.Call("queue.clear", &cleared); err != nil {
+		t.Fatal(err)
+	}
+	if cleared.Count != 5 {
+		t.Errorf("cleared %d, want the 5 that were waiting", cleared.Count)
+	}
+	if q := jrn.Waiting(); len(q) != 0 {
+		t.Errorf("queue = %+v, want it empty", q)
+	}
+	// Twice in a row is a person checking, not an error.
+	if err := c.Call("queue.clear", &cleared); err != nil || cleared.Count != 0 {
+		t.Errorf("clearing an empty queue = %d, %v", cleared.Count, err)
+	}
+	// And no half of it: an argument silently ignored is how somebody empties
+	// the whole queue believing they emptied part of it.
+	if err := c.Call("queue.clear", nil, "ci"); err == nil {
+		t.Error("queue.clear took an argument")
+	}
+}
+
+// What the clear drops, the rest of attn is told about.
+//
+// The same two things queue.done does for one item: the history stops showing it
+// as waiting, and whoever sent it hears that it is gone. An app blocked on its
+// own notification's closure has no other way to learn, and a center still
+// drawing a row the queue has let go of is the two halves of attn disagreeing
+// about one arrival.
+func TestQueueClearTellsTheHistoryAndTheSenders(t *testing.T) {
+	s, _, _ := queueTestServer(t, "vshop.DP-1.code")
+	var told []uint64
+	s.Watching(tellTale{ids: &told})
+	id, err := s.Arrived(attn.Notification{From: "ci", Text: "the build failed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp := s.Dispatch(Request{Method: "queue.clear"}); resp.Error != "" {
+		t.Fatal(resp.Error)
+	}
+	for _, r := range s.history.Recent() {
+		if r.ID == id && !r.Dismissed {
+			t.Error("the center still shows it as waiting after the queue let go of it")
+		}
+	}
+	if !slices.Contains(told, id) {
+		t.Errorf("dismissed %v, want the cleared id told to whoever sent it", told)
+	}
+}
+
 // The queue outlives the compositor, so a desk it remembers may be gone by the
 // next login. One stale reminder must not hold the key down for every reminder
 // behind it.

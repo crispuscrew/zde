@@ -34,6 +34,32 @@ type Keymap struct {
 	Binds []Bind
 }
 
+// Load reads the keymap source.
+//
+// A plain read, and deliberately not internal/plainfile, which is the other
+// read in this package (see ReadText). The two look alike and are not, so they
+// are decided separately:
+//
+//   - This one is the generator's input at build time. zde-keymap is run by one
+//     derivation, on `-in ${../common/keymap/keymap.yaml}` (nix/zde-config.nix),
+//     which is a store path the derivation names. There is no attacker to be had
+//     there: anybody who could change that file could change the derivation, and
+//     the derivation is what decides which compiler builds this binary at all.
+//     Nothing here outlives the build, and nothing reads a session's files.
+//   - ReadText's is a live machine's config, read by a running daemon on every
+//     palette call and by `zde keys`. That one is a real plainfile customer and
+//     keeps it.
+//
+// And the check cannot work where this one has to run, which is what settles it
+// rather than the exposure argument alone. Nix's Linux sandbox puts the builder
+// in a user namespace with a single uid mapping, build user to sandbox-uid,
+// 1000 by default. Host uid 0 is not in that map, so every root-owned store
+// path reads inside the builder as the overflow uid, 65534. That is not a
+// property of what plainfile trusts: the old rule of "ours or root's" refuses
+// 65534 as well. From inside a builder the store does not look like the store,
+// so "came out of the store" is not a thing ownership can recognise there - and
+// a check that refuses the only environment this function runs in, to defend
+// against nobody, is a check that costs and buys nothing.
 func Load(path string) (*Keymap, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {

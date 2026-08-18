@@ -200,21 +200,57 @@ func TestReadRefusesWhatIsPastTheCeiling(t *testing.T) {
 
 // Whose file it is, decided rather than guessed - and the decision is the thing
 // under test, because a unit test cannot make a file belonging to a third
-// account (internal/journal makes the same argument about chmodRefused).
-func TestOnlyOursAndRootsAreTrusted(t *testing.T) {
+// account or to root (internal/journal makes the same argument about
+// chmodRefused).
+//
+// The cases that matter are the last three. "root owns it" was the whole rule
+// once, and the reason written beside it was the nix store - so a symlink at
+// apps.json pointing at /etc/os-release was read as an app map, on the strength
+// of a sentence about a store that file has never been in. What separates the
+// two is the property the store has and /etc does not: the nix daemon
+// canonicalises everything it puts there to root-owned with no write bit set at
+// all.
+func TestOnlyOursAndTheStoresAreTrusted(t *testing.T) {
 	for _, c := range []struct {
 		name  string
 		owner int
 		us    int
+		mode  os.FileMode
 		want  bool
 	}{
-		{"ours", 1000, 1000, true},
-		{"root's, which is where home-manager puts every config it writes", 0, 1000, true},
-		{"somebody else's", 1001, 1000, false},
-		{"ours when we are root", 0, 0, true},
+		{"ours", 1000, 1000, 0o600, true},
+		{"ours, however we left its mode", 1000, 1000, 0o666, true},
+		{"ours when we are root", 0, 0, 0o644, true},
+		{"somebody else's", 1001, 1000, 0o444, false},
+		{"a store path, which is where home-manager puts every config it writes", 0, 1000, 0o444, true},
+		{"a store path that is executable", 0, 1000, 0o555, true},
+		{"root's and writable by root, which is /etc/os-release", 0, 1000, 0o644, false},
+		{"root's and writable by the world", 0, 1000, 0o666, false},
 	} {
-		if got := trusted(c.owner, c.us); got != c.want {
-			t.Errorf("%s: trusted(%d, %d) = %v, want %v", c.name, c.owner, c.us, got, c.want)
+		if got := trusted(c.owner, c.us, c.mode); got != c.want {
+			t.Errorf("%s: trusted(%d, %d, %04o) = %v, want %v", c.name, c.owner, c.us, c.mode.Perm(), got, c.want)
+		}
+	}
+}
+
+// And the same decision reached through a real open, so that the mode being
+// asked for is the one on the descriptor rather than one nobody reads.
+//
+// Our own file either way here - a test cannot make root's - so what this pins
+// is the half a narrowing could break by accident: a config of ours is read
+// whatever mode it has, because the mode only decides anything for a file
+// somebody else owns.
+func TestOurOwnFileIsReadWhateverItsMode(t *testing.T) {
+	for _, mode := range []os.FileMode{0o400, 0o444, 0o600, 0o644, 0o666} {
+		path := filepath.Join(t.TempDir(), "apps.json")
+		if err := os.WriteFile(path, []byte("{}"), mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Read(path, 1<<20); err != nil {
+			t.Errorf("our own %04o file was refused: %v", mode, err)
 		}
 	}
 }

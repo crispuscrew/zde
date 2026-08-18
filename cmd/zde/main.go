@@ -187,6 +187,8 @@ func run(args []string) error {
 		return queueList()
 	case len(args) == 3 && args[0] == "queue" && args[1] == "done":
 		return call("queue.done", args[2])
+	case len(args) == 2 && args[0] == "queue" && args[1] == "clear":
+		return queueClear()
 	case len(args) == 2 && args[0] == "desk" && args[1] == "queue-jump":
 		return focusDesk("desk.queue-jump")
 	case len(args) == 2 && args[0] == "desk" && args[1] == "regulars":
@@ -258,9 +260,14 @@ func launch(name string) error {
 // Mod+slash spawns a terminal on this (zde.apps.help). Printing to a stderr no
 // keypress has is what it did before, which on a desktop where most keys are
 // still silent is the worst key to have chosen for that.
+//
+// Through keymap.ReadText, for the reason the palette reads it that way: this
+// runs on `zde keys` and on Mod+slash, and a plain open of a FIFO at that path
+// waits in the kernel for a writer that never comes - a key that hangs a
+// terminal rather than printing the keymap.
 func keys() error {
 	path := keymap.TextPath()
-	data, err := os.ReadFile(path)
+	data, err := keymap.ReadText()
 	if os.IsNotExist(err) {
 		return fmt.Errorf("no keymap at %s: layer 1 installs it, so this is a zde "+
 			"whose home-manager module has not been activated", path)
@@ -680,6 +687,32 @@ func queueAdd(text string) error {
 		return err
 	}
 	fmt.Printf("%d\t%s\n", it.ID, it.Text)
+	return nil
+}
+
+// queueClear empties the queue and says how much it emptied.
+//
+// The count is the whole answer and it is printed rather than assumed, because
+// this is the one verb whose effect cannot be checked afterwards - the list it
+// dropped is not there to compare against. "0" is a real answer too: a queue
+// that was already empty is what somebody who typed this twice wants to see.
+//
+// No confirmation asked. What confirms it is having typed it: `zde queue` is one
+// word away and prints the whole list, the verb is spelled out rather than being
+// a flag on another one, and there is no key bound to it (common/keymap). A
+// prompt here would be a prompt in a terminal for a command whose only caller is
+// somebody in a terminal who has already decided.
+func queueClear() error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	var cleared zded.Cleared
+	if err := c.Call("queue.clear", &cleared); err != nil {
+		return err
+	}
+	fmt.Printf("%d\n", cleared.Count)
 	return nil
 }
 
@@ -1914,6 +1947,7 @@ func usage() {
                          text - tab separated)
   zde queue add TEXT     make something wait, on the desk you are on
   zde queue done ID      it is not waiting any more
+  zde queue clear        none of it is waiting any more; prints how many went
   zde attn [MODE]        the attn mode, or set it: work queues everything,
                          focus queues only what the sender called urgent,
                          quiet queues none of it. All three keep the lot in
