@@ -160,6 +160,28 @@ func TestRenameMovesRememberedPosition(t *testing.T) {
 	}
 }
 
+// The other kind of rename: `zde desk move-workspace-to` keeps the monitor and
+// changes the desk, and the remembered position has to change hands with the
+// workspace. Written back into the desk it left, vshop remembered a workspace
+// the regulars now own - a last-active slot that is a lie rather than a memory.
+func TestRenameToAnotherDeskMovesTheMemory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "journal.jsonl")
+	j := open(t, path)
+	j.SetActive(name(t, "vshop.DP-1.comms"))
+	if err := j.Renamed(desk.Rename{From: name(t, "vshop.DP-1.comms"), To: name(t, "regulars.DP-1.comms")}); err != nil {
+		t.Fatal(err)
+	}
+	j.Close()
+
+	st := open(t, path).State()
+	if got, stale := st.LastActive["vshop"]["DP-1"]; stale {
+		t.Errorf("vshop still remembers %q on DP-1, which the regulars own now", got)
+	}
+	if got := st.LastActive["regulars"]["DP-1"]; got != "comms" {
+		t.Errorf("regulars last active = %q, want the workspace it was given", got)
+	}
+}
+
 // A rename of some other workspace must not disturb what is remembered.
 func TestRenameOfAnotherWorkspaceIsIgnored(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "journal.jsonl")

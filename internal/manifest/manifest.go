@@ -141,12 +141,34 @@ func (d *Desk) check() error {
 		}
 		seen := map[string]bool{}
 		for _, label := range mon.Workspaces {
-			name, err := desk.NewName(d.Name, output, label)
-			if err != nil {
+			// The label has to survive becoming a workspace name, and that is
+			// the whole of what a slot must be: whatever internal/desk can mint
+			// and read back, a manifest can declare. That includes an ordinal,
+			// `workspaces: [1]`, which used to be refused here with the advice
+			// to give it a name.
+			//
+			// The advice is still good for a file somebody is writing by hand.
+			// The refusal was not, because this is also the check a snapshot is
+			// written through, and adoption mints an ordinal for a window whose
+			// app id leaves nothing readable (docs/model.md, section 3). One
+			// such workspace made the whole desk unsnapshottable and the only
+			// way out was to close the app: zde refusing to write down a name
+			// zde itself minted.
+			//
+			// What the refusal was protecting is real, and it lives one package
+			// away rather than here. The label space and the ordinal space stay
+			// apart in internal/desk, where Label declines an all-digit label
+			// and adoption hands out the next free number above the ones
+			// already taken; a declared ordinal joins the taken set like any
+			// other name, so adoption steps over it rather than into it.
+			//
+			// The rest of that argument - that a declaration and an adoption
+			// could end up meaning one workspace - is true of labels too: a
+			// manifest declaring `code` and an app calling itself code arrive
+			// at one name by design. An ordinal claims less than a label, not
+			// more, because it never said what was in there.
+			if _, err := desk.NewName(d.Name, output, label); err != nil {
 				return fmt.Errorf("manifest %q: %w", d.Name, err)
-			}
-			if _, isOrdinal := name.Ordinal(); isOrdinal {
-				return fmt.Errorf("manifest %q: workspace %q on %q is a number, which is the space adoption mints into - give it a name", d.Name, label, output)
 			}
 			if seen[label] {
 				return fmt.Errorf("manifest %q: monitor %q declares workspace %q twice", d.Name, output, label)
@@ -287,6 +309,10 @@ func FromMap(m *desk.Map, name string, private bool) (*Desk, error) {
 	if len(workspaces) == 0 {
 		return nil, fmt.Errorf("desk %q has no workspaces to write down", name)
 	}
+	// In the order the map has them, which is the order the strips have them.
+	// A manifest lists a monitor's workspaces in the order they should be, and
+	// entering the desk lands on the first (internal/zded, landingSlots), so
+	// writing them in any other order is a snapshot that moves the desk.
 	d := &Desk{Name: name, Private: private, Monitors: map[string]Monitor{}}
 	for _, n := range workspaces {
 		mon := d.Monitors[n.Monitor]
@@ -294,7 +320,7 @@ func FromMap(m *desk.Map, name string, private bool) (*Desk, error) {
 		d.Monitors[n.Monitor] = mon
 	}
 	// Written through its own checks: a snapshot that cannot be read back is
-	// not a snapshot, and an adopted ordinal is one way to get there.
+	// not a snapshot.
 	if err := d.check(); err != nil {
 		return nil, err
 	}

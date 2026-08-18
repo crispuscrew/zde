@@ -557,7 +557,19 @@ func (j *Journal) applyRename(e entry) {
 		return // the renamed workspace was not the remembered one
 	}
 	delete(byMonitor, from.Monitor)
-	byMonitor[to.Monitor] = to.Slot
+	// A rename usually keeps the desk and moves the monitor, which is a
+	// workspace dragged to another screen. `zde desk move-workspace-to` is the
+	// other kind: the desk changes and the monitor does not, and the position
+	// has to move with it - written back into from.Desk it left that desk
+	// remembering a workspace another desk now owns, which is a desk whose
+	// last-active slot is a lie rather than a memory.
+	//
+	// The desk that lost it is left with nothing remembered on that monitor,
+	// and a switch enters at the top of its band (internal/desk, SwitchPlan).
+	if j.state.LastActive[to.Desk] == nil {
+		j.state.LastActive[to.Desk] = map[string]string{}
+	}
+	j.state.LastActive[to.Desk][to.Monitor] = to.Slot
 }
 
 // State returns a copy of what the journal remembers.
@@ -641,6 +653,12 @@ func (j *Journal) SetActive(n desk.Name) error {
 }
 
 // SetLastDesk records the desk that was active, for desk.last.
+//
+// An empty name is the state "there is nowhere to go back to", which is what
+// zded writes when the desk this named turns out to be gone (internal/zded,
+// lastDesk). It replays as one - the kind is what a line means, and the desk is
+// what it says - and compaction drops it, because a journal that has never been
+// told is in the same state as one told there is nowhere.
 func (j *Journal) SetLastDesk(name string) error {
 	return j.record(entry{Kind: kindLastDesk, Desk: name})
 }

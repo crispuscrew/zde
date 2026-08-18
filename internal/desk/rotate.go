@@ -8,9 +8,11 @@ package desk
 // rotating into them would be arriving somewhere nothing is supposed to
 // scroll, and leaving them would be ambiguous about where back is.
 //
-// The order is the map's own, which is alphabetical. niri's strip order is
-// niri's to say and does not reach us yet (docs/roadmap.md, verify list), so
-// this is the one order both ends can agree on without asking.
+// The order is the map's own, which for desks is alphabetical (DeskNames). A
+// desk is not a strip - the strip order the map keeps workspaces in is per
+// monitor and says nothing about which desk follows which - so there is no
+// order niri could tell us here, and this is the one both ends can agree on
+// without asking.
 func (m *Map) Rotation() []string {
 	all := m.DeskNames()
 	out := make([]string, 0, len(all))

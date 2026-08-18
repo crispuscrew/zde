@@ -87,6 +87,34 @@ func TestSwitchPlanIgnoresStaleMemory(t *testing.T) {
 	}
 }
 
+// With nothing remembered, the switch lands at the top of the band - the top
+// of the strip, not the first label in alphabetical order. Landing at the
+// bottom left `zde workspace next` with nowhere to go and the rest of the desk
+// above the screen. Data where the two answers differ, or the test proves
+// nothing: the strip reads zsh then agent, and the names sort the other way.
+//
+// Against the slot niri put at the top of the strip, and not against Band's own
+// first: the switch picks out of Band, so comparing the two would hold whatever
+// order either of them was in. The other half of the same story - the map
+// keeping that order for what a snapshot writes down - is TestWorkspacesFollowTheStrip.
+func TestSwitchPlanLandsOnTheTopOfTheBand(t *testing.T) {
+	m := Rebuild([]Workspace{
+		{ID: 1, Name: "vshop.DP-1.zsh", Output: "DP-1", Idx: 0},
+		{ID: 2, Name: "vshop.DP-1.agent", Output: "DP-1", Idx: 1},
+	}, []string{"DP-1"})
+	plan := SwitchPlan(m, "vshop", nil)
+	if len(plan) != 1 || plan[0].Slot != "zsh" {
+		t.Errorf("plan = %v, want the top of the strip [vshop.DP-1.zsh]", names(plan))
+	}
+	// A window carried here comes down by the same rule, or it lands on a
+	// workspace the switch is not looking at. Nothing remembered here either,
+	// which is a nil slot map rather than an empty slot: Landing takes the
+	// whole of what a desk remembers now, keyed by the monitor in a name.
+	if got, ok := Landing(m, "vshop", "DP-1", nil); !ok || got.Slot != "zsh" {
+		t.Errorf("landing = %v %v, want the top of the strip", got, ok)
+	}
+}
+
 // A desk with nothing in it is not an error: it is a manifest that has not
 // been launched yet, and the caller decides what to do about it.
 func TestSwitchPlanEmptyDesk(t *testing.T) {

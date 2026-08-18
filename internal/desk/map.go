@@ -11,8 +11,9 @@ type Workspace struct {
 	// addressed no other way, which is what adoption needs.
 	ID uint64
 	// Idx is where it sits in its output's strip, which is niri's to say and
-	// the only order a scroll can honestly follow. The map's own order sorts
-	// names, and names are not where things are.
+	// the only order a scroll can honestly follow. It is the order the map
+	// keeps a desk's workspaces in, so that everything reading one - a switch,
+	// a snapshot, a scroll - agrees about which end is the top.
 	Idx    uint8
 	Name   string
 	Output string
@@ -157,9 +158,36 @@ func Rebuild(workspaces []Workspace, screens []string) *Map {
 		m.idx[name.String()] = w.Idx
 	}
 
-	for desk := range m.desks {
-		band := m.desks[desk]
-		sort.Slice(band, func(i, j int) bool { return less(band[i], band[j]) })
+	// A desk's workspaces are kept by monitor, and inside a monitor by the
+	// strip. The monitor comes first because what gets written out of this list
+	// is written per monitor: a manifest declares a monitor's workspaces
+	// together (internal/manifest, FromMap). The strip comes second because it
+	// is the only order that is a fact rather than an opinion.
+	//
+	// It used to sort names inside the monitor, and a snapshot wrote that order
+	// into a manifest: a strip reading zsh then agent came back as agent then
+	// zsh. A manifest's first workspace on a monitor is where entering the desk
+	// lands (internal/zded, landingSlots), so writing a desk down moved it.
+	//
+	// A switch does not read this order to choose. It walks the list only to
+	// find which screens the desk is on, and picks out of Band (SwitchPlan).
+	// But Band sorts by the same index, so the desk a snapshot writes down and
+	// the desk a switch brings up have one idea of which end is the top.
+	for d := range m.desks {
+		band := m.desks[d]
+		sort.Slice(band, func(i, j int) bool {
+			a, b := band[i], band[j]
+			if a.Monitor != b.Monitor {
+				return a.Monitor < b.Monitor
+			}
+			if ai, bi := m.idx[a.String()], m.idx[b.String()]; ai != bi {
+				return ai < bi
+			}
+			// Same index: workspaces niri gave none, which is every workspace
+			// in a map a caller built by hand. Names order those, so the map
+			// still does not depend on the order niri listed things in.
+			return less(a, b)
+		})
 	}
 	// Sorted so that the map does not depend on the order niri happened to
 	// list things in: a shell diffing two polls should see churn only when
@@ -180,8 +208,10 @@ func Rebuild(workspaces []Workspace, screens []string) *Map {
 
 // less orders workspaces by monitor, then labels before ordinals, then
 // ordinals by number so that 2 comes before 10. This is a stable order for
-// comparing and showing a map. It is not the strip's vertical order, which is
-// niri's to say and reaches us only as a workspace index we do not yet carry.
+// comparing and showing a map, and for the lists that are not a strip: what has
+// to be renamed, what is displaced. Inside a band it is only the tie-break for
+// workspaces niri gave the same index, because the strip's vertical order is
+// niri's to say and the index is how it says it.
 func less(a, b Name) bool {
 	if a.Monitor != b.Monitor {
 		return a.Monitor < b.Monitor
@@ -222,9 +252,10 @@ func (m *Map) DeskNames() []string {
 // its workspaces on a survivor: home stays in the name so it can go back, and
 // a band that read the name would be empty on the only screen left.
 //
-// The order is niri's, because the strip is niri's. The map's own order sorts
-// names, and a scroll that followed it would step over a workspace and then
-// back to it.
+// The order is niri's, because the strip is niri's. The map's own order is
+// niri's too, and the sort below is still not redundant: this groups by the
+// screen a workspace is on, and an unplugged monitor puts two monitors' runs on
+// one screen - which the map keeps apart and a scroll must not.
 func (m *Map) Band(desk, output string) []Name {
 	var out []Name
 	for _, n := range m.desks[desk] {
@@ -241,7 +272,11 @@ func (m *Map) Band(desk, output string) []Name {
 	return out
 }
 
-// Workspaces is every workspace a desk owns, across monitors.
+// Workspaces is every workspace a desk owns, across monitors: by monitor, and
+// down each monitor's strip in the order the screen has it. A snapshot writes
+// that order into a manifest, and the manifest's first workspace on a monitor
+// is where entering the desk lands (internal/zded, landingSlots), so it has to
+// be the strip's order and not a sort of its own.
 func (m *Map) Workspaces(desk string) []Name {
 	return append([]Name(nil), m.desks[desk]...)
 }
