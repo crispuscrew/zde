@@ -584,6 +584,14 @@ const unseen = "a Wayland app holding zwp_idle_inhibit_manager_v1 never reaches 
 // still work in, and on a machine with nothing configured to act on idle it
 // costs nothing at all; what it is worth is that it be visible before somebody
 // walks away from the machine rather than after.
+//
+// It is also the one check here whose readings are two strings a stranger wrote,
+// so it is printed two ways. On the owner's own screen the holders are named,
+// because the next thing that person does is go and stop one. In the state
+// snapshot they are counted and not named, because `--who=` defaults to the
+// holder's own command line and that file is written to be pasted into a bug
+// report (gather.go, Logind.Named; report.go, reportHeader). Which of the two
+// this is arrives on the reading rather than being decided here.
 func idle(s Session) []Check {
 	l := s.Power
 	switch {
@@ -605,6 +613,26 @@ func idle(s Session) []Check {
 		return []Check{{OK, "idle", "logind has nothing holding this session awake - though " + unseen}}
 	}
 	var out []Check
+	if !l.Named {
+		// The count, and never the words. This gather was not the owner's, so
+		// the two strings on every row were not taken at all (gather.go,
+		// Logind.Named) - and the count is still the whole of the finding, which
+		// is why this is a warning of exactly the weight the named rows below
+		// carry rather than a quieter line. A redaction that turned into an
+		// all-clear would be the one failure this check must not have.
+		//
+		// Where the names are is said, because the answer exists and is one
+		// command away on the machine itself. A file that talked somebody out of
+		// looking further would be worse than no file.
+		out = append(out, Check{Warn, "idle", fmt.Sprintf(
+			"%d thing(s) logind names are holding this session awake, and nothing here says which: "+
+				"an inhibitor's name is the command line of whatever took it and its reason is that "+
+				"program's own prose, so neither is written into a file meant to leave this machine - "+
+				"`systemd-inhibit --list`, or `zde doctor` on the machine itself, is where the names "+
+				"are. Nothing that acts on this session going idle will fire until they let go",
+			len(l.Holds))})
+		return append(out, Check{Warn, "idle", "and there may be more than logind can see: " + unseen})
+	}
 	for i, h := range l.Holds {
 		if i == holdsShown {
 			// The rest are counted rather than printed. Nothing is claimed to
@@ -652,6 +680,11 @@ const holdsShown = 6
 
 // holder is one row of logind's inhibitor table, worded so that it cannot be
 // read as zde's own words.
+//
+// Reached only where the row was gathered with its words in it, which is the
+// owner's own screen (gather.go, Logind.Named). Everything below is about a
+// stranger's prose arriving in a terminal; what stops the same prose arriving in
+// a file that leaves the machine is that it is never gathered.
 //
 // Both strings are a stranger's. `systemd-inhibit --who=... --why=...` takes
 // them from whoever runs it and every local account can run it, so they are the

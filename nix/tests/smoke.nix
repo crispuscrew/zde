@@ -249,6 +249,19 @@ let
         grep -qF 'no notification text' "$snap" || {
           echo "the snapshot does not say what it does not contain:"; head -30 "$snap"; exit 1
         }
+        # And the two sentences it used to get wrong. The file carries the niri
+        # lines it is judged off, so the header names that journal rather than
+        # denying there is one; and it carries parameter names whose values it
+        # has taken, so it says which. Both are the header telling the truth
+        # about the file under it, which is the whole of what makes it pasteable.
+        grep -qF 'No journal but the niri lines' "$snap" || {
+          echo "the snapshot's header does not say which journal content is in it:"
+          sed -n '1,/^\[graphics\]/p' "$snap"; exit 1
+        }
+        grep -qF 'counted and never named, because logind takes' "$snap" || {
+          echo "the snapshot's header does not say what happens to an idle inhibitor's name:"
+          sed -n '1,/^\[graphics\]/p' "$snap"; exit 1
+        }
         # The bar is up and listening, so status has to say so. Waited for rather
         # than asked once: the target starts zded and the bar together, and Qt
         # takes a second or two to reach the socket, so a single question here
@@ -1488,6 +1501,51 @@ let
           echo "zde printed the path of a file rotation deleted as it landed: $snap2"; exit 1
         }
         rm -f /var/log/zde/zde/29991231T235959Z-ffffffff.txt
+
+        # The other name this file may not carry, and the only one that needs a
+        # real logind to show. `man systemd-inhibit`: --who= "defaults to the
+        # command line string" of whatever took the inhibitor - so an ordinary
+        # backup puts a path under somebody's home directory, the host it is
+        # copying to and the name of the file into logind's table, and all of it
+        # used to go into the snapshot verbatim under a header promising "No
+        # command line but the kernel's own".
+        #
+        # Held by wrapping the command that reads it, so the inhibitor is taken
+        # and released by one process and there is nothing left running here.
+        systemd-inhibit --what=idle --who=/home/zde/secret-backup.sh \
+          --why='copying /home/zde/private-notes' \
+          zde report > /tmp/report-held.txt 2>&1 || {
+          echo "zde report failed with an idle inhibitor held:"; cat /tmp/report-held.txt; exit 1
+        }
+        snap3=$(sed -n 's/^wrote //p' /tmp/report-held.txt)
+        [ -n "$snap3" ] && [ -f "$snap3" ] || {
+          echo "zde report wrote no file, and said:"; cat /tmp/report-held.txt; exit 1
+        }
+        for secret in secret-backup.sh private-notes /home/zde/secret; do
+          if grep -qF "$secret" "$snap3"; then
+            echo "$secret came off another program's command line into a file meant to leave this machine:"
+            sed -n '/^\[doctor\]/,$p' "$snap3"; exit 1
+          fi
+        done
+        # Counted, though, and still a warning: a redaction that turned into an
+        # all-clear would be the one failure this check must not have, since
+        # refusing to give an all-clear it cannot support is its whole purpose.
+        grep -qE '^  warn +idle +[0-9]+ thing\(s\) logind names are holding this session awake' "$snap3" || {
+          echo "the snapshot does not say the session is being held awake at all:"
+          sed -n '/^\[doctor\]/,$p' "$snap3"; exit 1
+        }
+        # And `zde doctor` on this person's own screen names it, because that
+        # screen is theirs and that program is the one they have to go and stop.
+        # Not through a pipe, for the reason the manifest check above is not.
+        systemd-inhibit --what=idle --who=/home/zde/secret-backup.sh \
+          --why='copying /home/zde/private-notes' \
+          zde doctor >/tmp/doctor-held.txt 2>&1 || true
+        grep -qF 'secret-backup.sh' /tmp/doctor-held.txt || {
+          echo "doctor in a terminal will not say what is holding the screen awake:"
+          grep -E '^(ok|warn) +idle ' /tmp/doctor-held.txt || cat /tmp/doctor-held.txt
+          exit 1
+        }
+
         rm -f ~/.config/zde/desks/report-open.yaml ~/.config/zde/desks/report-secret.yaml
 
         # Mod+t, which is `zde app launch terminal`. The one thing a desktop has

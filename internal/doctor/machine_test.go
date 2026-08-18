@@ -188,12 +188,12 @@ func fakeNiri(t *testing.T, replies ...string) string {
 	return path
 }
 
-// niri's other words about devices are kept as context and must never be read
-// as a verdict, or a session that logged one line about an output would be
+// niri's other words about a renderer are kept as context and must never be
+// read as a verdict, or a session that logged one line about its GPU would be
 // reported as one that never drew.
 func TestALineAboutADeviceIsNotAFallback(t *testing.T) {
 	fell, saw, err := pickLines(fakeLog(
-		"Output eDP-1 connected",
+		"Found a DRM device at /dev/dri/card0",
 		"EGL Initialized",
 	))
 	if err != nil {
@@ -369,41 +369,96 @@ H: Handlers=event1
 	}
 }
 
-// The one thing this file narrows rather than admits to. root= and resume= are
-// the identity of a filesystem, they travel with the file into whatever bug
-// report it is pasted into, and neither of them can cause or explain a black
-// screen. The parameters that can are on the same line and every one of them
-// stays - including the ones this list has never heard of.
-func TestTheCommandLineKeepsEveryParameterAndNoDiskIdentity(t *testing.T) {
+// The reading this file narrows hardest, and the shape of the narrowing is the
+// point: an allowlist, because the last one was a denylist of nine names and a
+// denylist keeps the promises somebody thought of.
+//
+// The line below is what a netbooted machine that unlocks a disk from a key
+// file actually boots with. Under the nine names, root= and resume= came out
+// and the MAC of the boot NIC, this machine's address and hostname, the NFS
+// server, the path to the LUKS key, the machine-id and an API key set through
+// systemd.setenv= all went into the file whole - against a header that promises,
+// on three separate lines, no MAC, no IP, no machine-id and an environment that
+// is an allowlist.
+func TestTheCommandLineKeepsWhatDecidesWhatIsDrawnAndNoIdentityAtAll(t *testing.T) {
 	got := kernelCmdline(`initrd=\efi\nixos\abc-initrd.efi BOOT_IMAGE=/nix/store/abc-linux/bzImage ` +
 		`root=UUID=1d0a1e2b-3c4d-5e6f-7a8b-9c0d1e2f3a4b resume=/dev/disk/by-uuid/deadbeef-0000-1111-2222-333344445555 ` +
-		`resume_offset=533760 rd.luks.uuid=luks-9c0d1e2f ro quiet loglevel=4 nomodeset nvidia_drm.modeset=0 ` +
-		`i915.enable_psr=0 something.nobody.has.heard.of=7`)
+		`resume_offset=533760 rd.luks.uuid=luks-9c0d1e2f rd.luks.key=/keys/alice.key ` +
+		`BOOTIF=01-3c-97-0e-3f-1a-2b ip=192.168.7.31:192.168.7.10:192.168.7.1:255.255.255.0:alice-thinkpad:eth0:none ` +
+		`nfsroot=192.168.7.10:/srv/nixos systemd.machine_id=8f3c2b1a4d5e6f708192a3b4c5d6e7f8 ` +
+		`systemd.setenv=ANTHROPIC_API_KEY=sk-ant-0123456789abcdef ` +
+		`ro quiet loglevel=4 nomodeset nvidia_drm.modeset=0 i915.enable_psr=0 module_blacklist=nouveau ` +
+		`video=HDMI-A-1:1920x1080 systemd.unit=rescue.target something.nobody.has.heard.of=7`)
 	for _, gone := range []string{
-		"1d0a1e2b", "deadbeef-0000", "533760", "luks-9c0d1e2f",
+		"1d0a1e2b", "deadbeef-0000", "533760", "luks-9c0d1e2f", // the disk
+		"/keys/alice.key",                          // and the key that unlocks it
+		"3c-97-0e", "192.168.7.31", "192.168.7.10", // the network
+		"alice-thinkpad", "/srv/nixos", // and who this machine is on it
+		"8f3c2b1a",                     // the machine-id
+		"ANTHROPIC_API_KEY", "sk-ant-", // and the environment, name and value
+		"/nix/store/abc-linux", "initrd.efi", // the paths that came for free
 	} {
 		if strings.Contains(got, gone) {
-			t.Errorf("%q names a disk and is still on the command line:\n%s", gone, got)
+			t.Errorf("%q is somebody's identity and is still on the command line:\n%s", gone, got)
 		}
 	}
 	for _, kept := range []string{
-		"nomodeset",                       // the answer to half the black screens there are
-		"nvidia_drm.modeset=0",            // and to most of the rest
-		"i915.enable_psr=0",               // a driver option, which is the same kind of answer
-		"something.nobody.has.heard.of=7", // and this is not a list of what may stay
-		"BOOT_IMAGE=/nix/store/abc-linux/bzImage",
+		"nomodeset",                  // the answer to half the black screens there are
+		"nvidia_drm.modeset=0",       // and to most of the rest
+		"i915.enable_psr=0",          // a driver option, which is the same kind of answer
+		"module_blacklist=nouveau",   // a driver kept out of the machine on purpose
+		"video=HDMI-A-1:1920x1080",   // and a mode forced onto a connector
+		"systemd.unit=rescue.target", // why there may have been no session at all
 		"ro", "quiet", "loglevel=4",
 	} {
 		if !strings.Contains(got, kept) {
 			t.Errorf("%q is what somebody reads this line for and it is gone:\n%s", kept, got)
 		}
 	}
-	// The parameter's own name stays where its value went, because "this
-	// machine resumes from something" is a fact about how it boots and only
-	// which volume it resumes from is a serial number for a disk.
-	for _, named := range []string{"root=", "resume=", "resume_offset=", "rd.luks.uuid="} {
-		if !strings.Contains(got, named) {
+	// The parameter's own name stays where its value went, on every one of them,
+	// because "this machine netboots" and "this machine resumes from something"
+	// are facts about how it boots and only what follows is somebody's identity.
+	for _, named := range []string{
+		"root=", "resume=", "resume_offset=", "rd.luks.uuid=", "rd.luks.key=",
+		"BOOTIF=", "ip=", "nfsroot=", "systemd.machine_id=", "systemd.setenv=",
+		"initrd=", "BOOT_IMAGE=",
+	} {
+		if !strings.Contains(got, named+"<removed>") {
 			t.Errorf("%q was taken off the line entirely rather than emptied:\n%s", named, got)
+		}
+	}
+	// And this is what the inversion costs, said out loud: a parameter nobody
+	// put on the list keeps its name and loses its value, even where the value
+	// would have explained something. The reader is told there is a question to
+	// ask rather than told nothing, which is the deal root= has always had.
+	if !strings.Contains(got, "something.nobody.has.heard.of=<removed>") {
+		t.Errorf("a parameter nobody listed is not shown as one whose value was taken:\n%s", got)
+	}
+}
+
+// What is picked up out of niri's log decides what leaves this machine, because
+// those lines go into the file whole and in niri's own words. So the signs are a
+// renderer's vocabulary and nothing wider: "output" was one of them, and niri
+// uses that word for a monitor, for a block of the config file and for anything
+// it prints about either - which is a line the header could not honestly
+// describe, carrying whatever else happened to be on it.
+func TestALogLineThatIsNotAboutARendererIsNotPickedUp(t *testing.T) {
+	fell, saw, err := pickLines(fakeLog(
+		"Error creating renderer for primary GPU: no allocator available for device",
+		`error in config: unknown field "outputs" at /home/alice/.config/niri/config.kdl:41`,
+		"Trying to initialize EGL on /dev/dri/card0",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The verdict and its context both survive: this is a narrowing and not a
+	// file that stopped saying anything.
+	if len(fell) != 1 || len(saw) != 1 {
+		t.Fatalf("the renderer lines did not survive the narrowing: fell=%q saw=%q", fell, saw)
+	}
+	for _, line := range append(append([]string{}, fell...), saw...) {
+		if strings.Contains(line, "config.kdl") || strings.Contains(line, "/home/alice") {
+			t.Errorf("a line that is not about a renderer was picked up as one: %q", line)
 		}
 	}
 }

@@ -182,7 +182,29 @@ type Logind struct {
 	// something like "awake", because the set it describes is much smaller than
 	// that word - see the idle check in doctor.go for what is missing from it
 	// and why nothing here can find out.
+	//
+	// One entry per holder whoever this was gathered for, because the count is
+	// the finding and an empty list has to go on meaning "nothing is holding
+	// this session awake" and nothing else. Whether the entries have anybody's
+	// words in them is Named.
 	Holds []Hold
+	// Named is whether the two strings on each Hold were gathered at all.
+	//
+	// False for a reader who is not this machine's owner (see audience), and it
+	// is the same rule the private desks get, applied to a reading nobody had
+	// thought of when that rule was written. `systemd-inhibit --who=` defaults
+	// to the command line of whatever ran it, which on an ordinary machine is a
+	// path under somebody's home directory, the host a backup is copying to and
+	// the name of the file it is copying; --why= is free text from the same
+	// place. Neither can cause or explain a black screen, and the state snapshot
+	// is a file that leaves the machine (report.go) whose header promises no
+	// command line but the kernel's own.
+	//
+	// `zde doctor` on the owner's own terminal is the other way round, and that
+	// is the whole reason this is an audience rather than a redaction: the
+	// program holding the screen awake is exactly what they want named, because
+	// the next thing they do is go and stop it.
+	Named bool
 	// HoldsErr is why the inhibitors could not be listed, when the rest of the
 	// probe worked. Kept apart from Err for the reason every other unknown in
 	// this file is: a question that was never answered is not the answer "no",
@@ -198,6 +220,9 @@ type Logind struct {
 // is printed to a terminal, so both are put through internal/attn's filter
 // before they reach a line (doctor.go, idle) rather than here, because this
 // struct is the reading and that is the drawing.
+//
+// Both are empty on every entry of a gather that was not the owner's, where the
+// row is the count and nothing else was taken: see Logind.Named.
 type Hold struct {
 	Who string
 	Why string
@@ -349,7 +374,7 @@ func gather(a audience) Session {
 	// where zded is the thing that is wrong, and a check that could only be made
 	// through it would go blank exactly when it is wanted.
 	s.Desks = probeDesks(manifest.DefaultDir(), a)
-	s.Power = probeLogind()
+	s.Power = probeLogind(a)
 	return s
 }
 
@@ -654,7 +679,12 @@ const askFor = 2 * time.Second
 // build sandboxes have none, and so does a session where the system bus is
 // what broke, which is precisely when somebody wants to know why the power
 // menu refuses everything.
-func probeLogind() Logind {
+//
+// The audience reaches this far because one of the answers is a stranger's
+// prose. Everything else logind is asked here is its own vocabulary - a session
+// id, and "yes", "no", "na" or "challenge" - while the inhibitor table is two
+// free strings per row, chosen by whoever took the inhibitor (see Logind.Named).
+func probeLogind(a audience) Logind {
 	conn, err := bus.System()
 	if err != nil {
 		return Logind{Err: err}
@@ -695,7 +725,8 @@ func probeLogind() Logind {
 		l.Can = append(l.Can, c)
 	}
 	l.Session, l.SessionErr = displaySession(ctx, conn)
-	l.Holds, l.HoldsErr = idleHolds(ctx, mgr)
+	l.Holds, l.HoldsErr = idleHolds(ctx, mgr, a)
+	l.Named = a == owner
 	return l
 }
 
@@ -713,26 +744,51 @@ func probeLogind() Logind {
 // on purpose - this package asks logind what is true, that one asks it to do
 // things, and gather.go already keeps its own copy of every logind constant for
 // exactly this reason.
-func idleHolds(ctx context.Context, mgr dbus.BusObject) ([]Hold, error) {
-	var rows []struct {
-		What string
-		Who  string
-		Why  string
-		Mode string
-		UID  uint32
-		PID  uint32
-	}
+func idleHolds(ctx context.Context, mgr dbus.BusObject, a audience) ([]Hold, error) {
+	var rows []inhibitor
 	if err := mgr.CallWithContext(ctx, logindMgr+".ListInhibitors", 0).Store(&rows); err != nil {
 		return nil, err
 	}
+	return heldIdle(rows, a), nil
+}
+
+// inhibitor is one row of logind's table as it comes off the wire.
+type inhibitor struct {
+	What string
+	Who  string
+	Why  string
+	Mode string
+	UID  uint32
+	PID  uint32
+}
+
+// heldIdle is that table narrowed to the rows holding idle off, with the
+// audience applied as each row is made.
+//
+// Split out of the call above so that both halves of it can be written down in
+// a test - the narrowing, and who the two strings are gathered for - on a
+// machine with no logind on its bus. It is the same reason the graphics verdict
+// is a method on the readings rather than a step inside the probe (machine.go,
+// Drew).
+func heldIdle(rows []inhibitor, a audience) []Hold {
 	var out []Hold
 	for _, r := range rows {
 		if r.Mode != "block" || !slices.Contains(strings.Split(r.What, ":"), "idle") {
 			continue
 		}
+		if a != owner {
+			// Counted and never written down. The row is what the finding is
+			// made of; the two strings on it are a stranger's prose, and for a
+			// reader who is not the owner they are not gathered at all - which
+			// is the same rule and the same reason as the desks above, asked
+			// where the reading is taken so that no later pass has to know this
+			// field exists (see audience, and Logind.Named).
+			out = append(out, Hold{})
+			continue
+		}
 		out = append(out, Hold{Who: r.Who, Why: r.Why})
 	}
-	return out, nil
+	return out
 }
 
 // displaySession asks logind for this user's graphical session, which is the
