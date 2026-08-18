@@ -55,14 +55,13 @@ func readLockConfig() (lockConfig, error) {
 
 // lockPreset switches to the preset desk and locks.
 //
-// Four things can go wrong with the switch and none of them stops the lock:
-// nothing configured, a preset naming a desk that is not there, a preset naming
-// a private desk, and manifests nothing can read to tell whether it is one.
-// Locking the screen is what this action is for, and a key that refused to lock
-// because a desk was missing would be a screen left open over a configuration
-// mistake. Each of them comes back as a note beside the answer, so the
-// difference between "it switched" and "it locked where you were" is readable
-// rather than guessed at.
+// Nothing that goes wrong with the switch stops the lock: no preset set, a
+// preset naming a desk that is not there or a private one, a lock.json or a
+// manifest that will not parse. Locking the screen is what this action is for,
+// and a key that refused to lock because a desk was missing would be a screen
+// left open over a configuration mistake. Each of them comes back as a note
+// beside the answer, so the difference between "it switched" and "it locked
+// where you were" is readable rather than guessed at.
 //
 // The one thing that does stop it is having nothing to lock with, and that is
 // checked before anything moves. A machine with no locker configured would

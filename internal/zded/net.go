@@ -216,11 +216,12 @@ func (s *Server) netForget(ssid string) Response {
 // disagree with `nmcli networking on` typed in a terminal, and would come back
 // from a restart believing the network was up while it was not.
 //
-// A machine with no NetworkManager is refused rather than answered. Everywhere
-// else in this file an absent manager is a state - the bar can honestly say it
-// cannot ask - but here the caller asked for the network to be cut, and "there
-// is nothing here to cut it with" is the only true answer: reporting success
-// would be a security verb claiming an effect it did not have (docs/vision.md,
+// A machine with no NetworkManager is refused rather than answered. The two
+// readers in this file that can call it a state do - netStatus and connections
+// answer "absent", because a machine zde cannot ask about is a fact about the
+// machine. Here the caller asked for the network to be cut, and "there is
+// nothing here to cut it with" is the only true answer: reporting success would
+// be a security verb claiming an effect it did not have (docs/vision.md,
 // principle 9).
 func (s *Server) netKill() Response {
 	m, err := s.links()

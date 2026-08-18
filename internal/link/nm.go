@@ -950,8 +950,8 @@ func (m *NM) Disconnect() error {
 // goes with wifi, and on a laptop whose keyboard is bluetooth that is a machine
 // nobody can undo this from - which is the one thing a reversible security
 // action must not be. The reach is not there either: bluetooth's block is
-// /dev/rfkill or bluez, and zde's user is in networkmanager and video and no
-// other group (nix/live.nix).
+// /dev/rfkill or bluez, and the account zde ships with is in networkmanager and
+// video and no other group (nix/live.nix).
 //
 // One switch and not two, for the same reason. NetworkManager's WirelessEnabled
 // is a second bit that would have to be put back, and putting it back would
