@@ -682,6 +682,26 @@ ones are the point of zded holding the bus name.
     the first line of an error starts where zde's own words do. The report takes
     a program's first line of complaint and no more, which is its own rule about
     what a check is worth saying and not a bound on the line.
+  - **And the daemon's own log, which is the other terminal.** Almost none of
+    what `zded` says was written by zde either: niri's reply after a reconcile
+    carries a workspace name somebody chose, and a launch that would not start
+    carries zcr's whole container build. `journalctl` abbreviates a message with
+    unprintable bytes in it to `blob data`, so the unit's log was never the
+    exposed reader - the exposed one is a `zded` started by hand, which is how
+    this daemon is debugged.
+
+    ```sh
+    systemctl --user stop zded
+    zded 2>&1 | cat -A          # then break something: rename a workspace with
+                                # an ESC in the name, or point a desk at an app
+                                # whose image will not build
+    systemctl --user start zded
+    ```
+
+    No `^[` and no `^G`, and a line either begins a message in column one - a
+    date, or `zded` - or is indented two spaces under the line it continues.
+    Nothing zded prints is cut, so a build log arrives with as many lines as it
+    had, every one of them under the line naming the app.
 - **Who can read what you were sent.** One line: `ls -l
   ~/.local/state/zde/journal.jsonl` says `-rw-------`. It has to say that on a
   machine that has been running an earlier zde too, because the mode is set on

@@ -6,6 +6,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -82,7 +83,7 @@ func main() {
 		// worth staying for: Listen dials a socket it finds before it removes
 		// one, so a stale file left by this exit costs the next zded a connect
 		// that nobody answers (internal/zded, Listen).
-		fmt.Fprintf(os.Stderr, "zded: told to stop and still starting %v later, so it is leaving "+
+		fmt.Fprintf(errOut, "zded: told to stop and still starting %v later, so it is leaving "+
 			"unfinished. Something at one of its paths is not a plain file it can read: the journal, "+
 			"the notification history, a desk manifest, or niri's dynamic.kdl\n", stopGrace)
 		os.Exit(1)
@@ -169,7 +170,7 @@ func run(ctx context.Context, socket, jrnPath, desksDir, histPath string, notify
 	}
 	defer jrn.Close()
 	if n := jrn.Skipped(); n > 0 {
-		fmt.Fprintf(os.Stderr, "zded: journal: %d entries could not be read\n", n)
+		fmt.Fprintf(errOut, "zded: journal: %d entries could not be read\n", n)
 	}
 
 	srv := zded.New(version, jrn, compositor{}, manifest.Dir(desksDir))
@@ -187,7 +188,7 @@ func run(ctx context.Context, socket, jrnPath, desksDir, histPath string, notify
 	// On every way out, not only the tidy one: a socket file left behind is what
 	// makes the next zded refuse to start.
 	defer os.Remove(socket)
-	fmt.Fprintf(os.Stderr, "zded %s listening on %s\n", version, socket)
+	fmt.Fprintf(errOut, "zded %s listening on %s\n", version, socket)
 
 	// What the desks say about where their windows open, handed to niri before
 	// anything can be launched (internal/zded/rules.go). At startup because the
@@ -232,7 +233,7 @@ func run(ctx context.Context, socket, jrnPath, desksDir, histPath string, notify
 		// So that finishing something with `zde queue done` tells whoever sent
 		// it. A client blocked on its closure has no other way to find out.
 		srv.Watching(n)
-		fmt.Fprintln(os.Stderr, "zded: notifications: listening")
+		fmt.Fprintln(errOut, "zded: notifications: listening")
 	}
 
 	err = <-serving
@@ -437,10 +438,20 @@ func fatal(err error) {
 	os.Exit(1)
 }
 
-// complain is every line this daemon logs that has somebody else's words in it:
-// niri's, the bus's, a YAML parser's about a manifest. The rest of what it
-// prints - a socket path, a count of entries it could not read - it wrote
-// itself and prints as it is.
+// complain is one message on this daemon's stderr. It writes the error as it
+// is: what it carries of somebody else's words - niri's, the bus's, a YAML
+// parser's about a manifest - is filtered by the door it goes through, not
+// here (errOut).
+func complain(err error) { fmt.Fprintln(errOut, "zded:", err) }
+
+// errOut is the one way out of this daemon, and the filter is on it.
+//
+// Everything zded prints goes through here: every fmt.Fprint in this file, and
+// - because init points the log package at it - every log.Printf in
+// internal/zded. What comes out is what attn.Block leaves, which is the whole
+// message with the terminal's instructions taken out of it, the first line in
+// column one and every line after it indented two spaces, so that a parser's
+// several lines about one file cannot read as several messages from zded.
 //
 // Filtered for the reason `zde` filters an error (cmd/zde, complain), with one
 // difference in who reads it. This is a unit's log, and its usual reader is
@@ -449,4 +460,57 @@ func fatal(err error) {
 // buys there is the message surviving to be read at all. The reader that was
 // not safe is the other one: zded started by hand, where its log is whatever
 // terminal started it, which is where this daemon is debugged.
-func complain(err error) { fmt.Fprintln(os.Stderr, "zded:", attn.Block(err.Error())) }
+//
+// On the door rather than at the callers, and that is what changed. The rule
+// used to be "call complain", and a rule kept by remembering it at each of N
+// call sites is the rule that failed: two lines printed somebody else's words
+// raw - niri's reply after a reconcile (internal/zded, watch.go) and zcr's
+// whole output from a launch that would not start (server.go, launchApps) -
+// while the same niri error was filtered ten lines away for `zde status`.
+// Neither call site was wrong about anything except which function to call,
+// which is the mistake the next one makes too. Here, writing a line at all is
+// what filters it.
+//
+// What it costs, said rather than found out later:
+//
+//   - The filter runs over lines zde wrote itself as well. That is a walk of a
+//     short ASCII string that changes nothing, once per message printed, and
+//     this daemon prints on failures and at startup rather than per keypress.
+//   - It filters a Write and not a message, so one message per Write is an
+//     assumption. It holds for both writers here: log.Logger.Output builds a
+//     record and writes it in one call, and fmt.Fprint* formats into a buffer
+//     and writes that. If something ever split a message across two Writes,
+//     what would break is the shape - an indent, a line break where none was
+//     meant - and not the guarantee, because each piece is filtered on its own
+//     and no piece can carry an escape past this.
+//   - What internal/zded's own tests read is unfiltered. This door is in the
+//     daemon binary, so their test binary does not have it, and the ones that
+//     watch the log put a buffer of their own where it would be (watchTheLog).
+//     Deliberately: those tests are about what the daemon says, and what
+//     reaches a terminal is this binary's promise and is tested here.
+//
+// What it does not cover, because a rule is worth what it says and no more: a
+// subprocess that inherits this process's stderr writes its own bytes to that
+// terminal, not zded's (internal/zded, spawnDetached). Those are the terminals
+// and lockers the palette starts, on a program the person running zde named
+// themselves, and coming between them and their own stderr would mean zded
+// reading and re-printing everything they say for as long as they run.
+var errOut door
+
+// door is stderr with attn.Block on it: one message per Write, ended by one
+// newline of its own.
+type door struct{}
+
+func (door) Write(p []byte) (int, error) {
+	// os.Stderr looked up per write rather than kept, so that this is the file
+	// the process has now: a test hands the daemon one it can read back.
+	if _, err := fmt.Fprintln(os.Stderr, attn.Block(string(p))); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+// The log package is what internal/zded writes through, and this is where it
+// comes out. In init rather than in main so that it holds from the first line
+// this process prints, including anything logged while the flags are read.
+func init() { log.SetOutput(errOut) }

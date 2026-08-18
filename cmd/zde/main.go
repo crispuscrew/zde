@@ -787,10 +787,25 @@ func notifCenter() error {
 	// separated, text last because it is the only field that can be long. The
 	// weekday rather than a date: the history is bounded at a day or two of use,
 	// so a weekday tells a person which one it was without a column nobody reads.
+	//
+	// Filtered on the way out, the way the queue listing is and against the
+	// same kind of file (see queueList). Both listings are views of the same
+	// arrivals, and this was the one of the two with no filter of its own.
+	//
+	// Not because the layer under it is missing: an arrival is cleaned as it
+	// arrives (internal/attn, oneLine) and last session's are cleaned again as
+	// the daemon reads them back off disk (internal/attn, ReadSnapshot), and
+	// both of those are pinned. What this buys is that the promise about this
+	// command's stdout is kept by this command. zded is another process: it is
+	// where history.json is read, it can be an older or a newer build than the
+	// `zde` talking to it, and its center can be filled by a path written after
+	// this line. The row is made here, out of columns a tab separates, for a
+	// reader that is a terminal - so the filter that makes a row a row belongs
+	// here too.
 	for _, r := range center.Notifications {
 		fmt.Printf("%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			r.ID, urgentMark(r.Urgent), selfMark(r.Self), r.At.Format("Mon 15:04"),
-			dash(r.From), became(r), r.Text)
+			dash(attn.Line(r.From)), became(r), attn.Line(r.Text))
 	}
 	return nil
 }

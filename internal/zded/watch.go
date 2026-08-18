@@ -2,8 +2,7 @@ package zded
 
 import (
 	"context"
-	"fmt"
-	"os"
+	"log"
 	"time"
 )
 
@@ -76,7 +75,14 @@ func (s *Server) drain(ctx context.Context, events <-chan string) {
 		if resp := s.reconcile(); resp.Error != "" {
 			// A compositor that went away mid-reconcile is the ordinary case
 			// here, and the loop above is already going to wait it out.
-			fmt.Fprintln(os.Stderr, "zded: reconcile:", resp.Error)
+			//
+			// Through the log rather than straight at stderr, because the log is
+			// the daemon's one filtered door (cmd/zded, errOut) and what this
+			// prints is niri's sentence with a workspace name in it. Written
+			// with fmt.Fprintln it was the terminal that started zded reading
+			// niri's bytes as instructions, while the same error was filtered
+			// for `zde status` (server.go, status).
+			log.Printf("zded: reconcile: %s", resp.Error)
 		}
 	}
 }
