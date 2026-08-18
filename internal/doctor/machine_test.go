@@ -126,6 +126,86 @@ func TestACompositorWithNoScreenIsNotAnAllClear(t *testing.T) {
 	}
 }
 
+// The same state, from the end that reads the snapshot on a machine.
+//
+// The smoke test accepts the verdicts "probably yes" and "not known", and a
+// compositor with a screen for none of its outputs reaches "not known" (see
+// Unsure) - which is the black screen that section exists to catch. So the
+// reason is checked there too, and the fragment it matches on lives in one
+// place: quoted in smoke.nix, read from there here, applied to the line doctor
+// really writes. Either half moving fails this.
+func TestTheSmokeGuardRefusesTheBlackScreen(t *testing.T) {
+	guard := smokeBlackScreenGuard(t)
+
+	black := drawing()
+	black.Screens = nil
+	line := answerLine(t, black)
+	// Why the verdict alone cannot refuse this state: it is one of the two the
+	// VM is allowed to give.
+	if !strings.HasPrefix(strings.TrimSpace(line), "answer     not known") {
+		t.Fatalf("the black screen no longer answers %q, so the smoke test's verdict check "+
+			"may be enough on its own again and this pinning should be reconsidered", line)
+	}
+	if !strings.Contains(line, guard) {
+		t.Errorf("the smoke test would accept this line:\n  %s\nit refuses one holding %q, "+
+			"and a compositor with nowhere to draw no longer says that", line, guard)
+	}
+
+	// And the answers the VM may honestly give, which the guard must let past
+	// or every smoke run fails on a healthy machine.
+	honest := drawing()
+	if l := answerLine(t, honest); strings.Contains(l, guard) {
+		t.Errorf("the smoke test would refuse a compositor that is drawing:\n  %s", l)
+	}
+	noJournal := drawing()
+	noJournal.LogErr = errors.New("no journal here")
+	if l := answerLine(t, noJournal); strings.Contains(l, guard) {
+		t.Errorf("the smoke test would refuse a machine with no niri.service log:\n  %s", l)
+	}
+}
+
+// smokeBlackScreenGuard is the fragment nix/tests/smoke.nix refuses the graphics
+// answer for. Read out of that file rather than copied, so the two cannot drift.
+func smokeBlackScreenGuard(t *testing.T) string {
+	t.Helper()
+	const mark = "# pinned: graphics-black-screen"
+	path := filepath.Join("..", "..", "nix", "tests", "smoke.nix")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("the VM test cannot be read, so nothing here can be pinned to it: %v", err)
+	}
+	for _, l := range strings.Split(string(data), "\n") {
+		if !strings.Contains(l, mark) {
+			continue
+		}
+		_, rest, ok := strings.Cut(l, "'")
+		if !ok {
+			t.Fatalf("%s carries %s but no quoted string: %q", path, mark, l)
+		}
+		guard, _, ok := strings.Cut(rest, "'")
+		if !ok || guard == "" {
+			t.Fatalf("%s carries %s and no fragment to match on: %q", path, mark, l)
+		}
+		return guard
+	}
+	t.Fatalf("%s no longer refuses the graphics answer for a compositor with nowhere to draw: "+
+		"there is no line marked %s in it, so the VM test accepts the black screen again", path, mark)
+	return ""
+}
+
+// answerLine is the verdict line of the graphics section, which is the one line
+// the VM test reads.
+func answerLine(t *testing.T, g Graphics) string {
+	t.Helper()
+	for _, l := range strings.Split(renderGraphics(g), "\n") {
+		if strings.HasPrefix(l, "  answer ") {
+			return l
+		}
+	}
+	t.Fatalf("the graphics section has no answer line:\n%s", renderGraphics(g))
+	return ""
+}
+
 // And the reading itself, over a socket, against a niri answering the way a
 // laptop with its lid shut answers.
 //
@@ -150,6 +230,40 @@ func TestTheMonitorsAreTheOnesNiriHasAScreenFor(t *testing.T) {
 	if len(got) != 1 || got[0] != "DP-1" {
 		t.Errorf("the report names %v, want only the monitor niri has a screen for: the panel it "+
 			"switched off when the lid closed is still in the reply and is not somewhere a window can be", got)
+	}
+}
+
+// Two snapshots of one machine differ where the machine differs and nowhere
+// else, because a diff is what they are for. Screens ranges a Go map, so
+// without the sort in askNiri the screens row moves between two readings of an
+// unchanged machine and reads as a monitor having moved.
+//
+// Twelve readings of eight outputs: Go randomises where a range of a small map
+// starts, so twelve agreeing by luck is about one in eight billion.
+func TestTwoReadingsOfOneMachineNameItsScreensTheSameWay(t *testing.T) {
+	var outputs []string
+	for _, name := range []string{"DP-1", "DP-2", "DP-3", "HDMI-A-1", "HDMI-A-2", "eDP-1", "eDP-2", "DVI-D-1"} {
+		outputs = append(outputs, `"`+name+`":{"name":"`+name+`","logical":`+
+			`{"x":0,"y":0,"width":2560,"height":1440,"scale":1.0,"transform":"Normal"}}`)
+	}
+	reply := `{"Ok":{"Outputs":{` + strings.Join(outputs, ",") + `}}}`
+
+	var first []string
+	for i := 0; i < 12; i++ {
+		t.Setenv(niri.SocketEnv, fakeNiri(t, reply))
+		got, err := askNiri()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if first == nil {
+			first = got
+			continue
+		}
+		if strings.Join(got, " ") != strings.Join(first, " ") {
+			t.Fatalf("one machine, two readings:\n  %v\n  %v\nthe screens row moves between two "+
+				"snapshots of an unchanged machine, and a person diffing them reads that as a monitor moving",
+				first, got)
+		}
 	}
 }
 

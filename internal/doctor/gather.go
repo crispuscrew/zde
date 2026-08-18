@@ -261,6 +261,26 @@ type Unit struct {
 	Name  string
 	State string // what `is-active` printed: active, inactive, failed, ...
 	Err   error  // systemctl could not be asked at all
+	// Optional is a unit only some machines install. `is-active` says
+	// "inactive" for a unit that was never written as well as for one that has
+	// not run, so absence cannot be told from idleness here and is not warned
+	// about. Failure still is (see units).
+	Optional bool
+}
+
+// loginUnits are the user units a zde login starts (nix/home.nix), and the list
+// doctor asks systemd about. zde-bar as well as zded, because a bar that is not
+// running is the difference between the picker and a list printed at a key.
+// zde-report because a snapshot unit that failed is otherwise reported by
+// nothing: the snapshot is what it failed to write.
+//
+// Checked against the home module rather than kept in step by hand
+// (doctor_test.go).
+var loginUnits = []Unit{
+	{Name: "zded"},
+	{Name: "zde-bar"},
+	// Behind zde.debug, so most machines do not install it.
+	{Name: "zde-report", Optional: true},
 }
 
 // Podman is whether rootless podman works for this user, which is what layer 2
@@ -361,11 +381,8 @@ func gather(a audience) Session {
 	if s.Status == nil || !s.Status.Notifications {
 		s.Notify, s.NotifyErr = attn.Owner()
 	}
-	// The two units a login starts (nix/home.nix). zde-bar as well as zded,
-	// because a bar that is not running is the difference between the picker
-	// and a list printed at a key.
-	for _, name := range []string{"zded", "zde-bar"} {
-		s.Units = append(s.Units, unitState(name))
+	for _, u := range loginUnits {
+		s.Units = append(s.Units, unitState(u.Name, u.Optional))
 	}
 	s.Podman = probePodman()
 	s.Lock = probeLocker()
@@ -589,12 +606,12 @@ func ask(path string) (*zded.Status, error) {
 // unitState reads one unit. is-active exits non-zero for everything but
 // active and prints the state either way, so the word on stdout is the answer
 // and the exit status is not.
-func unitState(name string) Unit {
+func unitState(name string, optional bool) Unit {
 	out, err := run(probeTimeout, "systemctl", "--user", "is-active", name)
 	if state := strings.TrimSpace(out); state != "" {
-		return Unit{Name: name, State: state}
+		return Unit{Name: name, State: state, Optional: optional}
 	}
-	return Unit{Name: name, Err: err}
+	return Unit{Name: name, Err: err, Optional: optional}
 }
 
 // probePodman asks podman one field. `podman info` is what surfaces the way
