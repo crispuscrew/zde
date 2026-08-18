@@ -1,9 +1,11 @@
 package doctor
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
@@ -546,16 +548,67 @@ func plant(t *testing.T, dir, name string) {
 	}
 }
 
+// fullDisk carries the directory the write below is made into, and having it in
+// the environment at all is what tells this binary it is the half that writes.
+const fullDisk = "ZDE_TEST_FULL_DISK"
+
 // A write that could not finish leaves nothing behind. The half of a report
 // that did reach the disk has a name that looks like a whole one, no "cut here"
 // line in it, and a person who was told no file was written - so it is a file
 // nobody knows about that stops in the middle of the section they needed.
+//
+// The write is made in a process of its own, and that is not a style choice.
+// The only way to fill a disk without one is RLIMIT_FSIZE, and a file size
+// limit belongs to a process rather than to the goroutine that lowered it: for
+// as long as it was down here, every file this binary wrote was under it,
+// including the one the test harness keeps for the go command
+// (-test.testlogfile). That writer is buffered, so whether it flushes inside
+// the window is a question about how many bytes of paths have gone through it -
+// which made this a package that printed PASS and then failed the run with
+// "testing: can't write .../testlog.txt: file too large" on a machine with long
+// enough temporary paths, and passed on the machine it was written on. So the
+// limit goes into a process with nothing else in it for it to reach, and this
+// half keeps the directory and asks every question about it afterwards.
 func TestAWriteThatCouldNotFinishLeavesNoFile(t *testing.T) {
+	if into, ok := os.LookupEnv(fullDisk); ok {
+		writeOntoAFullDisk(t, into)
+		return
+	}
 	dir := userDir(t)
-	// The limit the kernel enforces per file, which is how a full disk is
-	// reproduced without one. SIGXFSZ comes with it and its default action is
-	// to kill this process, so it is ignored for the duration and the write
-	// gets EFBIG back instead.
+
+	// -test.v so that a skip below is a skip here: the other half exits 0
+	// whether it did the work or found a machine it could not do it on, and a
+	// vacuous pass in a test about a file that must not be there is worth the
+	// verbose output. Nothing is printed unless this fails.
+	child := exec.Command(os.Args[0], "-test.run=^"+t.Name()+"$", "-test.v")
+	child.Env = append(os.Environ(), fullDisk+"="+filepath.Dir(dir))
+	out, err := child.CombinedOutput()
+	if bytes.Contains(out, []byte("--- SKIP")) {
+		t.Skipf("the write could not be made to fail on this machine:\n%s", out)
+	}
+	if err != nil {
+		t.Fatalf("the process that wrote under the limit failed: %v\n%s", err, out)
+	}
+
+	if left := namesIn(t, dir); len(left) != 0 {
+		t.Errorf("a failed write left %q on the disk, under a name that reads as a whole report", left)
+	}
+	// And the retry works, which O_EXCL had otherwise made impossible for the
+	// rest of the second - the one second somebody is most likely to try again in.
+	if _, err := writeReport(filepath.Dir(dir), "the whole of it\n", noon, "0a1b2c3d"); err != nil {
+		t.Errorf("the failed write blocked the retry that came after it: %v", err)
+	}
+}
+
+// writeOntoAFullDisk is the other half: a report written into dir by a process
+// that may not write one that long.
+//
+// The limit the kernel enforces per file, which is how a full disk is
+// reproduced without one. SIGXFSZ comes with it and its default action is to
+// kill this process, so it is ignored for the duration and the write gets EFBIG
+// back instead. Both are process-wide, which is the whole reason this process
+// has nothing else in it.
+func writeOntoAFullDisk(t *testing.T, dir string) {
 	signal.Ignore(syscall.SIGXFSZ)
 	defer signal.Reset(syscall.SIGXFSZ)
 	var was unix.Rlimit
@@ -565,20 +618,20 @@ func TestAWriteThatCouldNotFinishLeavesNoFile(t *testing.T) {
 	if err := unix.Setrlimit(unix.RLIMIT_FSIZE, &unix.Rlimit{Cur: 64, Max: was.Max}); err != nil {
 		t.Skipf("this machine will not take a file size limit: %v", err)
 	}
-	_, err := writeReport(filepath.Dir(dir), strings.Repeat("a snapshot line\n", 500), noon, "0a1b2c3d")
+	_, err := writeReport(dir, strings.Repeat("a snapshot line\n", 500), noon, "0a1b2c3d")
 	if err := unix.Setrlimit(unix.RLIMIT_FSIZE, &was); err != nil {
 		t.Fatal(err)
 	}
 	if err == nil {
 		t.Fatal("a report larger than this process may write reported success")
 	}
-	if left := namesIn(t, dir); len(left) != 0 {
-		t.Errorf("a failed write left %q on the disk, under a name that reads as a whole report", left)
-	}
-	// And the retry works, which O_EXCL had otherwise made impossible for the
-	// rest of the second - the one second somebody is most likely to try again in.
-	if _, err := writeReport(filepath.Dir(dir), "the whole of it\n", noon, "0a1b2c3d"); err != nil {
-		t.Errorf("the failed write blocked the retry that came after it: %v", err)
+	// And it stopped for the reason this test arranged. The directory now
+	// arrives across a process boundary, so a write that never reached the disk
+	// at all - a directory that was not there, a name that already was - would
+	// leave nothing behind either, and every assertion the other half makes
+	// would then hold about a write that never happened.
+	if !errors.Is(err, syscall.EFBIG) {
+		t.Fatalf("the write stopped for a reason this test did not arrange: %v", err)
 	}
 }
 
