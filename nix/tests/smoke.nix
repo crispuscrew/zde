@@ -1362,11 +1362,13 @@ let
           grep -E '^(ok|warn) +idle ' /tmp/doctor.txt; exit 1
         }
         # And the whole of it, not the front. The name above is 22 characters
-        # into a caveat of 340, and every string a stranger sends this report is
-        # cut at 300 - so a filter aimed at foreign text and pointed at this
-        # sentence by mistake would leave the grep above passing on a line whose
-        # qualification had been cut off an all-clear. The last words of it are
-        # what says the caveat arrived.
+        # into a caveat of 340, and this column is filtered because most of what
+        # lands in it was written by another program - so a filter aimed at
+        # foreign text and pointed at this sentence by mistake leaves the grep
+        # above passing on a line whose qualification had been cut off an
+        # all-clear. It has been exactly that: cut at a queue row's 300
+        # characters the line stopped at "and e" and lost both documents. The
+        # last words of it are what says the caveat arrived.
         grep -E '^(ok|warn) +idle ' /tmp/doctor.txt | grep -q 'docs/verify.md, section 11)' || {
           echo "doctor's idle caveat is cut short, so the line reads as more than it is:"
           grep -E '^(ok|warn) +idle ' /tmp/doctor.txt; exit 1
