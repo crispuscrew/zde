@@ -3981,7 +3981,7 @@ const floodSocket = "ZDE_TEST_FLOOD_SOCKET"
 
 // TestAFloodInAProcessOfItsOwn is not a test. It is the flood, and it is a
 // process because what the test after it is about cannot be arranged from inside
-// one: the cap tells a session's four connections from somebody's four hundred
+// one: the cap tells a session's five connections from somebody's four hundred
 // by the process holding them (see admit), and every connection a test dials is
 // held by the test.
 //
