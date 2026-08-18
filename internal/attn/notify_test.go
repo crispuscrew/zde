@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/godbus/dbus/v5"
@@ -188,6 +189,46 @@ func TestNotifyWithNothingToSay(t *testing.T) {
 	}
 }
 
+// A summary that draws nothing is a summary that says nothing, and the queue
+// has two doors that have to agree about that.
+//
+// clean keeps the zero-width joiner deliberately - a family emoji without it is
+// three people - so a summary of nothing but joiners was a non-empty string and
+// walked past the test above, while `zde queue add` refused the same three bytes
+// (internal/zded, checkQueueText, and TestQueueAddRefusesTextThatDrawsNothing
+// beside it). What landed was a queue row with nothing in the text column and
+// nothing in the sender column: not readable, not recognisable, and not
+// dismissable by anything but its id.
+func TestASummaryThatDrawsNothingIsNoSummary(t *testing.T) {
+	for _, summary := range []string{"‍", "‍‍‍‍‍", "́", "️", "‍ ‍"} {
+		sink := &fakeSink{}
+		if _, derr := notifier(sink).Notify(peer, "app", 0, "", summary, "", nil, nil, -1); derr == nil {
+			t.Errorf("summary %q was accepted, and there is nothing in it to read", summary)
+		}
+		if len(sink.got) != 0 {
+			t.Errorf("summary %q reached the queue as %+v", summary, sink.got)
+		}
+		// And with a body behind it, the body becomes the row rather than
+		// being hidden behind an invisible summary that won the position.
+		with := &fakeSink{}
+		if _, derr := notifier(with).Notify(peer, "app", 0, "", summary, "ring the bank", nil, nil, -1); derr != nil {
+			t.Fatalf("summary %q with a body: %v", summary, derr)
+		}
+		if got := with.got[0].Text; got != "ring the bank" {
+			t.Errorf("summary %q with a body became the row %q, want the body", summary, got)
+		}
+	}
+	// The joiner still earns its keep in text that has something to draw: this
+	// is one family, not three people, and nothing here strips it.
+	sink := &fakeSink{}
+	if _, derr := notifier(sink).Notify(peer, "app", 0, "", "👨‍👩‍👧 arrived", "", nil, nil, -1); derr != nil {
+		t.Fatal(derr)
+	}
+	if got := sink.got[0].Text; got != "👨‍👩‍👧 arrived" {
+		t.Errorf("text = %q, want the joiners kept: without them a family is three people", got)
+	}
+}
+
 // One download, many updates, one item: the spec's own mechanism, and without
 // it a progress bar becomes a hundred reminders.
 func TestNotifyReplacesTakesTheOldOneOff(t *testing.T) {
@@ -276,6 +317,61 @@ func TestAnActionsTextIsBounded(t *testing.T) {
 	}
 }
 
+// A key is checked and never cleaned, for the reason a long one is dropped
+// rather than cut: it is the string that goes back to the sender.
+//
+// Both halves used to go through oneLine, so "rep\tly" was kept as "rep ly" -
+// which is a button whose press tells the app about an action it never declared,
+// while the action it did declare is refused as one nobody offered (history.go,
+// Allows). Dropped and counted instead, the surface says there is an action it
+// cannot reach, which is the same thing it says about the tenth one.
+func TestAnActionKeyIsDroppedRatherThanTidied(t *testing.T) {
+	sink := &fakeSink{}
+	if _, derr := notifier(sink).Notify(peer, "mail", 0, "", "Ilya: about the invoice", "", []string{
+		"rep\tly", "Reply",
+		"two  spaces", "Two",
+		" leading", "Leading",
+		"line\nbreak", "Break",
+		"archive", "Archive",
+	}, nil, -1); derr != nil {
+		t.Fatal(derr)
+	}
+	n := sink.got[0]
+	if len(n.Actions) != 1 || n.Actions[0].Key != "archive" {
+		t.Fatalf("kept %+v, want only the key that can be sent back as the sender wrote it", n.Actions)
+	}
+	if n.Extra != 4 {
+		t.Errorf("Extra = %d, want the 4 out of reach: the surface says so rather than showing a tidied key", n.Extra)
+	}
+	// And the tidied spellings address nothing, which is the harm stated the
+	// way the center meets it.
+	r := Record{Actions: n.Actions}
+	for _, key := range []string{"rep ly", "two spaces", "leading", "line break"} {
+		if r.Allows(key) {
+			t.Errorf("the record offers %q, a key the app never declared", key)
+		}
+	}
+}
+
+// An empty key is not an action. The guard that says so had nothing holding it
+// down: deleting it left the suite green, and what it leaves behind is a drawn
+// button that emits ActionInvoked with an empty key - which the spec gives no
+// meaning, so the app can only guess or ignore it.
+func TestAnEmptyActionKeyIsNotAnAction(t *testing.T) {
+	sink := &fakeSink{}
+	if _, derr := notifier(sink).Notify(peer, "app", 0, "", "hello", "",
+		[]string{"", "Approve", "archive", "Archive"}, nil, -1); derr != nil {
+		t.Fatal(derr)
+	}
+	n := sink.got[0]
+	if len(n.Actions) != 1 || n.Actions[0].Key != "archive" {
+		t.Fatalf("kept %+v, want only the action that addresses something", n.Actions)
+	}
+	if n.Extra != 0 {
+		t.Errorf("Extra = %d, want none: an empty key declared nothing to be out of reach of", n.Extra)
+	}
+}
+
 // Every volume OSD reuses one id of its own choosing - notify-send -r 42, and
 // dunstify's -r before it. Answering with a fresh id each time and matching
 // only on that turns one OSD into a hundred queue items.
@@ -356,14 +452,109 @@ func TestNotifyAnswersWithTheQueuesID(t *testing.T) {
 
 // A dash in the sender column means a person typed it, so an app that sends
 // nothing - or sends a dash - must not land there looking hand-written.
+//
+// The list past the first three is the class the byte comparison missed. This
+// was matched with app == "-" while the desktop's own name went through isSelf,
+// which folds a claim down to what somebody reads - so a dash with a zero-width
+// joiner after it was three bytes away from "-", kept its name, and drew as a
+// single dash in the column that means a person typed this. The joiner is the
+// one that was sent; a combining acute, a variation selector and an enclosing
+// keycap are the same shape of thing and there are a hundred more of them,
+// which is why the fix reads what is drawn rather than naming runes (notify.go,
+// drawn). Every rune is walked in the sweep below.
 func TestSenderCannotLookHandTyped(t *testing.T) {
-	for _, app := range []string{"", "-", "   "} {
+	for _, app := range []string{
+		"", "-", "   ",
+		"-‍", "‍-", "-́", "-️", "-⃣",
+		"‍", "́", "-​‍", "⁠-‍",
+	} {
 		sink := &fakeSink{}
 		if _, derr := notifier(sink).Notify(peer, app, 0, "", "hello", "", nil, nil, -1); derr != nil {
 			t.Fatal(derr)
 		}
 		if got := sink.got[0].From; got != string(peer) {
 			t.Errorf("app %q was recorded as %q, want the bus name it came from", app, got)
+		}
+	}
+}
+
+// The same question asked of all 1114112 code points, because the bug was a
+// rune nobody had thought of and the next one will be too.
+//
+// A claim is either taken away or kept, and a kept one has to be a name: there
+// has to be something in it a person can see, and that something must not be
+// the dash. Sent as the whole claim and on either side of a dash, which is how
+// it arrives - notify-send -a "$(printf -- '-‍')" is one shell line.
+//
+// visible is written out here rather than borrowed from notify.go on purpose.
+// A test that called drawn would agree with the code by construction and would
+// go on agreeing with it after somebody deleted a clause.
+func TestNoRuneLetsAClaimDrawAsADash(t *testing.T) {
+	for r := rune(0); r <= utf8.MaxRune; r++ {
+		if !utf8.ValidRune(r) {
+			continue // the surrogate half, which is not a character
+		}
+		for _, app := range []string{string(r), "-" + string(r), string(r) + "-"} {
+			got := claim(app, peer)
+			if got == string(peer) {
+				continue // taken away, which is the answer
+			}
+			if seen := visible(got); seen == "" || seen == "-" {
+				t.Fatalf("U+%04X: the claim %q kept the name %q, which draws as %q", r, app, got, seen)
+			}
+		}
+		// And the other half of the same reservation, swept the same way: a
+		// spelling of the desktop's own word must not survive with noise in it
+		// either. This has held since isSelf was written; it is here because it
+		// is the property the dash lost, and one of the pair having a sweep and
+		// the other not is how they drift apart again.
+		for _, app := range []string{"zde" + string(r), string(r) + "zde", "z" + string(r) + "de"} {
+			if got := claim(app, peer); got != string(peer) && word(visible(got)) == SelfFrom {
+				t.Fatalf("U+%04X: the claim %q kept the name %q, which reads as the desktop's own", r, app, got)
+			}
+		}
+	}
+}
+
+// visible is this test's own reading of what ends up on the screen: what Go
+// calls graphic, less the marks that are drawn on top of the character before
+// them, less the format characters that are an instruction to whatever lays the
+// text out, less the space around it all.
+func visible(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case unicode.IsMark(r), unicode.Is(unicode.Cf, r), unicode.IsSpace(r), !unicode.IsGraphic(r):
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// word is the same again for a name made of letters: case folded and the rest
+// dropped, which is how a person reads one.
+func word(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(unicode.ToLower(r))
+		}
+	}
+	return b.String()
+}
+
+// The history keeps one ring it never counts and never evicts, for rows off a
+// snapshot an older zde wrote, and the argument for the exemption is that no
+// app can reach it (history.go, nobody and unevictable). Nothing on a real bus
+// can: dbus-daemon stamps a sender on every message. This is that argument
+// stated by the code rather than borrowed from somebody else's implementation.
+func TestAClaimNeverFallsIntoTheRingNothingCounts(t *testing.T) {
+	for _, app := range []string{"", "-", "zde", "   ", "‍", "-‍"} {
+		got := claim(app, "")
+		if unevictable(got) {
+			t.Errorf("claim(%q) with no name on the connection recorded %q, which is a ring "+
+				"outside SendersMax and never evicted", app, got)
 		}
 	}
 }

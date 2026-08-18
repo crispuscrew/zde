@@ -481,7 +481,14 @@ func (n *notifications) Notify(
 	s := n.server
 	text := oneLine(summary)
 	rest := bodyText(body)
-	if text == "" {
+	// Draws rather than a test for the empty string, at this one and at the
+	// refusal below, and the difference is a summary made of zero-width
+	// joiners: non-empty, drawn as nothing, and until this a queue row with an
+	// empty text column that nobody could read or recognise. `zde queue add`
+	// has always refused those three bytes and now refuses the rest of the same
+	// class with them, which is the two doors of this queue agreeing on a floor
+	// (internal/zded, checkQueueText).
+	if !Draws(text) {
 		// Some apps put everything in the body, and a notification with no
 		// summary is ordinary: notify-send with one argument sends one. The
 		// front of the message becomes the summary and is bounded like one,
@@ -500,7 +507,7 @@ func (n *notifications) Notify(
 			rest = ""
 		}
 	}
-	if text == "" {
+	if !Draws(text) {
 		return 0, dbus.MakeFailedError(errors.New("a notification with neither summary nor body says nothing"))
 	}
 
@@ -607,16 +614,26 @@ func (n *notifications) GetCapabilities() ([]string, *dbus.Error) {
 // surface says there is an action it cannot reach, which is exactly what it
 // says about the tenth one. A label is read by a person and nothing depends on
 // its bytes.
+//
+// Which is why a key is not cleaned either, only checked. Running one through
+// oneLine was the same bug the paragraph above argues against, reached by the
+// other road: "rep\tly" came back "rep ly", and a center offering that button
+// would send the app a key it never declared while the one it did declare was
+// refused as never offered (history.go, Allows). A key oneLine would change is
+// therefore counted and dropped, exactly like one that is too long - the surface
+// admits there is an action it cannot reach, which is honest, where a renamed
+// key is a button that lies. What survives is a key already fit for a row, which
+// is what lets it stand in for a missing label.
 func takeActions(actions []string) ([]Action, int) {
 	var kept []Action
 	declared := 0
 	for i := 0; i < len(actions); i += 2 {
-		key := oneLine(actions[i])
+		key := actions[i]
 		if key == "" {
 			continue // an empty key addresses nothing
 		}
 		declared++
-		if utf8.RuneCountInString(key) > actionTextMax {
+		if utf8.RuneCountInString(key) > actionTextMax || oneLine(key) != key {
 			continue // counted above, and unreachable rather than wrong
 		}
 		if len(kept) >= actionsMax {
@@ -658,13 +675,43 @@ func (s *Server) lookup(k owned) (uint64, bool) {
 // is made (see SelfFrom, Notification.Self). The bus's name for a connection is
 // what both fall back to, because the bus hands that out rather than letting the
 // peer choose it.
+//
+// All three questions are asked of one string, and asking them of two was the
+// defect. isSelf has always folded a claim down to the word somebody reads; the
+// dash was matched on the bytes oneLine happened to leave, and oneLine keeps the
+// zero-width joiner on purpose - so "-" with a joiner after it was not "-", kept
+// its name, and drew in the sender column as a single dash beside the reminders
+// a person typed. Both reservations now read what drawn leaves, which is the
+// claim as it is seen rather than as it is spelled.
+//
+// The fallback has a floor under it. A connection the bus named nothing would
+// otherwise be recorded as "", and that is the ring the history never counts and
+// never evicts (history.go, nobody and unevictable) - a ring kept for rows off
+// an old snapshot file, on the strength of a sentence there saying no app can
+// reach it. dbus-daemon stamps a sender on every message, so no app ever has;
+// the sentence is worth being true because of this line rather than because of
+// somebody else's implementation.
 func claim(app string, sender dbus.Sender) string {
 	app = oneLine(app)
-	if app == "" || app == "-" || isSelf(app) {
+	read := drawn(app)
+	if read == "" || read == "-" || isSelf(read) {
+		if sender == "" {
+			return unnamedSender
+		}
 		return string(sender)
 	}
 	return app
 }
+
+// unnamedSender is the floor under claim's fallback: what to record when the
+// sender named nothing and the bus named the connection nothing either.
+//
+// A word rather than the empty string, because empty is the history's own
+// reserved ring, and a shape a parenthesis begins rather than a name, because
+// this is the server saying it does not know. An app may of course claim this
+// name too, and nothing goes wrong if it does: it shares an ordinary ring,
+// counted against SendersMax and evicted like any other claim.
+const unnamedSender = "(unknown)"
 
 // isSelf reports whether a claim is a spelling of the desktop's own name.
 //
@@ -802,6 +849,64 @@ func Block(s string) string {
 		return strconv.Quote(s)
 	}
 	return strings.ReplaceAll(out, "\n", "\n  ")
+}
+
+// Draws reports whether there is anything in s that a person can see.
+//
+// The question two doors in this tree ask about text somebody else wrote, and
+// they used to answer it differently. An arrival with neither summary nor body
+// says nothing and is refused (Notify); a queue item that says nothing cannot be
+// acted on or recognised and is refused too (internal/zded, checkQueueText). One
+// asked whether the string was empty and the other asked unicode.IsPrint of every
+// rune, so a summary of nothing but zero-width joiners walked past the app's door
+// while the same three bytes were turned away at the person's - the app's door
+// being the looser of the two, which is the wrong way round.
+//
+// The floor and not the whole of either door. Above this they are meant to
+// differ, and the difference is argued at oneLine: a person typing a reminder is
+// refused a tab and can try again, where an app's notification is normalised
+// because it is the only copy there will ever be of something that already
+// happened. What neither may do is put a row on the queue with nothing in it to
+// read.
+//
+// Exported for that second caller. It is the same reason Line is exported: the
+// rune decisions live here, and a second copy is the copy that drifts.
+func Draws(s string) bool { return drawn(s) != "" }
+
+// drawn is s reduced to what a person actually sees, and it is what a
+// reservation on a name compares (see claim).
+//
+// Two clauses and they are the whole of the rule. What Go calls printable, which
+// is everything oneLine keeps but for the joiner, less the combining marks: a
+// mark is drawn on top of the character before it rather than beside it, so it
+// adds nothing a reader can count. Between them they take away every rune with
+// no glyph of its own - the format characters, the joiner among them, and the
+// marks - and the space around what is left goes too, because a column of spaces
+// is a column of nothing.
+//
+// Stated as a class rather than as the rune that was found, and that is the
+// point of writing it here at all. oneLine keeps the joiner deliberately and will
+// go on keeping it - it is unprintable by every test Go has, and a family emoji
+// without it is three people - so a filter written against U+200D would close one
+// hole and leave the hundred other runes that draw nothing standing behind it.
+// Nothing is stripped from what is recorded, either: this decides what a
+// reservation compares, and the name an app keeps is the name it sent.
+//
+// What it does not close is a rune that draws something else that looks the
+// same. U+2212 MINUS SIGN and U+2010 HYPHEN both draw as a dash and both keep
+// their name here. That is the homoglyph class isSelf declines and it is declined
+// for the same reason: it has no edge. Unicode's dash category would take the
+// first handful, and then the minus sign is not in it, and the heavy minus is an
+// emoji, and the hyphen bullet is ordinary punctuation - a list that never ends
+// and is one row behind whoever is reading it. This closes what is invisible,
+// which is a question with an answer.
+func drawn(s string) string {
+	return strings.TrimSpace(strings.Map(func(r rune) rune {
+		if !unicode.IsPrint(r) || unicode.IsMark(r) {
+			return -1
+		}
+		return r
+	}, s))
 }
 
 // oneLine makes anything an app sends fit one line of the queue.

@@ -103,10 +103,15 @@ const SendersMax = 12
 // nobody is the ring for a record whose sender named itself nothing. It is
 // neither counted against SendersMax nor ever chosen by it.
 //
-// No app can land here. A notification off the bus that gives no name, or a
-// name of "-", is recorded under the bus's own name for its connection instead
-// (notify.go, claim), and the bus hands that out rather than letting the peer
-// choose it.
+// No app can land here, and the code is what says so rather than the bus. A
+// notification off the bus that gives no name, or a name that draws as a dash,
+// is recorded under the bus's own name for its connection instead (notify.go,
+// claim), and the bus hands that out rather than letting the peer choose it -
+// and where the bus named the connection nothing either, claim has a floor
+// under that fallback rather than letting an arrival fall through into this
+// ring (notify.go, unnamedSender). Nothing has ever come through that gap,
+// because dbus-daemon stamps a sender on every message; a sentence this flat
+// should not be resting on somebody else's implementation to stay true.
 //
 // Nothing else in the tree reaches it either, and it is worth being exact about
 // that rather than generous. zde's own notifications are not nameless: the one

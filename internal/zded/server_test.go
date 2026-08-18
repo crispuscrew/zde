@@ -2486,6 +2486,41 @@ func TestQueueAddRefusesWhatCannotBePrinted(t *testing.T) {
 	}
 }
 
+// Printable and drawn are not the same thing, and this door used to ask only
+// the first. A combining acute on its own is printable by every test Go has and
+// draws no character of its own, so it made a queue item whose text column was
+// blank - nothing to read, nothing to recognise, and nothing to act on but the
+// id beside it.
+//
+// The floor the app's door now stands on too, which is the point of the two of
+// them asking it with one function (internal/attn, Draws, and
+// TestASummaryThatDrawsNothingIsNoSummary beside it). A summary of nothing but
+// zero-width joiners used to walk past that door and land here as a row nobody
+// could read, refused at this one and let in at the other.
+//
+// Only the floor. Above it the doors are meant to differ and do: this one
+// refuses a tab where oneLine folds it, because a person typing a reminder can
+// be told to try again and an app's notification is the only copy there will
+// ever be of something that already happened.
+func TestQueueAddRefusesTextThatDrawsNothing(t *testing.T) {
+	s, _, _ := queueTestServer(t, "vshop.DP-1.code")
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	for _, bad := range []string{"́", "́́́", "️", "⃣"} {
+		if err := c.Call("queue.add", nil, bad); err == nil {
+			t.Errorf("queue.add %q was accepted, and there is nothing in it to read", bad)
+		}
+	}
+	// And what does draw goes on through, marks and all: an accented word is a
+	// word, and this refuses text rather than characters.
+	if err := c.Call("queue.add", nil, "réponse à Ilya"); err != nil {
+		t.Errorf("a reminder with something to draw was refused: %v", err)
+	}
+}
+
 // Jumping goes to where the oldest thing waits, and leaves it waiting:
 // arriving somewhere is not doing the thing.
 func TestQueueJumpGoesToTheOldestAndLeavesIt(t *testing.T) {
