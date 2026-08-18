@@ -963,8 +963,10 @@ func (m *NM) Disconnect() error {
 // - and netview's per-app cut (0.3) is what reaches those.
 //
 // The switch is NetworkManager's own state and is read back rather than
-// remembered (Status), which is what lets a bar say "zde cut this" after a
-// restart of either side.
+// remembered (Status), which is what lets a bar say "cut" after zded has been
+// restarted under it, and stop saying it the moment somebody runs `nmcli
+// networking on`. What a restart of NetworkManager itself does with the switch
+// is NetworkManager's business and is not asserted here.
 func (m *NM) Kill(cut bool) error {
 	ctx, cancel := m.within()
 	defer cancel()
