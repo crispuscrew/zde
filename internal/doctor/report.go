@@ -352,7 +352,11 @@ func writeGraphics(b *strings.Builder, g Graphics) {
 		fmt.Fprintf(b, "             the compositor is alive, its sockets are open, and nothing is drawn.\n")
 	case DrewProbably:
 		fmt.Fprintf(b, "  answer     probably yes - nothing in niri's log this boot says it fell back, and\n")
-		fmt.Fprintf(b, "             niri has %d screen(s) to draw on. Nothing here can see a photon, so\n", len(g.Screens))
+		// What niri said, and not the length of a list that is bounded: a
+		// machine with more outputs than screensMax would otherwise be told it
+		// has sixteen (see Graphics.ScreensMore).
+		fmt.Fprintf(b, "             niri has %d screen(s) to draw on. Nothing here can see a photon, so\n",
+			len(g.Screens)+g.ScreensMore)
 		fmt.Fprintf(b, "             a black screen with this line is a fault after the renderer.\n")
 	default:
 		fmt.Fprintf(b, "  answer     not known - %s.\n", g.Unsure())
@@ -382,7 +386,13 @@ func writeGraphics(b *strings.Builder, g Graphics) {
 		// filter: a monitor called "a b" and two monitors called "a" and "b"
 		// are different machines, and one filter over the joined string cannot
 		// keep them apart.
-		fmt.Fprintf(b, "  screens    %s\n", reading(strings.Join(each(g.Screens), " ")))
+		names := reading(strings.Join(each(g.Screens), " "))
+		if g.ScreensMore > 0 {
+			// The mark every other cut reading in this file carries: a list
+			// that stopped without saying so reads as all of them.
+			names += fmt.Sprintf(" ... (%d more)", g.ScreensMore)
+		}
+		fmt.Fprintf(b, "  screens    %s\n", names)
 	}
 
 	// The cards, one line each. Written even when the verdict was decided

@@ -59,7 +59,13 @@ type Graphics struct {
 	// Screens). Names only: what is on a screen is nobody's business but the
 	// person's, so nothing here asks niri about windows (see reportHeader).
 	Screens []string
-	NiriErr error
+	// ScreensMore is how many more niri named than Screens is allowed to hold
+	// (see screensMax). The bound is on the names, so the count the report
+	// gives is this plus the list's length, and the row printing the names says
+	// it was cut: a reading that lost its tail in silence is the one thing a
+	// snapshot cannot afford (see lineMax).
+	ScreensMore int
+	NiriErr     error
 
 	// Cards is one entry per DRM device node this machine has.
 	Cards []Card
@@ -336,7 +342,7 @@ func gatherMachine(root string, log logReader, self Self) Machine {
 // probeGraphics takes the four readings the answer is made of.
 func probeGraphics(root string, log logReader) Graphics {
 	g := Graphics{Socket: os.Getenv(niri.SocketEnv)}
-	g.Screens, g.NiriErr = askNiri()
+	g.Screens, g.ScreensMore, g.NiriErr = askNiri()
 	g.Cards, g.CardsErr = probeCards(root)
 	g.Fell, g.Saw, g.LogErr = pickLines(log)
 	for _, name := range graphicsEnv {
@@ -369,21 +375,26 @@ func probeGraphics(root string, log logReader) Graphics {
 // zded is what is wrong, and a reading that needed it would go blank exactly
 // when it is wanted. internal/niri bounds its own connect and its own request,
 // so nothing here has to.
-func askNiri() ([]string, error) {
+func askNiri() ([]string, int, error) {
 	c, err := niri.Dial()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer c.Close()
 	names, err := c.Screens()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
+	// Sorted and then cut, so that the same sixteen survive every reading of an
+	// unchanged machine: Screens ranges a Go map. How many were cut goes back
+	// with them, because the number the report gives is niri's.
+	sort.Strings(names)
+	more := 0
 	if len(names) > screensMax {
+		more = len(names) - screensMax
 		names = names[:screensMax]
 	}
-	sort.Strings(names)
-	return names, nil
+	return names, more, nil
 }
 
 // probeCards is every DRM device node, with the driver bound to it, the chip
