@@ -337,6 +337,65 @@ func TestARowIsOneBoundedLineOfWhateverWasCopied(t *testing.T) {
 	}
 }
 
+// A preview is somebody else's text on a terminal, and it is the whole guard.
+// What was copied is arbitrary bytes - a build log, a page of HTML, whatever a
+// browser put on the clipboard - and `zde clip history` prints the preview into
+// a tab separated row with no filter of its own (cmd/zde, clipHistory), so
+// nothing between the copy and the terminal cleans it but this.
+//
+// The test above looks like it covers this and does not: its input has no
+// escape in it, and the newline, tab and carriage return it does carry are
+// caught by the whitespace branch one case earlier. Take the unprintable branch
+// out and the suite stayed green while an OSC-0 sequence in something copied
+// retitled the window of whoever pressed Mod+v.
+//
+// The four things a row must survive are the four that text can do to one:
+// drive the terminal (ESC, and BEL, which ends an OSC sequence), split one row
+// into two (a newline), add a column (a tab), and reorder what is drawn around
+// it (a bidi override).
+func TestWhatWasCopiedCannotDriveTheTerminalItIsPreviewedOn(t *testing.T) {
+	var h History
+	h.Add(text("invoice\x1b]0;OWNED\x07\n99\tnothing to see‮gnp.eciovni"), now)
+	rows := h.Rows(now)
+	if len(rows) != 1 {
+		t.Fatalf("rows = %+v, want the one", rows)
+	}
+	got := rows[0].Preview
+	for _, bad := range []string{"\x1b", "\x07", "\n", "\t", "‮"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("the preview %q still carries %q, which the terminal printing it acts on", got, bad)
+		}
+	}
+	// And the row still says what was copied: a preview scrubbed to nothing is
+	// a row nobody can pick the entry out of, which is what the list is for.
+	if !strings.HasPrefix(got, "invoice") {
+		t.Errorf("preview = %q, want what was copied with only the instructions gone", got)
+	}
+}
+
+// The other string in that row an application chooses, and it reaches the same
+// terminal by the same route: a type that is not text becomes the reason column
+// instead of the preview (internal/zded, take; cmd/zde, clipHistory).
+//
+// Cleaned at Offered because that is where a mime type crosses out of the
+// application, and pinned here because nothing else on the way out looks at it.
+func TestATypeAnApplicationOffersCannotForgeARow(t *testing.T) {
+	got := Offered([]string{"image/png\x1b]0;OWNED\x07\t12:00\tnothing to see\n"})
+	for _, bad := range []string{"\x1b", "\x07", "\n", "\t"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("the offered type %q still carries %q, which the row printing it acts on", got, bad)
+		}
+	}
+	if !strings.HasPrefix(got, "image/png") {
+		t.Errorf("offered = %q, want the type it named with only the instructions gone", got)
+	}
+	// Bounded as well as printable: this ends up in a refusal a person reads,
+	// and a type is a short string or it is not a type.
+	if len([]rune(got)) > TypeMax {
+		t.Errorf("the offered type is %d runes, want at most %d", len([]rune(got)), TypeMax)
+	}
+}
+
 // Which type to ask for, and the answer that stops anything being read at all.
 // An image on the clipboard is the case that turns a bounded design into an
 // unbounded one, and the decision is made before a byte is requested.

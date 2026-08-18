@@ -1,11 +1,17 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
+	"io"
+	"net"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -296,4 +302,218 @@ func shortDir(t *testing.T) string {
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	return dir
+}
+
+// forged is what a workspace name can do to the terminal zded was started from,
+// in one string: retitle its window (an OSC-0 sequence, ended with a BEL), and
+// put a line of its own in the log that reads as something zded said.
+//
+// niri's, because a workspace name is a person's or an application's and it
+// comes back inside niri's own sentence when something goes wrong with it. The
+// same shape arrives from zcr, whose whole output from a launch that would not
+// start is printed by the same daemon (internal/zded, launchApps) - a container
+// build log, several lines of it, written by whatever the image builds.
+const forged = "no workspace called \"code\x1b]0;OWNED\x07\nzded: everything is fine and nothing failed\" on DP-1"
+
+// zdedMark is how this test binary knows it is being asked to be the daemon.
+// The one program certainly present in a build sandbox is the one already
+// running, which is the trick internal/zded plays for the same reason.
+const zdedMark = "zded-under-test"
+
+// TestZdedItself is the daemon when it is run as one, and nothing at all
+// otherwise. Its stderr is the file the test that started it reads back, which
+// is why this is a process and not a goroutine: what is asserted on is the
+// bytes that reach a terminal, and the honest way to have them is to let a real
+// zded write them to a real file descriptor.
+func TestZdedItself(t *testing.T) {
+	args := flag.Args()
+	if len(args) < 5 || args[0] != zdedMark {
+		return
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	if err := run(ctx, args[1], args[2], args[3], args[4],
+		func(attn.Sink, string) (*attn.Server, error) { return nil, errors.New("no bus in a test") },
+		// No clipboard: the real one spawns wl-paste against whatever Wayland
+		// session the machine has, and a test must not read the clipboard of
+		// whoever is running it.
+		nil); err != nil {
+		fatal(err)
+	}
+	os.Exit(0)
+}
+
+// niri's words reach a terminal, and they used to reach it as niri wrote them.
+// The reconcile loop printed the compositor's reply with fmt.Fprintln straight
+// at stderr, so a workspace name with an escape sequence in it was an
+// instruction to the terminal zded was started from - which is where this
+// daemon is debugged, and the one reader journalctl's "blob data" does not
+// cover. The same error was already filtered ten lines away for `zde status`.
+//
+// End to end over the real path, and a process rather than a goroutine: a fake
+// niri answers the reconcile with the sentence above, a real zded logs it to a
+// real file, and what this reads is the bytes a terminal would have acted on.
+//
+// If this regresses, the fix is not another call to a filter at whichever call
+// site lost it. It is that the daemon has one door out and the door filters
+// (main.go, errOut), so that a line added next year is covered by being written
+// at all.
+func TestNiriCannotDriveTheTerminalTheDaemonLogsTo(t *testing.T) {
+	dir := shortDir(t)
+	t.Setenv("NIRI_SOCKET", fakeNiri(t, forged))
+	// niri's placement rules are written under XDG_CONFIG_HOME, and this test
+	// does not write into the niri config of whoever is running it.
+	t.Setenv("HOME", dir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "config"))
+
+	logPath := filepath.Join(dir, "stderr")
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logFile.Close()
+
+	daemon := exec.Command(os.Args[0], "-test.run=^TestZdedItself$", "--", zdedMark,
+		filepath.Join(dir, "s"), filepath.Join(dir, "j.jsonl"), filepath.Join(dir, "desks"),
+		filepath.Join(dir, "history.json"))
+	daemon.Stderr = logFile
+	if err := daemon.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		daemon.Process.Signal(syscall.SIGTERM) //nolint:errcheck // it is on its way out either way
+		daemon.Wait()                          //nolint:errcheck // the exit status is not the assertion
+	}()
+
+	said := waitForFile(t, logPath, "reconcile:")
+
+	for _, bad := range []string{"\x1b", "\x07"} {
+		if strings.Contains(said, bad) {
+			t.Errorf("the daemon's log still carries %q, which the terminal printing it acts on:\n%q", bad, said)
+		}
+	}
+	// And no line of somebody else's starts in column one, where a line of
+	// zded's own starts. A message with several lines in it - a build log, a
+	// parser's caret under the column it did not like - is indented under the
+	// line that introduces it, so it reads as the rest of that message rather
+	// than as a second one the daemon never printed.
+	for _, line := range strings.Split(said, "\n") {
+		if strings.HasPrefix(line, "zded: everything is fine") {
+			t.Errorf("a line niri wrote starts in column one, so the log holds a message zded never printed:\n%q", said)
+		}
+	}
+	// The filter is not a refusal: what niri said is still there to be read, or
+	// the daemon would be debugged from a log that says nothing.
+	if !strings.Contains(said, "no workspace called") || !strings.Contains(said, "code") {
+		t.Errorf("the log lost what niri said, which is what it is for:\n%q", said)
+	}
+}
+
+// And the shape the same door gives a message with several lines in it, which
+// is what a launch that would not start puts in this log: zcr hands back the
+// whole of a container build (internal/zded, launchApps).
+func TestAFailedLaunchsBuildLogIsIndentedUnderTheLineThatIntroducesIt(t *testing.T) {
+	got := throughTheDoor(t, func() {
+		fmt.Fprintf(errOut, "zded: starting nvim@vshop: zcr run nvim: %s\n",
+			"STEP 3: RUN make\x1b[2Jmake: *** no rule to make target\nzded: nothing failed")
+	})
+
+	if strings.Contains(got, "\x1b") {
+		t.Errorf("zcr's build log still carries an escape:\n%q", got)
+	}
+	lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("the message came out as %d lines, want the two it was written as:\n%q", len(lines), got)
+	}
+	if !strings.HasPrefix(lines[0], "zded: starting") {
+		t.Errorf("the daemon's own first line is not in column one: %q", lines[0])
+	}
+	if !strings.HasPrefix(lines[1], "  ") {
+		t.Errorf("zcr's second line is not indented, so it reads as a message zded printed: %q", lines[1])
+	}
+}
+
+// throughTheDoor runs f with this process's stderr pointed at a file, and
+// returns what came out of it.
+func throughTheDoor(t *testing.T, f func()) string {
+	t.Helper()
+	tmp, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = tmp
+	f()
+	os.Stderr = old
+	said, err := os.ReadFile(tmp.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(said)
+}
+
+// fakeNiri is a compositor that answers every request with one sentence, and
+// the event stream that makes the daemon ask. Its address, for $NIRI_SOCKET.
+func fakeNiri(t *testing.T, said string) string {
+	t.Helper()
+	path := filepath.Join(shortDir(t), "niri")
+	l, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { l.Close() })
+	refusal, err := json.Marshal(said)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go serveFakeNiri(c, string(refusal))
+		}
+	}()
+	return path
+}
+
+// serveFakeNiri speaks niri's line protocol: one JSON request a line, one reply
+// a line, and after the event stream is asked for, events.
+func serveFakeNiri(c net.Conn, refusal string) {
+	defer c.Close()
+	r := bufio.NewReader(c)
+	for {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			return
+		}
+		if strings.Contains(line, "EventStream") {
+			// Taken, and then one event, which is what makes the daemon
+			// reconcile. The connection stays open the way niri's does: this
+			// loop goes back to reading, and unblocks when the daemon closes it.
+			io.WriteString(c, "{\"Ok\":{\"Handled\":null}}\n")                 //nolint:errcheck // a dead client ends the loop
+			io.WriteString(c, "{\"WorkspacesChanged\":{\"workspaces\":[]}}\n") //nolint:errcheck // same
+			continue
+		}
+		io.WriteString(c, "{\"Err\":"+refusal+"}\n") //nolint:errcheck // same
+	}
+}
+
+// waitForFile waits for what the daemon writes from a goroutine of its own,
+// which is after the process that started it has come up.
+func waitForFile(t *testing.T, path, want string) string {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	var raw []byte
+	for {
+		raw, _ = os.ReadFile(path)
+		if strings.Contains(string(raw), want) {
+			return string(raw)
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("the daemon never logged %q, and it is where this failure is written down:\n%s", want, raw)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }

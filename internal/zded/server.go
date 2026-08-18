@@ -551,7 +551,7 @@ func (s *Server) stopRuns() {
 		// Said rather than swallowed: what is left is a tier or a launch that
 		// did not die when its group was killed, which is a thing worth finding
 		// in a log.
-		fmt.Fprintf(os.Stderr, "zded: something it started was still running %v after being stopped\n", runStopWait)
+		log.Printf("zded: something it started was still running %v after being stopped", runStopWait)
 	}
 }
 
@@ -2682,7 +2682,11 @@ func (s *Server) launchApps(ctx context.Context, target string, apps []manifest.
 		}
 		// Every real one in the daemon's log, whole: it is one app on one
 		// desk, and taking the switch down over it would make an unbuildable
-		// image cost somebody their whole desk.
+		// image cost somebody their whole desk. Whole and not raw - what zcr
+		// printed is a container build log, and it reaches the terminal zded
+		// was started from through the daemon's one filtered door (cmd/zded,
+		// errOut), which takes the instructions out of it and indents what is
+		// left under this line.
 		log.Printf("zded: starting %s: %v", address, err)
 		failed = append(failed, launchFailure{Address: address, Err: err})
 	}

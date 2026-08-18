@@ -232,6 +232,62 @@ func TestASnapshotCannotClaimItsRowsAreLive(t *testing.T) {
 	}
 }
 
+// A record off the disk is somebody else's text arriving at a screen for the
+// second time, and the file it arrives from is not the file this zde wrote.
+// history.json is a plain file in this user's own state directory: a line can
+// be edited into it, a backup can be restored over it, and what reads it back
+// asks for an id and a text and nothing else - the same bargain the journal
+// makes with the queue (internal/journal, apply).
+//
+// Nothing was holding this. Take the two cleaning lines out and the whole suite
+// stayed green - and at the time `zde system notif-center` was the one listing
+// with no filter of its own, so an OSC-0 window retitle and two extra tab
+// columns reached the terminal it was run from. That listing filters on the way
+// out now (cmd/zde, notifCenter), which is a second layer and not a reason to
+// hold this one less tightly: this layer is what every other reader gets - the
+// popup surface, the bar, anything the socket answers.
+//
+// The four things a summary must survive are the four a row can be broken by:
+// driving the terminal (ESC, and the BEL that ends an OSC sequence), splitting
+// one row into two (a newline), adding a column (a tab), and reordering what is
+// drawn around it (a bidi override).
+func TestASnapshotOnDiskCannotForgeARowWhenItIsReadBack(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.json")
+	forged, err := json.Marshal(map[string]any{
+		"version": snapshotVersion,
+		"records": []map[string]any{{
+			"id":   7,
+			"text": "your account\x1b]0;OWNED\x07\n8\t.\t*\tMon 09:31\t-\tdone\tnothing is waiting‮",
+			"from": "mail\x1b[2J\tmail",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, forged, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	records, err := ReadSnapshot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("read %+v, want the one record", records)
+	}
+	r := records[0]
+	for _, bad := range []string{"\x1b", "\x07", "\n", "\t", "‮"} {
+		if strings.Contains(r.Text+r.From, bad) {
+			t.Errorf("text %q and sender %q still carry %q, which the row printing them acts on", r.Text, r.From, bad)
+		}
+	}
+	// And the row still says what arrived. A record scrubbed to nothing would be
+	// worse than one dropped: it draws a line nobody can read or act on.
+	if !strings.HasPrefix(r.Text, "your account") || !strings.HasPrefix(r.From, "mail") {
+		t.Errorf("text = %q, sender = %q, want what they said with only the instructions gone", r.Text, r.From)
+	}
+}
+
 // History is not the session. A snapshot that cannot be read costs a person the
 // answer to "what did I miss" and nothing else - the desks, the queue and every
 // keybind are on the other side of the daemon starting, so every one of these

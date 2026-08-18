@@ -633,6 +633,64 @@ func TestTheQueuePrintsOneLineAnItemWhateverTheJournalHolds(t *testing.T) {
 	}
 }
 
+// The center is the other listing of the same arrivals, and it was the one
+// with no filter of its own. The queue's is argued at queueList and the
+// argument is the same word for word here: what the daemon replays from is a
+// file in this user's own state directory, and what `zde` prints is a row of
+// tab separated columns on a terminal.
+//
+// A daemon rather than a file, because that is what this command talks to and
+// what it can be wrong about. zded reads history.json and cleans what it finds
+// (internal/attn, ReadSnapshot, pinned there); this asserts that `zde system
+// notif-center` prints one line an arrival even when what comes back over the
+// socket was never cleaned at all.
+func TestTheCenterPrintsOneLineAnArrivalWhateverTheDaemonSends(t *testing.T) {
+	fakeDaemon(t, func(req zded.Request) []string {
+		if req.Method != "attn.center" {
+			return []string{`{"error":"` + req.Method + ` is not what a center listing asks"}`}
+		}
+		center, err := json.Marshal(map[string]any{
+			"shown": false,
+			"notifications": []map[string]any{{
+				"id":   4,
+				"at":   time.Date(2026, 8, 17, 9, 30, 0, 0, time.UTC),
+				"text": "your account\x1b]0;OWNED\x07\n5\t.\t*\tMon 09:31\t-\tdone\tnothing is waiting",
+				"from": "mail\tmail",
+			}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return []string{`{"ok":` + string(center) + `}`}
+	})
+
+	said, err := onStdout(t, func() error { return run([]string{"system", "notif-center"}) })
+	if err != nil {
+		t.Fatalf("zde system notif-center: %v", err)
+	}
+	if lines := strings.Count(strings.TrimSuffix(said, "\n"), "\n"); lines != 0 {
+		t.Errorf("one arrival printed %d lines:\n%q", lines+1, said)
+	}
+	if fields := strings.Count(said, "\t"); fields != 6 {
+		t.Errorf("one arrival printed %d tabs, want the six between its seven columns:\n%q", fields, said)
+	}
+	// The third column says whether the desktop wrote this, and the arrival
+	// above is claiming everything it can reach. It cannot reach that column: a
+	// tab is what separates them and nothing that arrives here can hold one.
+	if got := strings.SplitN(said, "\t", 4); len(got) > 2 && got[2] != "." {
+		t.Errorf("the badge column reads %q for a row the daemon handed over, so a snapshot could "+
+			"claim the desktop wrote it:\n%q", got[2], said)
+	}
+	for _, bad := range []string{"\x1b", "\x07"} {
+		if strings.Contains(said, bad) {
+			t.Errorf("the center printed %q, which still carries %q", said, bad)
+		}
+	}
+	if !strings.Contains(said, "your account") {
+		t.Errorf("the center printed %q, and the arrival is still what it says", said)
+	}
+}
+
 // No shell means no panel, and a question that reached no panel was not asked.
 // It has to say so: the one thing it must not do is quietly run the tier
 // instead, because then the verb answers on a terminal or in a window depending
