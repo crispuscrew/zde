@@ -191,7 +191,9 @@ in
         It never refuses to lock. A name that is unset, names a desk that is
         gone, or names a desk declared `private: true` - which is the one desk
         an unlock should not reveal - locks where you are and says which of
-        those it was. The one case that refuses is a machine with no locker at
+        those it was, and so does a desks directory holding a manifest that will
+        not parse, since nothing can then say whether the preset is private. The
+        one case that refuses is a machine with no locker at
         all - `zde.apps.lock`, which this module defaults to swaylock, so it
         takes an override or a zde built by hand - and it refuses before
         anything moves: a session walked off its desk and left unlocked is

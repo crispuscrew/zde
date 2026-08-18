@@ -200,6 +200,35 @@ func TestAPrivateDeskIsNotSomethingToUnlockOnto(t *testing.T) {
 	}
 }
 
+// And the private check fails closed. A manifest that will not parse is the
+// ordinary state of a directory somebody edits by hand, and the switch does not
+// need a manifest to happen - so a check that read "cannot tell" as "not
+// private" would switch to a private desk on exactly the machine where nobody
+// can see that it did (docs/vision.md, principle 9).
+//
+// The mutation: read the preset's manifest through manifestFor, which drops the
+// error, so an unreadable directory and a desk nothing declares answer the same.
+// The switch goes through.
+func TestAManifestThatWillNotParseStopsTheSwitchRatherThanTheCheck(t *testing.T) {
+	s, f, sp := lockServer(t, "haven", map[string]string{
+		"broken": "name: haven\nmonitorz: nope\n",
+	})
+
+	resp := s.Dispatch(Request{Method: "system.lock-preset"})
+	if resp.Error != "" {
+		t.Fatalf("system.lock-preset beside a broken manifest: %s", resp.Error)
+	}
+	if got := f.focusCalls(); len(got) != 0 {
+		t.Errorf("niri was asked for %v while nothing could say whether that desk is private", got)
+	}
+	if len(sp.all()) != 1 {
+		t.Fatalf("the screen was not locked: %v", sp.all())
+	}
+	if !strings.Contains(resp.Note, "broken.yaml") {
+		t.Errorf("the note reads %q, and it should name the file to fix", resp.Note)
+	}
+}
+
 // Nothing to lock with is the one failure that stops this action, and it stops
 // it before anything moves. The alternative is a session walked off its desk and
 // left unlocked on another one, which is worse than a key that does nothing.

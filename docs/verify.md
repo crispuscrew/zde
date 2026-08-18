@@ -1194,6 +1194,11 @@ takes the session with it.
 - **A preset naming a desk that declares `private: true`** locks where you are
   and says why. Switching *to* a private desk would put the one desk built to be
   unseen on the screen an unlock reveals.
+- **A manifest that will not parse, anywhere in the desks directory**, also
+  locks where you are and names the file. The check fails closed on purpose: the
+  switch does not need a manifest, so a machine where nothing can say whether the
+  preset is private would otherwise switch to one. `zde status` names the file
+  too, and fixing it is what turns the preset back on.
 - **With no locker at all** it refuses, and nothing has moved. Layer 1 defaults
   `zde.apps.lock` to swaylock, so this takes `zde.apps.lock = lib.mkForce [ ]`
   or a zde built by hand. Check the desk really is where you left it: a session

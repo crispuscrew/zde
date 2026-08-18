@@ -177,10 +177,10 @@ what it cuts is NetworkManager's networking switch, so the radios stay powered
 and a bluetooth keyboard is still there to press it again. It says so on the
 bar for as long as it holds, which is what tells a person zde did this and the
 network did not break. `lock-preset` switches first and locks second, and the
-order is the whole of it; the three ways the switch can be unusable - no preset,
-a desk that is gone, a desk declared private - lock where you are and say so,
-because the one outcome worse than an unlock showing your work is a screen that
-did not lock.
+order is the whole of it; the four ways the switch can be unusable - no preset,
+a desk that is gone, a desk declared private, and manifests nothing can read to
+tell whether it is one - lock where you are and say so, because the one outcome
+worse than an unlock showing your work is a screen that did not lock.
 
 | Group | Actions |
 |---|---|

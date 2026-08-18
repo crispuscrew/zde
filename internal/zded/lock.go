@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/crispuscrew/zde/internal/apps"
+	"github.com/crispuscrew/zde/internal/attn"
 	"github.com/crispuscrew/zde/internal/plainfile"
 )
 
@@ -54,13 +55,14 @@ func readLockConfig() (lockConfig, error) {
 
 // lockPreset switches to the preset desk and locks.
 //
-// Three things can go wrong with the switch and none of them stops the lock:
-// nothing configured, a preset naming a desk that is not there, and a preset
-// naming a private desk. Locking the screen is what this action is for, and a
-// key that refused to lock because a desk was missing would be a screen left
-// open over a configuration mistake. Each of them comes back as a note beside
-// the answer, so the difference between "it switched" and "it locked where you
-// were" is readable rather than guessed at.
+// Four things can go wrong with the switch and none of them stops the lock:
+// nothing configured, a preset naming a desk that is not there, a preset naming
+// a private desk, and manifests nothing can read to tell whether it is one.
+// Locking the screen is what this action is for, and a key that refused to lock
+// because a desk was missing would be a screen left open over a configuration
+// mistake. Each of them comes back as a note beside the answer, so the
+// difference between "it switched" and "it locked where you were" is readable
+// rather than guessed at.
 //
 // The one thing that does stop it is having nothing to lock with, and that is
 // checked before anything moves. A machine with no locker configured would
@@ -117,11 +119,34 @@ func (s *Server) switchToPreset() string {
 		return fmt.Sprintf("locking where you were: no preset desk is set, so set zde.lock.preset "+
 			"in your home-manager config, which is what writes %s", apps.Path(lockFile))
 	}
-	if d := s.manifestFor(cfg.Preset); d != nil && d.Private {
-		// A private desk is out of the picker, popups off, capture-blocked
-		// (docs/vision.md, section 3). Switching away from one is what this
-		// action is for; switching to one would put the desk with the most to
-		// hide on the screen an unlock reveals.
+	// A private desk is out of the picker, popups off, capture-blocked
+	// (docs/vision.md, section 3). Switching away from one is what this action
+	// is for; switching to one would put the desk with the most to hide on the
+	// screen an unlock reveals.
+	//
+	// Read here rather than through manifestFor, because that one drops the
+	// error and a nil from it means both "no manifest" and "the manifests could
+	// not be read". Those are opposite answers to this question: a desk niri has
+	// and nothing declares cannot be private, and a directory nobody can read
+	// says nothing about the desk one way or the other. A check that allowed the
+	// switch on the second is not a check - the switch does not need a manifest,
+	// so it would go through. Fail-closed, the way an arrival on an unreadable
+	// desk does (history.go, privateArrival; docs/vision.md, principle 9).
+	//
+	// The reason a parser gives is a file somebody else wrote, on its way to a
+	// terminal, so it goes through the same filter every other foreign line in
+	// zde does (internal/attn, Line).
+	all, problems, err := s.desks.All()
+	if err != nil {
+		return "locking where you were: the desk manifests could not be read, so nothing here can say whether " +
+			cfg.Preset + " is private: " + attn.Line(err.Error())
+	}
+	s.rememberProblems(problems)
+	if len(problems) > 0 {
+		return "locking where you were: a desk manifest will not parse, so nothing here can say whether " +
+			cfg.Preset + " is private: " + attn.Line(problems[0].String())
+	}
+	if d := all[cfg.Preset]; d != nil && d.Private {
 		return "locking where you were: " + cfg.Preset + " declares private, and a private desk is not something to unlock onto"
 	}
 	if resp := s.switchDesk(cfg.Preset); resp.Error != "" {
