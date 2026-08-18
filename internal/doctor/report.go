@@ -500,15 +500,20 @@ func writeHardware(b *strings.Builder, h Hardware) {
 func writeDoctor(b *strings.Builder, s Session) {
 	b.WriteString(secDoctor + "\n")
 	for _, c := range Judge(s) {
-		fmt.Fprintf(b, "  %s\n", c)
+		// Every line of the check and not only its first, because a check is
+		// more than one line where its detail is (doctor.go, String). Indenting
+		// the first alone would leave a continuation two columns to the left of
+		// the detail it continues, and this file's own two spaces are what keep
+		// column one for a section heading.
+		fmt.Fprintf(b, "  %s\n", strings.ReplaceAll(c.String(), "\n", "\n  "))
 	}
 	if s.Desks.Private > 0 {
 		// Said even when nothing was left out, because "there is a private desk
 		// on this machine and it had nothing to report" and "there is no
 		// private desk" are the same blank otherwise - and somebody deciding
 		// whether to paste this into a bug report is entitled to know which.
-		fmt.Fprintf(b, "  %-5s %-13s %d desk(s) declare private, and nothing about them is in this file\n",
-			"note", "desk apps", s.Desks.Private)
+		fmt.Fprintf(b, "  %-*s %-*s %d desk(s) declare private, and nothing about them is in this file\n",
+			levelAt, "note", nameAt, "desk apps", s.Desks.Private)
 	}
 }
 
@@ -538,10 +543,23 @@ func writeDoctor(b *strings.Builder, s Session) {
 // three that makes the forgery impossible rather than harder, and reflowing a
 // reading costs nothing: it was one line to begin with or it was lying.
 //
+// The doctor section under this one took the other answer, and the two are not
+// in disagreement: the filter follows the shape. A check's detail is a sentence
+// zde often wrote itself and has to arrive whole, on a row whose level is in
+// column one, so it keeps its shape and every line after the first is indented
+// to the detail column, where nothing else in either shape of this report sits
+// (doctor.go, String). A reading is a scalar in a list where every row is
+// already two spaces in, so no indent tells it apart from a row, and it was one
+// line to begin with or it was lying.
+//
 // Its bound comes with it - a queue row's - and that is deliberate here too: an
 // environment value has no length a machine can rely on, and the report's own
 // ceiling should be reached by a machine with forty input devices rather than
-// by one variable.
+// by one variable. Nothing in these three sections is near it on a real
+// machine, which is the other half of why this one keeps a silent cut and the
+// detail column could not: the readings that could be long are cut with a
+// marker before they arrive (machine.go, lineMax and cmdlineMax), and the rest
+// are a socket path, a driver name, a store path and a DMI string.
 func reading(s string) string {
 	out := attn.Line(s)
 	if out == "" {

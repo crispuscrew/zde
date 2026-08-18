@@ -35,36 +35,131 @@ const (
 	Fail Level = "fail"
 )
 
-// Check is one line. Detail says the consequence and not only the reading
-// wherever there is one to say: somebody running this is trying to find out
-// what is broken, not to collect facts.
+// Check is one check's answer: one row of the report, and more than one line of
+// it where the detail has more than one line in it (see String). Detail says
+// the consequence and not only the reading wherever there is one to say:
+// somebody running this is trying to find out what is broken, not to collect
+// facts.
 type Check struct {
 	Level  Level
 	Name   string
 	Detail string
 }
 
-// String is the line as it is printed. Fixed columns rather than the tabs the
+// The columns a row is made of: the level five wide, the name thirteen, and a
+// space after each. detailAt is where the detail starts.
+//
+// Three names for what used to be two numbers inside a format string, because
+// the width of the columns and the indent under them are now one fact, and a
+// fact written twice is the copy that drifts. A continuation line indented to
+// anything else is a line that reads as neither this row nor a new one (see
+// String).
+const (
+	levelAt  = 5
+	nameAt   = 13
+	detailAt = levelAt + 1 + nameAt + 1
+)
+
+// detailMax is how much of one detail is printed. Past it the line is cut, and
+// it says it was cut (see cut), which is the whole of the difference between
+// this bound and the one it replaced.
+//
+// Two thousand characters, and the number is picked so that nothing this
+// package writes can reach it. The longest sentence zde puts in this column is
+// the idle check's caveat on a machine with no logind, 450 as this is written
+// and held under the bound by a test of its own (see unseen); the
+// widest row this package can construct is an idle holder's, at about 1370,
+// which is both of a stranger's two strings at attn.Line's three hundred
+// characters with every one of them a `"` that strconv.Quote escapes (see
+// holder). Above both, so that a cut here is always somebody else's text and
+// never zde's own qualification taken off the end of zde's own sentence, which
+// is exactly what the bound before it did.
+//
+// What is under it is another program's complaint: podman's refusal, zcr's
+// answer about an app name, a YAML parser on a manifest somebody edited by
+// hand. Something a thousand characters past the widest thing zde writes here
+// is a dump rather than a complaint, and the front of a dump is the part that
+// names the file.
+//
+// It is not the only ceiling and it is the one that keeps the other from being
+// spent on a single line. The state snapshot bounds the whole file at
+// reportBytesMax and cuts what does not fit (report.go), so an unbounded detail
+// would not merely be long: it would push the checks under it off the end of
+// the file somebody carried away from a machine that will not boot.
+const detailMax = 2000
+
+// String is the row as it is printed. Fixed columns rather than the tabs the
 // queue uses: this goes into a bug report to be read by people, and the level
 // is the column an eye runs down. Nothing generated reads it, so nothing is
 // owed a separator.
 //
-// The detail is filtered here, and it takes the row filter rather than the one
-// an error printed on its own takes (internal/attn, Line against Block). Most
-// of what is in this column was written by something else - systemctl's and
-// podman's first line of complaint, zcr's refusal of an app name, a YAML
-// parser's several lines about a manifest, logind's answer off the bus - and
-// this report is one line per check with the level in column one. A detail with
-// a newline in it is a check nobody made, drawn in the column an eye runs down;
-// a detail with an ESC in it drives the terminal somebody pasted the report
-// into. So it is one printable line each, and a manifest that has more wrong
-// with it than fits on one is fixed an edit at a time.
+// The detail is filtered here, and it keeps the shape it was written in
+// (internal/attn, Text rather than Line). Most of what is in this column was
+// written by something else - systemctl's and podman's first line of complaint,
+// zcr's refusal of an app name, a YAML parser's complaint about a manifest,
+// logind's answer off the bus, an app name out of apps.json - and this report is
+// read in a terminal and pasted into bug threads, where ESC is not a character
+// but the start of an instruction. Text is what takes that away: out of all
+// 1114112 runes it passes tab, newline and the zero-width joiner, and otherwise
+// only what Go calls printable, so ESC, a carriage return and a NUL are gone
+// before this returns. A tab survives and costs nothing here, because it can
+// move text to the right and a row is told apart by what is on its left.
+//
+// Nearly all of that arrives on one line already, and this does not rely on it.
+// A program's complaint is cut to its first line where it is run (gather.go,
+// firstLine); a parser's several lines are folded where they enter the daemon
+// (internal/zded, rememberProblems); a holder's two strings are folded and
+// quoted (see holder). The one that is neither is an app name, which comes off
+// apps.json and is whatever wrote that file - and that is where a newline has
+// actually reached this column, which cmd/zde tests end to end against a real
+// run. A filter here that leant on the folding upstream would be a filter that
+// fails the first time one of those rules is relaxed.
+//
+// Line was the filter and it was the wrong one, which is worth keeping rather
+// than deleting. Line makes a row: it folds a detail onto one line and cuts it
+// at a queue row's three hundred characters, in silence. The longest line in
+// this report is zde's own - the idle check's caveat about the half of the
+// mechanism nothing here can see is 340 characters by itself (see unseen), on a
+// line of 450 - so it stopped mid-word and lost the docs pointer at the end of
+// it, and the one check whose whole purpose is to refuse to give an all-clear
+// read as an all-clear whose qualification trailed off. A bound meant for
+// foreign text had been pointed at zde's own sentence.
+//
+// So a newline is paid for by where it lands rather than by being taken away.
+// Every line after the first is indented to detailAt, which is where the detail
+// column starts: it reads as the rest of this check, and it cannot be read as
+// another one, because a check's level is in column one and nothing twenty
+// characters in is in column one. That is the same shape the snapshot's own
+// rows are argued into (report.go, reading), reached from the other side: there
+// no indent is safe, because every row in that file is already indented two,
+// and here every indent is safe except the two attn.Block would have used.
+//
+// Which is why Block is not what this calls, though it is this filter with an
+// indent on it already. Its two spaces are for an error printed on its own in
+// column one (cmd/zde, complain), and two spaces under a twenty-character
+// column is neither this row continued nor a new one. An indent is layout, and
+// layout belongs to whoever owns the columns; the filtering is still attn's, and
+// there is still one copy of it.
+//
+// A bound stays, because taking away a cut is not the same as taking away a
+// ceiling: detailMax, cut the way this package cuts everything else, which is
+// out loud (see cut, and lineMax for why a silent cut is the one a snapshot
+// cannot afford).
+//
+// A detail with nothing printable in it is quoted rather than left blank, for
+// the reason attn.Block quotes one: a check that says something is wrong and
+// then says nothing about what is worse than a check that shows the bytes.
 //
 // Here rather than in each of the twenty places a Check is made, for the reason
 // `zde` filters its errors in one place: a filter per call site is a filter the
 // next check forgets.
 func (c Check) String() string {
-	return fmt.Sprintf("%-5s %-13s %s", c.Level, c.Name, attn.Line(c.Detail))
+	detail := strings.TrimSpace(attn.Text(c.Detail))
+	if detail == "" {
+		detail = strconv.Quote(c.Detail)
+	}
+	detail = strings.ReplaceAll(cut(detail, detailMax), "\n", "\n"+strings.Repeat(" ", detailAt))
+	return fmt.Sprintf("%-*s %-*s %s", levelAt, c.Level, nameAt, c.Name, detail)
 }
 
 // Report is the whole screen, in the order the checks are printed.

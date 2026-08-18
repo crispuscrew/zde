@@ -804,8 +804,14 @@ func run(d time.Duration, name string, args ...string) (string, error) {
 	return stdout.String(), err
 }
 
-// firstLine is as much of a program's complaint as belongs on one line of a
-// report that is one line per check.
+// firstLine is as much of a program's complaint as a check is worth.
+//
+// Still one line, now that a check's own line can carry more than one
+// (doctor.go, String). A check is a finding and what it costs, and a person
+// reading twenty of them is looking for which one to chase; the whole of a
+// parser's answer, with the caret under the column that is wrong, is what `zde
+// desk apps` is for (cmd/zde, complain). So this is a rule about what a check
+// says and not a way of keeping a line from being cut.
 func firstLine(s string) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		s = s[:i]
