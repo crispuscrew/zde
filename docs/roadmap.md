@@ -201,6 +201,25 @@ blocks 0.2:
 - netview: per-app connections/rates, nft counters (zinc ask 6), `app-cut`.
 - per-project browsers via `Inherits:` (ask 5) + `zde new`.
 - regulars polish: focus-mode comms filtering.
+- the assistant ([`assistant.md`](assistant.md)): a model drives this desktop
+  over mTLS, from loopback or one named LAN address, through nine MCP tools
+  that read what is here or do something a keypress undoes. It is in this phase
+  rather than 0.2 because remote control should not arrive before the security
+  set that hides a machine locally, and because 0.3 already holds the other two
+  places an LLM touches this system - doctor's runbook agent and update's re-pin
+  agent - so what an agent may reach gets argued once. Four items in order, and
+  the second is the one the rest depends on: `window.list` and `desk.start` in
+  zded, which are the two verbs the tool surface needs and zde wants anyway;
+  then a `zde-assist` uid, a second socket, and a second enumerated dispatch
+  table in zded, checked at the top of the connection's read loop rather than
+  in `Dispatch`, since `events`, `ask.run` and `clip.history <id>` never reach
+  `Dispatch` at all; then the listeners on loopback, the approval surface and
+  the audit; then the LAN bind. The rule that decides the shape is that nothing
+  the acting half answers may contain a string an application chose, which is
+  why a switch answers a count rather than the workspace it landed on: a
+  workspace slot is `Label(app_id)` and `partMax` is 64. One read tool, "what
+  is playing", waits on 0.2's media work and is not faked out of window titles
+  in the meantime.
 
 ## 0.4 - Media, gaming, laptop
 
