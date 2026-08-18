@@ -299,8 +299,12 @@ func TestNoReadingCanForgeAHeadingOrACheck(t *testing.T) {
 		},
 	}
 	s := dark()
-	// The doctor section takes its own path into the file, through the row
-	// filter a Check carries (doctor.go, String), so it is forged at too.
+	// The doctor section takes its own path into the file, through the filter a
+	// Check carries (doctor.go, String), so it is forged at too. That one keeps
+	// a newline and pays for it with an indent to the detail column, which is
+	// the other way round from the readings above and has to be forged at on
+	// its own terms: a check's continuation lands twenty characters in, and the
+	// two shapes this file is made of are at nought and at two.
 	s.Socket, s.Notify = forge, forge
 	text := renderReport(s, m, noon)
 
@@ -337,6 +341,13 @@ func TestNoReadingCanForgeAHeadingOrACheck(t *testing.T) {
 	// whenever there is nowhere to write it.
 	if strings.ContainsRune(text, 0x1b) {
 		t.Error("an escape sequence reached a file that is printed to a terminal")
+	}
+	// The newline the check kept is accounted for rather than counted on: it is
+	// this file's two spaces and then the detail column, which is a line that
+	// reads as the rest of the check above it and as nothing else. Said as the
+	// exact column because the whole of the defence is which column it is in.
+	if want := "\n" + strings.Repeat(" ", 2+detailAt) + "[doctor]"; !strings.Contains(text, want) {
+		t.Errorf("a check's second line is not under its detail column:\n%s", section(t, text, secDoctor))
 	}
 	// The reading itself survives, filtered rather than dropped: a snapshot
 	// that silently lost a value is worse than one that shows a strange one.
