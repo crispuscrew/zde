@@ -292,8 +292,9 @@ var registry = map[string]Entry{
 	"audio.mute":     {Group: "audio", Desc: "mute the output", Spawn: []string{"wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"}, WhenLocked: true, written: true},
 	"audio.mic-mute": {Group: "audio", Desc: "mute the mic", Spawn: []string{"wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"}, WhenLocked: true, written: true},
 
-	// net: the observer widget does per-app cuts and the kill switch; the two
-	// quick-cut sequences (keymap.yaml) wait for the input daemon.
+	// net: the observer widget does per-app cuts (0.3, and unwritten); the two
+	// quick-cut sequences (keymap.yaml) wait for the input daemon. The kill
+	// switch is written and is a palette row rather than a chord.
 	"net.observe": {Group: "net", Desc: "the network observer widget (per-app connections; cut from here)", Spawn: []string{"zde", "net", "observe"}},
 	"net.app-cut": {Group: "net", Desc: "cut the focused app's network", Spawn: []string{"zde", "net", "app-cut"}},
 	// The kill switch, and it is one key both ways: NetworkManager's networking
