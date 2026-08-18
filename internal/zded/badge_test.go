@@ -269,12 +269,15 @@ func TestNothingOnTheBusCanLookHandTyped(t *testing.T) {
 		{"", "no name at all"},
 	}
 	for _, l := range handTyped {
-		notify(t, client, l.name, "ring the bank about the transfer")
+		// What the name is meant to look like goes in the summary, because none
+		// of these names can be read in source and a failure below has to be
+		// able to say which one it found.
+		notify(t, client, l.name, "ring the bank about the transfer, sent as "+l.what)
 	}
 
 	// And a summary with nothing in it to read is refused at that same door, so
 	// there is no row for one of these to be the sender of. It used to be
-	// accepted, and what landed was a queue row with both columns blank.
+	// accepted, and what landed was a queue row with an empty text column.
 	for _, summary := range []string{"‍", "‍‍‍‍‍", "́"} {
 		call := client.Call("org.freedesktop.Notifications.Notify", 0,
 			"app", uint32(0), "", summary, "", []string{}, map[string]dbus.Variant{}, int32(-1))
@@ -288,9 +291,9 @@ func TestNothingOnTheBusCanLookHandTyped(t *testing.T) {
 		// The bus's own name for the connection, which is what all of them fall
 		// back to: an address, and no app name looks like one.
 		if !strings.HasPrefix(r.From, ":") {
-			t.Errorf("an arrival off the bus is drawn in the sender column as %q, and that column "+
-				"is what a person reads as the mark of something they typed themselves "+
-				"(internal/attn, claim)", r.From)
+			t.Errorf("an arrival off the bus is drawn in the sender column as %q (%s), and that "+
+				"column is what a person reads as the mark of something they typed themselves "+
+				"(internal/attn, claim)", r.From, r.Text)
 		}
 	}
 }
