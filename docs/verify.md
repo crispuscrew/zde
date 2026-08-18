@@ -554,6 +554,45 @@ ones are the point of zded holding the bus name.
     what a genuine `zde` row looks like beside the five. The badge is set where
     the record is made, inside zded, so nothing that arrives over the bus can
     ask for one (`internal/attn`, `Notification.Self`).
+  - **Nothing on the bus can be a person either.** The same reservation on the
+    other word, and it is the one with no badge behind it. A dash in the sender
+    column of `zde queue` means nobody sent this: somebody typed `zde queue
+    add`. That is a claim about who was at the keyboard, sitting in a column an
+    app fills in, so an app that sends a dash has to lose the name the same way
+    `zde` does.
+
+    ```sh
+    zde queue add 'buy milk'                                  # the real thing
+    notify-send -a '-' 'ring the bank about the transfer'
+    notify-send -a "$(printf -- '-\u200d')" 'ring the bank about the transfer'
+    notify-send -a "$(printf -- '-\u0301')" 'ring the bank about the transfer'
+    notify-send -a "$(printf -- '\u200d-')" 'ring the bank about the transfer'
+    zde queue
+    ```
+
+    Only the first row keeps its dash. The other four are recorded under the bus
+    address - `:1.4` or whatever the bus handed that connection - because the
+    reservation reads what the name draws as and not what it is spelled with,
+    and an invisible rune draws as nothing. That was the bug: the dash used to be
+    matched on bytes, so `-` with a zero-width joiner after it was three bytes
+    away from a dash, kept its name, and drew in the sender column as a single
+    dash beside the reminders somebody had typed. Try any invisible rune you
+    like rather than only the joiner - the reservation is written against the
+    class and not against the one that was found.
+
+    Then the part it cannot do, and the same part as above. U+2212 MINUS SIGN,
+    U+2010 HYPHEN and U+2013 EN DASH all keep their names, because they are
+    other characters that draw *like* a dash rather than being one - send them
+    the same way, `printf '\u2212'` and the rest, and watch three names survive.
+    That is the homoglyph residue, declined here for the reason it is declined
+    for the word `zde`: the class has no edge, and Unicode's dash category would
+    take a real name off a real app. Named rather than typed, in this paragraph
+    and in the box above, because a check somebody has to run is one where the
+    difference between two lines must be visible on the page.
+
+    Worth reading in `zde queue` rather than only on the card, because the
+    columns are where the two claims sit side by side: id, urgency, the `*`/`.`
+    that says whose it is, the desk, the sender, the text, tab separated.
   - **The modes as display.** quiet shows no card at all, focus shows only what
     the sender called urgent, work shows everything - and after each of the
     three, `Mod+n` has the lot. A mode that changed what is in the centre is the
@@ -854,22 +893,31 @@ show up in use.
   the key.
 
   ```sh
-  zde doctor | grep logind
+  zde doctor | grep -E '^[a-z]+ +logind '
   ```
+
+  Anchored on the name column rather than a bare `grep logind`, and that is not
+  fussiness. The `idle` check of section 11 spells "logind" out in its own
+  detail in every state it has, so a plain grep brings back that line too, and
+  reading the wrong one is reading section 11's answer to this section's
+  question. The columns are fixed width (`internal/doctor`, `levelAt` and
+  `nameAt`), so anchoring on the name is one line whatever the detail says.
 
   On a healthy machine that is one `ok` line naming the session a log out would
   end - check it against `loginctl session-status`, and they must be the same
   session. Three things to try to make it say something else:
   - **A machine with no logind**, which is any container: run `zde doctor` in
-    one, or with `DBUS_SYSTEM_BUS_ADDRESS` pointed at nothing. One warning, and
-    it must come back at once rather than sit there - this is the command
+    one, or with `DBUS_SYSTEM_BUS_ADDRESS` pointed at nothing. One warning here,
+    and it must come back at once rather than sit there - this is the command
     somebody runs when something else has already gone wrong. Which of the two
     warnings it is worth reading: a bus that answered and has nobody on
     logind's name says nothing can log out, suspend, reboot or power off this
     machine, and a bus that could not be reached or would not answer says `not
     known:` and the reading it came from. The second must not claim the first -
     a dial that ran out of its two seconds is a machine that is slow, not one
-    that cannot be shut down.
+    that cannot be shut down. `idle` warns in the same breath and for the same
+    reason, so the whole report is two lines poorer and not one: what is not
+    known there is whether anything is holding the screen awake.
   - **polkit refusing.** Deny the actions for your user
     (`security.polkit.extraConfig`, returning `polkit.Result.AUTH_ADMIN` for
     `org.freedesktop.login1.reboot`) and the line should say `reboot would be
@@ -1000,11 +1048,11 @@ show up in use.
   verb that takes a desk name, so a list of desks you cannot type at is the
   whole of how that name gets given.
 - **The palette, on the day you have forgotten a key.** `Mod+semicolon`, a few
-  letters of what you want, Enter. Getting on for eighty rows means `Ctrl+n`
-  past the bottom of the list, which is the scrolling worth pressing on. A row
-  for something nobody has written refuses with the reason rather than going
-  quiet, and so does one whose program is not on this machine. Five niri natives
-  say plainly
+  letters of what you want, Enter. Eighty-odd rows means `Ctrl+n` past the
+  bottom of the list, which is the scrolling worth pressing on. A row for
+  something nobody has written refuses with the reason rather than going quiet,
+  and so does one whose program is not on this machine. Eight niri natives - the
+  four that resize, the three screenshots and the layout switch - say plainly
   that they cannot be run from here and still show their key, because the key
   works; anything else that goes quiet when picked is a report.
 - **`Mod+w`, and whether you can tell your windows apart in it.** A row is the
@@ -1391,8 +1439,9 @@ launch on purpose is the one this protects against.
 The second ungated global, and the one that costs you something while you are
 not at the machine. `zwp_idle_inhibit_manager_v1` is built with no security
 filter (niri 26.04, `src/niri.rs`: `IdleInhibitManagerState::new::<State>` where
-thirteen neighbours take `client_is_unrestricted`), so any sandboxed app can
-take one. niri honours it while the surface is merely **visible, not focused** -
+twelve neighbours take `client_is_unrestricted` by name and a thirteenth, the
+gamma control, inlines the same bit), so any sandboxed app can take one. niri
+honours it while the surface is merely **visible, not focused** -
 its refresh asks whether the surface has a scanout output, nothing more - so a
 container sitting on a workspace you are not looking at is enough. Nothing is
 asked and nothing is shown.
@@ -1509,7 +1558,7 @@ Not bugs, do not report them:
   | `Mod+Shift+Tab` (last desk), `Mod+Ctrl+Tab` (send the focused window to a desk you pick), `Mod+Ctrl+Shift+Tab` (send the whole workspace, which is how the regulars are made) | |
   | `Mod+period`/`comma`, `Mod+Shift+m`, `Mod+Ctrl+m` (volume, mute, mic) | |
   | `Mod+b`, `Mod+Shift+b` (brightness, on a machine with a backlight) | |
-  | `zde status`, `doctor`, `keys`, `palette`, `ask`, `attn`, `queue`/`add`/`done` | `zde net observe\|app-cut\|kill` |
+  | `zde status`, `doctor`, `report`, `keys`, `palette`, `ask`, `attn`, `queue`/`add`/`done`/`clear` | `zde net observe\|app-cut\|kill` |
   | `zde app list\|launch`, `window jump-to`, `workspace next\|prev`, `nav down\|up` | `zde desk panic\|zen\|block\|pause`, which are not verbs at all |
   | `zde net status\|connect\|disconnect\|forget` | `zde pass`, `media`, `mode` |
   | `zde clip history [ID]`, `zde clip clear` | |

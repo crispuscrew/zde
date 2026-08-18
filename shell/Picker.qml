@@ -1,12 +1,17 @@
-// The picker (docs/roadmap.md, 0.1: shell MVP). Mod+Tab asks zded for the
-// desks and Mod+w for the open windows; zded tells whoever is listening, and
-// this appears on the screen being looked at with those rows on it.
+// The picker (docs/roadmap.md, 0.1: shell MVP). Four keys ask zded a question
+// that is answered by choosing from a list: Mod+Tab for the desks, Mod+w for
+// the open windows, and Mod+Ctrl+Tab and Mod+Ctrl+Shift+Tab for the two verbs
+// that send a window or a whole workspace to a desk you name. zded tells
+// whoever is listening, and this appears on the screen being looked at with
+// those rows on it.
 //
-// One surface for both. They differ only in what a row says and in what
-// choosing one means, and neither is this surface's business: it is handed
-// rows, and it hands back the key of the row that was chosen. A second copy of
-// the keyboard handling, the focus dance and the click targets would be a
-// second place for any of them to stop working, and the two would drift.
+// One surface for all four. They differ in what a row says, in what choosing
+// one means, and - for the two moves, which draw the same desks the switcher
+// does - in a line of words saying what choosing will do (caption, below).
+// None of that is this surface's business: it is handed rows and a caption, and
+// it hands back the key of the row that was chosen. A second copy of the
+// keyboard handling, the focus dance and the click targets would be a second
+// place for any of them to stop working, and the copies would drift.
 //
 // It is the first thing zde draws that takes the keyboard, which is a question
 // the roadmap has been carrying: a layer surface holding focus reads to niri as
@@ -227,9 +232,10 @@ PanelWindow {
             anchors.bottom: parent.bottom
             anchors.left: parent.left
             anchors.margins: 12
-            // "pick" rather than "desk": one surface lists the desks on Mod+Tab
-            // and the open windows on Mod+w, and a hint that names one of them
-            // is wrong half the time it is read.
+            // "pick" rather than "desk" or "window": one surface answers four
+            // keys, and a hint that names the rows of one of them is wrong
+            // most of the times it is read. What the rows are is the caption's
+            // job, and only where they need one.
             //
             // The caption goes on this line rather than above the rows: the
             // panel's height is the rows plus this, so a header would have to

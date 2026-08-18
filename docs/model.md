@@ -68,8 +68,16 @@ The bar shows the friendly part.
    X; fresh dynamic workspaces are named into the active band.
 4. Workspace scrolling is clamped to the active desk's band; crossing desks
    is always an explicit desk-level action.
-5. Desk switch restores each monitor's last-active workspace; on hotplug the
-   manifest re-places workspaces on their home monitors.
+5. Desk switch restores each monitor's last-active workspace. On hotplug the
+   workspaces go home, but niri is what takes them: it records the output each
+   was opened on and returns it there when that output comes back
+   (`Layout::add_output`). zde issues no move and the manifest re-places
+   nothing - zde's whole part is that the name keeps saying home while the
+   monitor is away, so the record survives the unplug. The case niri cannot
+   cover is a niri that restarted while the monitor was gone, since its record
+   does not outlive the session: those workspaces stay on the survivor with a
+   truthful name and nothing moves them ([`roadmap.md`](roadmap.md), 0.4;
+   [`verify.md`](verify.md), the lid).
 6. Focus changes never rearrange anything; layout changes are explicit.
 
 ## 5. Desk manifests
@@ -136,26 +144,30 @@ Modes gate which actions are live. Not everything here is written, and not
 everything written here has a chord. The keymap registry is the part that has a
 key or a reason to be reachable by name, and that is what `palette.open` lists,
 marking each row runnable or not on the build in front of you. The rest are the
-CLI's: `zde desk switch`, `desk snapshot`, `desk reconcile`, `desk
-move-window-to`, `desk move-workspace-to`, `ask local` and `attn <mode>` all
-work today with no row in any surface. A missing palette row means no key, not
-no verb.
+CLI's: `zde desk switch`, `desk snapshot`, `desk reconcile`, `ask local` and
+`attn <mode>` all work today with no row in any surface. A missing palette row
+means no key, not no verb.
 
-It does not promise a verb either, and two rows below have neither. `pause` is a
-desk action nothing implements - the manifest key `background: pause` is parsed
-and acts on nothing (section 5), and that is the whole of the word in this tree.
-`guest <name>` is in no registry, no daemon handler and no CLI: it is design and
-has never been anything else. Both stay in the table because this is the map and
-not the changelog, and neither is reachable from anywhere today.
+It does not promise a verb either. `pause` has a registry row and no key, which
+is what this list does with an action that is coming: the palette carries it and
+says on the row that nothing is written behind it, and the manifest key
+`background: pause` is parsed and acts on nothing (section 5). `guest <name>` is
+the one below with neither - no registry, no daemon handler, no CLI - because it
+carries a desk name and an unbound parametric row is a name no surface can show,
+and because it is a security posture rather than a verb, which is 0.2's set to
+decide. Both stay in the table because this is the map and not the changelog.
 
-The two that are reachable only from a terminal are worth naming, because the
-gap has a cost rather than being tidy. `desk move-workspace-to` is the only way
-the regulars band comes into being at all ([`roadmap.md`](roadmap.md)), and
-`desk move-window-to` is how one window leaves it; both work, neither has a key
-or a palette row, so the answer to "how do I make my regulars" is currently
-"open a terminal". Whether that should be a chord, a palette row, or a CLI verb
-on purpose is a decision about which keys exist, and it belongs in the keymap
-rather than in a note here.
+The two that name a desk are worth naming here too, because how the answer is
+given was the open question rather than whether the verb worked. `desk
+move-workspace-to` is the only way the regulars band comes into being at all
+([`roadmap.md`](roadmap.md)), and `desk move-window-to` is how one window leaves
+it; both had worked from a terminal since before either had a key. They have one
+now - `Mod+Ctrl+Shift+Tab` and `Mod+Ctrl+Tab` - and the desk name they take is
+asked for by the same picker `Mod+Tab` draws, with a line on it saying what
+choosing a row will do, since three verbs drawing the same desks look identical
+without one. What that settled belongs in the keymap and not in a note here: a
+verb that takes a name wants a surface that offers the names, not a chord per
+name.
 
 | Group | Actions |
 |---|---|
@@ -172,7 +184,7 @@ rather than in a note here.
 | audio | `vol-up`, `vol-down`, `mute`, `app-vol`, `sink-switch`, `app-sink`, `mic-mute` |
 | net | `observe`, `kill` (global toggle, loud bar state), `app-cut <app>` |
 | modes | `menu` (pick a mode), `normal`, `window`, `kb-mouse`, `one-hand`, `passthrough` |
-| system | `lock`, `lock-preset` (switch BEFORE lock), `power`, `quiet` (toggle), `attn <mode>` (work / focus / quiet by name; the CLI has it, no key is free for it), `connections` (wifi, and the link you are on; `forget` drops a saved network), `bluetooth` (the radio, what is around it, and pairing; no key of its own, since a second chord for half of one surface is a key to remember for no reason), `calendar`, `wallpapers`, `brightness-up`/`brightness-dn`, `help`, `notif-center`, `doctor`, `report` (write the state snapshot down for a session that will not come up; needs `zde.debug`, and no key of its own - the day it is wanted there is nobody at the keyboard), `update`, `layout-switch` (native) |
+| system | `lock`, `lock-preset` (switch BEFORE lock), `power`, `quiet` (toggle), `attn <mode>` (work / focus / quiet by name; the CLI has it, no key is free for it), `connections` (wifi, and the link you are on; `forget` drops a saved network), `bluetooth` (the radio, what is around it, and pairing; no key of its own, since a second chord for half of one surface is a key to remember for no reason), `calendar`, `wallpapers`, `brightness-up`/`brightness-dn`, `help`, `notif-center`, `notif-reach` (put the keyboard on the newest popup, which is the only way a popup ever takes it), `shortcut-grab` (native; hand the focused app zde's keys, or take them back - the one key an app holding a shortcuts inhibitor can never swallow), `doctor`, `report` (write the state snapshot down for a session that will not come up; needs `zde.debug`, and no key of its own - the day it is wanted there is nobody at the keyboard), `update`, `layout-switch` (native) |
 
 Launch placement: manifest pin first; else adoption (focused workspace,
 current scroll position, active desk); guest mode restricts launching to the

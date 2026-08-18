@@ -4,10 +4,13 @@
 // on it - then takes itself away.
 //
 // It is what makes zded's "actions" capability a claim about immediacy as well
-// as about reach. The center offers every action a sender declares, and it does
-// so behind Mod+n; an app that reads the capability as "there will be a button
-// on the screen when I send" was, until this, reading it as more than it said
-// (internal/attn, GetCapabilities).
+// as about reach. The center offers the sender's list rather than only its
+// default, and it does so behind Mod+n; an app that reads the capability as
+// "there will be a button on the screen when I send" was, until this, reading
+// it as more than it said (internal/attn, GetCapabilities). Offered is not the
+// same as all of them: zded keeps nine and refuses a key it would have to
+// rewrite, and both surfaces count what they could not reach rather than
+// drawing fewer buttons than were sent (internal/attn, takeActions).
 //
 // **It does not take the keyboard.** That is the whole shape of this file and
 // the reason for every awkward thing in it. Every other surface here is a

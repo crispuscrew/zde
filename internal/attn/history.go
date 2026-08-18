@@ -115,13 +115,15 @@ const SendersMax = 12
 //
 // Nothing else in the tree reaches it either, and it is worth being exact about
 // that rather than generous. zde's own notifications are not nameless: the one
-// path that sends one sends as "zde" (internal/zded, launchFrom). Nor is a
-// person's own reminder, because `zde queue add` writes the journal and never
-// this - the queue and the history are two records, and only an arrival makes
-// both (internal/zded, queueAdd against Arrived). What is actually here is a row
-// off a snapshot file whose sender field is empty: one an older zde wrote before
-// the name was filled in, or one somebody edited, since ReadSnapshot bounds that
-// field without insisting on it (snapshot.go).
+// path that sends one goes through Local, which stamps SelfFrom itself rather
+// than taking a name from its caller (notify.go; internal/zded, launchesFailed
+// is the only caller Local has). Nor is a person's own reminder, because `zde
+// queue add` writes the journal and never this - the queue and the history are
+// two records, and only an arrival makes both (internal/zded, queueAdd against
+// Arrived). What is actually here is a row off a snapshot file whose sender
+// field is empty: one an older zde wrote before the name was filled in, or one
+// somebody edited, since ReadSnapshot bounds that field without insisting on it
+// (snapshot.go).
 //
 // So this ring is small and it is history rather than this session, which is the
 // reason it is exempt and not a reason to trim it: losing what a restart brought

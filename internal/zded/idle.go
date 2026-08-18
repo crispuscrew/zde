@@ -24,9 +24,10 @@ import (
 //   - zwp_idle_inhibit_manager_v1, the Wayland protocol. Invisible here.
 //     niri 26.04 builds that global with no security-context filter
 //     (src/niri.rs, IdleInhibitManagerState::new with no client_is_unrestricted
-//     where thirteen other sensitive globals take one), so any sandboxed app
-//     can take one; niri honours it while the surface is merely visible rather
-//     than focused; and niri keeps the result in a field with no way out - no
+//     where twelve other sensitive globals take one by name and a thirteenth
+//     inlines the same bit), so any sandboxed app can take one; niri honours it
+//     while the surface is merely visible rather than focused; and niri keeps
+//     the result in a field with no way out - no
 //     IPC request, no event, and an org.freedesktop.ScreenSaver with Inhibit
 //     and no getter. Nothing zde can call returns it.
 //
