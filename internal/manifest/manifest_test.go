@@ -295,12 +295,97 @@ func TestSaveRefusesToOverwrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := dir.Save(d); err != nil {
+	first, err := dir.Save(d)
+	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = dir.Save(d)
-	if err == nil || !strings.Contains(err.Error(), "already exists") {
-		t.Errorf("got %v, want a refusal to overwrite", err)
+	if err == nil || !strings.Contains(err.Error(), first) {
+		t.Errorf("got %v, want a refusal naming %s", err, first)
+	}
+}
+
+// What a manifest declares is the name inside it, so a desk in `work.yaml` is
+// declared and a snapshot of it has to be refused. Save's refusal read the file
+// name instead, and wrote a second manifest: LoadDir then keeps one of the two
+// by filename, and the snapshot has none of the desk's apps or policies.
+func TestSaveRefusesADeskAnotherFileAlreadyDeclares(t *testing.T) {
+	dir := t.TempDir()
+	other := filepath.Join(dir, "work.yaml")
+	if err := os.WriteFile(other, []byte(vshop), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	m := desk.Rebuild([]desk.Workspace{
+		{ID: 1, Name: "vshop.DP-1.zsh", Output: "DP-1"},
+	}, []string{"DP-1"})
+	d, err := FromMap(m, "vshop", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Dir(dir).Save(d)
+	if err == nil {
+		t.Fatal("a desk another file already declares was snapshotted over the top of it")
+	}
+	if !strings.Contains(err.Error(), other) {
+		t.Errorf("the refusal says %q, and the next thing to do is open %s", err, other)
+	}
+
+	// And the directory still holds one manifest for vshop: the one with the
+	// apps in it.
+	all, problems, err := LoadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(problems) != 0 {
+		t.Errorf("the directory now has problems in it: %v", problems)
+	}
+	if got := all["vshop"]; got == nil || len(got.Apps) != 2 {
+		t.Errorf("vshop is now %+v, want the declaration that was already there", got)
+	}
+}
+
+// A snapshot of a private desk says so. Nothing on the screen does - the flag
+// is a declaration - so the caller carries it (internal/zded, the snapshot
+// verb). The other half of the guard is Save refusing a declared desk at all.
+func TestASnapshotOfAPrivateDeskSaysSo(t *testing.T) {
+	m := desk.Rebuild([]desk.Workspace{
+		{ID: 1, Name: "clinic.DP-1.mail", Output: "DP-1"},
+	}, []string{"DP-1"})
+	d, err := FromMap(m, "clinic", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := Dir(t.TempDir()).Save(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := Load(path)
+	if err != nil {
+		t.Fatalf("what snapshot wrote does not load: %v", err)
+	}
+	if !back.Private {
+		t.Error("the snapshot of a private desk reads back as an ordinary one")
+	}
+}
+
+// Fixing two files claiming one desk means knowing which two.
+func TestADuplicateDeskNamesTheFileThatKeptIt(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"aa-vshop.yaml", "zz-vshop.yaml"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(vshop), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, problems, err := LoadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(problems) != 1 {
+		t.Fatalf("problems = %v, want the second file reported", problems)
+	}
+	if !strings.Contains(problems[0].String(), "aa-vshop.yaml") {
+		t.Errorf("the problem says %q, and it has to name the file that won", problems[0])
 	}
 }
 
@@ -736,5 +821,34 @@ func TestADirectoryOfEnormousFilesIsNotReadIntoTheDaemon(t *testing.T) {
 		t.Errorf("reading a directory of %d files of %d MB allocated %d MB, and no manifest this "+
 			"zde reads is past %d KiB: the files went into the daemon's memory before anything "+
 			"measured them", files, size>>20, grew>>20, bytesMax>>10)
+	}
+}
+
+// Monitors sort; inside a monitor the file's own order stands. MissingPlan and
+// landingSlots both walk this list in order, and the monitors are a map, so
+// only Go's iteration randomisation was holding it - in 2 runs out of 12.
+func TestWorkspacesIsInTheManifestsOwnOrder(t *testing.T) {
+	d, err := Parse([]byte("name: vshop\nmonitors:\n" +
+		"  eDP-1:    { workspaces: [mail, chat] }\n" +
+		"  DP-1:     { workspaces: [zsh, code] }\n" +
+		"  HDMI-A-1: { workspaces: [aux] }\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"vshop.DP-1.zsh", "vshop.DP-1.code",
+		"vshop.HDMI-A-1.aux",
+		"vshop.eDP-1.mail", "vshop.eDP-1.chat",
+	}
+	// Repeated, because one pass of a map is one sample of an order that is
+	// deliberately not one.
+	for range 20 {
+		var got []string
+		for _, n := range d.Workspaces() {
+			got = append(got, n.String())
+		}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Fatalf("Workspaces = %v, want %v", got, want)
+		}
 	}
 }

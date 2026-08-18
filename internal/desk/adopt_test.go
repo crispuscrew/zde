@@ -126,3 +126,74 @@ func TestAdoptPlanConverges(t *testing.T) {
 		t.Errorf("a second pass wanted to adopt again: %v", got)
 	}
 }
+
+// A lid shut: the manifest declares workspaces on eDP-1 and niri is not drawing
+// on it, so no pass can make them. A different answer from a screen with no
+// empty workspace spare, which the next pass fixes.
+func TestMissingPlanSaysWhatItCannotMake(t *testing.T) {
+	m := Rebuild([]Workspace{
+		{ID: 1, Name: "vshop.DP-1.code", Output: "DP-1"},
+	}, []string{"DP-1"}) // eDP-1 is a connector, not a screen
+
+	declared := []Name{
+		{Desk: "vshop", Monitor: "DP-1", Slot: "code"},
+		{Desk: "vshop", Monitor: "eDP-1", Slot: "mail"},
+		{Desk: "vshop", Monitor: "eDP-1", Slot: "chat"},
+	}
+	plan, waiting := MissingPlan(m, declared, map[string][]uint64{"DP-1": {9}})
+	if len(plan) != 0 {
+		t.Errorf("plan = %v, want nothing: the only declared workspace on a screen is already there", plan)
+	}
+	if len(waiting) != 2 {
+		t.Fatalf("waiting = %v, want the two workspaces on the monitor that is not a screen", waiting)
+	}
+	for _, n := range waiting {
+		if n.Monitor != "eDP-1" {
+			t.Errorf("waiting on %s, and that monitor is a screen", n.Monitor)
+		}
+	}
+}
+
+// With the monitor back the same manifest comes up whole, which is why the ones
+// above are worth saying rather than failing on.
+func TestMissingPlanMakesThemAllWhenTheMonitorIsBack(t *testing.T) {
+	m := Rebuild([]Workspace{
+		{ID: 1, Name: "vshop.DP-1.code", Output: "DP-1"},
+	}, []string{"DP-1", "eDP-1"})
+
+	declared := []Name{
+		{Desk: "vshop", Monitor: "DP-1", Slot: "code"},
+		{Desk: "vshop", Monitor: "eDP-1", Slot: "mail"},
+	}
+	plan, waiting := MissingPlan(m, declared, map[string][]uint64{"eDP-1": {9}})
+	if len(waiting) != 0 {
+		t.Errorf("waiting = %v, want none: both monitors are screens", waiting)
+	}
+	if len(plan) != 1 || plan[0].Name.String() != "vshop.eDP-1.mail" {
+		t.Errorf("plan = %v, want the declared workspace named onto the empty one", plan)
+	}
+}
+
+// A screen with no empty workspace spare is what the caller's loop goes round
+// again for, so saying "not made" would be a message about the imminent.
+func TestMissingPlanIsQuietAboutAScreenWithNoEmptyWorkspace(t *testing.T) {
+	m := Rebuild([]Workspace{
+		{ID: 1, Name: "vshop.DP-1.code", Output: "DP-1"},
+	}, []string{"DP-1", "eDP-1"})
+
+	declared := []Name{{Desk: "vshop", Monitor: "eDP-1", Slot: "mail"}}
+	plan, waiting := MissingPlan(m, declared, nil) // niri has produced none yet
+	if len(plan) != 0 || len(waiting) != 0 {
+		t.Errorf("plan = %v, waiting = %v, want both empty: eDP-1 is a screen with nothing spare", plan, waiting)
+	}
+}
+
+// Without a screen list nothing knows which monitors are screens, and calling
+// them all parked would report a desk as unmade when niri was never asked.
+func TestMissingPlanSaysNothingWithNoScreenList(t *testing.T) {
+	m := Rebuild([]Workspace{{ID: 1, Name: "vshop.DP-1.code", Output: "DP-1"}}, nil)
+	declared := []Name{{Desk: "vshop", Monitor: "eDP-1", Slot: "mail"}}
+	if _, waiting := MissingPlan(m, declared, nil); len(waiting) != 0 {
+		t.Errorf("waiting = %v, want none: which monitors are screens is not known here", waiting)
+	}
+}

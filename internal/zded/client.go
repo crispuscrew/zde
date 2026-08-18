@@ -18,6 +18,9 @@ type Client struct {
 	// a client reading a reply has to be able to meet an event and keep going -
 	// otherwise the first event to land mid-call is read as a malformed reply.
 	queued []Event
+	// note is what the last call said it could not do (Response.Note). Kept
+	// rather than printed, because the CLI decides where it goes.
+	note string
 }
 
 func DialPath(path string) (*Client, error) {
@@ -39,6 +42,10 @@ func Dial() (*Client, error) {
 
 func (c *Client) Close() error { return c.conn.Close() }
 
+// Note is what the last Call said it could not do while doing what it was
+// asked. Empty for almost every call, and cleared by the next one.
+func (c *Client) Note() string { return c.note }
+
 // Call sends one request and decodes the reply into out.
 func (c *Client) Call(method string, out any, args ...string) error {
 	if err := c.conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
@@ -52,6 +59,7 @@ func (c *Client) Call(method string, out any, args ...string) error {
 		return err
 	}
 	resp, err := c.reply(method)
+	c.note = resp.Note
 	if err != nil {
 		return err
 	}
@@ -72,6 +80,7 @@ type line struct {
 	Event *Event          `json:"event"`
 	Ok    json.RawMessage `json:"ok"`
 	Error string          `json:"error"`
+	Note  string          `json:"note"`
 }
 
 // reply reads until a reply arrives, queueing any events it passes on the way.
@@ -96,7 +105,7 @@ func (c *Client) reply(method string) (Response, error) {
 			c.queued = append(c.queued, *l.Event)
 			continue
 		}
-		return Response{Ok: l.Ok, Error: l.Error}, nil
+		return Response{Ok: l.Ok, Error: l.Error, Note: l.Note}, nil
 	}
 }
 

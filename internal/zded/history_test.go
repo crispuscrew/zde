@@ -192,29 +192,19 @@ func TestASecondManifestForADeskIsNotHowItStopsBeingPrivate(t *testing.T) {
 	}
 }
 
-// And the file zde writes itself says so, which is the other half of the same
-// defect: a snapshot that dropped the flag is how the duplicate above gets on
-// to a machine in the first place.
-//
-// The existing manifest is under a filename of its own here because that is the
-// only shape this can happen in - Save refuses to overwrite the file it would
-// write, so a desk declared in `clinic.yaml` cannot be snapshotted over at all.
-func TestASnapshotOfAPrivateDeskWritesItDownAsPrivate(t *testing.T) {
+// And no snapshot writes that second file: the duplicate above is one zde used
+// to write itself, when Save refused on the file name it was about to write and
+// so let `aa-clinic.yaml` through. What a snapshot puts in the file when it
+// does write is pinned where it is decided (internal/manifest,
+// TestASnapshotOfAPrivateDeskSaysSo).
+func TestASnapshotOfADeskAnotherManifestDeclaresIsRefused(t *testing.T) {
 	s, _ := historyServer(t, "clinic.DP-1.mail", map[string]string{"aa-clinic": privateDesk})
 	resp := s.Dispatch(Request{Method: "desk.snapshot", Args: []string{"clinic"}})
-	if resp.Error != "" {
-		t.Fatal(resp.Error)
+	if resp.Error == "" {
+		t.Fatalf("the snapshot wrote a second manifest for a declared desk: %s", resp.Ok)
 	}
-	var path string
-	if err := json.Unmarshal(resp.Ok, &path); err != nil {
-		t.Fatal(err)
-	}
-	written, err := manifest.Load(path)
-	if err != nil {
-		t.Fatalf("what snapshot wrote does not load: %v", err)
-	}
-	if !written.Private {
-		t.Errorf("%s does not say the desk is private, so taking a snapshot of a private desk is how it stops being one", path)
+	if !strings.Contains(resp.Error, "aa-clinic.yaml") {
+		t.Errorf("the refusal says %q, and the next thing to do is open aa-clinic.yaml", resp.Error)
 	}
 }
 

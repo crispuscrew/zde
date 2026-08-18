@@ -434,6 +434,208 @@ func TestMapInvariants(t *testing.T) {
 	}
 }
 
+// A chain: one workspace wants the name another is on its way off. It used to
+// resolve differently depending on which end niri listed first, and the losing
+// order left a desk declaring a monitor it has nothing on.
+func TestRebuildResolvesAChainWhicheverEndArrivesFirst(t *testing.T) {
+	screens := []string{"DP-1", "eDP-1", "HDMI-A-1"}
+	onEDP := Workspace{ID: 1, Name: "vshop.DP-1.zsh", Output: "eDP-1"}
+	onDP := Workspace{ID: 2, Name: "vshop.HDMI-A-1.zsh", Output: "DP-1"}
+
+	want := []string{"vshop.DP-1.zsh", "vshop.eDP-1.zsh"}
+	for _, in := range [][]Workspace{{onEDP, onDP}, {onDP, onEDP}} {
+		m := Rebuild(in, screens)
+		var got []string
+		for _, n := range m.Workspaces("vshop") {
+			got = append(got, n.String())
+		}
+		if !equal(got, want) {
+			t.Errorf("listed %s %s, the desk is %v, want %v", in[0].Name, in[1].Name, got, want)
+		}
+		if len(m.Renames()) != 2 || len(m.Conflicts()) != 0 {
+			t.Errorf("listed %s %s: renames %v, conflicts %v, want both names corrected",
+				in[0].Name, in[1].Name, m.Renames(), m.Conflicts())
+		}
+	}
+}
+
+// Renames go to niri one at a time (internal/zded, reconcile), so a chain has
+// to start with the workspace that frees a name. Here that one sorts second.
+func TestRenamesComeBackInAnOrderThatCanBeApplied(t *testing.T) {
+	m := Rebuild([]Workspace{
+		{ID: 1, Name: "vshop.DP-1.zsh", Output: "eDP-1"},
+		{ID: 2, Name: "vshop.eDP-1.zsh", Output: "HDMI-A-1"},
+	}, []string{"DP-1", "eDP-1", "HDMI-A-1"})
+
+	renames := m.Renames()
+	if len(renames) != 2 {
+		t.Fatalf("Renames = %v, want the chain corrected", renames)
+	}
+	// Applied in the order given, each rename must find its new name free.
+	inUse := map[string]bool{"vshop.DP-1.zsh": true, "vshop.eDP-1.zsh": true}
+	for _, r := range renames {
+		if inUse[r.To.String()] {
+			t.Fatalf("renaming %s -> %s hands niri a name still in use; order was %v", r.From, r.To, renames)
+		}
+		delete(inUse, r.From.String())
+		inUse[r.To.String()] = true
+	}
+}
+
+// Two workspaces swapping monitors want each other's names. There is no first
+// rename that does not collide, so neither is made and both are told why.
+func TestRebuildRefusesASwap(t *testing.T) {
+	m := Rebuild([]Workspace{
+		{ID: 1, Name: "vshop.DP-1.zsh", Output: "eDP-1"},
+		{ID: 2, Name: "vshop.eDP-1.zsh", Output: "DP-1"},
+	}, []string{"DP-1", "eDP-1"})
+
+	if len(m.Renames()) != 0 {
+		t.Errorf("Renames = %v, want none: a swap cannot be done one rename at a time", m.Renames())
+	}
+	if len(m.Conflicts()) != 2 {
+		t.Fatalf("Conflicts = %v, want both halves of the swap reported", m.Conflicts())
+	}
+	for _, c := range m.Conflicts() {
+		if !strings.Contains(c.Reason, "one at a time") {
+			t.Errorf("conflict reason %q does not say why the swap cannot be made", c.Reason)
+		}
+	}
+	// Both keep their own names, so nothing has been erased.
+	if got := len(m.Workspaces("vshop")); got != 2 {
+		t.Errorf("vshop has %d workspaces, want both still there", got)
+	}
+}
+
+// A rename names the workspace it means (internal/niri, RenameWorkspace), so a
+// name two of them share addresses neither - including the one the map keeps.
+func TestRebuildDoesNotRenameOffASharedName(t *testing.T) {
+	m := Rebuild([]Workspace{
+		{ID: 1, Name: "vshop.DP-1.code", Output: "HDMI-A-1"},
+		{ID: 2, Name: "vshop.DP-1.code", Output: "eDP-1"},
+	}, []string{"DP-1", "HDMI-A-1", "eDP-1"})
+	if len(m.Renames()) != 0 {
+		t.Errorf("Renames = %v, want none: that name means two workspaces", m.Renames())
+	}
+	if len(m.Conflicts()) != 1 {
+		t.Errorf("Conflicts = %v, want the duplicate named once", m.Conflicts())
+	}
+}
+
+// The property the two halves of Rebuild exist for: one arrangement is one map,
+// however niri listed it. Slots repeat across monitors so that the shapes make
+// chains, which is what a hand-written case keeps missing.
+func TestRebuildDoesNotDependOnTheOrderNiriListedThings(t *testing.T) {
+	screens := []string{"DP-1", "eDP-1", "HDMI-A-1"}
+	slots := []string{"zsh", "code", "1", "2"}
+	rnd := uint64(20260818) // a fixed seed: a failing shape has to be reproducible
+
+	next := func(n int) int {
+		// xorshift, because this needs a deterministic sequence and not a good
+		// one, and math/rand's default source is neither pinned nor ours.
+		rnd ^= rnd << 13
+		rnd ^= rnd >> 7
+		rnd ^= rnd << 17
+		return int(rnd % uint64(n))
+	}
+
+	for shape := 0; shape < 3000; shape++ {
+		var in []Workspace
+		for i := 0; i < 1+next(5); i++ {
+			in = append(in, Workspace{
+				ID:     uint64(i + 1),
+				Idx:    uint8(next(3)),
+				Name:   "vshop." + screens[next(len(screens))] + "." + slots[next(len(slots))],
+				Output: screens[next(len(screens))],
+			})
+		}
+		want := Rebuild(in, screens)
+		for shuffle := 0; shuffle < 6; shuffle++ {
+			mixed := append([]Workspace(nil), in...)
+			for i := len(mixed) - 1; i > 0; i-- {
+				j := next(i + 1)
+				mixed[i], mixed[j] = mixed[j], mixed[i]
+			}
+			if got := Rebuild(mixed, screens); !reflect.DeepEqual(got, want) {
+				t.Fatalf("one arrangement, two maps.\nlisted %v\n  gives %+v\nlisted %v\n  gives %+v",
+					in, want, mixed, got)
+			}
+		}
+	}
+}
+
+// With no screen list Rebuild decides nothing: no rename, and no displacement
+// either, since displacement is the claim that a monitor has gone and nothing
+// here is evidence for one. A missing rename is recoverable; a wrong one erases
+// home.
+func TestRebuildWithNoScreenListDecidesNothing(t *testing.T) {
+	for _, screens := range [][]string{nil, {}} {
+		m := Rebuild([]Workspace{
+			{Name: "vshop.DP-1.code", Output: "HDMI-A-1"},
+			{Name: "vshop.HDMI-A-1.notes", Output: "DP-1"},
+			{Name: "vshop.eDP-1.mail", Output: ""},
+		}, screens)
+		if len(m.Renames()) != 0 {
+			t.Errorf("screens=%v: Renames = %v, want none", screens, m.Renames())
+		}
+		if len(m.Displaced()) != 0 {
+			t.Errorf("screens=%v: Displaced = %v, want none: nothing here says a monitor is gone",
+				screens, m.Displaced())
+		}
+		if len(m.Conflicts()) != 0 {
+			t.Errorf("screens=%v: Conflicts = %v, want none", screens, m.Conflicts())
+		}
+		if got := len(m.Workspaces("vshop")); got != 3 {
+			t.Errorf("screens=%v: vshop has %d workspaces, want all three untouched", screens, got)
+		}
+	}
+}
+
+// niri reporting no output is niri not saying, not the workspace being nowhere.
+// The name is the only other answer, and without it the workspace falls out of
+// its band and out of every switch.
+func TestBandHoldsAWorkspaceNiriGaveNoOutput(t *testing.T) {
+	m := Rebuild([]Workspace{
+		{Name: "vshop.DP-1.code", Output: ""},
+		{Name: "vshop.DP-1.notes", Output: "DP-1"},
+	}, both)
+
+	band := m.Band("vshop", "DP-1")
+	if len(band) != 2 {
+		t.Fatalf("Band(vshop, DP-1) = %v, want both: the one niri placed and the one it said nothing about", band)
+	}
+	if plan := SwitchPlan(m, "vshop", nil); len(plan) != 1 {
+		t.Errorf("SwitchPlan = %v, want the desk brought up on DP-1", plan)
+	}
+}
+
+// The other half: the name answers only while the monitor it names is a screen.
+// With the lid shut it is not, so the workspace is on none - and putting it in
+// the switched-off panel's band spends a switch's focus there. The focus that
+// lands last keeps the keyboard, and connectors sort, so it can be that one.
+func TestAWorkspaceOnNoScreenIsInNoBand(t *testing.T) {
+	m := Rebuild([]Workspace{
+		{Name: "vshop.eDP-1.mail", Output: ""}, // the shut lid
+		{Name: "vshop.DP-1.code", Output: "DP-1"},
+	}, []string{"DP-1"})
+
+	if got := m.Band("vshop", "eDP-1"); len(got) != 0 {
+		t.Errorf("Band(vshop, eDP-1) = %v, want nothing: eDP-1 is not a screen", got)
+	}
+	plan := SwitchPlan(m, "vshop", nil)
+	if len(plan) != 1 || plan[0].Monitor != "DP-1" {
+		t.Errorf("SwitchPlan = %v, want the one screen there is", plan)
+	}
+	// Its name still records home, which is what puts it back on the next
+	// reconcile after the lid opens, and the map says it is not at home.
+	if got := m.Displaced(); len(got) != 1 || got[0].String() != "vshop.eDP-1.mail" {
+		t.Errorf("Displaced = %v, want the workspace whose monitor is switched off", got)
+	}
+	if got := m.Workspaces("vshop"); len(got) != 2 {
+		t.Errorf("Workspaces = %v, want the workspace kept with its name", got)
+	}
+}
+
 // Rebuild is the recovery path: it must not depend on anything zded remembers,
 // must not touch what it was given, and must not report churn just because
 // niri listed things in a different order.

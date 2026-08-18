@@ -343,13 +343,32 @@ type Problem struct {
 
 func (p Problem) String() string { return p.Path + ": " + p.Err.Error() }
 
-// Save writes a manifest, refusing to overwrite one that is already there.
-// A snapshot is a record of an arrangement someone made; quietly replacing an
-// existing desk with the current shape of the screen is not what anybody means
-// by taking one.
+// Save writes a manifest, refusing when the desk it declares is already
+// declared here. A snapshot is a record of an arrangement someone made;
+// quietly replacing an existing desk with the current shape of the screen is
+// not what anybody means by taking one.
+//
+// On the desk and not on the file name: what a manifest declares is the name
+// inside it, and that is what everything else keys on (LoadDir). Refusing
+// rather than writing over the file that has it, because that file holds apps,
+// mounts and policies a snapshot captures none of - so the message names it.
+//
+// A manifest that does not parse is invisible here, so writeNew's refusal on
+// the path is still the last word.
 func (dir Dir) Save(d *Desk) (string, error) {
 	if err := d.check(); err != nil {
 		return "", err
+	}
+	// Before the directory is made, so a refusal leaves the disk as it found it.
+	declared, files, _, err := loadDir(string(dir))
+	if err != nil {
+		// Whether this desk is declared is then not knowable, and writing on a
+		// guess is what this check exists to stop.
+		return "", fmt.Errorf("%s cannot be read, so whether %q is already declared is not known: %w", dir, d.Name, err)
+	}
+	if _, already := declared[d.Name]; already {
+		return "", fmt.Errorf("%s already declares desk %q: remove or edit that file to take a new snapshot",
+			files[d.Name], d.Name)
 	}
 	// 0700, and 0600 on the file below. A manifest is config a person edits and
 	// not a secret, but it is the file that says which desk is the private one
@@ -389,6 +408,8 @@ func (dir Dir) Save(d *Desk) (string, error) {
 	}
 	header := "# Written by zde desk snapshot. Apps are not captured yet - add\n" +
 		"# them by hand (docs/model.md, section 5).\n"
+	// Catches what the refusal above cannot see: a file that will not parse,
+	// and anything that appeared at this name since.
 	if err := writeNew(path, append([]byte(header), out...)); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return "", fmt.Errorf("%s already exists: remove it to take a new snapshot of %q", path, d.Name)
@@ -498,15 +519,23 @@ func Load(path string) (*Desk, error) {
 // acceptable is the silence, which is why the problems come back rather than
 // being logged here: they end up in `zde status`, in front of somebody.
 func LoadDir(dir string) (map[string]*Desk, []Problem, error) {
+	out, _, problems, err := loadDir(dir)
+	return out, problems, err
+}
+
+// loadDir is LoadDir with the file each desk came out of, which Save needs to
+// name the manifest that already declares a desk.
+func loadDir(dir string) (map[string]*Desk, map[string]string, []Problem, error) {
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
-		return map[string]*Desk{}, nil, nil
+		return map[string]*Desk{}, map[string]string{}, nil, nil
 	}
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	var problems []Problem
 	out := map[string]*Desk{}
+	files := map[string]string{}
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -536,15 +565,16 @@ func LoadDir(dir string) (map[string]*Desk, []Problem, error) {
 			// that works over a duplicate somebody probably made by copying it.
 			problems = append(problems, Problem{
 				Path: path,
-				Err:  fmt.Errorf("desk %q is already declared by another manifest", prev.Name),
+				Err:  fmt.Errorf("desk %q is already declared by %s", prev.Name, files[prev.Name]),
 			})
 			continue
 		}
 		out[d.Name] = d
+		files[d.Name] = path
 	}
 	// Deterministic, because this is printed: os.ReadDir is sorted, so the
 	// problems are already in filename order and stay that way.
-	return out, problems, nil
+	return out, files, problems, nil
 }
 
 func contains(all []string, s string) bool {

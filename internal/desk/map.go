@@ -48,10 +48,17 @@ type Map struct {
 	// home still recorded in the name (invariant 1). Anything that asks "which
 	// screen" has to read this and not the name; reading the name is the whole
 	// of what went wrong in a desk switch focusing one screen twice.
+	//
+	// Empty is a workspace on no screen: niri reports no output for it and the
+	// monitor in its name is switched off. It is in no band, so nothing scrolls
+	// into it and no switch lands on it.
 	at map[string]string
 	// idx is its place in that output's strip, so a band can be walked in the
 	// order the screen has it rather than the order names sort in.
-	idx       map[string]uint8
+	idx map[string]uint8
+	// screens is what niri was drawing on when this map was built. Empty is a
+	// caller who did not say, which is not a machine with no screens.
+	screens   []string
 	foreign   []Workspace
 	renames   []Rename
 	conflicts []Conflict
@@ -62,6 +69,12 @@ type Map struct {
 // recovery story: no state of ours is consulted, so a zded that just started
 // and a zded that has been running for a week see the same map.
 //
+// The map is a function of the set of workspaces, not of the order niri listed
+// them in. That is what the two halves below are for: the first reads each
+// workspace on its own, the second decides the renames over all of them at
+// once, because whether one can have the name it wants depends on what the
+// others end up called.
+//
 // screens is the set of outputs a workspace can be on right now - the ones niri
 // has a layout monitor for, not every connector that has a cable in it
 // (internal/niri, Screens). The distinction is the whole of this function: an
@@ -71,9 +84,9 @@ type Map struct {
 // one of those workspaces somewhere else, and correcting those names would
 // erase the home monitor of every workspace no manifest declares.
 //
-// Pass nil only when the caller genuinely does not know, which disables
-// renaming rather than guessing. A missing rename is recoverable; a wrong one
-// erases home.
+// Pass nil only when the caller genuinely does not know. That decides nothing:
+// no rename, and no claim that a monitor has gone either. A missing rename is
+// recoverable; a wrong one erases home.
 func Rebuild(workspaces []Workspace, screens []string) *Map {
 	m := &Map{desks: map[string][]Name{}, at: map[string]string{}, idx: map[string]uint8{}}
 
@@ -81,31 +94,78 @@ func Rebuild(workspaces []Workspace, screens []string) *Map {
 	for _, o := range screens {
 		isScreen[o] = true
 	}
-	// Every name in play, so a rename is never handed a name already in use.
-	taken := map[string]bool{}
-	for _, w := range workspaces {
+	m.screens = append([]string(nil), screens...)
+	sort.Strings(m.screens)
+
+	// In an order of this function's own, so that which of two workspaces
+	// sharing a name the map keeps is settled here and not by niri. A copy: the
+	// caller's slice is niri's reply and stays as it came.
+	in := append([]Workspace(nil), workspaces...)
+	sort.Slice(in, func(i, j int) bool { return earlier(in[i], in[j]) })
+
+	// held counts the workspaces under each zde name. A count, because a rename
+	// addresses a workspace by naming it (internal/niri, RenameWorkspace), so
+	// nothing may be renamed off a name two of them share.
+	held := map[string]int{}
+	for _, w := range in {
 		if _, err := ParseName(w.Name); err == nil {
-			taken[w.Name] = true
+			held[w.Name]++
 		}
 	}
-	placed := map[string]bool{}
 
-	for _, w := range workspaces {
+	// reading is one workspace on its own terms: nothing here consults another
+	// workspace, so nothing here depends on where in the list it turned up.
+	type reading struct {
+		w    Workspace
+		name Name   // the name it carries now
+		to   Name   // the truthful name, when a move wants one
+		move bool   // whether it is asking for that name
+		at   string // the screen it is on, empty for none
+	}
+	var read []reading
+	kept := map[string]bool{}
+	for _, w := range in {
 		name, err := ParseName(w.Name)
 		if err != nil {
 			m.foreign = append(m.foreign, w)
 			continue
 		}
+		// Two workspaces under one name would break invariant 1 inside the map
+		// that reports it, and would leave Rename.From addressing either one.
+		// The second one is not ours: we cannot say which workspace the name
+		// owns, so it goes back with the unnamed and the foreign, where
+		// adoption can give it a name of its own.
+		if kept[name.String()] {
+			m.conflicts = append(m.conflicts, Conflict{w, "another workspace is already named " + name.String()})
+			m.foreign = append(m.foreign, w)
+			continue
+		}
+		kept[name.String()] = true
+
+		r := reading{w: w, name: name, at: w.Output}
+		// Whether the monitor in the name is still a screen. With no screen list
+		// nothing knows, and false is the honest answer.
+		homeGone := len(isScreen) > 0 && !isScreen[name.Monitor]
 		switch {
-		case w.Output == "" || w.Output == name.Monitor:
-			// Where it says it is, or niri is not saying.
+		case w.Output == "":
+			// niri is not saying. The name answers "which screen" only while
+			// that monitor is one; where it is not, the workspace is on none,
+			// and saying otherwise spends a desk switch's focus on a panel niri
+			// is drawing nothing on. Not at home either way, so it is reported
+			// the same way and keeps its name.
+			if homeGone {
+				m.displaced = append(m.displaced, name)
+			} else {
+				r.at = name.Monitor
+			}
+		case w.Output == name.Monitor:
+			// Where it says it is.
 		case len(isScreen) == 0:
 			// No screen list, so a move and a migration are indistinguishable
 			// and renaming would be a guess. A missing rename is recoverable;
 			// a wrong one erases home.
-		case !isScreen[name.Monitor]:
-			// Its monitor is not a screen any more - unplugged, or switched
-			// off, which a closing lid does by itself - and niri parked it on a
+		case homeGone:
+			// Its monitor is not a screen any more and niri parked it on a
 			// survivor. The name still records home, so leave it alone and say
 			// where it sits.
 			m.displaced = append(m.displaced, name)
@@ -115,47 +175,52 @@ func Rebuild(workspaces []Workspace, screens []string) *Map {
 			// being one while we were asking. Renaming on a list that has
 			// already moved on is how home gets erased, so decline and say so.
 			m.conflicts = append(m.conflicts, Conflict{w, "niri put it on an output it is no longer showing anything on"})
+		case held[name.String()] > 1:
+			// A shared name addresses neither workspace, so nothing is renamed
+			// off one. The duplicate above already reports the pair.
 		default:
-			// Both monitors are real, so this was a move: correct the name.
-			// Through NewName, because the output is niri's string and not
-			// ours - one that is not a connector would mint a name nothing can
-			// read back, and the workspace would leave its desk for good.
+			// Both monitors are real, so this was a move: correct the name
+			// (invariant 1). Through NewName, because the output is niri's
+			// string - one that is not a connector would mint a name nothing
+			// can read back, and the workspace would leave its desk for good.
 			truthful, err := NewName(name.Desk, w.Output, name.Slot)
 			if err != nil {
 				m.conflicts = append(m.conflicts, Conflict{w, err.Error()})
 				break
 			}
-			if taken[truthful.String()] {
-				// Ordinals restart per monitor, so this is ordinary rather
-				// than exotic. Only the caller can mint a free slot.
-				m.conflicts = append(m.conflicts, Conflict{w, "the truthful name " + truthful.String() + " is taken"})
-				break
+			r.to, r.move = truthful, true
+		}
+		read = append(read, r)
+	}
+
+	// The second half: every move weighed against every other one.
+	var moves []Rename
+	for _, r := range read {
+		if r.move {
+			moves = append(moves, Rename{From: r.name, To: r.to})
+		}
+	}
+	granted, refused := grantMoves(moves, held)
+	m.renames = granted
+	truthful := make(map[string]Name, len(granted))
+	for _, mv := range granted {
+		truthful[mv.From.String()] = mv.To
+	}
+
+	for _, r := range read {
+		name := r.name
+		if r.move {
+			if to, made := truthful[name.String()]; made {
+				name = to
+			} else {
+				m.conflicts = append(m.conflicts, Conflict{r.w, refused[name.String()]})
 			}
-			delete(taken, name.String())
-			taken[truthful.String()] = true
-			m.renames = append(m.renames, Rename{From: name, To: truthful})
-			name = truthful
 		}
-		// Two workspaces under one name would break invariant 1 inside the map
-		// that reports it, and would leave Rename.From addressing either one.
-		// The second one is not ours: we cannot say which workspace the name
-		// owns, so it goes back with the unnamed and the foreign, where
-		// adoption can give it a name of its own.
-		if placed[name.String()] {
-			m.conflicts = append(m.conflicts, Conflict{w, "another workspace is already named " + name.String()})
-			m.foreign = append(m.foreign, w)
-			continue
-		}
-		placed[name.String()] = true
 		m.desks[name.Desk] = append(m.desks[name.Desk], name)
-		// Where it is and where it sits, as niri has it. An output niri did
-		// not say falls back to the name, which is the only other answer.
-		where := w.Output
-		if where == "" {
-			where = name.Monitor
-		}
-		m.at[name.String()] = where
-		m.idx[name.String()] = w.Idx
+		// niri's output, or the name's monitor where niri said nothing and that
+		// monitor is a screen, or nothing at all.
+		m.at[name.String()] = r.at
+		m.idx[name.String()] = r.w.Idx
 	}
 
 	// A desk's workspaces are kept by monitor, and inside a monitor by the
@@ -189,21 +254,143 @@ func Rebuild(workspaces []Workspace, screens []string) *Map {
 			return less(a, b)
 		})
 	}
-	// Sorted so that the map does not depend on the order niri happened to
-	// list things in: a shell diffing two polls should see churn only when
-	// something changed.
+	// The lists that are not a band, in an order of their own: they are printed
+	// and diffed, so a line should move only when something moved. Renames are
+	// not here - they come back from grantMoves in the order they can be
+	// applied, which a chain depends on.
 	sort.Slice(m.foreign, func(i, j int) bool {
 		if m.foreign[i].Output != m.foreign[j].Output {
 			return m.foreign[i].Output < m.foreign[j].Output
 		}
 		return m.foreign[i].Name < m.foreign[j].Name
 	})
-	sort.Slice(m.renames, func(i, j int) bool { return less(m.renames[i].From, m.renames[j].From) })
 	sort.Slice(m.displaced, func(i, j int) bool { return less(m.displaced[i], m.displaced[j]) })
 	sort.Slice(m.conflicts, func(i, j int) bool {
 		return m.conflicts[i].Workspace.Name < m.conflicts[j].Workspace.Name
 	})
 	return m
+}
+
+// earlier is the order Rebuild reads niri's reply in. Any total order does the
+// job, which is to take "which one is met first" away from niri; by name,
+// because that is what the map is keyed on. The rest of the key only makes the
+// order total, and two workspaces alike in all of it are interchangeable.
+func earlier(a, b Workspace) bool {
+	if a.Name != b.Name {
+		return a.Name < b.Name
+	}
+	if a.Output != b.Output {
+		return a.Output < b.Output
+	}
+	if a.Idx != b.Idx {
+		return a.Idx < b.Idx
+	}
+	return a.ID < b.ID
+}
+
+// grantMoves decides which moves are made and in what order they can be
+// applied. held counts the workspaces under each name now.
+//
+// A move gets the name it wants when nothing ends up called that: nothing is
+// called it, or the one that is, is moving off it - a chain. Otherwise it is
+// refused and keeps a name that lies about its monitor, which is the side to
+// fail on: a wrong name can be put right, a wrong rename erases home.
+//
+//   - Two moves onto one name: it goes to the one that sorts first, so one
+//     wrong name rather than two. Only the caller can mint a free slot.
+//   - A move onto a name something stays under: refused, and it cascades,
+//     because a refused move keeps its own name.
+//   - A cycle: renames reach niri one at a time (internal/zded, reconcile), so
+//     whichever went first would be handed a name in use. All of it refused.
+//
+// The rest are chains, returned in the order they can be applied.
+func grantMoves(moves []Rename, held map[string]int) ([]Rename, map[string]string) {
+	refused := map[string]string{}
+	if len(moves) == 0 {
+		return nil, refused
+	}
+	// In an order of its own, so which of two claimants wins is decided here.
+	ordered := append([]Rename(nil), moves...)
+	sort.Slice(ordered, func(i, j int) bool { return less(ordered[i].From, ordered[j].From) })
+
+	// want is the moves still standing, keyed by the name carried now. Unique:
+	// Rebuild does not move a workspace whose name is shared.
+	want := make(map[string]Name, len(ordered))
+	claimed := map[string]string{}
+	for _, mv := range ordered {
+		to := mv.To.String()
+		if first, already := claimed[to]; already {
+			refused[mv.From.String()] = "the truthful name " + to + " is wanted by " + first + " as well"
+			continue
+		}
+		claimed[to] = mv.From.String()
+		want[mv.From.String()] = mv.To
+	}
+
+	// Refusals only grow, so the answer does not depend on the order walked,
+	// and each pass either refuses one or stops.
+	for changed := true; changed; {
+		changed = false
+		for _, mv := range ordered {
+			from := mv.From.String()
+			to, standing := want[from]
+			if !standing || held[to.String()] == 0 {
+				continue
+			}
+			if _, vacating := want[to.String()]; vacating {
+				continue
+			}
+			refused[from] = "the truthful name " + to.String() + " is taken"
+			delete(want, from)
+			changed = true
+		}
+	}
+
+	// step is how many renames must be applied before this one can be. A move
+	// that never gets one is waiting, round a cycle, on itself.
+	step := map[string]int{}
+	for changed := true; changed; {
+		changed = false
+		for _, mv := range ordered {
+			from := mv.From.String()
+			to, standing := want[from]
+			if !standing {
+				continue
+			}
+			if _, done := step[from]; done {
+				continue
+			}
+			switch prior, ready := step[to.String()]; {
+			case held[to.String()] == 0:
+				step[from] = 0
+			case ready:
+				step[from] = prior + 1
+			default:
+				continue
+			}
+			changed = true
+		}
+	}
+
+	granted := make([]Rename, 0, len(want))
+	for _, mv := range ordered {
+		from := mv.From.String()
+		to, standing := want[from]
+		if !standing {
+			continue
+		}
+		if _, applicable := step[from]; !applicable {
+			refused[from] = "the truthful name " + to.String() + " belongs to a workspace waiting for this one, " +
+				"and a rename happens one at a time"
+			continue
+		}
+		granted = append(granted, Rename{From: mv.From, To: to})
+	}
+	// Stable, so moves at the same step keep the order above.
+	sort.SliceStable(granted, func(i, j int) bool {
+		return step[granted[i].From.String()] < step[granted[j].From.String()]
+	})
+	return granted, refused
 }
 
 // less orders workspaces by monitor, then labels before ordinals, then
@@ -227,6 +414,11 @@ func less(a, b Name) bool {
 		return a.Slot < b.Slot
 	}
 }
+
+// Screens is the outputs niri was drawing on when this map was built, in a
+// stable order. Empty is the caller not having said, not a machine with no
+// screens.
+func (m *Map) Screens() []string { return append([]string(nil), m.screens...) }
 
 // DeskNames lists every desk in the map, regulars included, in a stable order.
 func (m *Map) DeskNames() []string {
@@ -257,6 +449,12 @@ func (m *Map) DeskNames() []string {
 // screen a workspace is on, and an unplugged monitor puts two monitors' runs on
 // one screen - which the map keeps apart and a scroll must not.
 func (m *Map) Band(desk, output string) []Name {
+	if output == "" {
+		// Not a screen. A workspace niri is showing nowhere reads as this
+		// (Rebuild), and a band is what a scroll clamps to and a switch lands
+		// in - neither can happen there.
+		return nil
+	}
 	var out []Name
 	for _, n := range m.desks[desk] {
 		if m.at[n.String()] == output {
@@ -296,9 +494,10 @@ func (m *Map) Renames() []Rename { return append([]Rename(nil), m.renames...) }
 // Conflicts is what Rebuild noticed and would not touch.
 func (m *Map) Conflicts() []Conflict { return append([]Conflict(nil), m.conflicts...) }
 
-// Displaced is the workspaces sitting on a screen other than the monitor their
-// name claims, because that monitor is gone - unplugged, or switched off, which
-// is what a closing lid does to a laptop panel.
+// Displaced is the workspaces that are not on the monitor their name claims,
+// because that monitor is gone - unplugged, or switched off, which is what a
+// closing lid does to a laptop panel. Usually parked on a survivor; where niri
+// reports no output at all, on no screen.
 //
 // Their names are not lies and must not be corrected. The name is zde's only
 // record of where the workspace belongs: a manifest records home too, but only
