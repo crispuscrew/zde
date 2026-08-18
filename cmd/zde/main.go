@@ -1755,6 +1755,11 @@ func switchDesk(name string) error { return focusDesk("desk.switch", name) }
 // focusDesk calls one of the verbs that bring a desk up, and prints the
 // workspaces it left focused - one name per line, the way everything else in
 // zde says a workspace.
+//
+// A note goes to stderr, so it reaches a person and stays out of the names a
+// script is reading: a desk that declares workspaces on a monitor which is not
+// a screen comes up on the screens there are, and says so (internal/zded,
+// waitingNote).
 func focusDesk(method string, args ...string) error {
 	c, err := zded.Dial()
 	if err != nil {
@@ -1767,6 +1772,9 @@ func focusDesk(method string, args ...string) error {
 	}
 	for _, n := range focused {
 		fmt.Println(n)
+	}
+	if note := c.Note(); note != "" {
+		fmt.Fprintln(os.Stderr, note)
 	}
 	return nil
 }

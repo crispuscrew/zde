@@ -66,7 +66,18 @@ func AdoptPlan(m *Map, active string, firstApp map[uint64]string) []Adoption {
 // keeps exactly one per strip, so a desk that declares three workspaces on one
 // monitor takes three passes: name one, let niri open the next, name that.
 // Callers loop until this returns nothing.
-func MissingPlan(m *Map, declared []Name, empty map[string][]uint64) []Adoption {
+//
+// The second result is the declared workspaces on a monitor that is not a
+// screen. There is no strip there for niri to leave an empty workspace at the
+// end of, so no pass produces one and going round again cannot help - which is
+// a different answer from "none spare this time round". Not a failure either:
+// the manifest still declares them and the next switch after the monitor comes
+// back makes them, so the caller says it rather than failing (internal/zded,
+// switchFrom).
+//
+// Empty when the map was built without a screen list: which monitors are
+// screens is then not known (Map.Screens).
+func MissingPlan(m *Map, declared []Name, empty map[string][]uint64) ([]Adoption, []Name) {
 	have := map[string]bool{}
 	for _, d := range declared {
 		for _, n := range m.Workspaces(d.Desk) {
@@ -74,10 +85,19 @@ func MissingPlan(m *Map, declared []Name, empty map[string][]uint64) []Adoption 
 		}
 		break
 	}
+	onScreen := map[string]bool{}
+	for _, o := range m.Screens() {
+		onScreen[o] = true
+	}
 	used := map[string]int{}
 	var plan []Adoption
+	var waiting []Name
 	for _, want := range declared {
 		if have[want.String()] {
+			continue
+		}
+		if len(onScreen) > 0 && !onScreen[want.Monitor] {
+			waiting = append(waiting, want)
 			continue
 		}
 		ids := empty[want.Monitor]
@@ -88,7 +108,7 @@ func MissingPlan(m *Map, declared []Name, empty map[string][]uint64) []Adoption 
 		used[want.Monitor]++
 		have[want.String()] = true
 	}
-	return plan
+	return plan, waiting
 }
 
 // slotFor is the workspace's label, made unique on its monitor, and an ordinal

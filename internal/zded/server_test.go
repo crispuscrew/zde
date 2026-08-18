@@ -1993,6 +1993,77 @@ func TestSwitchCreatesDeclaredWorkspaces(t *testing.T) {
 	}
 }
 
+// The lid is shut and the manifest declares workspaces on the panel behind it.
+// The desk comes up on the screen there is, which is not a failure, and the two
+// it could not make are said out loud - the switch used to answer with the one
+// workspace it focused and nothing else.
+func TestSwitchSaysWhatItCouldNotMake(t *testing.T) {
+	d, err := manifest.Parse([]byte("name: vshop\nmonitors: " +
+		"{ DP-1: { workspaces: [code] }, eDP-1: { workspaces: [mail, chat] } }"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	niri := &fakeCompositor{
+		// eDP-1 is a connector with the lid shut on it, so it is in no strip
+		// here and is not a screen.
+		empty:  map[string][]uint64{"DP-1": {10}},
+		nextID: 10,
+	}
+	niri.remap()
+	s := New("test", nil, niri, fixedDesks{"vshop": d})
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	var focused []string
+	if err := c.Call("desk.switch", &focused, "vshop"); err != nil {
+		t.Fatalf("the switch failed, and a monitor that is parked is not a failure: %v", err)
+	}
+	if len(focused) != 1 || focused[0] != "vshop.DP-1.code" {
+		t.Errorf("focused %v, want the desk up on the one screen there is", focused)
+	}
+	note := c.Note()
+	for _, want := range []string{"vshop.eDP-1.mail", "vshop.eDP-1.chat"} {
+		if !strings.Contains(note, want) {
+			t.Errorf("the switch said %q, and %s was not made", note, want)
+		}
+	}
+}
+
+// With both monitors there the same manifest comes up whole and the switch has
+// nothing to add. A note on every switch is a note nobody reads.
+func TestSwitchSaysNothingWhenItMadeTheWholeDesk(t *testing.T) {
+	d, err := manifest.Parse([]byte("name: vshop\nmonitors: " +
+		"{ DP-1: { workspaces: [code] }, eDP-1: { workspaces: [mail, chat] } }"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	niri := &fakeCompositor{
+		empty:  map[string][]uint64{"DP-1": {10}, "eDP-1": {20}},
+		nextID: 20,
+	}
+	niri.remap()
+	s := New("test", nil, niri, fixedDesks{"vshop": d})
+	c, err := DialPath(serve(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	var focused []string
+	if err := c.Call("desk.switch", &focused, "vshop"); err != nil {
+		t.Fatal(err)
+	}
+	if got := niri.adoptCalls(); len(got) != 3 {
+		t.Errorf("created %v, want all three declared workspaces", got)
+	}
+	if note := c.Note(); note != "" {
+		t.Errorf("the switch said %q about a desk it brought up whole", note)
+	}
+}
+
 // A window carried to a desk that exists only as a manifest has to wait for
 // that manifest to become workspaces. Carry first and there is nowhere to put
 // it - or worse, somewhere stale, while the switch that follows goes to what

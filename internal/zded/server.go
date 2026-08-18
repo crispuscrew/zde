@@ -118,6 +118,13 @@ type Request struct {
 type Response struct {
 	Ok    json.RawMessage `json:"ok,omitempty"`
 	Error string          `json:"error,omitempty"`
+	// Note is one line about something the call could not do while doing what
+	// it was asked. Not an Error: a desk switch that brought up every screen
+	// there is, on a laptop whose lid is shut, did what was asked and still has
+	// something to say (switchFrom). Beside Ok rather than inside it, so every
+	// verb keeps the shape its callers already read. Cleaned where it is made,
+	// because what reads it is a terminal.
+	Note string `json:"note,omitempty"`
 }
 
 // Status is what `zde status` prints: enough to tell a working session from a
@@ -1454,38 +1461,63 @@ func (s *Server) reconcile() Response {
 // monitor: name it, let niri open the next, go round again. The loop is bounded
 // by what is declared, so a compositor that stops producing empties ends it
 // rather than spinning.
-func (s *Server) ensureDeclared(target string) error {
+//
+// The first result is the declared workspaces it could not make, because their
+// monitor is not a screen (internal/desk, MissingPlan). Not an error: the rest
+// of the desk came up, and the switch says it.
+func (s *Server) ensureDeclared(target string) ([]desk.Name, error) {
 	all, problems, err := s.desks.All()
 	if err != nil {
-		return fmt.Errorf("reading manifests: %w", err)
+		return nil, fmt.Errorf("reading manifests: %w", err)
 	}
 	s.rememberProblems(problems)
 	declared, ok := all[target]
 	if !ok {
-		return nil // no manifest: the desk is whatever is already named into it
+		return nil, nil // no manifest: the desk is whatever is already named into it
 	}
 	want := declared.Workspaces()
+	var waiting []desk.Name
 	for range want {
 		m, err := s.niri.DeskMap()
 		if err != nil {
-			return err
+			return waiting, err
 		}
 		empty, err := s.niri.EmptyByOutput()
 		if err != nil {
-			return err
+			return waiting, err
 		}
-		plan := desk.MissingPlan(m, want, empty)
+		// The last pass's answer, not every pass's: each is the whole of what
+		// is still missing.
+		plan, nowhere := desk.MissingPlan(m, want, empty)
+		waiting = nowhere
 		if len(plan) == 0 {
-			return nil
+			return waiting, nil
 		}
 		// One per pass: naming this one is what makes niri open the next
 		// empty workspace for the one after it.
 		a := plan[0]
 		if err := s.niri.SetWorkspaceNameByID(a.ID, a.Name.String()); err != nil {
-			return fmt.Errorf("creating %s: %w", a.Name, err)
+			return waiting, fmt.Errorf("creating %s: %w", a.Name, err)
 		}
 	}
-	return nil
+	return waiting, nil
+}
+
+// waitingNote is what a switch says about the workspaces its desk declares and
+// this machine cannot hold right now. Empty when there are none.
+//
+// Through attn.Line for the reason reconcile's answer is: this line is printed
+// raw, and that these names hold nothing a terminal would act on was decided in
+// another package for another purpose.
+func waitingNote(waiting []desk.Name) string {
+	if len(waiting) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(waiting))
+	for _, n := range waiting {
+		names = append(names, n.String())
+	}
+	return attn.Line("not made, because their monitor is not a screen right now: " + strings.Join(names, ", "))
 }
 
 // snapshot writes down a desk that exists, so it can be asked for again. It is
@@ -1589,6 +1621,11 @@ func (s *Server) snapshot(args []string) Response {
 	// them, so the two would collide, and until this fix whichever the
 	// directory listed first decided whether anything arriving there could be
 	// written to disk (history.go, privateArrival).
+	//
+	// Save refuses a desk that is already declared whatever its file is called,
+	// so with a manifest.Dir under this the second file is never written. This
+	// stays because Desks is an interface, and because getting the value right
+	// and refusing the write are two guards rather than one.
 	private := false
 	if prev := s.manifestFor(target); prev != nil {
 		private = prev.Private
@@ -1780,7 +1817,10 @@ func (s *Server) carryTo(to, from string) Response {
 	// land by the map as it was and the switch arrive by the map as it became
 	// - and its errors would strand a window that had already left, on a desk
 	// nothing could then reach.
-	if err := s.ensureDeclared(to); err != nil {
+	//
+	// The note is dropped here: the switch below runs ensureDeclared again and
+	// answers with it.
+	if _, err := s.ensureDeclared(to); err != nil {
 		return Response{Error: err.Error()}
 	}
 	m, err := s.niri.DeskMap()
@@ -2541,7 +2581,8 @@ func (s *Server) switchFrom(target, from string) Response {
 	if s.jrn != nil {
 		was = s.jrn.State().OnDesk
 	}
-	if err := s.ensureDeclared(target); err != nil {
+	waiting, err := s.ensureDeclared(target)
+	if err != nil {
 		return Response{Error: err.Error()}
 	}
 	m, err := s.niri.DeskMap()
@@ -2596,7 +2637,11 @@ func (s *Server) switchFrom(target, from string) Response {
 	for _, n := range plan {
 		focused = append(focused, n.String())
 	}
-	return ok(focused)
+	resp := ok(focused)
+	// Beside the answer, not inside it: what the switch did is the list of
+	// workspaces it focused, and that is the shape every desk verb answers.
+	resp.Note = waitingNote(waiting)
+	return resp
 }
 
 // startApps runs what the desk declares, in the background.
