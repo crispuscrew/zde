@@ -1488,9 +1488,6 @@ func (s *Server) ensureDeclared(target string) error {
 	return nil
 }
 
-// snapshot writes down a desk that exists, so it can be asked for again. It is
-// the other end of adoption: arrange a desk by hand, let the names settle,
-// then make it something a manifest declares.
 // deskApps answers what a desk is made of before any of it is running.
 //
 // The manifests are files and a client could read them, but which directory
@@ -1550,6 +1547,9 @@ func (s *Server) deskApps(args []string) Response {
 	return ok(out)
 }
 
+// snapshot writes down a desk that exists, so it can be asked for again. It is
+// the other end of adoption: arrange a desk by hand, let the names settle, then
+// make it something a manifest declares.
 func (s *Server) snapshot(args []string) Response {
 	m, err := s.niri.DeskMap()
 	if err != nil {

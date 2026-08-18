@@ -210,7 +210,7 @@ const (
 // (machine.go, sawSigns).
 //
 // Every other promise is kept by something above or beside it: the allowlist
-// (graphicsEnv), the outputs-and-never-windows rule (askNiri), and the private
+// (graphicsEnv), the monitors-and-never-windows rule (askNiri), and the private
 // desks that are counted and never named (gather.go, audience).
 const reportHeader = `zde state snapshot
 %s

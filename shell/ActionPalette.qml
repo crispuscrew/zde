@@ -88,8 +88,8 @@ PanelWindow {
 
     // What is on screen: a case-insensitive substring of the name or of what
     // the action does, so that `desk` finds the desk group and `lock` finds the
-    // lock. No fuzzy matching - a list of sixty rows with a name column does
-    // not need scored subsequences, and it would be a dependency to keep.
+    // lock. No fuzzy matching - a list of eighty-odd rows with a name column
+    // does not need scored subsequences, and it would be a dependency to keep.
     readonly property var matches: {
         const q = query.text.toLowerCase();
         if (q === "")

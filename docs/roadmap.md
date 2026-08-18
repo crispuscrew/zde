@@ -287,8 +287,9 @@ turned "when someone has hardware" into something anyone can do this evening.
   make the whole question smaller.
 - the idle inhibitor, the second ungated global:
   `IdleInhibitManagerState::new::<State>` is built with no
-  `client_is_unrestricted` where its thirteen neighbours take one, so a
-  sandboxed app can hold `zwp_idle_inhibit_manager_v1`. Worse than the keyboard
+  `client_is_unrestricted` where twelve neighbours take it by name and a
+  thirteenth inlines the same bit, so a sandboxed app can hold
+  `zwp_idle_inhibit_manager_v1`. Worse than the keyboard
   one in the part that matters: niri's `refresh_idle_inhibit` honours a surface
   that is merely **visible, not focused**, so a container on a workspace nobody
   is looking at keeps the session from ever going idle, with no interaction and

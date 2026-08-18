@@ -26,7 +26,8 @@ import (
 // launchFailure is one app a desk declares that did not start, and the runner's
 // own words about it. An app that was already running is not one of these: zinc
 // refuses a second launch, and the desk switch that met that refusal got what
-// it wanted (server.go, startApps).
+// it wanted (server.go, launchApps, which is where that refusal is skipped;
+// startApps only claims the desk's one place to be launching in).
 type launchFailure struct {
 	Address string
 	Err     error

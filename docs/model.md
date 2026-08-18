@@ -136,26 +136,30 @@ Modes gate which actions are live. Not everything here is written, and not
 everything written here has a chord. The keymap registry is the part that has a
 key or a reason to be reachable by name, and that is what `palette.open` lists,
 marking each row runnable or not on the build in front of you. The rest are the
-CLI's: `zde desk switch`, `desk snapshot`, `desk reconcile`, `desk
-move-window-to`, `desk move-workspace-to`, `ask local` and `attn <mode>` all
-work today with no row in any surface. A missing palette row means no key, not
-no verb.
+CLI's: `zde desk switch`, `desk snapshot`, `desk reconcile`, `ask local` and
+`attn <mode>` all work today with no row in any surface. A missing palette row
+means no key, not no verb.
 
-It does not promise a verb either, and two rows below have neither. `pause` is a
-desk action nothing implements - the manifest key `background: pause` is parsed
-and acts on nothing (section 5), and that is the whole of the word in this tree.
-`guest <name>` is in no registry, no daemon handler and no CLI: it is design and
-has never been anything else. Both stay in the table because this is the map and
-not the changelog, and neither is reachable from anywhere today.
+It does not promise a verb either. `pause` has a registry row and no key, which
+is what this list does with an action that is coming: the palette carries it and
+says on the row that nothing is written behind it, and the manifest key
+`background: pause` is parsed and acts on nothing (section 5). `guest <name>` is
+the one below with neither - no registry, no daemon handler, no CLI - because it
+carries a desk name and an unbound parametric row is a name no surface can show,
+and because it is a security posture rather than a verb, which is 0.2's set to
+decide. Both stay in the table because this is the map and not the changelog.
 
-The two that are reachable only from a terminal are worth naming, because the
-gap has a cost rather than being tidy. `desk move-workspace-to` is the only way
-the regulars band comes into being at all ([`roadmap.md`](roadmap.md)), and
-`desk move-window-to` is how one window leaves it; both work, neither has a key
-or a palette row, so the answer to "how do I make my regulars" is currently
-"open a terminal". Whether that should be a chord, a palette row, or a CLI verb
-on purpose is a decision about which keys exist, and it belongs in the keymap
-rather than in a note here.
+The two that name a desk are worth naming here too, because how the answer is
+given was the open question rather than whether the verb worked. `desk
+move-workspace-to` is the only way the regulars band comes into being at all
+([`roadmap.md`](roadmap.md)), and `desk move-window-to` is how one window leaves
+it; both had worked from a terminal since before either had a key. They have one
+now - `Mod+Ctrl+Shift+Tab` and `Mod+Ctrl+Tab` - and the desk name they take is
+asked for by the same picker `Mod+Tab` draws, with a line on it saying what
+choosing a row will do, since three verbs drawing the same desks look identical
+without one. What that settled belongs in the keymap and not in a note here: a
+verb that takes a name wants a surface that offers the names, not a chord per
+name.
 
 | Group | Actions |
 |---|---|

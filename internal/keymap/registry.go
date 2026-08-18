@@ -32,18 +32,23 @@ type Entry struct {
 	// inhibitor.
 	//
 	// The hole it closes is niri's. zwp_keyboard_shortcuts_inhibit_manager_v1
-	// is the one sensitive global niri 26.04 does not gate on the security
-	// context every zinc app arrives through: in src/niri.rs the layer shell,
-	// the session lock, screencopy, both data-control protocols, the virtual
-	// keyboard and pointer and eight more are built with a
-	// client_is_unrestricted filter, and KeyboardShortcutsInhibitState::new is
-	// built without one. A new inhibitor is then activated on the spot, with no
-	// dialog and nobody asked - niri's own FIXME in src/handlers/mod.rs says the
-	// confirmation is missing. While that surface has the keyboard, niri
-	// forwards rather than acts on every bind whose allow-inhibiting is true
-	// (src/input/mod.rs, should_intercept_key), and true is what a bind gets
-	// when it says nothing (niri-config/src/binds.rs). So one Wayland global,
-	// bound by any container, takes every key on this machine.
+	// is one of the two sensitive globals niri 26.04 does not gate on the
+	// security context every zinc app arrives through: in src/niri.rs the layer
+	// shell, the session lock, screencopy, both data-control protocols, the
+	// virtual keyboard and pointer and five more - twelve, which is every call
+	// site grep for client_is_unrestricted finds beside the definition - are
+	// built with that filter, thirteen counting the gamma control, which
+	// inlines the same restricted bit rather than naming the function. Both
+	// KeyboardShortcutsInhibitState::new and IdleInhibitManagerState::new are
+	// built without one, and the second costs a screen rather than a keyboard
+	// (internal/zded, Idle; docs/verify.md, section 11). A new inhibitor is
+	// then activated on the spot, with no dialog and nobody asked - niri's own
+	// FIXME in src/handlers/mod.rs says the confirmation is missing. While that
+	// surface has the keyboard, niri forwards rather than acts on every bind
+	// whose allow-inhibiting is true (src/input/mod.rs, should_intercept_key),
+	// and true is what a bind gets when it says nothing
+	// (niri-config/src/binds.rs). So one Wayland global, bound by any
+	// container, takes every key on this machine.
 	//
 	// Deliberately not the whole keymap. A bind marked here is a chord no
 	// application can ever receive, and that protocol exists for the ones that

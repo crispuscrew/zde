@@ -28,16 +28,19 @@
 //     expect the second thing to be true as well as the first.
 //
 // In memory only, and this is the line to argue with before anybody adds a
-// file. The notification history sets the precedent (internal/attn, HistoryMax)
-// and this has a stronger version of the same reason: a notification history on
-// disk is a log of what other people sent you, and a clipboard history on disk
-// is a wallet. It is every password that was ever pasted rather than typed,
-// every token copied out of a terminal, every address, in one file, in the
-// clear, surviving a reboot - and the TTL above becomes a lie the moment the
-// text is also somewhere with an inode. If a future zde wants persistence, it
-// wants an argument against that paragraph first, and an encrypted store is not
-// one: the key would have to be readable by the daemon that reads the
-// clipboard, so it is the same file with a longer path.
+// file. The notification history is the precedent to argue against rather than
+// from: it does write a bounded snapshot to disk (internal/attn, snapshotMax -
+// forty records, so a restart still answers "what was happening"), and the
+// reason that was affordable there is exactly the reason it is not affordable
+// here. A notification history on disk is a log of what other people sent you,
+// and a clipboard history on disk is a wallet: every password that was ever
+// pasted rather than typed, every token copied out of a terminal, every
+// address, in one file, in the clear, surviving a reboot - and the TTL above
+// becomes a lie the moment the text is also somewhere with an inode. If a
+// future zde wants persistence, it wants an argument against that paragraph
+// first, and an encrypted store is not one: the key would have to be readable
+// by the daemon that reads the clipboard, so it is the same file with a longer
+// path.
 //
 // The bounds are all here because clipboard content is whatever an application
 // felt like offering: Max entries, TextMax bytes in each, and anything bigger or
