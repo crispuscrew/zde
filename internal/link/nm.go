@@ -953,8 +953,9 @@ func (m *NM) Disconnect() error {
 // /dev/rfkill or bluez, and the account zde ships with is in networkmanager and
 // video and no other group (nix/live.nix).
 //
-// One switch and not two, for the same reason. NetworkManager's WirelessEnabled
-// is a second bit that would have to be put back, and putting it back would
+// One switch and not two, and this one is a reason of its own. NetworkManager's
+// WirelessEnabled would reach the wifi radio without any of the above, and it is
+// still left alone: it is a second bit to put back, and putting it back would
 // silently un-block a radio somebody had blocked themselves before ever pressing
 // this.
 //
