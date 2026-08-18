@@ -1439,6 +1439,22 @@ func mode(t *testing.T, path string) os.FileMode {
 // that costs four bytes a character. Nothing in this package clamps them - the
 // caller does - so building them here is the only way to ask what the worst
 // case costs.
+//
+// And the flood mints a name per arrival, which is the half of this fixture
+// that had to be rewritten. It was first written under a single sender against
+// a queue whose only bound was QueueMax, so one name could reach the ceiling
+// and the file measured below was the worst case it claimed to be. PerSenderMax
+// arrived afterwards and stops one name at thirty items, which left the fixture
+// asserting eight megabytes about a queue of thirty - a bound nothing could
+// fail. A name costs nothing to mint and nothing verifies it (see Reserved), so
+// the flood that still reaches the ceiling is the one that varies what it calls
+// itself, and that is the flood worth measuring.
+//
+// The last hundred places are then filled by the person the reserve is kept
+// for, because those places are the same 2.5 KB a line and a file measured at
+// nine tenths of its ceiling is a file measured short. That a flood cannot take
+// them is TestAThousandInventedNamesStillLeaveRoomForAPersonAndForZde's
+// assertion and not this one's; here they are only more bytes.
 func TestAFloodLeavesAJournalThatCompactsToSomethingADiskCanHold(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "journal.jsonl")
 	j := open(t, path)
@@ -1446,6 +1462,14 @@ func TestAFloodLeavesAJournalThatCompactsToSomethingADiskCanHold(t *testing.T) {
 	// Four bytes a character, and 300 of them, which is what a queued line is
 	// at its ceiling. An emoji in a notification summary is not an exotic case.
 	wide := strings.Repeat("\U0001F642", 300)
+	// A sender at that same ceiling, and a different one every arrival. The
+	// digits replace characters rather than being added to them, so the name
+	// stays the 300 an app is clamped to and costs a handful of bytes less than
+	// the summary beside it rather than a handful more.
+	from := func(i int) string {
+		n := strconv.Itoa(i)
+		return strings.Repeat("\U0001F642", 300-len(n)) + n
+	}
 	// Spelled as a number rather than as QueueMax times eight, so that widening
 	// the cap does not widen the flood along with it: a fixture written in
 	// terms of the bound it is testing grows to meet whatever the bound became,
@@ -1453,13 +1477,20 @@ func TestAFloodLeavesAJournalThatCompactsToSomethingADiskCanHold(t *testing.T) {
 	const flood = 8001
 	refused := 0
 	for i := 0; i < flood; i++ {
-		_, err := j.Queue(Item{Text: wide, From: wide, Desk: "vshop"})
+		_, err := j.Queue(Item{Text: wide, From: from(i), Desk: "vshop"})
 		switch {
 		case err == nil:
-		case errors.Is(err, ErrQueueFull):
+		case errors.Is(err, ErrQueueFull), errors.Is(err, ErrSenderFull):
 			refused++
 		default:
 			t.Fatalf("queueing %d of %d: %v", i, flood, err)
+		}
+	}
+	// And then the places nothing on the bus can spend, filled with the same
+	// oversized lines, so what is measured below is the whole ceiling.
+	for len(j.Waiting()) < QueueMax {
+		if _, err := j.Queue(Item{Text: wide, Desk: "vshop"}); err != nil {
+			t.Fatalf("filling the reserve at %d of %d: %v", len(j.Waiting()), QueueMax, err)
 		}
 	}
 	// The rewrite a restart does, which is the only thing that ever shortens
@@ -1477,9 +1508,14 @@ func TestAFloodLeavesAJournalThatCompactsToSomethingADiskCanHold(t *testing.T) {
 			flood, fi.Size()>>20)
 	}
 	// And the queue is still a queue, so the size above is a ceiling something
-	// reached rather than a journal that lost what was owed.
-	if len(j.Waiting()) == 0 {
-		t.Error("nothing is waiting after the flood, so the size above is about an empty queue")
+	// reached rather than a journal that lost what was owed. The ceiling itself
+	// and not merely "something is waiting", because that is what makes the byte
+	// count mean anything: a queue the flood never filled leaves a small file
+	// for the wrong reason, and the weaker check is what would have let this go
+	// on passing while it measured thirty items.
+	if n := len(j.Waiting()); n != QueueMax {
+		t.Errorf("%d waiting after the flood, want the whole %d: the size above is about a queue that never filled",
+			n, QueueMax)
 	}
 	// Said after the size, and not instead of it: a cap so high that eight
 	// thousand arrivals never reach it is a cap that no flood a machine can
