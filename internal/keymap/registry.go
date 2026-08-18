@@ -296,7 +296,12 @@ var registry = map[string]Entry{
 	// quick-cut sequences (keymap.yaml) wait for the input daemon.
 	"net.observe": {Group: "net", Desc: "the network observer widget (per-app connections; cut from here)", Spawn: []string{"zde", "net", "observe"}},
 	"net.app-cut": {Group: "net", Desc: "cut the focused app's network", Spawn: []string{"zde", "net", "app-cut"}},
-	"net.kill":    {Group: "net", Desc: "cut all network (loud, reversible)", Spawn: []string{"zde", "net", "kill"}},
+	// The kill switch, and it is one key both ways: NetworkManager's networking
+	// switch off, and the same action back on. A cut that could only be undone
+	// from another machine is a way to end a session rather than to protect one
+	// (internal/link, Kill). Still unbound - the two quick-cut sequences above
+	// wait for the input daemon - and reachable by name from the palette.
+	"net.kill": {Group: "net", Desc: "cut every link NetworkManager holds, and put it back (the radios stay on)", Spawn: []string{"zde", "net", "kill"}, written: true},
 
 	// modes: not wired yet - the mode mechanism is a verify item
 	// (docs/roadmap.md). menu is the entry point (pick a mode); the rest are
@@ -329,8 +334,14 @@ var registry = map[string]Entry{
 	// application may ever have. Lock stays reachable while a grab is on
 	// because this bind exists, so the awkward chord is the one that has to
 	// work and the frequent one does not.
-	"system.lock":  {Group: "system", Desc: "lock the screen", Spawn: []string{"zde", "system", "lock"}, written: true, Unsuppressible: true},
-	"system.quiet": {Group: "system", Desc: "toggle quiet (do not disturb)", Spawn: []string{"zde", "system", "quiet"}, written: true},
+	"system.lock": {Group: "system", Desc: "lock the screen", Spawn: []string{"zde", "system", "lock"}, written: true, Unsuppressible: true},
+	// The same lock, over a desk chosen in advance: what is on the screen when
+	// the lock takes it is what a shoulder reads and what an unlock puts back
+	// (docs/vision.md, W23). Unsuppressible for the reason lock is - it is the
+	// same act - and unbound, so that costs nothing now and is already right
+	// the day it gets a chord, which is what this file does with desk.block.
+	"system.lock-preset": {Group: "system", Desc: "switch to the preset desk, then lock, so an unlock shows that desk and not your work", Spawn: []string{"zde", "system", "lock-preset"}, written: true, Unsuppressible: true},
+	"system.quiet":       {Group: "system", Desc: "toggle quiet (do not disturb)", Spawn: []string{"zde", "system", "quiet"}, written: true},
 	// The way back, and the general answer the named exceptions are not: it
 	// turns the focused surface's inhibitor off, so every other zde key works
 	// again, and a second press hands them back. Without it the protected set is

@@ -1146,6 +1146,63 @@ of this has met one.
   argument), `zde net disconnect` and `zde net forget SSID` are the same thing
   from a terminal, and the path that does not take the keyboard.
 
+### The kill switch
+
+`net.kill` has no chord: it is `zde net kill`, or the palette on `Mod+semicolon`
+by name. It cuts NetworkManager's networking switch, which is wired and wifi at
+once, so **do this on a machine you are sitting in front of** - over ssh it
+takes the session with it.
+
+- **Cut it, and watch the bar.** `net: cut`, and in a colour nothing else on that
+  strip uses. This is the whole point: with the switch off NetworkManager reports
+  no link, so a bar that said "no network" would be describing a fault where
+  there is a decision. `zde net status` says the same word.
+- **Press it again.** The link comes back with no password typed and no profile
+  remade: a cut leaves every saved network saved. If anything has to be re-entered,
+  that is the failure this verb is arranged to avoid.
+- **Bluetooth stays up while it holds.** A bluetooth keyboard or mouse keeps
+  working, which is the reason the radios are left alone - on a laptop with no
+  cable, the keyboard that undoes this is the one that must not go with it.
+  A bluetooth *network* (PAN) does go, because NetworkManager manages that.
+- **Something outside NetworkManager keeps working**, and is meant to: a
+  wireguard interface brought up by hand, a container bridge. The per-app cut in
+  0.3 is what reaches those, and `zde net status` claims nothing about them.
+- **`nmcli networking on` in a terminal while zde is holding the cut.** The bar
+  should stop saying `cut` within five seconds - nothing here remembers having
+  cut anything, it asks NetworkManager - and the next `zde net kill` should cut
+  rather than restore.
+- **Restart zded while it holds** (`systemctl --user restart zded`). The bar
+  still says `cut` when it comes back, for the same reason.
+- **An account that is not in the `networkmanager` group** gets polkit's refusal
+  in words. A key that silently did nothing is the outcome this must not have.
+- **A machine with no NetworkManager at all** - any zde desktop, since layer 0
+  installs it only with `zde.laptop.enable` - refuses and says so, rather than
+  reporting a cut it did not make.
+
+### lock-preset
+
+`zde system lock-preset`, or the palette by name; no chord yet. Set
+`zde.lock.preset` in the home-manager config first, to a desk that exists.
+
+- **Work on one desk, run it, unlock.** What is on the screen at the lock and
+  after the unlock is the preset desk, not what you were doing. This is the
+  check: if the switch and the lock race, the desk does change - a moment too
+  late, with your work behind the lock screen in between.
+- **With `zde.lock.preset` unset** it locks where you are and prints the option
+  to set. Same for a preset naming a desk that no longer exists, which names the
+  desk.
+- **A preset naming a desk that declares `private: true`** locks where you are
+  and says why. Switching *to* a private desk would put the one desk built to be
+  unseen on the screen an unlock reveals.
+- **With no locker at all** it refuses, and nothing has moved. Layer 1 defaults
+  `zde.apps.lock` to swaylock, so this takes `zde.apps.lock = lib.mkForce [ ]`
+  or a zde built by hand. Check the desk really is where you left it: a session
+  walked off its desk and left unlocked is worse than a key that did nothing.
+- **On a machine whose locker is configured but broken** it still switches and
+  still reports "locking". zded starts the locker and does not wait for it, so
+  a locker that exits immediately is a screen that did not lock - the same gap
+  `zde system lock` and the power menu's lock row have.
+
 ### Bluetooth
 
 Needs an adapter, something to pair with, and the radio turned on:

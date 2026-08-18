@@ -174,6 +174,31 @@ in
       '';
     };
 
+    lock.preset = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      example = "haven";
+      description = ''
+        The desk `system.lock-preset` switches to before it locks, so that what
+        an unlock shows - and what a shoulder reads over the lock screen - is
+        that desk and not whatever you were doing.
+
+        The name of a desk, as a manifest declares it
+        (`~/.config/zde/desks/<name>.yaml`). Unset is the default and locks
+        where you are: `zde system lock` and `system.lock-preset` are then the
+        same thing, said differently.
+
+        It never refuses to lock. A name that is unset, names a desk that is
+        gone, or names a desk declared `private: true` - which is the one desk
+        an unlock should not reveal - locks where you are and says which of
+        those it was. The one case that refuses is a machine with no locker at
+        all - `zde.apps.lock`, which this module defaults to swaylock, so it
+        takes an override or a zde built by hand - and it refuses before
+        anything moves: a session walked off its desk and left unlocked is
+        worse than a key that does nothing.
+      '';
+    };
+
     ask.tiers = lib.mkOption {
       type = lib.types.attrsOf (lib.types.listOf lib.types.str);
       default = { };
@@ -411,6 +436,12 @@ in
       # when it is empty: the file being there and saying nothing is what makes
       # `Mod+a` answer with the option to set rather than with a missing file.
       "zde/ask.json".text = builtins.toJSON cfg.ask.tiers;
+
+      # And which desk an unlock should show. Written even when it is empty,
+      # for the reason ask.json is: the file being there and saying nothing is
+      # what makes lock-preset lock and say which option to set, rather than
+      # look at a missing file and guess.
+      "zde/lock.json".text = builtins.toJSON { preset = cfg.lock.preset; };
     };
 
     # dynamic.kdl is the seam zded writes through, so home-manager seeds it and
