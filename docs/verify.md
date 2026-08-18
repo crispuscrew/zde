@@ -1145,68 +1145,9 @@ of this has met one.
 - `zde net status`, `zde net connect SSID` (the password on stdin, never in an
   argument), `zde net disconnect` and `zde net forget SSID` are the same thing
   from a terminal, and the path that does not take the keyboard.
-
-### The kill switch
-
-`net.kill` has no chord: it is `zde net kill`, or the palette on `Mod+semicolon`
-by name. It cuts NetworkManager's networking switch, which is wired and wifi at
-once, so **do this on a machine you are sitting in front of** - over ssh it
-takes the session with it.
-
-- **Cut it, and watch the bar.** `net: cut`, and in a colour nothing else on that
-  strip uses. This is the whole point: with the switch off NetworkManager reports
-  no link, so a bar that said "no network" would be describing a fault where
-  there is a decision. `zde net status` says the same word.
-- **Press it again.** The link comes back with no password typed and no profile
-  remade: a cut leaves every saved network saved. If anything has to be re-entered,
-  that is the failure this verb is arranged to avoid.
-- **Bluetooth stays up while it holds.** A bluetooth keyboard or mouse keeps
-  working, which is the reason the radios are left alone - on a laptop with no
-  cable, the keyboard that undoes this is the one that must not go with it.
-  A bluetooth *network* (PAN) does go, because NetworkManager manages that.
-- **Something outside NetworkManager keeps working**, and is meant to: a
-  wireguard interface brought up by hand, a container bridge. The per-app cut in
-  0.3 is what reaches those, and `zde net status` claims nothing about them.
-- **`nmcli networking on` in a terminal while zde is holding the cut.** The bar
-  should stop saying `cut` within five seconds - nothing here remembers having
-  cut anything, it asks NetworkManager - and the next `zde net kill` should cut
-  rather than restore.
-- **Restart zded while it holds** (`systemctl --user restart zded`). The bar
-  still says `cut` when it comes back, for the same reason.
-- **An account that is not in the `networkmanager` group** gets polkit's refusal
-  in words. A key that silently did nothing is the outcome this must not have.
-- **A machine with no NetworkManager at all** - any zde desktop, since layer 0
-  installs it only with `zde.laptop.enable` - refuses and says so, rather than
-  reporting a cut it did not make.
-
-### lock-preset
-
-`zde system lock-preset`, or the palette by name; no chord yet. Set
-`zde.lock.preset` in the home-manager config first, to a desk that exists.
-
-- **Work on one desk, run it, unlock.** What is on the screen at the lock and
-  after the unlock is the preset desk, not what you were doing. This is the
-  check: if the switch and the lock race, the desk does change - a moment too
-  late, with your work behind the lock screen in between.
-- **With `zde.lock.preset` unset** it locks where you are and prints the option
-  to set. Same for a preset naming a desk that no longer exists, which names the
-  desk.
-- **A preset naming a desk that declares `private: true`** locks where you are
-  and says why. Switching *to* a private desk would put the one desk built to be
-  unseen on the screen an unlock reveals.
-- **A manifest that will not parse, anywhere in the desks directory**, also
-  locks where you are and names the file. The check fails closed on purpose: the
-  switch does not need a manifest, so a machine where nothing can say whether the
-  preset is private would otherwise switch to one. `zde status` names the file
-  too, and fixing it is what turns the preset back on.
-- **With no locker at all** it refuses, and nothing has moved. Layer 1 defaults
-  `zde.apps.lock` to swaylock, so this takes `zde.apps.lock = lib.mkForce [ ]`
-  or a zde built by hand. Check the desk really is where you left it: a session
-  walked off its desk and left unlocked is worse than a key that did nothing.
-- **On a machine whose locker is configured but broken** it still switches and
-  still reports "locking". zded starts the locker and does not wait for it, so
-  a locker that exits immediately is a screen that did not lock - the same gap
-  `zde system lock` and the power menu's lock row have.
+- **Cutting the network on purpose** is `net.kill`, and it is in section 12 with
+  the rest of the security set rather than here: what it turns off is
+  NetworkManager, not a radio.
 
 ### Bluetooth
 
@@ -1576,9 +1517,77 @@ What only a session settles:
   sample by construction (`internal/zded/idle.go`, `holdsMax`).
 - **What it is worth on a machine that does not lock on idle**, which today is
   every zde machine: nothing auto-locks yet, so an idle hold currently costs
-  only whatever logind's own `IdleActionSec` would have done. This is worth
-  deciding about before the lock preset lands (roadmap 0.3), because that is the
-  release where this stops being an indicator and starts being a hole.
+  only whatever logind's own `IdleActionSec` would have done. `lock-preset` has
+  landed since this was written and does not change it - both locks are a key
+  somebody presses - so the release where this stops being an indicator and
+  starts being a hole is still the one where something locks on its own.
+
+## 12. The security set
+
+The first two of 0.2's set are written; guest, panic and the decoy, zen and
+capture-block are not, and are in the list below. Neither of these has a chord:
+both are `zde` verbs, and both are rows in the palette on `Mod+semicolon`.
+
+### The kill switch
+
+`zde net kill` cuts NetworkManager's networking switch, which is wired and wifi
+at once, so **do this on a machine you are sitting in front of** - over ssh it
+takes the session with it.
+
+- **Cut it, and watch the bar.** `net: cut`, and in a colour nothing else on that
+  strip uses. This is the whole point: with the switch off NetworkManager reports
+  no link, so a bar that said "no network" would be describing a fault where
+  there is a decision. `zde net status` says the same word.
+- **Press it again.** The link comes back with no password typed and no profile
+  remade: a cut leaves every saved network saved. If anything has to be re-entered,
+  that is the failure this verb is arranged to avoid.
+- **Bluetooth stays up while it holds.** A bluetooth keyboard or mouse keeps
+  working, which is the reason the radios are left alone - on a laptop with no
+  cable, the keyboard that undoes this is the one that must not go with it.
+  A bluetooth *network* (PAN) does go, because NetworkManager manages that.
+- **Something outside NetworkManager keeps working**, and is meant to: a
+  wireguard interface brought up by hand, a container bridge. The per-app cut in
+  0.3 is what reaches those, and `zde net status` claims nothing about them.
+- **`nmcli networking on` in a terminal while zde is holding the cut.** The bar
+  should stop saying `cut` within five seconds - nothing here remembers having
+  cut anything, it asks NetworkManager - and the next `zde net kill` should cut
+  rather than restore.
+- **Restart zded while it holds** (`systemctl --user restart zded`). The bar
+  still says `cut` when it comes back, for the same reason.
+- **An account that is not in the `networkmanager` group** gets polkit's refusal
+  in words. A key that silently did nothing is the outcome this must not have.
+- **A machine with no NetworkManager at all** - any zde desktop, since layer 0
+  installs it only with `zde.laptop.enable` - refuses and says so, rather than
+  reporting a cut it did not make.
+
+### lock-preset
+
+`zde system lock-preset`. Set `zde.lock.preset` in the home-manager config
+first, to a desk that exists.
+
+- **Work on one desk, run it, unlock.** What is on the screen at the lock and
+  after the unlock is the preset desk, not what you were doing. This is the
+  check: if the switch and the lock race, the desk does change - a moment too
+  late, with your work behind the lock screen in between.
+- **With `zde.lock.preset` unset** it locks where you are and prints the option
+  to set. Same for a preset naming a desk that no longer exists, which names the
+  desk.
+- **A preset naming a desk that declares `private: true`** locks where you are
+  and says why. Switching *to* a private desk would put the one desk built to be
+  unseen on the screen an unlock reveals.
+- **A manifest that will not parse, anywhere in the desks directory**, also
+  locks where you are and names the file. The check fails closed on purpose: the
+  switch does not need a manifest, so a machine where nothing can say whether the
+  preset is private would otherwise switch to one. `zde status` names the file
+  too, and fixing it is what turns the preset back on.
+- **With no locker at all** it refuses, and nothing has moved. Layer 1 defaults
+  `zde.apps.lock` to swaylock, so this takes `zde.apps.lock = lib.mkForce [ ]`
+  or a zde built by hand. Check the desk really is where you left it: a session
+  walked off its desk and left unlocked is worse than a key that did nothing.
+- **On a machine whose locker is configured but broken** it still switches and
+  still reports "locking". zded starts the locker and does not wait for it, so
+  a locker that exits immediately is a screen that did not lock - the same gap
+  `zde system lock` and the power menu's lock row have.
 
 ## Expected to be missing
 
@@ -1620,11 +1629,11 @@ Not bugs, do not report them:
   | `Mod+Shift+Tab` (last desk), `Mod+Ctrl+Tab` (send the focused window to a desk you pick), `Mod+Ctrl+Shift+Tab` (send the whole workspace, which is how the regulars are made) | |
   | `Mod+period`/`comma`, `Mod+Shift+m`, `Mod+Ctrl+m` (volume, mute, mic) | |
   | `Mod+b`, `Mod+Shift+b` (brightness, on a machine with a backlight) | |
-  | `zde status`, `doctor`, `report`, `keys`, `palette`, `ask`, `attn`, `queue`/`add`/`done`/`clear` | `zde net observe\|app-cut\|kill` |
+  | `zde status`, `doctor`, `report`, `keys`, `palette`, `ask`, `attn`, `queue`/`add`/`done`/`clear` | `zde net observe\|app-cut` |
   | `zde app list\|launch`, `window jump-to`, `workspace next\|prev`, `nav down\|up` | `zde desk panic\|zen\|block\|pause`, which are not verbs at all |
-  | `zde net status\|connect\|disconnect\|forget` | `zde pass`, `media`, `mode` |
+  | `zde net status\|connect\|disconnect\|forget\|kill` | `zde pass`, `media`, `mode` |
   | `zde clip history [ID]`, `zde clip clear` | |
-  | `zde system lock\|quiet\|notif-center\|notif-reach\|connections\|bluetooth\|power` | `zde system calendar\|wallpapers` |
+  | `zde system lock\|lock-preset\|quiet\|notif-center\|notif-reach\|connections\|bluetooth\|power` | `zde system calendar\|wallpapers` |
   | every other `zde desk` verb: `list`, `switch`, `switcher`, `next`/`prev`/`last`, `apps`, `snapshot`, `reconcile`, `queue-jump`, `regulars`, `move-window`, `move-window-to [NAME]`, `move-workspace-to [NAME]` (with no name they open the picker, which is what the two chords above spawn) | a manifest's `policies.zen`, `background: pause`, `on_enter`/`on_exit`, all parsed and read by nobody |
   | a manifest's `policies.attn`: entering the desk puts the session in the mode it declares | |
   | the niri natives: columns, monitors, fullscreen, float, close, overview, consume/expel, layout switch | |
