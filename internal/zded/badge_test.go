@@ -232,6 +232,72 @@ func TestTheBadgeIsNotReadOffTheName(t *testing.T) {
 	}
 }
 
+// The queue's other reservation, over the same bus and read the same way.
+//
+// An empty sender column is drawn as a dash, and a dash there means a person
+// typed this (cmd/zde, dash). So a name that draws as a lone dash puts an app's
+// message in among the reminders somebody wrote, and it was three bytes away:
+// the reservation compared "-" against the bytes oneLine left, and oneLine keeps
+// the zero-width joiner on purpose. `notify-send -a "$(printf -- '-<zwj>')"` is
+// the whole of the attack, and the row it made was indistinguishable on screen
+// from one out of `zde queue add`.
+//
+// Not a matcher test, for the reason the one above is not: the claim is about
+// what a surface is handed, so it is asked of the real interface with the real
+// server holding the real name, and answered out of the reply the centre binds
+// to. Names beyond the joiner because the fix is a class rather than a rune - a
+// combining acute and a variation selector are the same shape of thing, and the
+// whole code space is swept where the rule lives (internal/attn,
+// TestNoRuneLetsAClaimDrawAsADash).
+func TestNothingOnTheBusCanLookHandTyped(t *testing.T) {
+	s, _ := deskThatDeclares(t, "nvim")
+	t.Setenv("DBUS_SESSION_BUS_ADDRESS", startPrivateBus(t))
+	server, err := attn.Serve(s, "test")
+	if err != nil {
+		t.Fatalf("taking the notification name on a bus of this test's own: %v", err)
+	}
+	defer server.Close()
+
+	client := notifyClient(t)
+	handTyped := []struct{ name, what string }{
+		{"-", "the dash itself"},
+		{"-‍", "a dash and a zero-width joiner"},
+		{"‍-", "a joiner and then a dash"},
+		{"-́", "a dash with a combining acute on it"},
+		{"-️", "a dash and a variation selector"},
+		{"‍", "nothing but a joiner"},
+		{"", "no name at all"},
+	}
+	for _, l := range handTyped {
+		// What the name is meant to look like goes in the summary, because none
+		// of these names can be read in source and a failure below has to be
+		// able to say which one it found.
+		notify(t, client, l.name, "ring the bank about the transfer, sent as "+l.what)
+	}
+
+	// And a summary with nothing in it to read is refused at that same door, so
+	// there is no row for one of these to be the sender of. It used to be
+	// accepted, and what landed was a queue row with an empty text column.
+	for _, summary := range []string{"‍", "‍‍‍‍‍", "́"} {
+		call := client.Call("org.freedesktop.Notifications.Notify", 0,
+			"app", uint32(0), "", summary, "", []string{}, map[string]dbus.Variant{}, int32(-1))
+		if call.Err == nil {
+			t.Errorf("a summary of %q was accepted over the bus, and there is nothing in it to read", summary)
+		}
+	}
+
+	rows := drawnRows(t, s, len(handTyped))
+	for _, r := range rows {
+		// The bus's own name for the connection, which is what all of them fall
+		// back to: an address, and no app name looks like one.
+		if !strings.HasPrefix(r.From, ":") {
+			t.Errorf("an arrival off the bus is drawn in the sender column as %q (%s), and that "+
+				"column is what a person reads as the mark of something they typed themselves "+
+				"(internal/attn, claim)", r.From, r.Text)
+		}
+	}
+}
+
 // drawnRows is what Mod+n hands the notification centre, once the history holds
 // what the test put in it.
 func drawnRows(t *testing.T, s *Server, want int) []drawnRow {

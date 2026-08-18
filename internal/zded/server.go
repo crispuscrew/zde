@@ -2092,7 +2092,19 @@ func (s *Server) whereWeAre() string {
 // the CLI, and the bar after it - so a newline would turn one item into two,
 // and the second would have no id.
 func checkQueueText(text string) error {
-	if text == "" {
+	// Empty and drawing-nothing are one refusal, because they are one thing to
+	// whoever comes back to the queue: a row with nothing in the column they
+	// read. A bare combining mark is printable by every test Go has and draws
+	// no character of its own, and that is what this catches that the loop
+	// below does not.
+	//
+	// The floor the notification door stands on as well, asked with the same
+	// function so that the two cannot drift (internal/attn, Draws). It is only
+	// the floor. Above it this door is the stricter of the two on purpose: it
+	// refuses a tab where oneLine folds one, because a person typing a reminder
+	// can be told to try again and an app's notification is the only copy there
+	// will ever be of something that already happened (internal/attn, oneLine).
+	if !attn.Draws(text) {
 		return errors.New("nothing to wait for: say what it is")
 	}
 	// Runes, not bytes: a reminder written in Cyrillic is not half a reminder.
