@@ -1507,8 +1507,8 @@ func (s *Server) ensureDeclared(target string) ([]desk.Name, error) {
 // this machine cannot hold right now. Empty when there are none.
 //
 // Through attn.Line for the reason reconcile's answer is: this line is printed
-// raw, and that these names hold nothing a terminal would act on is a decision
-// made in another package for another purpose.
+// raw, and that these names hold nothing a terminal would act on was decided in
+// another package for another purpose.
 func waitingNote(waiting []desk.Name) string {
 	if len(waiting) == 0 {
 		return ""
@@ -1817,6 +1817,7 @@ func (s *Server) carryTo(to, from string) Response {
 	// land by the map as it was and the switch arrive by the map as it became
 	// - and its errors would strand a window that had already left, on a desk
 	// nothing could then reach.
+	//
 	// The note is dropped here: the switch below runs ensureDeclared again and
 	// answers with it.
 	if _, err := s.ensureDeclared(to); err != nil {
