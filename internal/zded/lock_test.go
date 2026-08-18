@@ -229,6 +229,31 @@ func TestAManifestThatWillNotParseStopsTheSwitchRatherThanTheCheck(t *testing.T)
 	}
 }
 
+// The note goes to a terminal, and every name in it came out of a file somebody
+// or something else wrote: the desks directory, which an agent may author
+// (docs/model.md, section 5), and lock.json. So it goes through the filter every
+// other foreign line in zde does, or a manifest could clear the screen the
+// refusal was printed on.
+//
+// The mutation: drop attn.Line from the manifest-problem branch. The escape
+// arrives whole.
+func TestTheNoteCannotCarryAnEscapeOutOfAFileSomebodyElseWrote(t *testing.T) {
+	s, _, _ := lockServer(t, "haven", map[string]string{
+		"bro\x1b[2Jken": "name: haven\nmonitorz: nope\n",
+	})
+
+	resp := s.Dispatch(Request{Method: "system.lock-preset"})
+	if resp.Error != "" {
+		t.Fatalf("system.lock-preset: %s", resp.Error)
+	}
+	if strings.ContainsRune(resp.Note, '\x1b') {
+		t.Errorf("the note carries an escape out of a manifest's name: %q", resp.Note)
+	}
+	if !strings.Contains(resp.Note, "ken.yaml") {
+		t.Errorf("the note reads %q, and the file is still what somebody has to go and fix", resp.Note)
+	}
+}
+
 // Nothing to lock with is the one failure that stops this action, and it stops
 // it before anything moves. The alternative is a session walked off its desk and
 // left unlocked on another one, which is worse than a key that does nothing.
