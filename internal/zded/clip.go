@@ -359,23 +359,36 @@ func (s *Server) clipPut(id string) Response {
 	return ok([]string{})
 }
 
-// clipPutOn is clipPut answered off the connection's read loop, so that the
-// three seconds internal/clip allows a clipboard write are not three seconds in
-// which this connection's other requests go unread (internal/zded, handle).
+// clipPutOn takes the claim on the connection's read loop and answers off it,
+// so that the three seconds internal/clip allows a clipboard write are not three
+// seconds in which this connection's other requests go unread (internal/zded,
+// handle).
 //
 // Out of order with anything asked after it, which the two clients this has are
 // built for: the CLI sends one request per connection and waits, and the shell's
 // stream matches replies by shape because the protocol has no request ids
 // (shell/shell.qml). What it must not do is overlap with itself, hence the
 // claim - the read loop used to provide that for free.
+//
+// The claim is taken before the goroutine and not inside it, which is where the
+// read loop's back-pressure went. This was `go s.clipPutOn(...)`, so the claim
+// bounded the wl-copy calls and nothing bounded the goroutines: a refused put
+// still cost one, and it ended in a reply that parks for up to replyWait against
+// a client that is not reading. Measured on a running zded, one connection
+// sending `clip.history <id>` and never reading: 400,000 lines took it from 3
+// goroutines to 399,756 and its RSS from 8.8 MB to 2.15 GB. Refused here, the
+// refusal is written by the goroutine that read the line and the connection gets
+// one at a time.
 func (s *Server) clipPutOn(k *sink, id string) {
 	if !k.putting.CompareAndSwap(false, true) {
 		k.reply(Response{Error: "this connection is still putting the last entry back on the clipboard: " +
 			"wait for it, or ask on another"})
 		return
 	}
-	defer k.putting.Store(false)
-	k.reply(s.clipPut(id))
+	go func() {
+		defer k.putting.Store(false)
+		k.reply(s.clipPut(id))
+	}()
 }
 
 // clipClear forgets the history now, wiping it rather than unlisting it

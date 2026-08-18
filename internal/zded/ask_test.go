@@ -627,11 +627,18 @@ func TestATierDoesNotOutliveTheDaemonThatStartedIt(t *testing.T) {
 	}
 
 	// And nothing new begins after that, which is what keeps a run from being
-	// counted while the count is being waited on.
+	// counted while the count is being waited on. Through askOn, which is what
+	// the read loop calls: startRun below it now answers whether it started, and
+	// the sentence is said by the caller that took the claims back.
 	rec := &recorder{}
-	s.startRun(&sink{w: rec}, []string{TierProvider, "one more"})
+	s.askOn(&sink{w: rec}, []string{TierProvider, "one more"})
 	if !strings.Contains(rec.String(), "stopping") {
 		t.Errorf("an ask that arrived after the daemon stopped was answered with %q", rec.String())
+	}
+	// And the claims it took on the way in came back, or the next ask on a
+	// daemon that had not stopped would be refused by a place nothing is using.
+	if n := s.asking(); n != 0 {
+		t.Errorf("the refused ask left %d of the daemon's %d places claimed", n, asksMax)
 	}
 }
 
@@ -1179,7 +1186,7 @@ func TestAPanelAskedForWithAQuestionOpensWithThatQuestionInIt(t *testing.T) {
 
 	// With the whitespace a question read from a pipe brings with it: what the
 	// window draws and what a tier is handed have to be the same string, and
-	// askRun trims.
+	// askOn trims.
 	resp := s.Dispatch(Request{Method: "ask.panel", Args: []string{"  what is the capital of peru\n"}})
 	if resp.Error != "" {
 		t.Fatalf("ask.panel with a question: %s", resp.Error)
@@ -1215,10 +1222,10 @@ func TestTheOneshotPopupIsNeverHandedAQuestion(t *testing.T) {
 	}
 }
 
-// An empty question is the one thing no tier can be asked (see askRun), and a
+// An empty question is the one thing no tier can be asked (see askOn), and a
 // panel that opened on one would ask it and show the refusal - a window that
 // appeared to say that what opened it was nothing. Refused where it arrives
-// instead, in the words askRun uses.
+// instead, in the words askOn uses.
 func TestAPanelQuestionOfNothingButSpaceOpensNoPanel(t *testing.T) {
 	s := New("test", nil, &fakeCompositor{m: twoDesks()}, nil)
 	rec := &recorder{}
@@ -1368,5 +1375,31 @@ func TestALoopingTierCannotPushMoreThanAWindowHoldsIntoTheShell(t *testing.T) {
 	if !strings.Contains(failure, "was stopped") {
 		t.Errorf("the tier was not stopped, so %d KiB is what it chose to say and not what it "+
 			"was allowed to: %q", len(text)>>10, failure)
+	}
+}
+
+// One piece of an answer waits exactly as long as a reply does, because they
+// were chosen to be one number.
+//
+// This is the odd one out among the bounds in this package, and worth saying why
+// rather than leaving it unheld. askSendWait has no absolute consequence to
+// assert: what it bounds is a client that has stopped reading while an answer is
+// being pushed at it, and the daemon's cost is one goroutine parked in a write
+// whatever the number is. The number's whole justification is that it is the
+// client's own - Call puts five seconds on the round trip (client.go), so a
+// piece written after that is one nobody is waiting for - and replyWait's
+// comment says the two are deliberately the same: "the socket has one number for
+// 'as long as anybody could still want this line' rather than two".
+//
+// So what is held here is that sentence. Either of them retuned alone is a
+// decision somebody has to come here and make on purpose.
+func TestOnePieceOfAnAnswerWaitsAsLongAsAReplyDoes(t *testing.T) {
+	if askSendWait != replyWait {
+		t.Errorf("one piece of an answer waits %v and a reply waits %v: they are one number, "+
+			"which is as long as anybody could still want the line", askSendWait, replyWait)
+	}
+	// And that one number is the client's, not a guess made on this side.
+	if askSendWait != 5*time.Second {
+		t.Errorf("askSendWait is %v against the five seconds Call gives a whole round trip (client.go)", askSendWait)
 	}
 }

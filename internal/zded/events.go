@@ -267,6 +267,14 @@ type sink struct {
 	// and waits, the window will not take a second question while one is
 	// running - and this is what makes that a property of the protocol rather
 	// than a habit of the only two callers there happen to be.
+	//
+	// It is also read by the connection cap, which skips a connection that has
+	// a tier running rather than dropping somebody's answer out from under them
+	// (server.go, admit). That second reader is why it is set only once the
+	// daemon's own place to run in has been claimed and never for a refusal:
+	// what admit's comment says about it - that asksMax bounds how many can be
+	// exempt - is only true of a flag a running tier sets. Set true by this
+	// connection's read loop alone, and cleared by the run it started.
 	asking atomic.Bool
 	// putting is whether a clipboard write asked for on this connection is still
 	// happening. One at a time, and for a plainer reason than asking's: the read
@@ -274,6 +282,10 @@ type sink struct {
 	// without this would let one connection queue as many wl-copy processes as it
 	// can write lines - and two writes racing for the selection is two answers
 	// about which entry is on the clipboard.
+	//
+	// Claimed on the read loop, like asking and for the second reason it is:
+	// a claim taken inside the goroutine bounds the wl-copy calls and not the
+	// goroutines (clip.go, clipPutOn).
 	putting atomic.Bool
 	// pid is the process on the other end, from the credentials the kernel
 	// attaches to the socket (server.go, allowPeer). Set once, before this sink
@@ -527,12 +539,18 @@ func (k *sink) writeWithin(line []byte, wait time.Duration) error {
 // what holds it is a line already being written, and there is nothing useful to
 // queue a second one behind.
 //
-// And said on a goroutine of its own, which is the other half of that (server.go,
-// handle). The bound is 200ms, and the caller with something to lose is the
-// connection that has just arrived - which may be the shell, dialling again into
-// a full table. Measured on the arriving connection while the victim's gate was
-// held: 200.6 to 200.9ms before this was moved off it, which is the whole of the
-// ackWait a keypress has to be acknowledged in.
+// And said on a goroutine of its own when the connection being told is not the
+// one telling it (server.go, handle). The bound is 200ms, and the caller with
+// something to lose is the connection that has just arrived - which may be the
+// shell, dialling again into a full table. Measured on the arriving connection
+// while the victim's gate was held: 200.6 to 200.9ms before this was moved off
+// it, which is the whole of the ackWait a keypress has to be acknowledged in.
+//
+// The other way round it must not be a goroutine at all, and that is the one
+// caller this has where the descriptor belongs to the caller: a connection that
+// paid for its own slot is told by its own handle, which then returns into a
+// deferred Close. Started as a goroutine there, the close won the race - 0 of 20
+// dials heard anything (server.go, handle).
 func (k *sink) drop(reason string) {
 	k.writeWithin(responseLine(Response{Error: reason}), sendWait)
 	if c, ok := k.w.(io.Closer); ok {
