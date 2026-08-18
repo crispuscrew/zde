@@ -58,6 +58,22 @@
   # has a real password, written down in a public document. Left alone, joining
   # a cafe network to do the wifi items would hand the session user to everyone
   # else on it.
+  #
+  # That is the remote half and it is the only half. The local one is left
+  # exactly as the installer CD has it, which is worth saying out loud because a
+  # line turning sshd off reads like a hardened image and this is not one:
+  # greetd holds VT1, and on VT2 upward the CD's own `nixos` account is
+  # autologged in by getty, with an empty password, in `wheel`, and
+  # `security.sudo.wheelNeedsPassword` is false. Anyone at this keyboard is one
+  # Ctrl+Alt+F2 from root and is asked for nothing on the way.
+  #
+  # Left that way because it is what the by-hand list needs: docs/verify.md
+  # sends you to a text console to read journals and restart units while the
+  # session is the thing under test, and a stick that touches no disk, keeps
+  # nothing and is meant to be pulled out has nothing on it worth that lock. The
+  # network is different because it is the one way in that does not need the
+  # keyboard. A machine you install gets the other answer, in templates/host -
+  # do not carry any of this into one.
   services.openssh.enable = lib.mkForce false;
 
   # nmtui works off networkmanager; `video` is what brightnessctl's udev rules

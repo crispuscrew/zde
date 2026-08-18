@@ -47,5 +47,8 @@
     device = "/dev/sda1";
     fsType = "ext4";
   };
-  system.stateVersion = "25.05";
+  # The release the template creates a machine at, so this throwaway host and a
+  # real one evaluate the same NixOS. The live image already gets 26.05 from the
+  # installer CD, so this was the last host disagreeing with the other two.
+  system.stateVersion = "26.05";
 }
