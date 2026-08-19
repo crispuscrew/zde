@@ -1334,8 +1334,10 @@ for a desktop nobody is sitting at is a remote shell with a friendlier name.
 **Phase**: 0.3. It is in no phase today, and 0.3 is where it belongs for three
 reasons. 0.2 is the phase that makes the desktop usable by the person sitting
 at it, and shipping remote control before the security set - guest, panic and
-the decoy, zen, lock-preset, capture-block, `net.kill` - would mean the machine
-can be driven from elsewhere before it can be hidden here. 0.3 already contains
+the decoy, lock-preset, capture-block, `net.kill` - would mean the machine can
+be driven from elsewhere before it can be hidden here. Zen was in that list and
+is out of it: it landed in 0.1, and it hides chrome rather than anything a
+person needs hidden. 0.3 already contains
 the other two places an LLM touches this system, doctor's runbook agent and
 update's re-pin agent, and the rules about what an agent may reach want writing
 once in one phase rather than three times in three. And one read tool waits on
