@@ -1518,6 +1518,59 @@ What only a session settles:
   deciding about before the lock preset lands (roadmap 0.3), because that is the
   release where this stops being an indicator and starts being a hole.
 
+## 12. Zen
+
+`Mod+Shift+z`: hide bar, borders, gaps; content only
+([`glossary.md`](glossary.md)). One key over two mechanisms, which is what makes
+it worth a section of its own. The bar is zde's own layer surface, so the shell
+unmaps it. The borders, the focus ring and the gaps are niri's, and niri 26.04
+exposes none of them over IPC - so zded writes a `layout` block into
+`~/.config/niri/dynamic.kdl`, the file it already owns, and asks niri to reload.
+
+CI proves the file is one niri's parser accepts, and the VM smoke test proves
+the bar leaves the layer list and a window grows. What it cannot prove is what
+this looks like to somebody using it.
+
+- **Both halves land, and together.** Press it: the strip goes, and the gap
+  between the window and the edge of the screen goes with it. Two presses back
+  and forth. A gap that stays is niri not reloading; a bar that stays is the
+  shell. `zde status` says which - the `zen` line is zded's own answer.
+- **The space comes back.** With one window open, watch its top edge. Zen should
+  give it the 26 pixels the bar was reserving, not draw over them. This is why
+  the bar is unmapped rather than made transparent.
+- **Both screens.** Zen is session-wide on purpose: niri's half has no
+  per-output spelling. On two monitors both bars go, and both sets of borders.
+- **What your applications still draw.** An app with its own titlebar keeps it.
+  `prefer-no-csd` is a request and some toolkits refuse it, so "content only" is
+  about the chrome zde and niri put there. Worth writing down which of your apps
+  ignore it, because that is the gap between the glossary's sentence and the
+  screen.
+- **A notification still arrives.** Zen changes no display policy: send yourself
+  one (`notify-send` from a terminal, or a real app) and the popup should appear
+  over a zen screen exactly as over any other. If it does not, that is a bug and
+  not zen working. The mode is what silences arrivals, and it has its own key.
+- **The microphone still shows.** Start something that captures - a call, a
+  recorder - and the bar must come back for as long as it holds the microphone,
+  then go again. This is the one exception zen makes, and the reason is that a
+  room being heard is not chrome. `zde desk zen` while the mic is live is the
+  case to check: the toggle takes, and the strip stays because of the mic rather
+  than because zen failed.
+- **The lock and the panic keys are untouched.** `Mod+Ctrl+semicolon` locks from
+  a zen session and the password unlocks it. Zen writes nothing about binds, so
+  this should be dull - check it once anyway, because dynamic.kdl is included by
+  the config that carries the keymap and that is the file zen writes.
+- **It survives a rebuild.** Turn zen on, then `systemctl --user restart
+  zde-bar` (or run a `nixos-rebuild switch`, which restarts it for you): the bar
+  must not come back. This is the whole reason the toggle is not kept in the
+  shell. Then `systemctl --user restart zded` and check the same thing.
+- **A dead daemon gives the bar back.** `systemctl --user stop zded` with zen on:
+  the strip should reappear, saying zded is not answering. A bar that stayed
+  hidden could only be brought back by the daemon that is gone.
+- **What a session with no shell does.** `zde desk zen` in a terminal with the
+  bar stopped still takes the borders and gaps, and prints which state it left
+  you in. That is the honest half, and it is the case where the printed line is
+  the only feedback there is.
+
 ## Expected to be missing
 
 Not bugs, do not report them:
@@ -1540,13 +1593,13 @@ Not bugs, do not report them:
 
   | Works | Silent |
   |---|---|
-  | `Mod+Tab` (the desk picker), `Mod+w` (the window one) | `Mod+Shift+Escape` (panic), `Mod+Shift+z` (zen) |
+  | `Mod+Tab` (the desk picker), `Mod+w` (the window one) | `Mod+Shift+Escape` (panic) |
   | `Mod+j`/`k` and the arrows (nav) | `Mod+Shift+v` (pass) |
   | `Mod+Shift+j`/`k` (move window) | `Mod+Shift+t`, `Mod+Shift+e` (launch-at) |
   | `Mod+r` (regulars), `Mod+u` (queue jump) | `Mod+p`, `Mod+Shift+p`, `Mod+Ctrl+p` (media) |
   | `Mod+t` (terminal) | `Mod+m` (modes), `Mod+Shift+n` (net observer) |
   | `Mod+n` (the notification centre, with the newest of it kept across a zded restart), `Mod+q` (quiet) | `Mod+c` (calendar), `Mod+Shift+w` (wallpapers) |
-  | `Mod+Ctrl+n` (the keyboard onto the newest popup) | |
+  | `Mod+Ctrl+n` (the keyboard onto the newest popup), `Mod+Shift+z` (zen) | |
   | `Mod+semicolon` (the palette), `Mod+Shift+x` (the power menu) | |
   | `Mod+a` (one question), `Mod+Shift+a` (a conversation), once a tier is set | `XF86AudioPlay`/`Next`/`Prev` (the media target) |
   | `Mod+Shift+c` (wifi, and the link you are on) | `Mod+e`, until `zde.apps.editor` names one (below) |
@@ -1559,7 +1612,7 @@ Not bugs, do not report them:
   | `Mod+period`/`comma`, `Mod+Shift+m`, `Mod+Ctrl+m` (volume, mute, mic) | |
   | `Mod+b`, `Mod+Shift+b` (brightness, on a machine with a backlight) | |
   | `zde status`, `doctor`, `report`, `keys`, `palette`, `ask`, `attn`, `queue`/`add`/`done`/`clear` | `zde net observe\|app-cut\|kill` |
-  | `zde app list\|launch`, `window jump-to`, `workspace next\|prev`, `nav down\|up` | `zde desk panic\|zen\|block\|pause`, which are not verbs at all |
+  | `zde app list\|launch`, `window jump-to`, `workspace next\|prev`, `nav down\|up`, `desk zen [on\|off\|toggle]` | `zde desk panic\|block\|pause`, which are not verbs at all |
   | `zde net status\|connect\|disconnect\|forget` | `zde pass`, `media`, `mode` |
   | `zde clip history [ID]`, `zde clip clear` | |
   | `zde system lock\|quiet\|notif-center\|notif-reach\|connections\|bluetooth\|power` | `zde system calendar\|wallpapers` |

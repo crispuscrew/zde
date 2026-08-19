@@ -10,7 +10,7 @@ zde is early, and this is what "early" means in practice:
 - **Part of the cheatsheet is silent.** The desks, the queue, notifications and
   the centre that reads them, the bar, the picker, the palette, the wifi list,
   screenshots, the clipboard history on `Mod+v` and a terminal work. pass,
-  media, the modes beyond Normal, panic and zen, the calendar, the wallpapers
+  media, the modes beyond Normal, panic, the calendar, the wallpapers
   and the power menu are keys that do nothing. Three more do nothing until you
   say what they are:
   ask has no tier until a machine names one, `Mod+e` has no editor until

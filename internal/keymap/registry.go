@@ -173,7 +173,11 @@ var registry = map[string]Entry{
 	// gets a chord - unbound, it costs nothing now and is already right then.
 	"desk.panic": {Group: "desk", Desc: "panic: decoy desk, mute, silence", Spawn: []string{"zde", "desk", "panic"}, Unsuppressible: true},
 	"desk.block": {Group: "desk", Desc: "block: hard lock, no notifications or capture leak", Spawn: []string{"zde", "desk", "block"}, Unsuppressible: true},
-	"desk.zen":   {Group: "desk", Desc: "toggle zen (content only)", Spawn: []string{"zde", "desk", "zen"}},
+	// zen hides chrome and nothing else, so it is deliberately not
+	// Unsuppressible and deliberately not WhenLocked: it is the comfort toggle
+	// beside two keys whose job is to work when something is wrong, and a key
+	// that only makes a screen quieter has no claim on either exception.
+	"desk.zen": {Group: "desk", Desc: "toggle zen: no bar, no borders, no gaps", Spawn: []string{"zde", "desk", "zen"}, written: true},
 	// pause is 0.3's, with the background policies and the per-desk cost widgets
 	// (docs/roadmap.md, resources), and nothing in this tree pauses anything: the
 	// manifest's `background: pause` is parsed and acted on by nobody

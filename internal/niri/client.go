@@ -196,6 +196,21 @@ func (c *Client) Perform(action string) error {
 	return c.Action(map[string]any{name: map[string]any{}}, name)
 }
 
+// ReloadConfig asks niri to read its config files again, now.
+//
+// It is the one thing niri 26.04 offers for the half of zen that is niri's.
+// There is no IPC action for gaps, borders or the focus ring - the whole action
+// list is windows, columns, workspaces, monitors and screenshots - so what zen
+// changes, it changes by writing the file niri already includes (internal/zded,
+// rules.go) and asking for this.
+//
+// Not required for the change to land: niri's own watcher polls the config and
+// its includes every 500ms and reloads on an mtime it has not seen
+// (src/utils/watcher.rs). This is what niri's own documentation for the action
+// says it is for - a script that has just written the file and would rather not
+// wait - so a refusal here is half a second of delay and not a failure.
+func (c *Client) ReloadConfig() error { return c.Perform("load-config-file") }
+
 // variant is a bind's action name in the spelling niri's IPC uses for it:
 // focus-column-left is FocusColumnLeft. One rule rather than a table of twenty,
 // because a table would be a second copy of the same list to keep true.

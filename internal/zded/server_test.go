@@ -59,6 +59,13 @@ type fakeCompositor struct {
 	// one is invisible to Go.
 	performed []string
 	failOn    string
+	// reloads is how many times niri was asked to read its config again. What
+	// zen writes is a file, so this is the only observable difference between
+	// "now" and "within half a second" (zen.go).
+	reloads int
+	// reloadErr is a niri that will not reload. zen has to survive it: the file
+	// is written either way and niri's own watcher picks it up.
+	reloadErr error
 }
 
 func (f *fakeCompositor) DeskMap() (*desk.Map, error) {
@@ -169,6 +176,22 @@ func (f *fakeCompositor) Perform(action string) error {
 	}
 	f.performed = append(f.performed, action)
 	return nil
+}
+
+func (f *fakeCompositor) ReloadConfig() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.reloadErr != nil {
+		return f.reloadErr
+	}
+	f.reloads++
+	return nil
+}
+
+func (f *fakeCompositor) reloadCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reloads
 }
 
 func (f *fakeCompositor) performCalls() []string {

@@ -583,6 +583,44 @@ func TestModeSurvivesCompaction(t *testing.T) {
 	}
 }
 
+// Zen survives a restart and a compaction, for the reason the mode does and one
+// more. The shell is what draws the bar and it is restarted by every
+// home-manager switch, so a toggle kept there would be undone by a rebuild
+// nobody connected to it. And zen is two halves - the bar here, niri's borders
+// in a config file that stays written - so a forgotten toggle is not a state
+// reset, it is the two halves disagreeing: a bar back on a screen that still
+// has no borders around anything.
+//
+// Both directions, because off is a state somebody arrived at. A journal that
+// recorded only "on" would replay a second press as though it never happened.
+func TestZenSurvivesReopenAndCompaction(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "j.jsonl")
+	j := open(t, path)
+	if err := j.SetZen(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Compact(); err != nil {
+		t.Fatal(err)
+	}
+	j.Close()
+
+	back := open(t, path)
+	if !back.Zen() {
+		t.Error("zen was on, the journal was compacted and reopened, and it came back off")
+	}
+	if err := back.SetZen(false); err != nil {
+		t.Fatal(err)
+	}
+	if err := back.Compact(); err != nil {
+		t.Fatal(err)
+	}
+	back.Close()
+
+	if open(t, path).Zen() {
+		t.Error("zen was turned off and a compacted journal still says it is on")
+	}
+}
+
 // Which desk lent the mode survives a restart, because the mode does. zded
 // restarts on every rebuild that touches it, and the two halves are one fact: a
 // session that came back in focus but had forgotten whose focus it was would

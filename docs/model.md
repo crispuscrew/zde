@@ -126,7 +126,11 @@ on_exit:  []
   there ends the loan; it is yours, it follows you off the desk, and the desk
   takes the mode again the next time you enter it. Only a desk switch applies
   it, so a desk you arrive on another way keeps the mode you came with.
-  `policies.zen` is parsed and read by nobody: zen is 0.2's security set.
+  `policies.zen` is parsed and read by nobody. The verb behind it is written -
+  `zde desk zen`, on `Mod+Shift+z` - but it is one session-wide toggle kept in
+  the journal, and a desk that could declare it would need the borrowing
+  `policies.attn` has: written down on the way in, given back on the way out.
+  That is the same argument as above and it is not made twice yet.
 - `app_id` is what the window calls itself, which is not what zinc calls the
   app: `app: browser` opens a window that says `org.mozilla.firefox`. Given it,
   the pin above becomes a niri window rule in `dynamic.kdl` and the window opens
@@ -169,9 +173,18 @@ without one. What that settled belongs in the keymap and not in a note here: a
 verb that takes a name wants a surface that offers the names, not a chord per
 name.
 
+`zen` is one verb over two mechanisms, and the split is niri's rather than a
+choice. The bar is zde's own layer-shell surface, so the shell unmaps it and the
+space it reserved goes back to the windows. The borders, the focus ring and the
+gaps are niri's, and niri 26.04 has no IPC action for any of them - so zded
+writes a `layout` block into the `dynamic.kdl` it already owns and asks niri to
+reload. That is also why zen is all screens and not the focused one: niri's half
+has no per-output spelling. The state is in the journal, so it survives the
+shell being restarted, which every home-manager switch does.
+
 | Group | Actions |
 |---|---|
-| desk | `switcher`, `nav-down`/`nav-up` (focus stacked window, else rotate desk), `switch <name>`, `next`, `prev`, `last`, `queue-jump`, `regulars`, `move-window-next`, `move-window-prev`, `move-window-to <name>`, `move-workspace-to <name>` (the whole workspace changes hands: how the regulars are made, and how work leaves them), `snapshot`, `reconcile`, `pause`, `panic`, `block`, `guest <name>`, `zen` |
+| desk | `switcher`, `nav-down`/`nav-up` (focus stacked window, else rotate desk), `switch <name>`, `next`, `prev`, `last`, `queue-jump`, `regulars`, `move-window-next`, `move-window-prev`, `move-window-to <name>`, `move-workspace-to <name>` (the whole workspace changes hands: how the regulars are made, and how work leaves them), `snapshot`, `reconcile`, `pause`, `panic`, `block`, `guest <name>`, `zen` (hide the bar, the borders and the gaps, on every screen; hides chrome and no information, so what may pop up is still attn's to decide) |
 | monitor | `focus <dir>`, `move-window <dir>`, `move-workspace <dir>` |
 | workspace | `next`/`prev` (band-clamped), `overview` |
 | window | `focus <dir>`, `move <dir>`, `resize`, `preset-width`, `consume`/`expel`, `float`, `fullscreen`, `close`, `capture-block`, `jump-to` (pick any open window and go to where it is; travels the hierarchy, and rearranges nothing) |
