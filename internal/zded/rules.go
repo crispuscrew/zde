@@ -17,9 +17,9 @@ import (
 // generated config is a read-only store path, so anything that changes while
 // the session runs lives here, and niri reloads the lot when it is written.
 //
-// Two things go in it. Zen's half of the chrome is one - niri 26.04 has no IPC
-// action for gaps or borders, so a file it already includes is the only way to
-// change them without a restart (zen.go).
+// Two things go in it. Zen's half of the chrome is one - nothing in niri 26.04's
+// IPC touches the layout section, so a file it already includes is the only way
+// to change gaps or borders without a restart (zen.go).
 //
 // The other is placement. A desk manifest pins an app to a
 // workspace, and until now nothing read that: a desk brought up three apps and

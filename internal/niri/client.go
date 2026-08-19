@@ -199,10 +199,10 @@ func (c *Client) Perform(action string) error {
 // ReloadConfig asks niri to read its config files again, now.
 //
 // It is the one thing niri 26.04 offers for the half of zen that is niri's.
-// There is no IPC action for gaps, borders or the focus ring - the whole action
-// list is windows, columns, workspaces, monitors and screenshots - so what zen
-// changes, it changes by writing the file niri already includes (internal/zded,
-// rules.go) and asking for this.
+// Nothing in its action list touches the layout section - there is no action for
+// gaps, for the border or for the focus ring - so what zen changes, it changes
+// by writing the file niri already includes (internal/zded, rules.go) and asking
+// for this.
 //
 // Not required for the change to land: niri's own watcher polls the config and
 // its includes every 500ms and reloads on an mtime it has not seen

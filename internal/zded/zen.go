@@ -9,10 +9,10 @@ import "log"
 // gives the space it was reserving back to the windows. That half is in
 // shell/shell.qml.
 //
-// The borders, the focus ring and the gaps are niri's, and niri 26.04 exposes
-// no way to change them while it runs: the whole IPC action list is windows,
-// columns, workspaces, monitors, screenshots and screencasts, and there is
-// nothing in it for the layout section. What there is, is a config it reloads.
+// The borders, the focus ring and the gaps are niri's, and niri 26.04 exposes no
+// way to ask for them: nothing in its IPC action list touches the layout section
+// at all. What it does expose is a config it reloads, and an action for asking
+// it to reload now.
 // So zen writes a `layout` block into dynamic.kdl - the file zded already owns
 // and niri already includes (rules.go) - and asks niri to reload. niri merges a
 // later file's layout over an earlier one, so the block overrides what
