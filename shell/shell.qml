@@ -1402,9 +1402,9 @@ ShellRoot {
         }
 
         // What the bar makes of zen, and why it is on the screen anyway. Four
-        // words, because three different reasons put a strip up while zen is on
+        // answers, because three different things put a strip up while zen is on
         // and only one of them is the widget working: "unknown" is zded not
-        // having answered, "mic" is the exception this bar makes on purpose,
+        // having answered, "on mic" is the exception this bar makes on purpose,
         // and "on" with no bar is what zen looks like when it works.
         function zen(): string {
             if (!root.zenKnown)

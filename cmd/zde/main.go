@@ -410,7 +410,11 @@ func status() error {
 	// And whether the chrome is hidden, which is the answer to "where is the
 	// bar". Always printed, including "off": a missing line would leave a
 	// session whose shell never started looking exactly like one in zen.
-	fmt.Printf("zen        %s\n", map[bool]string{true: "on", false: "off"}[st.Zen])
+	hidden := "off"
+	if st.Zen {
+		hidden = "on"
+	}
+	fmt.Printf("zen        %s\n", hidden)
 	fmt.Printf("queue      %d waiting\n", st.Queued)
 	if st.OnDesk != "" {
 		fmt.Printf("on desk    %s\n", st.OnDesk)
