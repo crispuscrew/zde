@@ -916,10 +916,13 @@ let
           nirimsg --json windows; exit 1
         }
         # And the bar says zen is off first, so what follows is a change rather
-        # than a state that was already there.
-        [ "$(barq zen)" = "off" ] || {
-          echo "the bar reads zen '$(barq zen)' before anything asked for it"; exit 1
-        }
+        # than a state that was already there. Waited for, like the mic and the
+        # count above: "unknown" is the honest answer until zded has said, and
+        # asking once races whichever tick this lands between.
+        zen_off() { zenread=$(barq zen); [ "$zenread" = "off" ]; }
+        if ! waitfor 20 zen_off; then
+          echo "the bar last read zen '$zenread' before anything asked for it"; exit 1
+        fi
 
         XDG_RUNTIME_DIR=$mgr zde desk zen 2>&1 | tee /tmp/zen-on.txt
         grep -q '^zen on' /tmp/zen-on.txt || {
