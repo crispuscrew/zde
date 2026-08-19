@@ -133,11 +133,17 @@ func TestPaletteRunsANativeThroughNiri(t *testing.T) {
 // the key does nothing and says nothing. A palette that ran one of those rows
 // the same way would be the same silence with an extra step, so it refuses and
 // says why - and it refuses before anything is started.
+//
+// The row is the wallpapers widget, which nothing is written behind and nothing
+// in flight is writing. It used to be panic, and panic is written now
+// (internal/zded, deskPanic): what this test needs is a dead row, and picking
+// one somebody is about to bring to life is how it goes red for the wrong
+// reason.
 func TestPaletteRefusesWhatIsNotWrittenYet(t *testing.T) {
-	withCheatsheet(t, "desk\n  Mod+Shift+Escape\tdesk.panic\tpanic: decoy desk, mute, silence\n")
+	withCheatsheet(t, "system\n  Mod+Shift+w\tsystem.wallpapers\tthe wallpapers widget\n")
 	s, _, sp := paletteServer(t)
 
-	resp := s.Dispatch(Request{Method: "palette.run", Args: []string{"desk.panic"}})
+	resp := s.Dispatch(Request{Method: "palette.run", Args: []string{"system.wallpapers"}})
 	if resp.Error == "" {
 		t.Fatal("the palette ran an action with nothing behind it")
 	}
@@ -155,19 +161,20 @@ func TestPaletteRefusesWhatIsNotWrittenYet(t *testing.T) {
 func TestPaletteMarksTheSilentRowsAndKeepsThem(t *testing.T) {
 	withCheatsheet(t, "desk\n"+
 		"  Mod+Tab\tdesk.switcher\topen the desk switcher\n"+
-		"  Mod+Shift+Escape\tdesk.panic\tpanic: decoy desk, mute, silence\n")
+		"system\n"+
+		"  Mod+Shift+w\tsystem.wallpapers\tthe wallpapers widget\n")
 	s, _, _ := paletteServer(t)
 	p := list(t, s)
 
-	panicRow := row(t, p, "desk.panic")
-	if panicRow.Live {
-		t.Error("desk.panic reads as working, and pressing its key does nothing at all")
+	silent := row(t, p, "system.wallpapers")
+	if silent.Live {
+		t.Error("system.wallpapers reads as working, and pressing its key does nothing at all")
 	}
-	if panicRow.Why == "" {
+	if silent.Why == "" {
 		t.Error("a row that cannot run says nothing about why")
 	}
-	if panicRow.Key != "Mod+Shift+Escape" {
-		t.Errorf("the silent row lost its key: %+v", panicRow)
+	if silent.Key != "Mod+Shift+w" {
+		t.Errorf("the silent row lost its key: %+v", silent)
 	}
 	if live := row(t, p, "desk.switcher"); !live.Live || live.Why != "" {
 		t.Errorf("desk.switcher reads as %+v, and Mod+Tab works", live)

@@ -10,9 +10,11 @@ zde is early, and this is what "early" means in practice:
 - **Part of the cheatsheet is silent.** The desks, the queue, notifications and
   the centre that reads them, the bar, the picker, the palette, the wifi list,
   screenshots, the clipboard history on `Mod+v` and a terminal work. pass,
-  media, the modes beyond Normal, panic and zen, the calendar, the wallpapers
-  and the power menu are keys that do nothing. Three more do nothing until you
-  say what they are:
+  media, the modes beyond Normal, zen, the calendar, the wallpapers
+  and the power menu are keys that do nothing. `Mod+Shift+Escape` (panic) works
+  once a machine names a decoy desk in `zde.panic.decoy`; with none set it
+  changes nothing at all, and `zde desk panic` in a terminal is where that
+  refusal can be read. Three more do nothing until you say what they are:
   ask has no tier until a machine names one, `Mod+e` has no editor until
   `zde.apps.editor` names one (section 4), and bluetooth is a command rather
   than a key. `Mod+semicolon` says which is which on the machine in front of

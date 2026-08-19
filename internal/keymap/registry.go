@@ -171,7 +171,13 @@ var registry = map[string]Entry{
 	// vision's first named exception; block is the same reflex one notch harder
 	// (a hard lock), so it goes in beside it rather than waiting for the day it
 	// gets a chord - unbound, it costs nothing now and is already right then.
-	"desk.panic": {Group: "desk", Desc: "panic: decoy desk, mute, silence", Spawn: []string{"zde", "desk", "panic"}, Unsuppressible: true},
+	//
+	// panic is one key both ways, like the kill switch: the decoy desk, the
+	// output muted and nothing allowed to interrupt, and the same key gives all
+	// three back (internal/zded, deskPanic). Pressed anywhere but on the decoy
+	// it hides again rather than putting the work back, which is the one thing
+	// this key must never do by accident.
+	"desk.panic": {Group: "desk", Desc: "panic: the decoy desk, mute, silence - and the same key comes back", Spawn: []string{"zde", "desk", "panic"}, written: true, Unsuppressible: true},
 	"desk.block": {Group: "desk", Desc: "block: hard lock, no notifications or capture leak", Spawn: []string{"zde", "desk", "block"}, Unsuppressible: true},
 	"desk.zen":   {Group: "desk", Desc: "toggle zen (content only)", Spawn: []string{"zde", "desk", "zen"}},
 	// pause is 0.3's, with the background policies and the per-desk cost widgets
