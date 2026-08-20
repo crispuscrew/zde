@@ -173,7 +173,7 @@ without one. What that settled belongs in the keymap and not in a note here: a
 verb that takes a name wants a surface that offers the names, not a chord per
 name.
 
-Three of 0.2's security set are written. Two of them have no chord, which is the
+Four of 0.2's security set are written. Three of them have no chord, which is the
 state above - a palette row and a CLI verb, and no key spent until usage asks
 for one - and panic has had `Mod+Shift+Escape` since before it did anything.
 `net.kill` is one action both ways, because a cut nobody at that keyboard can
@@ -211,8 +211,8 @@ zded writes the rule into the same `dynamic.kdl` and asks for a reload; the set
 of blocked app ids is in the journal, so a restarted daemon puts it back. What
 it cannot be is per window. A niri window rule matches an app id or a title -
 classes, never one instance - and a title is a string the application rewrites
-whenever it likes, so the key is pressed on a window and what it blocks is every
-window of that application. That is the per-app flag of
+whenever it likes, so the verb acts on the window in front of you and what it
+blocks is every window of that application. That is the per-app flag of
 [`vision.md`](vision.md), section 3; the per-window toggle beside it is not
 expressible on this compositor. The value written is `screen-capture`, the
 stronger of the two niri takes: the portal screencast, the wlr-screencopy tools,

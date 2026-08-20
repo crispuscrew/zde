@@ -66,23 +66,25 @@ const blockOutFrom = "screen-capture"
 // stops matching when a tab changes is a block that goes away silently.
 //
 // So the per-window toggle of docs/vision.md section 3 is not expressible on
-// niri 26.04, and what is delivered is the per-app flag beside it: the key is
-// pressed on a window, and what it blocks is every window that calls itself
-// what that window calls itself. The reply says which app id it acted on, so
-// that this is something somebody reads rather than something they discover.
+// niri 26.04, and what is delivered is the per-app flag beside it: the verb
+// acts on the window in front of you, and what it blocks is every window that
+// calls itself what that window calls itself. The reply says which app id it
+// acted on, so that this is something somebody reads rather than something they
+// discover.
 
-// errNothingFocused is what the reads below say when there is no window to be
-// about. Its own error because two callers want to tell it apart from niri
-// being unreachable: one refuses on it and one answers the rest of the question.
+// errNothingFocused is what focusedAppID says when there is no window for this
+// to be about - nothing focused, or a focused id that is not in the list niri
+// just gave. One error rather than a sentence at each of those two returns, so
+// they cannot drift into saying different things about the same situation.
 var errNothingFocused = errors.New("nothing is focused, so there is no window to block")
 
-// What a private desk needs is this function and a second list. vision.md
-// section 3 asks for private desks to be capture-blocked during a screencast
-// and during guest mode, which is one more set of app ids handed to
-// captureRules - the ones a private manifest pins - rather than a second
-// mechanism. Neither trigger is written: guest is another change, and the
-// screencast half needs niri's Casts stream watched, since blocking a private
-// desk all day is not what that sentence says.
+// What a private desk would need is captureRules and a second list. vision.md
+// section 3 asks for private desks to be capture-blocked during a screencast and
+// during guest mode, and that is one more set of app ids - the ones a private
+// manifest pins - handed to the function below, rather than a second mechanism.
+// Neither trigger is written: guest is its own change, and the screencast half
+// needs niri's Casts stream watched, since blocking a private desk all day is
+// not what that sentence says.
 
 // captureRules is one window rule per blocked app id, and nothing when none is
 // blocked. It goes into dynamic.kdl beside the placement rules: the two set
@@ -135,13 +137,13 @@ func (s *Server) captureBlocked() []string {
 	return s.jrn.CaptureBlocked()
 }
 
-// focusedAppID is the app id of the window the key was pressed on, raw.
+// focusedAppID is the app id of the window this was run on, raw.
 //
 // Two calls to niri rather than one, because the Compositor interface answers
 // the focused window as an id and the app ids come with the window list. The
 // gap between them is not a race worth closing: an id names one window for as
 // long as that window exists, so a focus that moved in between leaves this
-// acting on the window that was focused when the key went down, which is the
+// acting on the window that was focused when the verb started, which is the
 // window the person was looking at.
 func (s *Server) focusedAppID() (string, error) {
 	id, err := s.niri.FocusedWindow()

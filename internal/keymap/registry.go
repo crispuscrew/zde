@@ -233,8 +233,8 @@ var registry = map[string]Entry{
 	//
 	// Named window and not app although a niri window rule matches an app id and
 	// never one window (internal/zded, capture.go): the row is where the action
-	// map put it (docs/model.md, section 6), the key is pressed on a window, and
-	// what the reply says is which app id went with it.
+	// map put it (docs/model.md, section 6), the verb acts on the window in
+	// front of you, and what the reply says is which app id went with it.
 	"window.capture-block": {Group: "window", Desc: "hide this window's app from screen capture, and show it again", Spawn: []string{"zde", "window", "capture-block", "toggle"}, written: true},
 
 	// workspace: numbered switching is gone (desks replace it); overview zooms
