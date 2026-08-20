@@ -2,6 +2,11 @@
 # machine. Kept out of the required check because it needs KVM and a VM boot,
 # and off pull requests that cannot affect a machine - but a change to the
 # system definition is what it exists to catch, so those run it before landing.
+#
+# shell/** is on the list because the bar is one of the things being checked:
+# its geometry, what it reads, and whether zen takes it off the screen. A change
+# to the QML alone builds nothing this repo compiles, so without that line the
+# one test that runs it would not run.
 name: smoke
 
 on:
@@ -17,6 +22,7 @@ on:
       - flake.lock
       - nix/**
       - niri/**
+      - shell/**
       - common/keymap/**
       - cmd/**
       - internal/**
@@ -29,6 +35,7 @@ on:
       - flake.lock
       - nix/**
       - niri/**
+      - shell/**
       - common/keymap/**
       - cmd/**
       - internal/**

@@ -887,6 +887,120 @@ let
           nirimsg windows; exit 1
         fi
 
+        # Mod+Shift+z: zen. Hide bar, borders, gaps (docs/glossary.md), and this
+        # is the only place both mechanisms can be asked at once. The bar is a
+        # layer surface zde owns, so the shell unmaps it; the borders and gaps
+        # are niri's, which 26.04 exposes over no IPC action at all - so zded
+        # writes a layout block into the dynamic.kdl niri already includes and
+        # asks it to reload. A unit test can prove the bytes are ones niri's
+        # parser accepts; only a running compositor proves it acted on them.
+        #
+        # One window to measure against, because a gap is only visible around
+        # something. Closed again at the end, like the two above: everything
+        # below was written for a strip with a known set of windows on it.
+        foot -e sleep 600 >/tmp/zen-foot.log 2>&1 &
+        one_open() { [ "$(count_windows)" -ge 1 ]; }
+        if ! waitfor 60 one_open; then
+          echo "no window to measure zen against:"; cat /tmp/zen-foot.log; exit 1
+        fi
+        # niri's own arithmetic, read back: the size of the tile the window sits
+        # in. What is asserted is that it changes and comes back, never a
+        # particular number - the number is niri's business and pinning it would
+        # be this test having an opinion about another project's layout.
+        tilesize() {
+          nirimsg --json windows 2>/dev/null | grep -o '"tile_size":\[[^]]*\]' | head -1
+        }
+        before=$(tilesize)
+        [ -n "$before" ] || {
+          echo "niri reports no tile size for the window, so this cannot measure anything:"
+          nirimsg --json windows; exit 1
+        }
+        # And the bar says zen is off first, so what follows is a change rather
+        # than a state that was already there. Waited for, like the mic and the
+        # count above: "unknown" is the honest answer until zded has said, and
+        # asking once races whichever tick this lands between.
+        zen_off() { zenread=$(barq zen); [ "$zenread" = "off" ]; }
+        if ! waitfor 20 zen_off; then
+          echo "the bar last read zen '$zenread' before anything asked for it"; exit 1
+        fi
+
+        XDG_RUNTIME_DIR=$mgr zde desk zen 2>&1 | tee /tmp/zen-on.txt
+        grep -q '^zen on' /tmp/zen-on.txt || {
+          echo "zde desk zen did not say which state it left the session in:"
+          cat /tmp/zen-on.txt; exit 1
+        }
+        # niri's half. The tile grows, because the gaps around it are gone and
+        # the bar has given back what it was reserving.
+        laid_out_again() { [ "$(tilesize)" != "$before" ]; }
+        if ! waitfor 20 laid_out_again; then
+          echo "zen is on and niri lays the window out exactly as before ($before):"
+          cat "$HOME/.config/niri/dynamic.kdl" 2>&1 || true
+          journalctl --user -u niri.service --no-pager 2>/dev/null | tail -20 || true
+          exit 1
+        fi
+        # zde's half, and it has to leave the layer list rather than go dark: a
+        # mapped surface is still taking 26 pixels off the top of every screen.
+        no_bar() {
+          nirimsg --json layers >/tmp/layers-zen.txt 2>&1 &&
+            ! grep -q '"namespace":"zde-bar"' /tmp/layers-zen.txt
+        }
+        if ! waitfor 20 no_bar; then
+          echo "zen is on and the bar is still on a layer:"; cat /tmp/layers-zen.txt; exit 1
+        fi
+
+        # And it survives the shell, which is the whole reason the toggle lives
+        # in zded: a home-manager switch restarts the bar, and a state kept in
+        # the bar would be one the person set and the machine forgot.
+        #
+        # By pid, so that "the bar came back and stayed hidden" cannot be read
+        # off a bar that never came back at all.
+        oldbar=$barpid
+        sctl restart zde-bar.service
+        restarted() {
+          barpid=$(sctl show -p MainPID --value zde-bar.service)
+          [ -n "$barpid" ] && [ "$barpid" != "0" ] && [ "$barpid" != "$oldbar" ] &&
+            [ "$(barq zen)" = "on" ]
+        }
+        if ! waitfor 60 restarted; then
+          echo "the bar was restarted with zen on and never came back knowing it: pid $barpid, zen '$(barq zen)'"
+          sctl status zde-bar.service || true
+          journalctl --user -u zde-bar.service --no-pager | tail -25; exit 1
+        fi
+        no_bar || {
+          echo "the bar restarted with zen on and put itself back on the screen:"
+          cat /tmp/layers-zen.txt; exit 1
+        }
+
+        # Off again, and both halves come back. A toggle that only goes one way
+        # is worse than none on a key somebody presses to concentrate.
+        XDG_RUNTIME_DIR=$mgr zde desk zen 2>&1 | tee /tmp/zen-off.txt
+        grep -qx 'zen off' /tmp/zen-off.txt || {
+          echo "turning zen off did not say so:"; cat /tmp/zen-off.txt; exit 1
+        }
+        bar_back() {
+          nirimsg --json layers >/tmp/layers-zen.txt 2>&1 &&
+            grep -q '"namespace":"zde-bar"' /tmp/layers-zen.txt
+        }
+        if ! waitfor 30 bar_back; then
+          echo "zen is off and the bar never came back:"; cat /tmp/layers-zen.txt; exit 1
+        fi
+        gaps_back() { [ "$(tilesize)" = "$before" ]; }
+        if ! waitfor 20 gaps_back; then
+          echo "zen is off and niri still lays the window out as $(tilesize), not $before"
+          cat "$HOME/.config/niri/dynamic.kdl" 2>&1 || true
+          exit 1
+        fi
+        # The window goes, and the shell is listening again, which is what every
+        # surface below this line needs.
+        nirimsg action close-window >/dev/null
+        if ! waitfor 30 no_windows; then
+          echo "the zen window outlived its test:"; nirimsg windows; exit 1
+        fi
+        if ! waitfor 30 shell_seen; then
+          echo "the bar was restarted for the zen check and never subscribed again:"
+          XDG_RUNTIME_DIR=$mgr zde status; exit 1
+        fi
+
         # Mod+semicolon: the palette. The same round trip as the picker - key,
         # daemon, event, surface, token back - with the two halves that are its
         # own: the filter, and running a row, which has to do what the row's key

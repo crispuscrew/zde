@@ -49,6 +49,17 @@ ShellRoot {
     // trust the silence.
     property string mode: ""
     property bool modeKnown: false
+    // Zen: hide bar, borders, gaps (docs/glossary.md). The bar is the half this
+    // process owns; the rest is niri's and zded writes it into niri's config.
+    //
+    // Held here and never decided here. zded is where the toggle lives, because
+    // this process is restarted by every home-manager switch and a state kept in
+    // it would be one the person set and the machine forgot. So the shell asks,
+    // and `zenKnown` is the same bargain the count and the mode make - except
+    // that this one fails towards showing the bar. A strip hidden because the
+    // daemon that knows why has gone away is a strip nobody can get back.
+    property bool zen: false
+    property bool zenKnown: false
     // What a panel actually came up as, reported back for the same reason the
     // count is: a strip of zero height, or one reserving nothing, is on the
     // screen as far as the compositor's layer list is concerned and invisible
@@ -227,10 +238,17 @@ ShellRoot {
 
         onConnectedChanged: {
             root.streamWaiting = 0;
-            if (stream.connected)
+            if (stream.connected) {
                 stream.write('{"method":"events"}\n');
-            else
+                // And zen, immediately rather than on the first tick: this
+                // connection is what a restarted shell has instead of a memory,
+                // and two seconds of a bar that should not be there is two
+                // seconds of the toggle looking lost.
+                stream.write('{"method":"desk.zen"}\n');
+            } else {
                 root.modeKnown = false;
+                root.zenKnown = false;
+            }
         }
 
         onHeard: line => {
@@ -261,6 +279,15 @@ ShellRoot {
                 root.streamWaiting = 0;
                 root.mode = msg.ok.mode;
                 root.modeKnown = true;
+                return;
+            }
+            // Whether the chrome is hidden, recognised the same way and for the
+            // same reason. Asked for rather than read off an event, so the bar
+            // and zded cannot end up holding two different answers: the event
+            // below only says to ask again.
+            if (msg.ok && msg.ok.zen !== undefined) {
+                root.zen = msg.ok.zen === true;
+                root.zenKnown = true;
                 return;
             }
             // A refusal, attributed to whichever surface is up that could
@@ -341,6 +368,12 @@ ShellRoot {
                 root.showPopup(msg.event);
             else if (msg.event.kind === "attn.reach")
                 root.reachPopup(msg.event);
+            else if (msg.event.kind === "zen")
+                // The one event that draws nothing and asks instead. It carries
+                // no state on purpose (internal/zded, EventZen): the reply above
+                // is the only place this shell learns whether zen is on, so a
+                // dropped event costs a poll and never a wrong bar.
+                stream.write('{"method":"desk.zen"}\n');
             else if (msg.event.kind === "attn.hide")
                 root.hidePopups();
         }
@@ -413,6 +446,11 @@ ShellRoot {
             // asking here rather than on the bar's own connection keeps the
             // reply away from a parser that reads every answer as a queue.
             stream.write('{"method":"attn.mode"}\n');
+            // And zen, on the same tick and for the same reason: it changes
+            // from a keybind, and the event that says so can be dropped when
+            // this connection is busy (internal/zded, errSinkBusy). Asking is
+            // what makes a bar that missed one come back on its own.
+            stream.write('{"method":"desk.zen"}\n');
         }
     }
 
@@ -1380,6 +1418,19 @@ ShellRoot {
         function geometry(): string {
             return root.barHeight + " " + root.barZone;
         }
+
+        // What the bar makes of zen, and why it is on the screen anyway. Four
+        // answers, because three different things put a strip up while zen is on
+        // and only one of them is the widget working: "unknown" is zded not
+        // having answered, "on mic" is the exception this bar makes on purpose,
+        // and "on" with no bar is what zen looks like when it works.
+        function zen(): string {
+            if (!root.zenKnown)
+                return "unknown";
+            if (!root.zen)
+                return "off";
+            return micState.live ? "on mic" : "on";
+        }
     }
 
     // One bar per screen. Variants rebuilds this list when screens come and
@@ -1418,6 +1469,23 @@ ShellRoot {
             // tiles to what is left, so a bar that does not reserve is a bar
             // that covers the top of whatever you are reading.
             exclusiveZone: bar.implicitHeight
+
+            // Zen: the strip goes, and with it the space it was reserving -
+            // which is why this is `visible` and not an opacity or a zero
+            // height. A surface that is still mapped is still taking 26 pixels
+            // off the top of the screen, and zen is not a paint job.
+            //
+            // Except while something is holding the microphone. Zen hides
+            // chrome, and a room being heard is not chrome: it is the one line
+            // on this strip that is about the world rather than about the
+            // desktop, and a comfort toggle that could take it away would be a
+            // way to hide a warning. Muted does not qualify - that is the safe
+            // direction, and hiding it costs nothing.
+            //
+            // `zenKnown` is what keeps the failure the right way round: a bar
+            // that hid because zded stopped answering could not be brought back
+            // by anything, since the only thing that could is zded.
+            visible: !root.zen || !root.zenKnown || micState.live
 
             // qmllint enable uncreatable-type
 

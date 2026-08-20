@@ -86,6 +86,10 @@ type Compositor interface {
 	// the keymap is niri's own, and the palette has to be able to run those the
 	// same way it runs everything else.
 	Perform(action string) error
+	// ReloadConfig makes niri read its config again now, rather than when its
+	// own watcher next notices. It is how the half of zen that is niri's takes
+	// effect on the keypress instead of half a second later (zen.go).
+	ReloadConfig() error
 }
 
 // Desks is where manifests live. An interface rather than a loaded map,
@@ -170,6 +174,10 @@ type Status struct {
 	// because "why has nothing arrived for an hour" is a question with exactly
 	// one cheap answer, and a person who cannot see the bar has only this one.
 	Mode string `json:"mode"`
+	// Zen is whether the chrome is hidden (zen.go). Here for the reason the
+	// mode is: with the bar gone, "why is there no bar" has one cheap answer,
+	// and the person asking it cannot read the bar to find out.
+	Zen bool `json:"zen"`
 	// Zinc says whether layer 2's runner is on the session's PATH (docs/
 	// delivery.md). A zde machine without it can run nothing sandboxed, which
 	// is most of what a zde machine is for - and the session's PATH is not the
@@ -1364,6 +1372,8 @@ func (s *Server) Dispatch(req Request) Response {
 			return Response{Error: "attn.invoke takes a notification id and the key of the action to press"}
 		}
 		return s.invoke(req.Args[0], req.Args[1])
+	case "desk.zen":
+		return s.zen(req.Args)
 	case "desk.queue-jump":
 		if len(req.Args) != 0 {
 			return Response{Error: "desk.queue-jump takes no arguments"}
@@ -2834,21 +2844,26 @@ func (s *Server) launchApps(ctx context.Context, target string, apps []manifest.
 	s.launchesFailed(target, failed)
 }
 
-// SyncRules puts the desks' placement into niri's dynamic config (rules.go).
+// SyncRules writes niri's dynamic config: the desks' placement, and what zen is
+// doing to the chrome (rules.go, zen.go).
 //
-// At startup and on reconcile, which is when the manifests are the question -
-// not on every switch. The rules are a function of the files, so a switch that
-// rewrote them would be asking niri to reload its config for something that
-// had not changed, and a reload re-evaluates the rules for every window
-// already open. A manifest edited mid-session takes effect at the next
-// `zde desk reconcile`, which is the verb for making things true again.
+// At startup, on reconcile and on a zen toggle - not on every switch. The rules
+// are a function of the files, so a switch that rewrote them would be asking
+// niri to reload its config for something that had not changed, and a reload
+// re-evaluates the rules for every window already open. A manifest edited
+// mid-session takes effect at the next `zde desk reconcile`, which is the verb
+// for making things true again.
+//
+// Startup is also where zen's half is put back after zded is restarted: the
+// state is in the journal, this is what turns it into the file niri reads, and
+// writeRules leaves the file alone when the bytes already match.
 func (s *Server) SyncRules() {
 	all, _, err := s.desks.All()
 	if err != nil {
 		return
 	}
-	if err := writeRules(dynamicPath(), placementRules(all)); err != nil {
-		log.Printf("zded: writing niri's placement rules: %v", err)
+	if err := writeRules(dynamicPath(), dynamicKDL(s.zenState(), all)); err != nil {
+		log.Printf("zded: writing niri's dynamic config: %v", err)
 	}
 }
 
@@ -2887,6 +2902,7 @@ func (s *Server) status() Status {
 	s.mu.Unlock()
 	st.Notifications = s.watcher() != nil
 	st.Mode = string(s.mode())
+	st.Zen = s.zenState()
 	// Looked up per call rather than remembered from startup. PATH points at
 	// profile directories whose contents change under a running daemon, and
 	// zded outlives the switch that installs zinc - so asking every time is

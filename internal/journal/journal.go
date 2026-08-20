@@ -229,6 +229,11 @@ type entry struct {
 	// borrowed from To: a mode is not a workspace name, and a reader looking at
 	// the file should not have to know which kinds put what where.
 	Mode string `json:"mode,omitempty"`
+	// Zen is what a "zen" entry sets. Its own field rather than a word in Mode:
+	// the two are different questions - what arrivals may do, and what chrome is
+	// drawn - and one field answering both would make a journal from a newer zde
+	// replay a mode name into the chrome.
+	Zen bool `json:"zen,omitempty"`
 }
 
 const (
@@ -242,6 +247,7 @@ const (
 	kindLastID   = "lastid"   // the highest queue id handed out, so none repeats
 	kindMode     = "mode"     // what arrivals are allowed to do (internal/attn)
 	kindBorrowed = "borrowed" // the desk whose declared mode is in force, and the mode it displaced
+	kindZen      = "zen"      // chrome hidden, or shown again (internal/zded, zen.go)
 )
 
 // State is what the journal remembers. It is a value: callers get a copy and
@@ -272,6 +278,12 @@ type State struct {
 	// Borrowed is the desk whose manifest is deciding the mode above, and what
 	// the mode was before it did (docs/model.md, section 5: policies.attn).
 	Borrowed Borrowed
+	// Zen is whether the chrome is hidden: the bar, and niri's borders and gaps
+	// (docs/glossary.md). Here rather than in the shell for the reason the mode
+	// is here rather than in the daemon - the shell is restarted by every
+	// home-manager switch, so a toggle it kept would be one the person set and
+	// the machine forgot, with a bar back on the screen and no key pressed.
+	Zen bool
 }
 
 // Borrowed is a desk's attn policy in force. The zero value is nobody having
@@ -602,6 +614,8 @@ func (j *Journal) apply(e entry) {
 		}
 	case kindMode:
 		j.state.Mode = e.Mode
+	case kindZen:
+		j.state.Zen = e.Zen
 	case kindBorrowed:
 		// An empty desk is the real state "nobody has it" rather than a torn
 		// line: it is how a mode chosen by hand ends the loan (internal/zded,
@@ -675,6 +689,7 @@ func (j *Journal) State() State {
 		OnDesk:     j.state.OnDesk,
 		Mode:       j.state.Mode,
 		Borrowed:   j.state.Borrowed,
+		Zen:        j.state.Zen,
 		Queue:      append([]Item(nil), j.state.Queue...),
 	}
 	for d, byMonitor := range j.state.LastActive {
@@ -711,6 +726,23 @@ func (j *Journal) Mode() string {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	return j.state.Mode
+}
+
+// Zen is whether the chrome is hidden. Its own method for the reason Mode is:
+// the bar asks for it on a clock, and one bool is not a reason to copy a
+// session's worth of desk positions.
+func (j *Journal) Zen() bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.state.Zen
+}
+
+// SetZen writes down whether the chrome is hidden. Both directions are written,
+// where the queue writes only its additions: off is a state somebody arrived at
+// by pressing the key a second time, and a journal that recorded only "on"
+// would put the bar back and leave the borders gone at the next replay.
+func (j *Journal) SetZen(on bool) error {
+	return j.record(entry{Kind: kindZen, Zen: on})
 }
 
 // Borrowed is which desk's declared mode is in force, and the mode it
@@ -1010,6 +1042,15 @@ func (j *Journal) compactLocked() error {
 		if err := write(entry{
 			Kind: kindBorrowed, Desk: j.state.Borrowed.Desk, Mode: j.state.Borrowed.Mode,
 		}); err != nil {
+			return err
+		}
+	}
+	// And zen, or a compaction would put the bar back on the screen while niri
+	// still has no borders - the two halves of one toggle disagreeing because
+	// the journal happened to get long enough. Only the on state is written:
+	// off is what a file that has never been told already replays as.
+	if j.state.Zen {
+		if err := write(entry{Kind: kindZen, Zen: true}); err != nil {
 			return err
 		}
 	}

@@ -197,6 +197,13 @@ const EventPalette = "palette"
 // another surface's event would draw an empty thing holding the keyboard.
 const EventClip = "clip"
 
+// EventZen says the chrome changed and carries nothing else. Deliberately
+// payload-free: the shell answers it by asking for the state (zen.go), so this
+// fact is published in one place and there is no second copy of it to drift.
+// What the event buys is the latency - a key whose whole job is to change the
+// screen should not wait for the next poll.
+const EventZen = "zen"
+
 // MethodShown is how a listener says it did the thing: the token from the
 // event it acted on. Unsolicited ones are ignored, so this cannot be used to
 // make a key report success that never happened.

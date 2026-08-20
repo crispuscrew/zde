@@ -196,6 +196,14 @@ func run(args []string) error {
 		return call("queue.done", args[2])
 	case len(args) == 2 && args[0] == "queue" && args[1] == "clear":
 		return queueClear()
+	// Mod+Shift+z. The chord spawns the two-word form and that is a toggle: one
+	// press to hide the chrome, one to bring it back. The three-word forms are
+	// for a script or a desk hook that wants to say which state it means rather
+	// than flip whatever it found.
+	case len(args) == 2 && args[0] == "desk" && args[1] == "zen":
+		return zen("toggle")
+	case len(args) == 3 && args[0] == "desk" && args[1] == "zen":
+		return zen(args[2])
 	case len(args) == 2 && args[0] == "desk" && args[1] == "queue-jump":
 		return focusDesk("desk.queue-jump")
 	case len(args) == 2 && args[0] == "desk" && args[1] == "regulars":
@@ -408,6 +416,14 @@ func status() error {
 	// has nothing arrived all afternoon", and without it the only way to find
 	// out is to send yourself a notification and watch it not appear.
 	fmt.Printf("attn       %s\n", st.Mode)
+	// And whether the chrome is hidden, which is the answer to "where is the
+	// bar". Always printed, including "off": a missing line would leave a
+	// session whose shell never started looking exactly like one in zen.
+	hidden := "off"
+	if st.Zen {
+		hidden = "on"
+	}
+	fmt.Printf("zen        %s\n", hidden)
 	fmt.Printf("queue      %d waiting\n", st.Queued)
 	if st.OnDesk != "" {
 		fmt.Printf("on desk    %s\n", st.OnDesk)
@@ -740,6 +756,31 @@ func attnMode(method string, args ...string) error {
 		return err
 	}
 	fmt.Println(a.Mode)
+	return nil
+}
+
+// zen hides the chrome, or brings it back, and says which it left you in.
+//
+// It prints, where most toggles bound to a key do not, because this is the one
+// whose effect can be invisible: pressed on a session whose shell has died, the
+// borders and gaps still go and the bar was never there to leave. A word on
+// stdout is what a terminal gets; `zde status` is where somebody who pressed
+// the key and saw nothing goes next.
+func zen(state string) error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	var z zded.Zen
+	if err := c.Call("desk.zen", &z, state); err != nil {
+		return err
+	}
+	if z.Zen {
+		fmt.Println("zen on: content only")
+	} else {
+		fmt.Println("zen off")
+	}
 	return nil
 }
 
@@ -2086,6 +2127,13 @@ func usage() {
                          its sender's buttons can be pressed. A popup never
                          takes the keyboard on its own, which is why this key
                          exists; says so when there is no popup to reach
+  zde desk zen [STATE]   toggle zen (Mod+Shift+z): the bar goes, and so do
+                         niri's borders, focus ring and gaps, on every screen.
+                         on, off or toggle to say which rather than flip. It
+                         hides chrome and nothing else - notifications arrive
+                         as they would have, the lock and panic keys are
+                         untouched, and the bar comes back by itself while
+                         something is holding the microphone
   zde desk queue-jump    go to where the oldest thing waiting is
   zde desk regulars      the band that belongs to no desk (comms, music)
   zde desk last          go back to the desk you came from

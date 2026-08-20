@@ -392,6 +392,15 @@ func (compositor) Perform(action string) error {
 	return c.Perform(action)
 }
 
+func (compositor) ReloadConfig() error {
+	c, err := niri.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	return c.ReloadConfig()
+}
+
 func (compositor) FocusWorkspace(name string) error {
 	c, err := niri.Dial()
 	if err != nil {

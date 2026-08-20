@@ -68,8 +68,10 @@ blocks 0.2:
 
 - the rest of what a manifest declares. `policies.attn` is read now, and beside
   it `policies.zen`, `background: pause` and `on_enter`/`on_exit` are still
-  parsed and consulted by nobody. Zen belongs to 0.2's security set and pausing
-  to 0.3's resources, so what is left here is the two hooks.
+  parsed and consulted by nobody. Zen's own verb landed early (`zde desk zen`,
+  `Mod+Shift+z`) and a desk declaring it needs the borrowing `policies.attn`
+  has; pausing belongs to 0.3's resources. So what is left here is the two hooks
+  and that borrowing.
 - the popup is unproven in CI. The smoke test boots a real niri and counts which
   layer surfaces hold the keyboard, which is exactly the assertion this wants -
   but it stops the shell before it starts the session bus a notification needs,
@@ -185,8 +187,10 @@ blocks 0.2:
     calculator on a desk, launched like anything else, not a second surface for
     the shell to own.
 - modes via the input-layer daemon + device remap profiles.
-- security set: guest, panic + decoy, zen, lock-preset, capture-block,
-  `net.kill`. Three have landed. `net.kill` is NetworkManager's networking
+- security set: guest, panic + decoy, lock-preset, capture-block,
+  `net.kill`. Three have landed, and zen came out of this set early and is in
+  0.1: it hides chrome and no information, so nothing in it was a security
+  posture to decide. `net.kill` is NetworkManager's networking
   switch, one action both ways, drawn on the bar while it holds; `lock-preset`
   switches to `zde.lock.preset` and then locks, and locks anyway when that desk
   is unset, gone or private; `panic` switches to `zde.panic.decoy`, mutes the

@@ -10,7 +10,7 @@ zde is early, and this is what "early" means in practice:
 - **Part of the cheatsheet is silent.** The desks, the queue, notifications and
   the centre that reads them, the bar, the picker, the palette, the wifi list,
   screenshots, the clipboard history on `Mod+v` and a terminal work. pass,
-  media, the modes beyond Normal, zen, the calendar, the wallpapers
+  media, the modes beyond Normal, the calendar, the wallpapers
   and the power menu are keys that do nothing. `Mod+Shift+Escape` (panic) works
   once a machine names a decoy desk in `zde.panic.decoy`; with none set it
   changes nothing at all, and `zde desk panic` in a terminal is where that
