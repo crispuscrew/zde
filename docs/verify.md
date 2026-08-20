@@ -1297,6 +1297,9 @@ list, and that is the first thing to check if nothing below works.
   The list must be the same list in the same order: putting an entry back is a
   clipboard change like any other, and zde recording its own would reorder the
   history every time somebody used it.
+- **The one thing that stops it** is a guest session: nothing is recorded, the
+  list is not shown and no entry is put back until it ends, and everything that
+  was there before comes back whole (section 12).
 - **The sensitive hint, with a real password manager.** This is the one that
   matters. KeePassXC is the usual one: copy a password out of it, then `Mod+v`.
   The password must not be there, and neither must a blank row where it would

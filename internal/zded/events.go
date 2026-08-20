@@ -160,7 +160,9 @@ const EventAttnPopup = "attn.popup"
 // one-at-a-time rule everything else obeys.
 const EventAttnReach = "attn.reach"
 
-// EventAttnHide takes every popup off the screen, and it is panic's (panic.go).
+// EventAttnHide takes every popup off the screen. Two things ask for it and
+// both are one action putting a screen in front of somebody else: panic
+// (panic.go) and handing the machine over (guest.go).
 //
 // Display and nothing else, which is the line this whole side of zde is drawn
 // on: what was on those cards is in the notification history and on the queue

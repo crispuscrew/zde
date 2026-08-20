@@ -60,9 +60,11 @@ func (s *Server) lockPreset() Response {
 //
 // The same table `zde system lock` resolves against and the same name, because
 // a second idea of what locks this screen is how a machine ends up with a key
-// that locks and a menu that does not (power.go, powerRun). Three things ask
-// now: this action, which only wants to know there is one, and a guest session,
-// which needs the argv on the way out and the answer on the way in (guest.go).
+// that locks and a menu that does not (power.go, powerRun). lock-preset only
+// wants to know there is one (see canLock); a guest session asks the same
+// question on the way in and then runs the answer on the way out, because that
+// program exiting is the only password anything in zde will ever see
+// (guest.go).
 func (s *Server) lockArgv() ([]string, error) {
 	all, err := apps.Load(apps.DefaultPath())
 	if err != nil {
