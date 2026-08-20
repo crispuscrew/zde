@@ -355,6 +355,7 @@ func TestTheWireServerKeepsADispatchOffTheMachine(t *testing.T) {
 		{"palette.list would read", keymap.TextPath()},
 		{"ask.run would read", apps.Path(askFile)},
 		{"system.lock-preset would read", apps.Path(lockFile)},
+		{"desk.panic would read", apps.Path(panicFile)},
 	} {
 		if !strings.HasPrefix(would.path, machine.dir+string(os.PathSeparator)) {
 			t.Errorf("%s %s, which is not this test's own directory", would.what, would.path)

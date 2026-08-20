@@ -271,6 +271,17 @@ type Server struct {
 	// history looks the same either way from a keyboard (see Clips.Why).
 	clipWhy string
 
+	// The sound side (audio.go, panic.go). sound is how the machine's output is
+	// muted, and it is nil until somebody says otherwise (see UseSound) - for
+	// the reason the clipboard is: this one runs a program against whatever
+	// PipeWire the machine has, and the servers the tests build would otherwise
+	// mute the speakers of whoever is running them.
+	//
+	// panicking is what panic took and what a second press gives back, nil when
+	// it is not holding. In memory on purpose: see panicHold.
+	sound     Sound
+	panicking *panicHold
+
 	// The network side (net.go). openLink is a field for the same reason launch
 	// is: the tests need a manager without a system bus under them, and the
 	// machine this runs on may have no NetworkManager at all.
@@ -1363,6 +1374,17 @@ func (s *Server) Dispatch(req Request) Response {
 			return Response{Error: "desk.regulars takes no arguments"}
 		}
 		return s.regulars()
+	case "desk.panic":
+		// No argument, and the decoy is deliberately not one. This is the key
+		// pressed with somebody already in the room, and a desk name typed after
+		// it is a name to get wrong at exactly that moment; the decoy is a line
+		// in a config, decided once (panic.go). One key both ways, the way
+		// net.kill is, and which way it goes is read off where you are standing
+		// rather than typed.
+		if len(req.Args) != 0 {
+			return Response{Error: "desk.panic takes no arguments: the decoy is zde.panic.decoy in your home-manager config, and the same key comes back"}
+		}
+		return s.deskPanic()
 	case "desk.next", "desk.prev":
 		if len(req.Args) != 0 {
 			return Response{Error: req.Method + " takes no arguments"}

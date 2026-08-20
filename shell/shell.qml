@@ -341,6 +341,8 @@ ShellRoot {
                 root.showPopup(msg.event);
             else if (msg.event.kind === "attn.reach")
                 root.reachPopup(msg.event);
+            else if (msg.event.kind === "attn.hide")
+                root.hidePopups();
         }
     }
 
@@ -522,6 +524,14 @@ ShellRoot {
                     why: c.why ?? "",
                     at: c.at
                 })), ev.token ?? "");
+    }
+
+    // panic: every card off the screen (internal/zded, EventAttnHide). The same
+    // verb present() uses when another surface takes over, because it is the
+    // same act - let go and get off the screen - and this one has nothing to
+    // hand the keyboard to.
+    function hidePopups() {
+        attnPopup.hide();
     }
 
     // Mod+Ctrl+n: the one deliberate act that puts the keyboard on a popup, and

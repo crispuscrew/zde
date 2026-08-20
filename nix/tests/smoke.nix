@@ -906,8 +906,14 @@ let
         fi
         # Typing narrows it. The second number is what is left on screen, and a
         # filter that did nothing would leave it equal to the first.
+        #
+        # The row is the wallpapers widget, which nothing is written behind
+        # and nothing in flight is writing. It used to be desk.panic, and panic
+        # is written now - what these two lines need is a dead row, and picking
+        # one somebody is about to bring to life turns this red for a reason
+        # that has nothing to do with the palette.
         narrowed() { case "$(paletteq state)" in *" 1") return 0 ;; *) return 1 ;; esac; }
-        paletteq filter desk.panic >/dev/null
+        paletteq filter system.wallpapers >/dev/null
         if ! waitfor 15 narrowed; then
           echo "typing into the palette did not narrow it: $(paletteq state)"; exit 1
         fi
@@ -915,8 +921,8 @@ let
         # stays up saying why. This is the whole design - a key that does
         # nothing silently, and a palette that says so instead - and until this
         # line nothing in CI ever touched it.
-        [ "$(paletteq run desk.panic)" = "cannot" ] || {
-          echo "the palette ran a row nothing is written behind: $(paletteq run desk.panic)"; exit 1
+        [ "$(paletteq run system.wallpapers)" = "cannot" ] || {
+          echo "the palette ran a row nothing is written behind: $(paletteq run system.wallpapers)"; exit 1
         }
         [ "$(paletteq state)" != "closed" ] || {
           echo "refusing a dead row closed the palette, so nobody saw the reason"; exit 1

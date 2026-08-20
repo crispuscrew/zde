@@ -1524,9 +1524,10 @@ What only a session settles:
 
 ## 12. The security set
 
-The first two of 0.2's set are written; guest, panic and the decoy, zen and
-capture-block are not, and are in the list below. Neither of these has a chord:
-both are `zde` verbs, and both are rows in the palette on `Mod+semicolon`.
+Three of 0.2's set are written; guest, zen and capture-block are not, and are in
+the list below. The kill switch and lock-preset have no chord - both are `zde`
+verbs and rows in the palette on `Mod+semicolon` - and panic has had
+`Mod+Shift+Escape` since before there was anything behind it.
 
 ### The kill switch
 
@@ -1589,6 +1590,60 @@ first, to a desk that exists.
   a locker that exits immediately is a screen that did not lock - the same gap
   `zde system lock` and the power menu's lock row have.
 
+### panic and the decoy
+
+`Mod+Shift+Escape`, or `zde desk panic`. Set `zde.panic.decoy` in the
+home-manager config first, to a desk that exists and is not private. Do this
+with something playing and something arriving, or three quarters of it is
+untestable.
+
+- **Play something, then press it.** The decoy desk is on every monitor, the
+  sound stops, and the bar says `attn quiet`. All three, or none of it counts: a
+  decoy with a video still audible in the next room is what this key is for.
+  That word on the bar is also the only thing on any surface saying panic is
+  holding, which is deliberate - a bar announcing a panic to the room would be
+  the tell the key exists to avoid.
+- **Press it again.** Your desk comes back, the sound comes back, and the mode
+  is the one you were in - not work. Check that last one from quiet: go into
+  quiet with `Mod+q`, panic, come back, and the machine must still be silent.
+  Coming back into work would be a call ending with an hour of notifications
+  arriving at once.
+- **Mute by hand first, then panic, then come back.** The sound stays off. Panic
+  gives back what it took and nothing else.
+- **With a notification popup on the screen** when you press it, the card goes
+  with the desk. Then open `Mod+n`: it is still in the notification centre, with
+  the queue as long as it was. panic hides a screen and forgets nothing, which
+  is principle 3 ([`vision.md`](vision.md)) - and it is the honest limit of this
+  key: somebody at your keyboard can still press `Mod+n`, and `Mod+Tab` still
+  lists your desks the way it did before. That moment is what `zde system lock`
+  is for.
+- **Come off the decoy by hand, then press panic again.** It hides again. It
+  never puts the work back except from the decoy itself, because the press that
+  matters is the one made when somebody has just walked in.
+- **With `zde.panic.decoy` unset** nothing at all happens - no switch, no mute,
+  no silence - and `zde desk panic` in a terminal names the option to set. Same
+  for a decoy naming a desk that is gone, one declaring `private: true`, and a
+  desks directory holding a manifest that will not parse, each said in its own
+  words. From the key those refusals go to a stderr nobody reads, so the check
+  is that the machine is exactly as you left it: a panic that muted the sound
+  over the work it could not hide is somebody believing they are covered.
+- **On a machine with no sound** - a VM, or a session with no PipeWire - the
+  desk and the silence still happen and the answer says the sound was not muted.
+  `zde desk panic` in a terminal is where that line can be read.
+- **What the mute reaches is the default sink.** An app pointed at a second sink
+  by hand keeps playing, and so does anything a mixer would have to reach one
+  stream at a time: per-app audio is 0.2's media work
+  ([`roadmap.md`](roadmap.md)), and nothing here claims to have done it.
+- **The mic is not part of it.** `Mod+Ctrl+m` is its own key with its own
+  indicator, and panic leaves it alone: this key is about what is on the screen
+  and what the room can hear, and a call whose microphone died with no word
+  anywhere is a different surprise.
+- **Restart zded while it holds** (`systemctl --user restart zded`). The desk,
+  the mute and the mode stay as they are, and the key panics again rather than
+  coming back: what panic took is remembered in memory only, deliberately, so
+  that nothing on disk records that you pressed it. Getting back from there is
+  `Mod+Tab`, `Mod+Shift+m` and `Mod+q`, and the three are visible on the bar.
+
 ## Expected to be missing
 
 Not bugs, do not report them:
@@ -1611,7 +1666,8 @@ Not bugs, do not report them:
 
   | Works | Silent |
   |---|---|
-  | `Mod+Tab` (the desk picker), `Mod+w` (the window one) | `Mod+Shift+Escape` (panic), `Mod+Shift+z` (zen) |
+  | `Mod+Tab` (the desk picker), `Mod+w` (the window one) | `Mod+Shift+z` (zen) |
+  | `Mod+Shift+Escape` (panic), once `zde.panic.decoy` names a desk (below) | |
   | `Mod+j`/`k` and the arrows (nav) | `Mod+Shift+v` (pass) |
   | `Mod+Shift+j`/`k` (move window) | `Mod+Shift+t`, `Mod+Shift+e` (launch-at) |
   | `Mod+r` (regulars), `Mod+u` (queue jump) | `Mod+p`, `Mod+Shift+p`, `Mod+Ctrl+p` (media) |
@@ -1630,22 +1686,23 @@ Not bugs, do not report them:
   | `Mod+period`/`comma`, `Mod+Shift+m`, `Mod+Ctrl+m` (volume, mute, mic) | |
   | `Mod+b`, `Mod+Shift+b` (brightness, on a machine with a backlight) | |
   | `zde status`, `doctor`, `report`, `keys`, `palette`, `ask`, `attn`, `queue`/`add`/`done`/`clear` | `zde net observe\|app-cut` |
-  | `zde app list\|launch`, `window jump-to`, `workspace next\|prev`, `nav down\|up` | `zde desk panic\|zen\|block\|pause`, which are not verbs at all |
+  | `zde app list\|launch`, `window jump-to`, `workspace next\|prev`, `nav down\|up` | `zde desk zen\|block\|pause`, which are not verbs at all |
   | `zde net status\|connect\|disconnect\|forget\|kill` | `zde pass`, `media`, `mode` |
   | `zde clip history [ID]`, `zde clip clear` | |
   | `zde system lock\|lock-preset\|quiet\|notif-center\|notif-reach\|connections\|bluetooth\|power` | `zde system calendar\|wallpapers` |
-  | every other `zde desk` verb: `list`, `switch`, `switcher`, `next`/`prev`/`last`, `apps`, `snapshot`, `reconcile`, `queue-jump`, `regulars`, `move-window`, `move-window-to [NAME]`, `move-workspace-to [NAME]` (with no name they open the picker, which is what the two chords above spawn) | a manifest's `policies.zen`, `background: pause`, `on_enter`/`on_exit`, all parsed and read by nobody |
+  | every other `zde desk` verb: `list`, `switch`, `switcher`, `next`/`prev`/`last`, `apps`, `snapshot`, `reconcile`, `queue-jump`, `regulars`, `panic`, `move-window`, `move-window-to [NAME]`, `move-workspace-to [NAME]` (with no name they open the picker, which is what the two chords above spawn) | a manifest's `policies.zen`, `background: pause`, `on_enter`/`on_exit`, all parsed and read by nobody |
   | a manifest's `policies.attn`: entering the desk puts the session in the mode it declares | |
   | the niri natives: columns, monitors, fullscreen, float, close, overview, consume/expel, layout switch | |
 
   The `zde` rows are the ones worth reading twice: the CLI is one binary with
   one dispatch, so a verb it does not know prints usage to stderr and exits, and
   from a keybind that is indistinguishable from a key that did nothing.
-  `Mod+Shift+Escape` is worth singling out for the same reason: panic is the key
-  you reach for first when something goes wrong, and it is one of the silent
-  ones. The one failure that has come off this table is a desk's own launches:
-  what a switch could not start now arrives as a notification, and `zde doctor`
-  names it before you press anything (section 5).
+  `Mod+Shift+Escape` was the one worth singling out for that reason and is not
+  any more - panic is written - but the same silence is one refusal away: with
+  no decoy set it changes nothing and says so to a stderr no keypress has
+  (section 12). The one failure that has come off this table is a desk's own
+  launches: what a switch could not start now arrives as a notification, and
+  `zde doctor` names it before you press anything (section 5).
 - **Modes** (`Mod+m`) and the leader sequences for panic and block. They wait
   on the input layer landing.
 - **Brightness** (`Mod+b`, `Mod+Shift+b`) needs your user in the `video` group,

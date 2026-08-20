@@ -202,6 +202,8 @@ func run(args []string) error {
 		return focusDesk("desk.regulars")
 	case len(args) == 2 && args[0] == "desk" && args[1] == "last":
 		return lastDesk()
+	case len(args) == 2 && args[0] == "desk" && args[1] == "panic":
+		return deskPanic()
 	case len(args) == 2 && args[0] == "desk" && args[1] == "reconcile":
 		return reconcile()
 	case len(args) == 2 && args[0] == "desk" && args[1] == "apps":
@@ -1840,6 +1842,32 @@ func focusDesk(method string, args ...string) error {
 // where you end up as the only one that would not say.
 func lastDesk() error { return focusDesk("desk.last") }
 
+// deskPanic hides: the decoy desk, the sound off, the notifications silenced -
+// and the same verb again to come back.
+//
+// Printed rather than silent, the way `zde net kill` is and unlike the lock,
+// because it is one verb both ways: the line is what says which way this one
+// went. The note beside it is the half that did not happen - a machine with no
+// sound to mute, a desk that could not be brought back - and it goes to stderr,
+// because a panic that quietly did two thirds of its job is a thing somebody
+// believes they have.
+func deskPanic() error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	var said string
+	if err := c.Call("desk.panic", &said); err != nil {
+		return err
+	}
+	fmt.Println(said)
+	if note := c.Note(); note != "" {
+		fmt.Fprintln(os.Stderr, note)
+	}
+	return nil
+}
+
 func reconcile() error {
 	c, err := zded.Dial()
 	if err != nil {
@@ -2061,6 +2089,15 @@ func usage() {
   zde desk queue-jump    go to where the oldest thing waiting is
   zde desk regulars      the band that belongs to no desk (comms, music)
   zde desk last          go back to the desk you came from
+  zde desk panic         hide (Mod+Shift+Escape): switch to the decoy desk, mute
+                         the output, and let nothing interrupt. The decoy is
+                         zde.panic.decoy in your home-manager config, and with
+                         none set - or one naming a desk that is gone or one
+                         declared private - it changes nothing and says which of
+                         those it was. The same verb again comes back: your
+                         desk, the sound as it was, the mode as it was. It hides
+                         a screen and forgets nothing: what arrived while it
+                         held is in the notification center afterwards
   zde desk reconcile     make the workspace names true again
   zde desk snapshot [N]  write down the desk you are on, so you can ask for it
   zde desk apps [NAME]   what a desk declares: the address of each app, where

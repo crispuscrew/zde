@@ -182,6 +182,10 @@ func run(ctx context.Context, socket, jrnPath, desksDir, histPath string, notify
 		complain(fmt.Errorf("notification history: %w", err))
 	}
 	srv.UseClipboard(clipboard)
+	// And the machine's sound, which panic mutes. Wired here rather than
+	// defaulted for the reason the clipboard is: it runs a program against
+	// whatever PipeWire is on the machine (internal/zded, UseSound).
+	srv.UseSound(zded.Wpctl{})
 	if err := srv.Listen(socket); err != nil {
 		return err
 	}
