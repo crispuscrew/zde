@@ -1671,9 +1671,10 @@ a way of finding out what a capture would have seen.
   picker: it is **not** blocked, and that is niri's own decision - a selection
   you drag is one you can see. If you want the picker blocked too, this action
   is not what does it.
-- **A third-party tool as well.** `grim -o <output> /tmp/g.png` with the window
-  blocked: black rectangle. This is the wlr-screencopy path, which the weaker of
-  niri's two settings would have left wide open.
+- **A third-party tool as well.** zde installs none, so bring one: `nix shell
+  nixpkgs#grim -c grim -o <output> /tmp/g.png` with the window blocked gives a
+  black rectangle. This is the wlr-screencopy path, which the weaker of niri's
+  two settings would have left wide open.
 - **A screencast.** Share the screen to a browser tab or start OBS through the
   portal: the window is blocked there too. It is the same setting - blocking the
   screenshot path necessarily blocks the cast, since niri's `screen-capture` is
@@ -1689,9 +1690,9 @@ a way of finding out what a capture would have seen.
 - **Lift a block after the window is gone.** Block an app, close it, then `zde
   window capture-block off <app-id>` with the id the list printed. Without the
   name there would be nothing to press the key on.
-- **A window with no app id** - rare, but xwayland-satellite and some toolkits
-  manage it - refuses and says so. An empty pattern would be a rule matching
-  every window on the machine.
+- **A window with no app id** - rare, and niri reports one as null when the
+  client never set it - refuses and says so. An empty pattern would be a rule
+  matching every window on the machine.
 - **The keymap still works.** `dynamic.kdl` is included by the config carrying
   the binds, and the app id in it is a string the application chose, so check
   once that `Mod+Shift+Escape` and the lock key still do their jobs with
