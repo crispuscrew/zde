@@ -158,6 +158,15 @@ func run(args []string) error {
 		// because a jump answers the way every other verb that moves the
 		// session answers: the workspace it left focused.
 		return focusDesk("window.jump-to", args[2])
+	// The bare form reads it back and the rest act. `toggle` on the focused
+	// window is what a key would spawn; the four-word form names an app id, so
+	// a block put on a window that has since been closed can still be lifted.
+	case len(args) == 2 && args[0] == "window" && args[1] == "capture-block":
+		return captureBlock(nil)
+	case len(args) == 3 && args[0] == "window" && args[1] == "capture-block":
+		return captureBlock([]string{args[2]})
+	case len(args) == 4 && args[0] == "window" && args[1] == "capture-block":
+		return captureBlock([]string{args[2], args[3]})
 	case len(args) == 3 && args[0] == "desk" && args[1] == "switch":
 		return switchDesk(args[2])
 	case len(args) == 3 && args[0] == "desk" && args[1] == "move-window":
@@ -780,6 +789,51 @@ func zen(state string) error {
 		fmt.Println("zen on: content only")
 	} else {
 		fmt.Println("zen off")
+	}
+	return nil
+}
+
+// captureBlock is `zde window capture-block`: which windows niri hands to a
+// screen capture as a black rectangle, and which it does not.
+//
+// It prints, and this is the one verb in the set where printing is the whole of
+// the feedback rather than a fallback: a blocked window looks exactly like an
+// unblocked one to the person sitting at the screen, because niri only ever
+// blocks a render target that is not the physical output (internal/zded,
+// capture.go). So the line says which app id was acted on and which way, and
+// with nothing to act on it prints what is blocked so that a block can be found
+// and lifted. docs/verify.md has the check that goes further than a line: take
+// a screenshot with Mod+Print and look at it.
+func captureBlock(args []string) error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	var b zded.CaptureBlock
+	if err := c.Call("window.capture-block", &b, args...); err != nil {
+		return err
+	}
+	if b.AppID != "" {
+		state := "not blocked"
+		if b.Blocked {
+			state = "blocked out of every capture except the interactive screenshot picker"
+		}
+		fmt.Printf("%s\t%s\n", b.AppID, state)
+	}
+	if len(args) > 0 {
+		// A state was asked for, so the answer is what happened to that one app
+		// and not a report on the session. The bare form below is the report.
+		return nil
+	}
+	for _, id := range b.All {
+		if id == b.AppID {
+			continue
+		}
+		fmt.Printf("%s\tblocked\n", id)
+	}
+	if b.AppID == "" && len(b.All) == 0 {
+		fmt.Println("nothing is blocked out of capture")
 	}
 	return nil
 }
@@ -2048,6 +2102,18 @@ func usage() {
                          open the window picker (Mod+w); prints the list when
                          no shell is up - id, workspace, app, title - and with
                          an id goes straight to that window, desk and all
+  zde window capture-block [STATE [APP_ID]]
+                         hide the focused window from screen capture, and show
+                         it again. With no argument it prints what is blocked.
+                         niri matches a rule on the app id, not on one window,
+                         so this covers every window of that application; with
+                         an app id typed after the state it acts on that one,
+                         which is how a block is lifted after the window is
+                         gone. What it blocks: screencasts through the portal,
+                         wlr-screencopy tools, and Mod+Print and Mod+Ctrl+w.
+                         What it does not: your own screen, and the region
+                         picker on Mod+Shift+s, which niri leaves unblocked on
+                         purpose. A blocked window looks normal to you
   zde ask oneshot [QUESTION]
                          the quick LLM (Mod+a). With a question typed here the
                          answer arrives here, streamed as it comes; without one

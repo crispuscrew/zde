@@ -1374,6 +1374,8 @@ func (s *Server) Dispatch(req Request) Response {
 		return s.invoke(req.Args[0], req.Args[1])
 	case "desk.zen":
 		return s.zen(req.Args)
+	case "window.capture-block":
+		return s.captureBlock(req.Args)
 	case "desk.queue-jump":
 		if len(req.Args) != 0 {
 			return Response{Error: "desk.queue-jump takes no arguments"}
@@ -2844,25 +2846,27 @@ func (s *Server) launchApps(ctx context.Context, target string, apps []manifest.
 	s.launchesFailed(target, failed)
 }
 
-// SyncRules writes niri's dynamic config: the desks' placement, and what zen is
-// doing to the chrome (rules.go, zen.go).
+// SyncRules writes niri's dynamic config: the desks' placement, what zen is
+// doing to the chrome, and what is blocked out of capture (rules.go, zen.go,
+// capture.go).
 //
-// At startup, on reconcile and on a zen toggle - not on every switch. The rules
-// are a function of the files, so a switch that rewrote them would be asking
-// niri to reload its config for something that had not changed, and a reload
-// re-evaluates the rules for every window already open. A manifest edited
-// mid-session takes effect at the next `zde desk reconcile`, which is the verb
-// for making things true again.
+// At startup, on reconcile and on a zen or capture-block toggle - not on every
+// switch. The rules are a function of the files, so a switch that rewrote them
+// would be asking niri to reload its config for something that had not changed,
+// and a reload re-evaluates the rules for every window already open. A manifest
+// edited mid-session takes effect at the next `zde desk reconcile`, which is the
+// verb for making things true again.
 //
-// Startup is also where zen's half is put back after zded is restarted: the
-// state is in the journal, this is what turns it into the file niri reads, and
-// writeRules leaves the file alone when the bytes already match.
+// Startup is also where zen's half and the capture blocks are put back after
+// zded is restarted: both states are in the journal, this is what turns them
+// into the file niri reads, and writeRules leaves the file alone when the bytes
+// already match.
 func (s *Server) SyncRules() {
 	all, _, err := s.desks.All()
 	if err != nil {
 		return
 	}
-	if err := writeRules(dynamicPath(), dynamicKDL(s.zenState(), all)); err != nil {
+	if err := writeRules(dynamicPath(), dynamicKDL(s.zenState(), s.captureBlocked(), all)); err != nil {
 		log.Printf("zded: writing niri's dynamic config: %v", err)
 	}
 }

@@ -205,6 +205,23 @@ the queue are as they were, which is principle 3 ([`vision.md`](vision.md)) and
 also the honest limit: this is the key for somebody walking past, and `lock` is
 the key for leaving the room.
 
+`capture-block` is zen's mechanism with a different promise on it. niri's
+`block-out-from` is a window rule and niri 26.04 has no IPC action for it, so
+zded writes the rule into the same `dynamic.kdl` and asks for a reload; the set
+of blocked app ids is in the journal, so a restarted daemon puts it back. What
+it cannot be is per window. A niri window rule matches an app id or a title -
+classes, never one instance - and a title is a string the application rewrites
+whenever it likes, so the key is pressed on a window and what it blocks is every
+window of that application. That is the per-app flag of
+[`vision.md`](vision.md), section 3; the per-window toggle beside it is not
+expressible on this compositor. The value written is `screen-capture`, the
+stronger of the two niri takes: the portal screencast, the wlr-screencopy tools,
+and `capture.shot-full` and `capture.shot-window`. `capture.shot-region` is not
+blocked, because niri saves what the screen shows for a selection you drag. A
+blocked window looks entirely normal to the person sitting at it - niri blocks
+every render target except the physical output - so `zde window capture-block`
+prints what is blocked, and that is how anybody checks.
+
 `zen` is one verb over two mechanisms, and the split is niri's rather than a
 choice. The bar is zde's own layer-shell surface, so the shell unmaps it and the
 space it reserved goes back to the windows. The borders, the focus ring and the
@@ -219,7 +236,7 @@ shell being restarted, which every home-manager switch does.
 | desk | `switcher`, `nav-down`/`nav-up` (focus stacked window, else rotate desk), `switch <name>`, `next`, `prev`, `last`, `queue-jump`, `regulars`, `move-window-next`, `move-window-prev`, `move-window-to <name>`, `move-workspace-to <name>` (the whole workspace changes hands: how the regulars are made, and how work leaves them), `snapshot`, `reconcile`, `pause`, `panic` (one key both ways: the decoy desk `zde.panic.decoy` names, the output muted, the notifications silenced - and the same key gives all three back), `block`, `guest <name>`, `zen` (hide the bar, the borders and the gaps, on every screen; hides chrome and no information, so what may pop up is still attn's to decide) |
 | monitor | `focus <dir>`, `move-window <dir>`, `move-workspace <dir>` |
 | workspace | `next`/`prev` (band-clamped), `overview` |
-| window | `focus <dir>`, `move <dir>`, `resize`, `preset-width`, `consume`/`expel`, `float`, `fullscreen`, `close`, `capture-block`, `jump-to` (pick any open window and go to where it is; travels the hierarchy, and rearranges nothing) |
+| window | `focus <dir>`, `move <dir>`, `resize`, `preset-width`, `consume`/`expel`, `float`, `fullscreen`, `close`, `capture-block` (hide this window from screen capture and show it again; niri matches on the app id, so it is that application and not that one window), `jump-to` (pick any open window and go to where it is; travels the hierarchy, and rearranges nothing) |
 | launch | `launcher.open` (zlg), `palette.open` (run any action by name, filtered as you type, with the ones nobody has written marked as such; answering an expression typed in place of a name is 0.2), `app.launch <name>`, `app.launch-at <name>` (prompts for a directory), `app.launch-here` (context fills the slot), `app.jump-or-launch`, `app.new-instance` (always fresh) |
 | ask | `oneshot`, `panel`, `escalate`, `local` |
 | pass | `open` (trusted secrets window; types into the focused field, never the clipboard), `type` (trusted window only) |

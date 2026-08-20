@@ -1524,8 +1524,9 @@ What only a session settles:
 
 ## 12. The security set
 
-Three of 0.2's set are written; guest, zen and capture-block are not, and are in
-the list below. The kill switch and lock-preset have no chord - both are `zde`
+Four of 0.2's set are written; guest is not. zen keeps its own section below,
+since it hides chrome and no information and was never a posture to decide. The
+kill switch, lock-preset and capture-block have no chord - all three are `zde`
 verbs and rows in the palette on `Mod+semicolon` - and panic has had
 `Mod+Shift+Escape` since before there was anything behind it.
 
@@ -1644,6 +1645,59 @@ untestable.
   that nothing on disk records that you pressed it. Getting back from there is
   `Mod+Tab`, `Mod+Shift+m` and `Mod+q`, and the three are visible on the bar.
 
+### capture-block
+
+`zde window capture-block` - no chord yet, so it is a palette row on
+`Mod+semicolon` and a verb in a terminal. It writes a niri window rule into
+`~/.config/niri/dynamic.kdl` and asks niri to reload, which is the mechanism zen
+uses for niri's half of the chrome, with a security posture on it.
+
+Read this first: **a blocked window looks exactly like an unblocked one on your
+own screen.** niri blocks every render target except the one you are looking at,
+so nothing on the desktop changes and there is no indicator. Everything below is
+a way of finding out what a capture would have seen.
+
+- **Block the window you are on, and read it back.** `zde window capture-block
+  toggle`, then `zde window capture-block` with no argument: it names the app id
+  and says blocked, and lists anything else that is. That app id is what niri
+  matched on, so read it - `zde window jump-to` prints the same string.
+- **It is the application, not the window.** Open two windows of the same app,
+  block one: both are blocked. This is niri's rule language and not a bug -
+  a window rule matches a class - and it is the reason this action is in the
+  window group and still says "app" in every answer it gives.
+- **A screenshot is the proof.** With it blocked, `Mod+Print`
+  (`capture.shot-full`) and `Mod+Ctrl+w` (`capture.shot-window`): open the files
+  and the window is a solid black rectangle. Then `Mod+Shift+s`, the region
+  picker: it is **not** blocked, and that is niri's own decision - a selection
+  you drag is one you can see. If you want the picker blocked too, this action
+  is not what does it.
+- **A third-party tool as well.** `grim -o <output> /tmp/g.png` with the window
+  blocked: black rectangle. This is the wlr-screencopy path, which the weaker of
+  niri's two settings would have left wide open.
+- **A screencast.** Share the screen to a browser tab or start OBS through the
+  portal: the window is blocked there too. It is the same setting - blocking the
+  screenshot path necessarily blocks the cast, since niri's `screen-capture` is
+  a superset of its `screencast`. There is no way to ask for the reverse.
+- **The same verb gives it back.** `zde window capture-block toggle` again, then
+  `Mod+Print`: the window is in the picture. If it is still black, niri did not
+  reload - `niri validate -c ~/.config/niri/dynamic.kdl` says why.
+- **It survives a restart.** Block something, then `systemctl --user restart
+  zded`, then screenshot: still black. This is the whole reason the set is in
+  the journal and not in the daemon's memory. A rebuild restarts zded, and a
+  block that a rebuild quietly lifted is a window handed to the next screencast
+  with nothing on the screen different either way.
+- **Lift a block after the window is gone.** Block an app, close it, then `zde
+  window capture-block off <app-id>` with the id the list printed. Without the
+  name there would be nothing to press the key on.
+- **A window with no app id** - rare, but xwayland-satellite and some toolkits
+  manage it - refuses and says so. An empty pattern would be a rule matching
+  every window on the machine.
+- **The keymap still works.** `dynamic.kdl` is included by the config carrying
+  the binds, and the app id in it is a string the application chose, so check
+  once that `Mod+Shift+Escape` and the lock key still do their jobs with
+  something blocked. `niri validate -c ~/.config/niri/dynamic.kdl` is the fast
+  version of the same question.
+
 ## 12. Zen
 
 `Mod+Shift+z`: hide bar, borders, gaps; content only
@@ -1741,6 +1795,7 @@ Not bugs, do not report them:
   | `Mod+b`, `Mod+Shift+b` (brightness, on a machine with a backlight) | |
   | `zde status`, `doctor`, `report`, `keys`, `palette`, `ask`, `attn`, `queue`/`add`/`done`/`clear` | `zde net observe\|app-cut` |
   | `zde app list\|launch`, `window jump-to`, `workspace next\|prev`, `nav down\|up`, `desk zen [on\|off\|toggle]` | `zde desk block\|pause`, which are not verbs at all |
+  | `zde window capture-block [on\|off\|toggle [APP_ID]]` (no chord: the palette runs it) | |
   | `zde net status\|connect\|disconnect\|forget\|kill` | `zde pass`, `media`, `mode` |
   | `zde clip history [ID]`, `zde clip clear` | |
   | `zde system lock\|lock-preset\|quiet\|notif-center\|notif-reach\|connections\|bluetooth\|power` | `zde system calendar\|wallpapers` |

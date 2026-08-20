@@ -234,6 +234,13 @@ type entry struct {
 	// drawn - and one field answering both would make a journal from a newer zde
 	// replay a mode name into the chrome.
 	Zen bool `json:"zen,omitempty"`
+	// AppID is the window class a "captureblock" entry is about, and Blocked is
+	// the direction it sets (internal/zded, capture.go). Their own fields for
+	// the reason Zen has one: an app id is not a desk name, and a kind that
+	// borrowed Desk for it would have a journal from a newer zde replay a
+	// window class into the desk map.
+	AppID   string `json:"app_id,omitempty"`
+	Blocked bool   `json:"blocked,omitempty"`
 }
 
 const (
@@ -248,6 +255,9 @@ const (
 	kindMode     = "mode"     // what arrivals are allowed to do (internal/attn)
 	kindBorrowed = "borrowed" // the desk whose declared mode is in force, and the mode it displaced
 	kindZen      = "zen"      // chrome hidden, or shown again (internal/zded, zen.go)
+	// kindCaptureBlock is one app id blocked out of screen capture, or let back
+	// in (internal/zded, capture.go).
+	kindCaptureBlock = "captureblock"
 )
 
 // State is what the journal remembers. It is a value: callers get a copy and
@@ -284,6 +294,12 @@ type State struct {
 	// home-manager switch, so a toggle it kept would be one the person set and
 	// the machine forgot, with a bar back on the screen and no key pressed.
 	Zen bool
+	// CaptureBlocked is the set of Wayland app ids blocked out of screen
+	// capture (internal/zded, capture.go). Here for the reason Zen is, and one
+	// harder: a block that a restart forgot leaves a window somebody decided
+	// was private being handed to the next screencast, with nothing on the
+	// screen different either way.
+	CaptureBlocked map[string]bool
 }
 
 // Borrowed is a desk's attn policy in force. The zero value is nobody having
@@ -616,6 +632,22 @@ func (j *Journal) apply(e entry) {
 		j.state.Mode = e.Mode
 	case kindZen:
 		j.state.Zen = e.Zen
+	case kindCaptureBlock:
+		if e.AppID == "" {
+			// Nothing to match on, so nothing this line can block. Counted
+			// rather than treated as "block everything", which is the reading
+			// an empty pattern would get from a compositor.
+			j.skipped++
+			return
+		}
+		if e.Blocked {
+			if j.state.CaptureBlocked == nil {
+				j.state.CaptureBlocked = map[string]bool{}
+			}
+			j.state.CaptureBlocked[e.AppID] = true
+		} else {
+			delete(j.state.CaptureBlocked, e.AppID)
+		}
 	case kindBorrowed:
 		// An empty desk is the real state "nobody has it" rather than a torn
 		// line: it is how a mode chosen by hand ends the loan (internal/zded,
@@ -692,6 +724,12 @@ func (j *Journal) State() State {
 		Zen:        j.state.Zen,
 		Queue:      append([]Item(nil), j.state.Queue...),
 	}
+	if j.state.CaptureBlocked != nil {
+		out.CaptureBlocked = make(map[string]bool, len(j.state.CaptureBlocked))
+		for id := range j.state.CaptureBlocked {
+			out.CaptureBlocked[id] = true
+		}
+	}
 	for d, byMonitor := range j.state.LastActive {
 		m := make(map[string]string, len(byMonitor))
 		for mon, slot := range byMonitor {
@@ -743,6 +781,32 @@ func (j *Journal) Zen() bool {
 // would put the bar back and leave the borders gone at the next replay.
 func (j *Journal) SetZen(on bool) error {
 	return j.record(entry{Kind: kindZen, Zen: on})
+}
+
+// CaptureBlocked is every app id blocked out of screen capture, sorted, so that
+// the window rules built from it are the same bytes twice and niri is not asked
+// to reload for nothing (internal/zded, captureRules).
+//
+// A copy: the caller renders it into a config file, and a slice reaching back
+// into the journal would be one a concurrent toggle rewrites underneath that.
+func (j *Journal) CaptureBlocked() []string {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	out := make([]string, 0, len(j.state.CaptureBlocked))
+	for id := range j.state.CaptureBlocked {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// SetCaptureBlocked writes down whether one app id is blocked out of screen
+// capture. Both directions are written, for the reason SetZen writes both: a
+// journal that recorded only the blocking would put every window somebody had
+// ever unblocked back behind a black rectangle at the next replay, and a
+// blocked window looks normal to the person at the keyboard.
+func (j *Journal) SetCaptureBlocked(appID string, on bool) error {
+	return j.record(entry{Kind: kindCaptureBlock, AppID: appID, Blocked: on})
 }
 
 // Borrowed is which desk's declared mode is in force, and the mode it
@@ -1051,6 +1115,17 @@ func (j *Journal) compactLocked() error {
 	// off is what a file that has never been told already replays as.
 	if j.state.Zen {
 		if err := write(entry{Kind: kindZen, Zen: true}); err != nil {
+			return err
+		}
+	}
+	// And every app id blocked out of capture, or a compaction would quietly
+	// unblock them: the file would replay as a session where nothing was ever
+	// blocked, and nothing on the screen says otherwise either way. Sorted, so
+	// two compactions of the same state write the same file. Only the blocked
+	// ones, since not blocked is what a file that has never been told replays
+	// as.
+	for _, id := range sortedKeys(j.state.CaptureBlocked) {
+		if err := write(entry{Kind: kindCaptureBlock, AppID: id, Blocked: true}); err != nil {
 			return err
 		}
 	}
