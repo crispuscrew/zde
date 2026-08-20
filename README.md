@@ -49,7 +49,7 @@ than described: zinc is a pinned input, so a zde machine has `zcr`, `zc` and
 
 **Missing.** The apps: the sandbox is installed and nothing here defines
 anything to put in it, so what `Mod+t` starts is an ordinary host program until
-you write one. pass, media, the modes beyond Normal, panic,
+you write one. pass, media, the modes beyond Normal,
 launch-at, the calendar and the wallpapers are keys that do nothing, silently - a bind whose command is not written yet prints
 usage to a stderr nobody reads, which is why the palette marks them rather than
 hiding them. Bluetooth is `zde system bluetooth` and nothing on a screen; ask

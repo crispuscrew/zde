@@ -322,6 +322,18 @@ func (m *NM) Status() (Status, error) {
 		return Status{}, err
 	}
 	st := Status{Kind: KindNone}
+	// Whether zde (or anything else) has NetworkManager's networking switch
+	// off. Asked here rather than in a verb of its own because every reader of
+	// a link already asks this question - the bar, the widget, `zde net status`
+	// - and a cut machine looks exactly like a broken one without it. One
+	// property read on the same budget as the rest.
+	//
+	// A NetworkManager that will not answer it is not a reason to have no link:
+	// what is missing is why there is no network, not whether there is one.
+	var enabled bool
+	if err := m.prop(ctx, nmPath, nmIface, "NetworkingEnabled", &enabled); err == nil {
+		st.Killed = !enabled
+	}
 	// The same radio List and Connect will use, from the same reading, so that
 	// the bar and the widget cannot end up describing different devices.
 	wifi := pickWifi(devs)
@@ -925,6 +937,45 @@ func (m *NM) Disconnect() error {
 		return errors.New("no wifi connection to drop")
 	}
 	return m.call(ctx, nmPath, nmIface+".DeactivateConnection", nil, active)
+}
+
+// Kill cuts the network at NetworkManager's own switch, and puts it back.
+//
+// What it is: Enable(false), which is `nmcli networking off`. Every managed
+// device is deactivated and brought down - wired and wifi together, and a
+// bluetooth PAN with them - and every saved profile stays exactly where it was,
+// so the way back is Enable(true) and nothing has to be typed again.
+//
+// What it deliberately is not is the radios. Blocking those means bluetooth
+// goes with wifi, and on a laptop whose keyboard is bluetooth that is a machine
+// nobody can undo this from - which is the one thing a reversible security
+// action must not be. The reach is not there either: bluetooth's block is
+// /dev/rfkill or bluez, and the account zde ships with is in networkmanager and
+// video and no other group (nix/live.nix).
+//
+// One switch and not two, and this one is a reason of its own. NetworkManager's
+// WirelessEnabled would reach the wifi radio without any of the above, and it is
+// still left alone: it is a second bit to put back, and putting it back would
+// silently un-block a radio somebody had blocked themselves before ever pressing
+// this.
+//
+// The honest limit: this cuts what NetworkManager manages. A tunnel somebody
+// built by hand, a container bridge, a tether nothing here knows about, carry on
+// - and netview's per-app cut (0.3) is what reaches those.
+//
+// The switch is NetworkManager's own state and is read back rather than
+// remembered (Status), which is what lets a bar say "cut" after zded has been
+// restarted under it, and stop saying it the moment somebody runs `nmcli
+// networking on`. What a restart of NetworkManager itself does with the switch
+// is NetworkManager's business and is not asserted here.
+func (m *NM) Kill(cut bool) error {
+	ctx, cancel := m.within()
+	defer cancel()
+	// polkit decides this, not us: enable-disable-network is a permission an
+	// account has or does not, and NetworkManager's refusal is the sentence
+	// worth passing on rather than one written here about a machine this code
+	// cannot see.
+	return m.call(ctx, nmPath, nmIface+".Enable", nil, !cut)
 }
 
 // gone reports whether an error is D-Bus for "that object is not there any

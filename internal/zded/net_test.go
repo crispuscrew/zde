@@ -32,9 +32,17 @@ type fakeLink struct {
 	// here that destroys something.
 	forgot    []string
 	forgetErr error
+	// cuts is every way Kill was asked to go, so a test can prove a toggle
+	// went the way the machine's state said and not the way it felt like.
+	cuts    []bool
+	killErr error
 }
 
-func (f *fakeLink) Status() (link.Status, error) { return f.status, nil }
+func (f *fakeLink) Status() (link.Status, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.status, nil
+}
 func (f *fakeLink) List() ([]link.Network, error) {
 	return append([]link.Network(nil), f.networks...), nil
 }
@@ -54,6 +62,27 @@ func (f *fakeLink) Forget(ssid string) error {
 }
 
 func (f *fakeLink) Disconnect() error { return nil }
+
+// Kill is NetworkManager's networking switch, and the fake keeps it where the
+// real one does: in the status it answers with. Nothing in zded remembers
+// having cut the network, so a fake that remembered it somewhere else would be
+// testing a daemon that does not exist.
+func (f *fakeLink) Kill(cut bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cuts = append(f.cuts, cut)
+	if f.killErr != nil {
+		return f.killErr
+	}
+	f.status.Killed = cut
+	return nil
+}
+
+func (f *fakeLink) asked() []bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]bool(nil), f.cuts...)
+}
 
 func (f *fakeLink) handed() []string {
 	f.mu.Lock()

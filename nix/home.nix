@@ -174,6 +174,65 @@ in
       '';
     };
 
+    lock.preset = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      example = "haven";
+      description = ''
+        The desk `system.lock-preset` switches to before it locks, so that what
+        an unlock shows - and what a shoulder reads over the lock screen - is
+        that desk and not whatever you were doing.
+
+        The name of a desk, as a manifest declares it
+        (`~/.config/zde/desks/<name>.yaml`). Unset is the default and locks
+        where you are: `zde system lock` and `system.lock-preset` are then the
+        same thing, said differently.
+
+        It never refuses to lock. A name that is unset, names a desk that is
+        gone, or names a desk declared `private: true` - which is the one desk
+        an unlock should not reveal - locks where you are and says which of
+        those it was, and so does a desks directory holding a manifest that will
+        not parse, since nothing can then say whether the preset is private. The
+        one case that refuses is a machine with no locker at
+        all - `zde.apps.lock`, which this module defaults to swaylock, so it
+        takes an override or a zde built by hand - and it refuses before
+        anything moves: a session walked off its desk and left unlocked is
+        worse than a key that does nothing.
+      '';
+    };
+
+    panic.decoy = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      example = "haven";
+      description = ''
+        The harmless desk `desk.panic` switches to (`Mod+Shift+Escape`), so that
+        somebody walking in sees that desk instead of what you were doing. The
+        key mutes the output and silences the notifications at the same time,
+        and pressing it again gives all three back: the desk you were on, the
+        sound as it was, the mode as it was.
+
+        The name of a desk, as a manifest declares it
+        (`~/.config/zde/desks/<name>.yaml`). Unset is the default, and unlike
+        the lock preset that means the key refuses: lock-preset with no preset
+        still locks the screen, which is what it is for, while panic with no
+        decoy has nothing to put in front of the person who has already walked
+        in - and a key that muted the sound over the work it was asked to hide
+        is worse than one that says it did nothing.
+
+        The same refusal, changing nothing, for a name that is not a desk any
+        more, one that names a desk declared `private: true` - the desk with the
+        most to hide is the one thing panic must never show - and a desks
+        directory holding a manifest that will not parse, since nothing can then
+        say whether the decoy is private.
+
+        What it hides is a screen and a sound, and it erases nothing: everything
+        that arrived while it held is in the notification center afterwards, and
+        the queue is as long as it was. It is for the moment somebody walks past;
+        `zde system lock` is for the moment you leave the room.
+      '';
+    };
+
     ask.tiers = lib.mkOption {
       type = lib.types.attrsOf (lib.types.listOf lib.types.str);
       default = { };
@@ -411,6 +470,17 @@ in
       # when it is empty: the file being there and saying nothing is what makes
       # `Mod+a` answer with the option to set rather than with a missing file.
       "zde/ask.json".text = builtins.toJSON cfg.ask.tiers;
+
+      # And which desk an unlock should show. Written even when it is empty,
+      # for the reason ask.json is: the file being there and saying nothing is
+      # what makes lock-preset lock and say which option to set, rather than
+      # look at a missing file and guess.
+      "zde/lock.json".text = builtins.toJSON { preset = cfg.lock.preset; };
+
+      # And which desk panic hides behind, written on the same terms and for the
+      # same reason: a file that is there and says nothing is what lets the key
+      # name the option to set instead of guessing at a missing file.
+      "zde/panic.json".text = builtins.toJSON { decoy = cfg.panic.decoy; };
     };
 
     # dynamic.kdl is the seam zded writes through, so home-manager seeds it and

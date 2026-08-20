@@ -173,6 +173,38 @@ without one. What that settled belongs in the keymap and not in a note here: a
 verb that takes a name wants a surface that offers the names, not a chord per
 name.
 
+Three of 0.2's security set are written. Two of them have no chord, which is the
+state above - a palette row and a CLI verb, and no key spent until usage asks
+for one - and panic has had `Mod+Shift+Escape` since before it did anything.
+`net.kill` is one action both ways, because a cut nobody at that keyboard can
+undo is a way to end a session rather than to protect one - and
+what it cuts is NetworkManager's networking switch, so the radios stay powered
+and a bluetooth keyboard is still there to press it again. It says so on the
+bar for as long as it holds, which is what tells a person zde did this and the
+network did not break. `lock-preset` switches first and locks second, and the
+order is the whole of it; every way the switch can be unusable - no preset, a
+desk that is gone, a desk declared private, a file that will not parse - locks
+where you are and says so, because the one outcome worse than an unlock showing
+your work is a screen that did not lock.
+
+`panic` is the same three checks with the opposite answer, and the difference is
+worth reading twice: the same list of failures changes nothing at all. It is one
+action and three reaches - the decoy desk from `zde.panic.decoy`, the output
+muted, the notifications silenced - and the decoy is the whole of it, so a panic
+with nowhere to switch to that muted the sound anyway would be somebody hearing
+the machine go quiet and believing their screen was covered. The order follows
+from that: the desk first, the silence next, the popups already drawn swept
+after it, and the sound last, since a machine with no sound card still panics and
+says what it could not do. It is one key both ways, like `net.kill`, because a
+key that hides a session and cannot give it back is a way to lose one - and
+pressed anywhere but on the decoy it hides again rather than putting the work
+back, which is the rule that keeps the way back from becoming a way to reveal.
+What comes back is what it took: your desk, the sound unless it was already off,
+the mode you were in. It hides and erases nothing - the notification history and
+the queue are as they were, which is principle 3 ([`vision.md`](vision.md)) and
+also the honest limit: this is the key for somebody walking past, and `lock` is
+the key for leaving the room.
+
 `zen` is one verb over two mechanisms, and the split is niri's rather than a
 choice. The bar is zde's own layer-shell surface, so the shell unmaps it and the
 space it reserved goes back to the windows. The borders, the focus ring and the
@@ -184,7 +216,7 @@ shell being restarted, which every home-manager switch does.
 
 | Group | Actions |
 |---|---|
-| desk | `switcher`, `nav-down`/`nav-up` (focus stacked window, else rotate desk), `switch <name>`, `next`, `prev`, `last`, `queue-jump`, `regulars`, `move-window-next`, `move-window-prev`, `move-window-to <name>`, `move-workspace-to <name>` (the whole workspace changes hands: how the regulars are made, and how work leaves them), `snapshot`, `reconcile`, `pause`, `panic`, `block`, `guest <name>`, `zen` (hide the bar, the borders and the gaps, on every screen; hides chrome and no information, so what may pop up is still attn's to decide) |
+| desk | `switcher`, `nav-down`/`nav-up` (focus stacked window, else rotate desk), `switch <name>`, `next`, `prev`, `last`, `queue-jump`, `regulars`, `move-window-next`, `move-window-prev`, `move-window-to <name>`, `move-workspace-to <name>` (the whole workspace changes hands: how the regulars are made, and how work leaves them), `snapshot`, `reconcile`, `pause`, `panic` (one key both ways: the decoy desk `zde.panic.decoy` names, the output muted, the notifications silenced - and the same key gives all three back), `block`, `guest <name>`, `zen` (hide the bar, the borders and the gaps, on every screen; hides chrome and no information, so what may pop up is still attn's to decide) |
 | monitor | `focus <dir>`, `move-window <dir>`, `move-workspace <dir>` |
 | workspace | `next`/`prev` (band-clamped), `overview` |
 | window | `focus <dir>`, `move <dir>`, `resize`, `preset-width`, `consume`/`expel`, `float`, `fullscreen`, `close`, `capture-block`, `jump-to` (pick any open window and go to where it is; travels the hierarchy, and rearranges nothing) |
@@ -195,9 +227,9 @@ shell being restarted, which every home-manager switch does.
 | capture | `shot-region`, `shot-window`, `shot-full`, `replay-clip`, `send-to <target>` |
 | media | `play-pause`, `next`, `prev`, `panel`, `like`, `download`, `target-pick`, `target-next`, `target-pin` |
 | audio | `vol-up`, `vol-down`, `mute`, `app-vol`, `sink-switch`, `app-sink`, `mic-mute` |
-| net | `observe`, `kill` (global toggle, loud bar state), `app-cut <app>` |
+| net | `observe`, `kill` (global toggle, loud bar state: NetworkManager's networking switch off and back, radios left on), `app-cut <app>` |
 | modes | `menu` (pick a mode), `normal`, `window`, `kb-mouse`, `one-hand`, `passthrough` |
-| system | `lock`, `lock-preset` (switch BEFORE lock), `power`, `quiet` (toggle), `attn <mode>` (work / focus / quiet by name; the CLI has it, no key is free for it), `connections` (wifi, and the link you are on; `forget` drops a saved network), `bluetooth` (the radio, what is around it, and pairing; no key of its own, since a second chord for half of one surface is a key to remember for no reason), `calendar`, `wallpapers`, `brightness-up`/`brightness-dn`, `help`, `notif-center`, `notif-reach` (put the keyboard on the newest popup, which is the only way a popup ever takes it), `shortcut-grab` (native; hand the focused app zde's keys, or take them back - the one key an app holding a shortcuts inhibitor can never swallow), `doctor`, `report` (write the state snapshot down for a session that will not come up; needs `zde.debug`, and no key of its own - the day it is wanted there is nobody at the keyboard), `update`, `layout-switch` (native) |
+| system | `lock`, `lock-preset` (switch BEFORE lock, to the desk `zde.lock.preset` names), `power`, `quiet` (toggle), `attn <mode>` (work / focus / quiet by name; the CLI has it, no key is free for it), `connections` (wifi, and the link you are on; `forget` drops a saved network), `bluetooth` (the radio, what is around it, and pairing; no key of its own, since a second chord for half of one surface is a key to remember for no reason), `calendar`, `wallpapers`, `brightness-up`/`brightness-dn`, `help`, `notif-center`, `notif-reach` (put the keyboard on the newest popup, which is the only way a popup ever takes it), `shortcut-grab` (native; hand the focused app zde's keys, or take them back - the one key an app holding a shortcuts inhibitor can never swallow), `doctor`, `report` (write the state snapshot down for a session that will not come up; needs `zde.debug`, and no key of its own - the day it is wanted there is nobody at the keyboard), `update`, `layout-switch` (native) |
 
 Launch placement: manifest pin first; else adoption (focused workspace,
 current scroll position, active desk); guest mode restricts launching to the

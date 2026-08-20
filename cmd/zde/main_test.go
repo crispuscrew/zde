@@ -230,6 +230,19 @@ func TestAMachineWithNoManagerSaysSoInOneLine(t *testing.T) {
 	}
 }
 
+// A cut network reports no link, which is also what a broken one reports - so
+// this line has to say which of the two it is looking at, or `zde net status`
+// tells somebody their wifi died about a switch they turned off themselves.
+func TestACutNetworkReadsAsCutAndNotAsOffline(t *testing.T) {
+	got := linkLine(link.Status{Kind: link.KindNone, Killed: true})
+	if !strings.Contains(got, "cut") {
+		t.Errorf("linkLine(cut) = %q, and it reads as a network that broke", got)
+	}
+	if !strings.Contains(got, "zde net kill") {
+		t.Errorf("linkLine(cut) = %q, and it should name the way back", got)
+	}
+}
+
 // The registry says which actions have a command written behind them, and the
 // palette shows every other row as one that will do nothing. That claim is only
 // worth making if it is true, and the only thing that decides it is this file's

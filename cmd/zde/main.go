@@ -75,6 +75,11 @@ func run(args []string) error {
 			return fmt.Errorf("nothing to lock the screen with: %w", err)
 		}
 		return nil
+	case len(args) == 2 && args[0] == "system" && args[1] == "lock-preset":
+		// The daemon's, not this process's, because the switch has to have
+		// happened before the locker starts and only zded can move a desk
+		// (internal/zded, lockPreset).
+		return lockPreset()
 	case len(args) == 2 && args[0] == "system" && args[1] == "power":
 		return powerMenu("")
 	case len(args) == 3 && args[0] == "system" && args[1] == "power":
@@ -109,6 +114,8 @@ func run(args []string) error {
 		// long as the process lives (/proc/<pid>/cmdline) - so there is no
 		// spelling of this command that can leak one. It comes from stdin.
 		return netConnect(args[2])
+	case len(args) == 2 && args[0] == "net" && args[1] == "kill":
+		return netKill()
 	case len(args) == 3 && args[0] == "net" && args[1] == "forget":
 		return netForget(args[2])
 	case len(args) == 2 && args[0] == "net" && args[1] == "disconnect":
@@ -203,6 +210,8 @@ func run(args []string) error {
 		return focusDesk("desk.regulars")
 	case len(args) == 2 && args[0] == "desk" && args[1] == "last":
 		return lastDesk()
+	case len(args) == 2 && args[0] == "desk" && args[1] == "panic":
+		return deskPanic()
 	case len(args) == 2 && args[0] == "desk" && args[1] == "reconcile":
 		return reconcile()
 	case len(args) == 2 && args[0] == "desk" && args[1] == "apps":
@@ -1612,6 +1621,13 @@ func netStatus() error {
 // linkLine is the link in words, and the same words the bar uses so that the
 // two never look like they are talking about different machines.
 func linkLine(st link.Status) string {
+	if st.Killed {
+		// Before the kind, because it is the reason for it: a cut machine
+		// reports no link, and "not connected" about a network somebody cut on
+		// purpose is the one thing this line must not say (internal/link,
+		// Status.Killed).
+		return "cut: zde has NetworkManager's networking switch off, and `zde net kill` puts it back"
+	}
 	switch st.Kind {
 	case link.KindWifi:
 		if st.SSID == "" {
@@ -1628,6 +1644,48 @@ func linkLine(st link.Status) string {
 	default:
 		return "not connected"
 	}
+}
+
+// netKill cuts every link NetworkManager holds, or puts them back, and says
+// which way it went.
+//
+// Printed rather than silent, unlike `zde system lock`, because this is a
+// toggle: the answer is the only thing standing between somebody and pressing
+// it twice. The bar says the same thing for as long as it holds
+// (internal/zded, netKill).
+func netKill() error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	var said string
+	if err := c.Call("net.kill", &said); err != nil {
+		return err
+	}
+	fmt.Println(said)
+	return nil
+}
+
+// lockPreset switches to the preset desk and locks the screen.
+//
+// Nothing is printed when it did both, the way the lock key prints nothing. The
+// note is what it could not do - no preset set, a preset naming a desk that is
+// gone, a preset that is private - and it goes to stderr, because a lock that
+// quietly skipped the switch is a feature somebody believes they have.
+func lockPreset() error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	if err := c.Call("system.lock-preset", nil); err != nil {
+		return err
+	}
+	if note := c.Note(); note != "" {
+		fmt.Fprintln(os.Stderr, note)
+	}
+	return nil
 }
 
 // netConnect joins a network, and asks for the password only when joining
@@ -1825,6 +1883,32 @@ func focusDesk(method string, args ...string) error {
 // where you end up as the only one that would not say.
 func lastDesk() error { return focusDesk("desk.last") }
 
+// deskPanic hides: the decoy desk, the sound off, the notifications silenced -
+// and the same verb again to come back.
+//
+// Printed rather than silent, the way `zde net kill` is and unlike the lock,
+// because it is one verb both ways: the line is what says which way this one
+// went. The note beside it is the half that did not happen - a machine with no
+// sound to mute, a desk that could not be brought back - and it goes to stderr,
+// because a panic that quietly did two thirds of its job is a thing somebody
+// believes they have.
+func deskPanic() error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	var said string
+	if err := c.Call("desk.panic", &said); err != nil {
+		return err
+	}
+	fmt.Println(said)
+	if note := c.Note(); note != "" {
+		fmt.Fprintln(os.Stderr, note)
+	}
+	return nil
+}
+
 func reconcile() error {
 	c, err := zded.Dial()
 	if err != nil {
@@ -1886,6 +1970,13 @@ func usage() {
   zde desk switcher      open the picker; prints the list when no shell is up
   zde app launch NAME    run what this machine calls that (Mod+t, Mod+e)
   zde system lock        lock the screen (Mod+Ctrl+semicolon)
+  zde system lock-preset switch to the preset desk, then lock, so that what an
+                         unlock shows - and what a shoulder reads at the lock
+                         screen - is that desk and not what you were doing. The
+                         desk is zde.lock.preset in your home-manager config.
+                         With none set, one naming a desk that is gone, or one
+                         naming a desk declared private, it locks where you are
+                         and says which of those it was
   zde system power       the power menu (Mod+Shift+x): lock, log out, suspend,
                          reboot, power off. Prints the five when no shell is
                          up, each with what it is about to cost underneath -
@@ -1905,7 +1996,15 @@ func usage() {
                          signal, security, note, network - and says so plainly
                          on a machine with no NetworkManager
   zde net status         what the link is right now: wifi and its signal,
-                         wired, nothing, or no NetworkManager to ask
+                         wired, nothing, no NetworkManager to ask, or cut
+  zde net kill           cut every link NetworkManager holds - wired and wifi
+                         together - and press it again to put them back. It is
+                         NetworkManager's own networking switch, so saved
+                         networks stay saved and the radios stay powered: a
+                         bluetooth keyboard still works to undo it. What it
+                         does not reach is anything NetworkManager does not
+                         manage. While it holds, the bar and zde net status say
+                         cut rather than offline
   zde net connect SSID   join a wifi network. The password is read from stdin,
                          never from the command line - anybody with an account
                          on this machine can read a running process's
@@ -2038,6 +2137,15 @@ func usage() {
   zde desk queue-jump    go to where the oldest thing waiting is
   zde desk regulars      the band that belongs to no desk (comms, music)
   zde desk last          go back to the desk you came from
+  zde desk panic         hide (Mod+Shift+Escape): switch to the decoy desk, mute
+                         the output, and let nothing interrupt. The decoy is
+                         zde.panic.decoy in your home-manager config, and with
+                         none set - or one naming a desk that is gone or one
+                         declared private - it changes nothing and says which of
+                         those it was. The same verb again comes back: your
+                         desk, the sound as it was, the mode as it was. It hides
+                         a screen and forgets nothing: what arrived while it
+                         held is in the notification center afterwards
   zde desk reconcile     make the workspace names true again
   zde desk snapshot [N]  write down the desk you are on, so you can ask for it
   zde desk apps [NAME]   what a desk declares: the address of each app, where

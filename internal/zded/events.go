@@ -160,6 +160,19 @@ const EventAttnPopup = "attn.popup"
 // one-at-a-time rule everything else obeys.
 const EventAttnReach = "attn.reach"
 
+// EventAttnHide takes every popup off the screen, and it is panic's (panic.go).
+//
+// Display and nothing else, which is the line this whole side of zde is drawn
+// on: what was on those cards is in the notification history and on the queue
+// exactly as it was, and nothing here tells a sender anything. Quiet mode stops
+// the next popup; this is for the one that is already up, drawn over the decoy
+// with the name of whoever sent it on it.
+//
+// No token and no waiting, like the popup event itself: a key that hides
+// something is not a key that wants to know whether a surface appeared, and
+// there is nothing to fall back to printing.
+const EventAttnHide = "attn.hide"
+
 // EventAsk asks the shell to open the ask popup, and EventAskPanel the panel
 // that stays open. Two kinds and not one with a flag, for the reason the window
 // picker has a kind of its own: a shell that has never heard of the second

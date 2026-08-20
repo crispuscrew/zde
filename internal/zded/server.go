@@ -279,6 +279,17 @@ type Server struct {
 	// history looks the same either way from a keyboard (see Clips.Why).
 	clipWhy string
 
+	// The sound side (audio.go, panic.go). sound is how the machine's output is
+	// muted, and it is nil until somebody says otherwise (see UseSound) - for
+	// the reason the clipboard is: this one runs a program against whatever
+	// PipeWire the machine has, and the servers the tests build would otherwise
+	// mute the speakers of whoever is running them.
+	//
+	// panicking is what panic took and what a second press gives back, nil when
+	// it is not holding. In memory on purpose: see panicHold.
+	sound     Sound
+	panicking *panicHold
+
 	// The network side (net.go). openLink is a field for the same reason launch
 	// is: the tests need a manager without a system bus under them, and the
 	// machine this runs on may have no NetworkManager at all.
@@ -1152,6 +1163,15 @@ func (s *Server) Dispatch(req Request) Response {
 		default:
 			return Response{Error: "system.power takes one action name, or none to open the menu"}
 		}
+	case "system.lock-preset":
+		// No argument, and the desk is deliberately not one. This is the key
+		// pressed on the way out of a room, and a desk name typed after it is a
+		// name to get wrong at exactly the wrong moment; the preset is a line in
+		// a config, decided once (lock.go).
+		if len(req.Args) != 0 {
+			return Response{Error: "system.lock-preset takes no arguments: the desk is zde.lock.preset in your home-manager config"}
+		}
+		return s.lockPreset()
 	case "system.idle":
 		// No arity, unlike system.power: there is nothing to do about an idle
 		// hold from here. zde cannot drop somebody else's inhibitor and would
@@ -1191,6 +1211,15 @@ func (s *Server) Dispatch(req Request) Response {
 			return Response{Error: "net.disconnect takes no arguments"}
 		}
 		return s.netDisconnect()
+	case "net.kill":
+		// No argument, because a kill switch with an "on" and an "off" word is
+		// two things to remember about the key you press when something is
+		// wrong. Which way it goes is read off NetworkManager (net.go, netKill),
+		// and the answer says which way it went.
+		if len(req.Args) != 0 {
+			return Response{Error: "net.kill takes no arguments: it is a toggle, and `zde net status` says which way it is"}
+		}
+		return s.netKill()
 	case MethodClip:
 		// One verb, two arities, the way window.jump-to has them: the list and
 		// the choice are the same question - which entry - and with no surface
@@ -1355,6 +1384,17 @@ func (s *Server) Dispatch(req Request) Response {
 			return Response{Error: "desk.regulars takes no arguments"}
 		}
 		return s.regulars()
+	case "desk.panic":
+		// No argument, and the decoy is deliberately not one. This is the key
+		// pressed with somebody already in the room, and a desk name typed after
+		// it is a name to get wrong at exactly that moment; the decoy is a line
+		// in a config, decided once (panic.go). One key both ways, the way
+		// net.kill is, and which way it goes is read off where you are standing
+		// rather than typed.
+		if len(req.Args) != 0 {
+			return Response{Error: "desk.panic takes no arguments: the decoy is zde.panic.decoy in your home-manager config, and the same key comes back"}
+		}
+		return s.deskPanic()
 	case "desk.next", "desk.prev":
 		if len(req.Args) != 0 {
 			return Response{Error: req.Method + " takes no arguments"}

@@ -187,9 +187,20 @@ blocks 0.2:
     calculator on a desk, launched like anything else, not a second surface for
     the shell to own.
 - modes via the input-layer daemon + device remap profiles.
-- security set: guest, panic + decoy, lock-preset, capture-block, `net.kill`.
-  Zen came out of this set early and is in 0.1: it hides chrome and no
-  information, so nothing in it was a security posture to decide.
+- security set: guest, panic + decoy, lock-preset, capture-block,
+  `net.kill`. Three have landed, and zen came out of this set early and is in
+  0.1: it hides chrome and no information, so nothing in it was a security
+  posture to decide. `net.kill` is NetworkManager's networking
+  switch, one action both ways, drawn on the bar while it holds; `lock-preset`
+  switches to `zde.lock.preset` and then locks, and locks anyway when that desk
+  is unset, gone or private; `panic` switches to `zde.panic.decoy`, mutes the
+  output and silences the notifications, gives all three back on the same key,
+  and refuses without moving anything when that desk is unset, gone or private
+  ([`model.md`](model.md), section 6). The panic-lock variant
+  ([`vision.md`](vision.md), section 3) is not written and has no row: it is a
+  second decision - what the lock screen shows, and whether the way back needs
+  a password - and it belongs with `guest`, which is the other half of that
+  question.
 
 ## 0.3 - Comfort and ops
 

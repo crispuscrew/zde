@@ -42,8 +42,8 @@ PanelWindow {
     // A row is { ssid, signal, secure, saved, active }, exactly as zded sends
     // it (internal/link, Network). The surface adds nothing to it.
     property var rows: []
-    // The link as it stands: { kind, ssid, signal, wifi }. What you are on is
-    // the one thing about a network list you cannot read off the list.
+    // The link as it stands: { kind, ssid, signal, wifi, killed }. What you are
+    // on is the one thing about a network list you cannot read off the list.
     property var link: ({})
     property int index: 0
     property string token: ""
@@ -281,6 +281,13 @@ PanelWindow {
             anchors.margins: 12
             text: {
                 const l = connections.link ?? {};
+                // Before the kind, and for the reason the bar does the same: a
+                // cut machine reports no link, so this surface - the one
+                // somebody opens to find out why they have no network - would
+                // otherwise answer "not connected" about a switch zde is
+                // holding off.
+                if (l.killed === true)
+                    return "cut by zde: net.kill puts it back";
                 if (l.kind === "wifi")
                     return l.ssid ? "on " + l.ssid + "  " + (l.signal ?? 0) + "%" : "on wifi";
                 if (l.kind === "wired")

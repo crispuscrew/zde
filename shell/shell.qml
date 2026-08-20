@@ -374,6 +374,8 @@ ShellRoot {
                 // is the only place this shell learns whether zen is on, so a
                 // dropped event costs a poll and never a wrong bar.
                 stream.write('{"method":"desk.zen"}\n');
+            else if (msg.event.kind === "attn.hide")
+                root.hidePopups();
         }
     }
 
@@ -560,6 +562,14 @@ ShellRoot {
                     why: c.why ?? "",
                     at: c.at
                 })), ev.token ?? "");
+    }
+
+    // panic: every card off the screen (internal/zded, EventAttnHide). The same
+    // verb present() uses when another surface takes over, because it is the
+    // same act - let go and get off the screen - and this one has nothing to
+    // hand the keyboard to.
+    function hidePopups() {
+        attnPopup.hide();
     }
 
     // Mod+Ctrl+n: the one deliberate act that puts the keyboard on a popup, and
@@ -822,6 +832,11 @@ ShellRoot {
         property string kind: ""
         property string ssid: ""
         property int strength: 0
+        // Whether zde is holding the network cut (net.kill). A cut machine
+        // reports no link, so without this the bar would draw "no network" over
+        // a network somebody switched off on purpose - which is the one thing
+        // principle 4 puts this widget here to prevent.
+        property bool killed: false
         // known is the same bargain the queue count makes. A signal reading
         // left on the bar after zded stopped answering looks current, and four
         // bars of wifi on a machine whose NetworkManager died is exactly the
@@ -887,6 +902,7 @@ ShellRoot {
                 netState.kind = res.ok.kind ?? "";
                 netState.ssid = res.ok.ssid ?? "";
                 netState.strength = res.ok.signal ?? 0;
+                netState.killed = res.ok.killed === true;
                 netState.known = true;
                 // And the surface, while it is up. A join often answers
                 // "joining" rather than "joined" - NetworkManager takes
@@ -1370,6 +1386,8 @@ ShellRoot {
         function net(): string {
             if (!netState.known)
                 return "unknown";
+            if (netState.killed)
+                return "cut";
             if (netState.kind === "wifi")
                 return "wifi " + netState.ssid + " " + netState.strength;
             return netState.kind;
@@ -1635,6 +1653,13 @@ ShellRoot {
                 text: {
                     if (!netState.known)
                         return "net: unknown";
+                    // Before the kind, because it is the reason for it: with
+                    // the switch off NetworkManager reports no link, and
+                    // "no network" is what a broken one says. This is the
+                    // visible state principle 4 asks for - the one thing that
+                    // tells a person zde cut this and one key puts it back.
+                    if (netState.killed)
+                        return "net: cut";
                     switch (netState.kind) {
                     case "wifi":
                         // The name is the useful half - it is how you know
@@ -1649,7 +1674,15 @@ ShellRoot {
                     }
                     return "no network";
                 }
-                color: netState.known && netState.kind !== "absent" ? "#c9ccd4" : "#7a7f8a"
+                // A cut is the one state on this widget somebody did on
+                // purpose and has to be able to find again, so it is the one
+                // that is not furniture-grey (docs/model.md, section 6: loud
+                // bar state).
+                color: {
+                    if (netState.killed)
+                        return "#e8b44a";
+                    return netState.known && netState.kind !== "absent" ? "#c9ccd4" : "#7a7f8a";
+                }
                 font.pixelSize: 13
                 font.family: "monospace"
                 textFormat: Text.PlainText
