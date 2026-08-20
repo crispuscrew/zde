@@ -925,7 +925,12 @@ let
         # And the row that does work does what Mod+Ctrl+semicolon does. The
         # locker on this machine is a touch, so what is asserted is the chain:
         # surface, shell, zded, the spawn, the apps table, an exec.
-        paletteq filter system.lock >/dev/null
+        # Filtered by the description and not by the name: the palette matches
+        # on both, and `system.lock` stopped being one row the day
+        # `system.lock-preset` was registered beside it. The name is still what
+        # `run` is given below - this narrows to one row so that the surface's
+        # filter is what is being asserted.
+        paletteq filter "lock the screen" >/dev/null
         if ! waitfor 15 narrowed; then
           echo "the palette did not narrow to the row to run: $(paletteq state)"; exit 1
         fi

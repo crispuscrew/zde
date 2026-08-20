@@ -203,6 +203,59 @@ func (s *Server) netForget(ssid string) Response {
 	return ok("forgot " + ssid)
 }
 
+// netKill cuts every link NetworkManager manages, or puts them all back
+// (docs/vision.md, A13; docs/model.md, section 6).
+//
+// A toggle, because this is a security action and the person at the keyboard
+// has to be able to undo it with the key they cut with. On a laptop with no
+// cable there is no other way back, and a kill switch that needs a second
+// machine to reverse is a way to end a session rather than to protect one.
+//
+// Which way it goes is read off NetworkManager rather than remembered here.
+// Nothing in zded holds a bit saying "I cut this": a daemon that did would
+// disagree with `nmcli networking on` typed in a terminal, and would come back
+// from a restart believing the network was up while it was not.
+//
+// A machine with no NetworkManager is refused rather than answered. The two
+// readers in this file that can call it a state do - netStatus and connections
+// answer "absent", because a machine zde cannot ask about is a fact about the
+// machine. Here the caller asked for the network to be cut, and "there is
+// nothing here to cut it with" is the only true answer: reporting success would
+// be a security verb claiming an effect it did not have (docs/vision.md,
+// principle 9).
+func (s *Server) netKill() Response {
+	m, err := s.links()
+	if err != nil {
+		if errors.Is(err, link.ErrNoManager) {
+			return Response{Error: "there is no NetworkManager on this machine, so zde has no network to cut: " +
+				"what this machine is online through is something zde cannot reach"}
+		}
+		return Response{Error: err.Error()}
+	}
+	st, err := m.Status()
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	cut := !st.Killed
+	if err := m.Kill(cut); err != nil {
+		// NetworkManager's own refusal - polkit, most likely - said as a
+		// refusal. The alternative is a key that appears to have worked on a
+		// machine that is still online, which is the worst thing this verb
+		// could do.
+		if cut {
+			return Response{Error: "cutting the network: " + err.Error()}
+		}
+		return Response{Error: "putting the network back: " + err.Error()}
+	}
+	if cut {
+		// Said as what it is and what it is not. The radios are still on -
+		// bluetooth keyboards keep working, which is why they are (internal/link,
+		// Kill) - and the way back is this same action.
+		return ok("network cut: NetworkManager is off, the radios are not, and this action puts it back")
+	}
+	return ok("network back")
+}
+
 func (s *Server) netDisconnect() Response {
 	m, err := s.links()
 	if err != nil {

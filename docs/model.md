@@ -169,6 +169,19 @@ without one. What that settled belongs in the keymap and not in a note here: a
 verb that takes a name wants a surface that offers the names, not a chord per
 name.
 
+The first two of 0.2's security set are written and neither has a chord, which
+is the state above: a palette row and a CLI verb, and no key spent until usage
+asks for one. `net.kill` is one action both ways, because a cut nobody at that
+keyboard can undo is a way to end a session rather than to protect one - and
+what it cuts is NetworkManager's networking switch, so the radios stay powered
+and a bluetooth keyboard is still there to press it again. It says so on the
+bar for as long as it holds, which is what tells a person zde did this and the
+network did not break. `lock-preset` switches first and locks second, and the
+order is the whole of it; every way the switch can be unusable - no preset, a
+desk that is gone, a desk declared private, a file that will not parse - locks
+where you are and says so, because the one outcome worse than an unlock showing
+your work is a screen that did not lock.
+
 | Group | Actions |
 |---|---|
 | desk | `switcher`, `nav-down`/`nav-up` (focus stacked window, else rotate desk), `switch <name>`, `next`, `prev`, `last`, `queue-jump`, `regulars`, `move-window-next`, `move-window-prev`, `move-window-to <name>`, `move-workspace-to <name>` (the whole workspace changes hands: how the regulars are made, and how work leaves them), `snapshot`, `reconcile`, `pause`, `panic`, `block`, `guest <name>`, `zen` |
@@ -182,9 +195,9 @@ name.
 | capture | `shot-region`, `shot-window`, `shot-full`, `replay-clip`, `send-to <target>` |
 | media | `play-pause`, `next`, `prev`, `panel`, `like`, `download`, `target-pick`, `target-next`, `target-pin` |
 | audio | `vol-up`, `vol-down`, `mute`, `app-vol`, `sink-switch`, `app-sink`, `mic-mute` |
-| net | `observe`, `kill` (global toggle, loud bar state), `app-cut <app>` |
+| net | `observe`, `kill` (global toggle, loud bar state: NetworkManager's networking switch off and back, radios left on), `app-cut <app>` |
 | modes | `menu` (pick a mode), `normal`, `window`, `kb-mouse`, `one-hand`, `passthrough` |
-| system | `lock`, `lock-preset` (switch BEFORE lock), `power`, `quiet` (toggle), `attn <mode>` (work / focus / quiet by name; the CLI has it, no key is free for it), `connections` (wifi, and the link you are on; `forget` drops a saved network), `bluetooth` (the radio, what is around it, and pairing; no key of its own, since a second chord for half of one surface is a key to remember for no reason), `calendar`, `wallpapers`, `brightness-up`/`brightness-dn`, `help`, `notif-center`, `notif-reach` (put the keyboard on the newest popup, which is the only way a popup ever takes it), `shortcut-grab` (native; hand the focused app zde's keys, or take them back - the one key an app holding a shortcuts inhibitor can never swallow), `doctor`, `report` (write the state snapshot down for a session that will not come up; needs `zde.debug`, and no key of its own - the day it is wanted there is nobody at the keyboard), `update`, `layout-switch` (native) |
+| system | `lock`, `lock-preset` (switch BEFORE lock, to the desk `zde.lock.preset` names), `power`, `quiet` (toggle), `attn <mode>` (work / focus / quiet by name; the CLI has it, no key is free for it), `connections` (wifi, and the link you are on; `forget` drops a saved network), `bluetooth` (the radio, what is around it, and pairing; no key of its own, since a second chord for half of one surface is a key to remember for no reason), `calendar`, `wallpapers`, `brightness-up`/`brightness-dn`, `help`, `notif-center`, `notif-reach` (put the keyboard on the newest popup, which is the only way a popup ever takes it), `shortcut-grab` (native; hand the focused app zde's keys, or take them back - the one key an app holding a shortcuts inhibitor can never swallow), `doctor`, `report` (write the state snapshot down for a session that will not come up; needs `zde.debug`, and no key of its own - the day it is wanted there is nobody at the keyboard), `update`, `layout-switch` (native) |
 
 Launch placement: manifest pin first; else adoption (focused workspace,
 current scroll position, active desk); guest mode restricts launching to the

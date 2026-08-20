@@ -52,6 +52,16 @@ type Status struct {
 	// list of networks means something quite different from "nothing is in
 	// range", and only this can tell the two apart.
 	Wifi bool `json:"wifi"`
+	// Killed is NetworkManager's networking switch, off. It is beside Kind
+	// rather than a fifth Kind because the two answer different questions and a
+	// cut machine answers both: Kind is none, and this is why.
+	//
+	// Read back from NetworkManager on every Status rather than remembered by
+	// whoever flipped it. A daemon that remembered would go on saying "zde cut
+	// this" after somebody ran `nmcli networking on`, and would say nothing at
+	// all after a zded restart - and the whole worth of this field is a bar that
+	// can tell a cut network from a broken one (docs/vision.md, principle 4).
+	Killed bool `json:"killed,omitempty"`
 }
 
 // Network is one wifi network as the list shows it: enough to choose by, and
@@ -86,6 +96,11 @@ type Manager interface {
 	Forget(ssid string) error
 	// Disconnect drops the wifi link, and leaves the profile saved.
 	Disconnect() error
+	// Kill cuts every link NetworkManager manages, or puts them all back. It is
+	// NetworkManager's own networking switch and nothing else: wired and wifi
+	// go, saved profiles stay, and the radios stay powered - so a bluetooth
+	// keyboard still works to press the key that undoes it (see NM.Kill).
+	Kill(cut bool) error
 }
 
 // ErrNoManager is a machine with no NetworkManager: no system bus, or nobody

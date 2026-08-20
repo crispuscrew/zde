@@ -1144,6 +1144,15 @@ func (s *Server) Dispatch(req Request) Response {
 		default:
 			return Response{Error: "system.power takes one action name, or none to open the menu"}
 		}
+	case "system.lock-preset":
+		// No argument, and the desk is deliberately not one. This is the key
+		// pressed on the way out of a room, and a desk name typed after it is a
+		// name to get wrong at exactly the wrong moment; the preset is a line in
+		// a config, decided once (lock.go).
+		if len(req.Args) != 0 {
+			return Response{Error: "system.lock-preset takes no arguments: the desk is zde.lock.preset in your home-manager config"}
+		}
+		return s.lockPreset()
 	case "system.idle":
 		// No arity, unlike system.power: there is nothing to do about an idle
 		// hold from here. zde cannot drop somebody else's inhibitor and would
@@ -1183,6 +1192,15 @@ func (s *Server) Dispatch(req Request) Response {
 			return Response{Error: "net.disconnect takes no arguments"}
 		}
 		return s.netDisconnect()
+	case "net.kill":
+		// No argument, because a kill switch with an "on" and an "off" word is
+		// two things to remember about the key you press when something is
+		// wrong. Which way it goes is read off NetworkManager (net.go, netKill),
+		// and the answer says which way it went.
+		if len(req.Args) != 0 {
+			return Response{Error: "net.kill takes no arguments: it is a toggle, and `zde net status` says which way it is"}
+		}
+		return s.netKill()
 	case MethodClip:
 		// One verb, two arities, the way window.jump-to has them: the list and
 		// the choice are the same question - which entry - and with no surface

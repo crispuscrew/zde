@@ -284,6 +284,7 @@ func TestTheKeysAnAppCannotSuppress(t *testing.T) {
 		"desk.panic":           "vision principle 2 names panic; it is the key for when the screen is wrong",
 		"desk.block":           "panic one notch harder - a hard lock - and the same reflex",
 		"system.lock":          "vision principle 2 names lock; a screen that will not lock is a lost machine",
+		"system.lock-preset":   "the same lock over a chosen desk, so the same exception covers it",
 		"system.shortcut-grab": "the key that ends a grab, which a grab must not be able to eat",
 		"modes.menu":           "vision principle 2 names mode exit, and leaving a mode is opening the picker",
 		"modes.window":         "or entering another mode, so the whole group is the exit",

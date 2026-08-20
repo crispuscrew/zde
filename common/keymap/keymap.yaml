@@ -186,7 +186,8 @@ binds:
   - { action: net.observe, key: Mod+Shift+n }
   # The two quick cuts you described are Mod+Tab-then-n / Mod+Shift+Tab-then-n -
   # leader sequences that need the input daemon (same as panic/block). Until
-  # then cut from the widget; net.app-cut and net.kill are in the palette.
+  # then both are palette rows: net.kill is written and works from there,
+  # net.app-cut waits on the observer widget with everything else in 0.3.
   # - { action: net.app-cut, key: ... }   # cut the focused app
   # - { action: net.kill, key: ... }      # cut all network
 

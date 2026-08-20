@@ -425,6 +425,18 @@ func (o *nmObject) RequestScan(options map[string]dbus.Variant) *dbus.Error {
 	return nil
 }
 
+// Enable is NetworkManager's networking switch, and the whole of a kill. It
+// writes the property zde reads back, because that round trip is the feature:
+// nothing in zde remembers having cut the network, it asks.
+func (o *nmObject) Enable(enable bool) *dbus.Error {
+	o.f.record(o.path, "Enable")
+	if err := o.f.failing("Enable"); err != nil {
+		return err
+	}
+	o.f.set(rootPath, nmIface, "NetworkingEnabled", enable)
+	return nil
+}
+
 func (o *nmObject) GetSettings() (map[string]map[string]dbus.Variant, *dbus.Error) {
 	o.f.record(o.path, "GetSettings")
 	o.f.mu.Lock()
@@ -548,7 +560,10 @@ func (f *nmFake) exportLater(path dbus.ObjectPath) {
 func home() *nmFake {
 	return &nmFake{
 		objs: world{
-			rootPath: {nmIface: {"Devices": dbus.MakeVariant([]dbus.ObjectPath{wifiPath})}},
+			rootPath: {nmIface: {
+				"Devices":           dbus.MakeVariant([]dbus.ObjectPath{wifiPath}),
+				"NetworkingEnabled": dbus.MakeVariant(true),
+			}},
 			setsPath: {setIface: {"Connections": dbus.MakeVariant([]dbus.ObjectPath{homeConn})}},
 			wifiPath: {
 				devIface: {

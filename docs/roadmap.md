@@ -186,7 +186,11 @@ blocks 0.2:
     the shell to own.
 - modes via the input-layer daemon + device remap profiles.
 - security set: guest, panic + decoy, zen, lock-preset, capture-block,
-  `net.kill`.
+  `net.kill`. The last two have landed, unbound and reachable by name:
+  `net.kill` is NetworkManager's networking switch, one action both ways, drawn
+  on the bar while it holds; `lock-preset` switches to `zde.lock.preset` and
+  then locks, and locks anyway when that desk is unset, gone or private
+  ([`model.md`](model.md), section 6).
 
 ## 0.3 - Comfort and ops
 
