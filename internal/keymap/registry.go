@@ -226,6 +226,16 @@ var registry = map[string]Entry{
 	"window.consume":     {Group: "window", Desc: "consume: pull the next window into this column (in)", Native: "consume-window-into-column", performs: true},
 	"window.expel":       {Group: "window", Desc: "expel: push the window out of its column (out)", Native: "expel-window-from-column", performs: true},
 	"window.jump-to":     {Group: "window", Desc: "jump to any open window by name", Spawn: []string{"zde", "window", "jump-to"}, written: true},
+	// No chord, which is what this list does with a security posture nobody has
+	// worn in yet: a palette row and a CLI verb, and no key spent until usage
+	// asks for one (net.kill and lock-preset are the same). The verb toggles,
+	// so whatever chord it gets later is one key both ways.
+	//
+	// Named window and not app although a niri window rule matches an app id and
+	// never one window (internal/zded, capture.go): the row is where the action
+	// map put it (docs/model.md, section 6), the verb acts on the window in
+	// front of you, and what the reply says is which app id went with it.
+	"window.capture-block": {Group: "window", Desc: "hide this window's app from screen capture, and show it again", Spawn: []string{"zde", "window", "capture-block", "toggle"}, written: true},
 
 	// workspace: numbered switching is gone (desks replace it); overview zooms
 	// out to the whole band.

@@ -17,11 +17,13 @@ import (
 // generated config is a read-only store path, so anything that changes while
 // the session runs lives here, and niri reloads the lot when it is written.
 //
-// Two things go in it. Zen's half of the chrome is one - nothing in niri 26.04's
-// IPC touches the layout section, so a file it already includes is the only way
-// to change gaps or borders without a restart (zen.go).
+// Three things go in it. Zen's half of the chrome is one - nothing in niri
+// 26.04's IPC touches the layout section, so a file it already includes is the
+// only way to change gaps or borders without a restart (zen.go). The capture
+// blocks are the second, for the same reason: block-out-from is a window rule
+// and niri's socket has no action for it (capture.go).
 //
-// The other is placement. A desk manifest pins an app to a
+// The third is placement. A desk manifest pins an app to a
 // workspace, and until now nothing read that: a desk brought up three apps and
 // all three landed on whichever workspace was in front of you. niri places a
 // window at map time from a window rule, which is the one moment a move cannot
@@ -29,15 +31,16 @@ import (
 // else, and on a desktop whose rule is that nothing rearranges under you, that
 // is the wrong kind of correct.
 //
-// Written at startup, on reconcile, and on a zen toggle - not on a switch. niri
-// reloads its whole config when this file is written, and a reload re-evaluates
-// the rules for every window already open. Doing that on a keypress somebody
-// presses all day is a lot of asking for something that only changes when a
-// file is edited; zen is on the list because a reload is the only way it
-// happens at all, and it is a key pressed when somebody wants the screen to
-// change.
+// Written at startup, on reconcile, and on a zen or capture-block toggle - not
+// on a switch. niri reloads its whole config when this file is written, and a
+// reload re-evaluates the rules for every window already open. Doing that on a
+// keypress somebody presses all day is a lot of asking for something that only
+// changes when a file is edited; the two toggles are on the list because a
+// reload is the only way either happens at all, and both are pressed when
+// somebody wants the screen to change now.
 const rulesHeader = "// Written by zded. Do not edit: it is rewritten from the desk manifests\n" +
-	"// (~/.config/zde/desks) and from whether zen is on (`zde desk zen`).\n"
+	"// (~/.config/zde/desks), from whether zen is on (`zde desk zen`), and from\n" +
+	"// what is blocked out of capture (`zde window capture-block`).\n"
 
 // dynamicPath is where niri's config includes it from.
 func dynamicPath() string {
@@ -52,11 +55,12 @@ func dynamicPath() string {
 }
 
 // dynamicKDL is the whole of that file: the header, what zen is doing to niri's
-// chrome (zen.go), and where the manifests say each pinned app opens. One
-// function because there is one file, and a writer that knew about only its own
-// half would drop the other's on every write.
-func dynamicKDL(zen bool, desks map[string]*manifest.Desk) string {
-	return rulesHeader + zenLayout(zen) + placementRules(desks)
+// chrome (zen.go), what is blocked out of capture (capture.go), and where the
+// manifests say each pinned app opens. One function because there is one file,
+// and a writer that knew about only its own part would drop the others on every
+// write.
+func dynamicKDL(zen bool, blocked []string, desks map[string]*manifest.Desk) string {
+	return rulesHeader + zenLayout(zen) + captureRules(blocked) + placementRules(desks)
 }
 
 // placementRules renders every pinned app on every desk as a niri window rule,

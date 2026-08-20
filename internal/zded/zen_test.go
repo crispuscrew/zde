@@ -356,7 +356,7 @@ func TestZenIsAConfigNiriAccepts(t *testing.T) {
 	if err != nil {
 		t.Skip("no niri on PATH: nix/tests/smoke.nix is the copy of this that cannot skip")
 	}
-	both := dynamicKDL(true, desks(t,
+	both := dynamicKDL(true, nil, desks(t,
 		"name: haven\nmonitors: { DP-1: { workspaces: [web] } }\n"+
 			"apps: [{ app: browser, app_id: org.mozilla.firefox, monitor: DP-1, workspace: web }]\n"))
 	path := filepath.Join(t.TempDir(), "dynamic.kdl")

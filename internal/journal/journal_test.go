@@ -621,6 +621,76 @@ func TestZenSurvivesReopenAndCompaction(t *testing.T) {
 	}
 }
 
+// A capture block survives a reopen and a compaction, and this one is worth
+// more than zen's: a window that is blocked and a window that is not look
+// identical to the person at the keyboard, because niri only ever blocks a
+// render target that is not the screen (internal/zded, capture.go). So a
+// compaction that dropped the set would hand a window somebody had hidden to
+// the next screencast, with nothing anywhere saying it had happened.
+//
+// Both directions, because unblocking is a state somebody arrived at: a journal
+// that recorded only the blocking would put every lifted block back at the next
+// replay.
+func TestCaptureBlocksSurviveReopenAndCompaction(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "j.jsonl")
+	j := open(t, path)
+	for _, id := range []string{"org.keepassxc.KeePassXC", "org.mozilla.firefox"} {
+		if err := j.SetCaptureBlocked(id, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := j.SetCaptureBlocked("org.mozilla.firefox", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Compact(); err != nil {
+		t.Fatal(err)
+	}
+	j.Close()
+
+	back := open(t, path)
+	got := back.CaptureBlocked()
+	if len(got) != 1 || got[0] != "org.keepassxc.KeePassXC" {
+		t.Errorf("a compacted journal came back blocking %v, want the one app still blocked", got)
+	}
+	if err := back.SetCaptureBlocked("org.keepassxc.KeePassXC", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := back.Compact(); err != nil {
+		t.Fatal(err)
+	}
+	back.Close()
+
+	if got := open(t, path).CaptureBlocked(); len(got) != 0 {
+		t.Errorf("the block was lifted and a compacted journal still blocks %v", got)
+	}
+}
+
+// The list is sorted and it is a copy. Sorted because it becomes window rules in
+// a file niri reloads whenever its bytes change, and a set ranged in Go's map
+// order would rewrite that file - and re-evaluate every open window's rules - on
+// a keypress that changed nothing. A copy because the caller renders it while
+// another connection may be toggling.
+func TestCaptureBlockedComesBackSortedAndCopied(t *testing.T) {
+	j := open(t, filepath.Join(t.TempDir(), "j.jsonl"))
+	defer j.Close()
+	for _, id := range []string{"zed", "alacritty", "org.mozilla.firefox"} {
+		if err := j.SetCaptureBlocked(id, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first := j.CaptureBlocked()
+	want := []string{"alacritty", "org.mozilla.firefox", "zed"}
+	for i, id := range want {
+		if first[i] != id {
+			t.Fatalf("blocked apps came back %v, want %v", first, want)
+		}
+	}
+	first[0] = "something else"
+	if second := j.CaptureBlocked(); second[0] != "alacritty" {
+		t.Errorf("editing the list changed the journal's own: %v", second)
+	}
+}
+
 // Which desk lent the mode survives a restart, because the mode does. zded
 // restarts on every rebuild that touches it, and the two halves are one fact: a
 // session that came back in focus but had forgotten whose focus it was would
