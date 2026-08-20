@@ -165,7 +165,15 @@ blocks 0.2:
 
 - pass: derivation + pepper + counters, trusted window, type-out. The other lane
   of the two-lane secrets (vision.md, principle 5); the clipboard's lane moved
-  into 0.1 and is above.
+  into 0.1 and is above. The derivation, the pepper and the counters have
+  landed as `internal/pass` and `zde pass`: Argon2id over the master, salted
+  with the pepper as a key so that the offline attack needs the file as well as
+  the master, and encoded to what the site takes. The cost is recorded per site,
+  because raising it changes that site's password and that is a decision taken
+  one account at a time. The window and type-out are what is left, and until
+  they land nothing prints a derived password without two gates being opened by
+  hand - there is deliberately no clipboard path, which is the one thing this
+  lane exists to avoid.
 - capture: shots, replay clip, send-to.
 - media/audio: target (pick/next/pin) + bar widget, mixer widget, device
   switch, mic OSD.

@@ -254,6 +254,13 @@ var registry = map[string]Entry{
 	// pass: the trusted secrets window - the safe path for passwords. Types
 	// into the focused field over the clipboard's dead body (never touches
 	// it). This is clip's secure sibling.
+	//
+	// Silent, and it stays silent while the derivation behind it is written:
+	// `zde pass get` derives a password today (internal/pass), and `zde pass`
+	// on its own is this window, which needs a compositor block-out and an
+	// exclusive keyboard grab that nothing has yet. A key that opened a window
+	// which cannot be blocked out of a screencast would be worse than a key
+	// that does nothing.
 	"pass.open": {Group: "pass", Desc: "open zde-pass (types a secret into the focused field, never via the clipboard)", Spawn: []string{"zde", "pass"}},
 
 	// clip. Text only, in memory only, expiring, and nothing a password manager
