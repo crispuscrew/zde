@@ -620,3 +620,30 @@ func TestThePanicRefusalCannotCarryAnEscapeOutOfAConfig(t *testing.T) {
 		t.Errorf("the refusal carries an escape out of a config: %q", resp.Error)
 	}
 }
+
+// A directory nobody can read is not a directory that says no desk is private.
+// It is the one branch of canShow the other two tests cannot reach: a manifest
+// that will not parse is a Problem, and a desk that is not declared is a nil,
+// but a directory that will not open is an error, and reading it as "nothing
+// declares private" would put the decoy up on exactly the machine where nobody
+// can see that it did.
+func TestManifestsThatCannotBeReadStopThePanic(t *testing.T) {
+	s, f, snd := panicServer(t, "haven", map[string]string{"haven": "name: haven\n"})
+	s.desks = unreadableDesks{}
+
+	resp := s.Dispatch(Request{Method: "desk.panic"})
+	if resp.Error == "" {
+		t.Fatalf("with the manifests unreadable, desk.panic answered %s", resp.Ok)
+	}
+	// The words canShow uses for this branch, so the test fails if the refusal
+	// starts coming from somewhere else and this one has quietly opened.
+	if !strings.Contains(resp.Error, "could not be read") {
+		t.Errorf("the refusal reads %q, and it should say the manifests could not be read", resp.Error)
+	}
+	if got := f.focusCalls(); len(got) != 0 {
+		t.Errorf("niri was asked for %v while nothing could say whether the decoy is private", got)
+	}
+	if snd.is() {
+		t.Error("the sound went off while nothing could say whether the decoy is private")
+	}
+}
