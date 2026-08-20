@@ -28,6 +28,7 @@ import (
 	"github.com/crispuscrew/zde/internal/journal"
 	"github.com/crispuscrew/zde/internal/keymap"
 	"github.com/crispuscrew/zde/internal/link"
+	"github.com/crispuscrew/zde/internal/pass"
 	"github.com/crispuscrew/zde/internal/zded"
 	"github.com/crispuscrew/zde/internal/zinc"
 )
@@ -147,6 +148,12 @@ func run(args []string) error {
 		return call("clip.history", args[2])
 	case len(args) == 2 && args[0] == "clip" && args[1] == "clear":
 		return clipClear()
+	// The derivation's verbs (cmd/zde/pass.go). Two words and never one: `zde
+	// pass` on its own is what the keymap's pass.open spawns, and that is the
+	// trusted window, which nobody has written - so it stays an unknown command
+	// and the palette keeps saying the key does nothing.
+	case len(args) >= 2 && args[0] == "pass":
+		return passCmd(args[1:])
 	case len(args) == 2 && args[0] == "app" && args[1] == "list":
 		return appList()
 	case len(args) == 2 && args[0] == "desk" && args[1] == "switcher":
@@ -1773,18 +1780,72 @@ func netDisconnect() error {
 // killed mid-prompt the terminal is left quiet until `stty sane`, which is the
 // same deal every password prompt on the machine makes.
 func readSecret(prompt string) (string, error) {
+	b, err := readSecretBytes(prompt)
+	if err != nil {
+		return "", err
+	}
+	// This one becomes a string on its way to NetworkManager, so there is
+	// nothing to zero afterwards. The bytes below are for the caller that can
+	// (cmd/zde/pass.go).
+	defer pass.Zero(b)
+	return string(b), nil
+}
+
+// readSecretBytes is readSecret for a caller that intends to erase what it
+// read.
+//
+// A byte at a time, and into one buffer that is allocated large enough not to
+// grow, because a bufio.Reader keeps the secret in a 4 KiB buffer nobody can
+// reach and a string keeps a copy that cannot be written to. It also reads
+// exactly the line and not a byte more, so a pipe carrying something after the
+// password still has it.
+//
+// The limits are honest: a Go runtime may still have moved the buffer, and this
+// process cannot erase what the kernel's tty layer holds. What it does is keep
+// the copy this program owns from outliving the command.
+func readSecretBytes(prompt string) ([]byte, error) {
 	restore := hush(os.Stdin)
 	defer restore()
 	fmt.Fprint(os.Stderr, prompt)
-	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	buf := make([]byte, 0, maxSecret)
+	one := make([]byte, 1)
+	for {
+		n, err := os.Stdin.Read(one)
+		if n == 1 && one[0] != '\n' {
+			if len(buf) == maxSecret {
+				pass.Zero(buf)
+				return nil, fmt.Errorf("that is more than %d characters, which is a paste that went wrong rather than a password", maxSecret)
+			}
+			buf = append(buf, one[0])
+		}
+		if n == 1 && one[0] == '\n' {
+			break
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			pass.Zero(buf)
+			return nil, err
+		}
+	}
 	// The newline the person's Enter could not echo, so the next thing printed
 	// does not land on the prompt.
 	fmt.Fprintln(os.Stderr)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return "", err
+	// A CRLF line ending, dropped in place rather than by reslicing, so the
+	// caller's Zero still reaches the byte.
+	if n := len(buf); n > 0 && buf[n-1] == '\r' {
+		buf[n-1] = 0
+		buf = buf[:n-1]
 	}
-	return strings.TrimRight(line, "\r\n"), nil
+	return buf, nil
 }
+
+// maxSecret is the buffer readSecretBytes fills, and the ceiling on a password
+// typed at a prompt. It is a capacity as much as a limit: append past it would
+// copy the secret into a second, larger array and leave the first one in the
+// heap with nothing pointing at it to erase.
+const maxSecret = 1024
 
 // hush turns a terminal's echo off and answers with how to put it back. A
 // stdin that is not a terminal - a pipe from `pass show wifi` - echoes nothing
@@ -2079,6 +2140,41 @@ func usage() {
                          an image or a file is a row saying so rather than
                          content
   zde clip clear         forget the history now rather than when it expires
+  zde pass init          write the pepper: 32 random bytes, 0600, and half of
+                         every password derived on this machine. It exists
+                         nowhere else, so back it up, and nothing writes over
+                         one - a second pepper changes every password there is
+  zde pass list          the services this machine derives for, with each one's
+                         counter, what the site accepts, and the Argon2id
+                         parameters its password was derived under
+  zde pass add NAME [-length N] [-classes LIST] [-exclude CHARS]
+                         record a service and what it takes: how many
+                         characters, which of lower, upper, digit and symbol
+                         (one of each is required), and any character the site
+                         refuses. Nothing derives for a name that was not
+                         recorded, because a typo would be a different password
+                         with nothing wrong-looking about it
+  zde pass alias NAME OTHER
+                         a second spelling of a site already here, so that two
+                         names for one account cannot become two passwords
+  zde pass rotate NAME   the next counter, which is a new password for that
+                         site and nothing else. It prints where the counter
+                         was: the old password is still at the old number
+  zde pass counter NAME N
+                         put the counter at a number, which is how a rotation
+                         nobody meant is undone
+  zde pass upgrade NAME  re-stamp one site with today's Argon2id parameters.
+                         This changes that site's password, which is why it is
+                         one site at a time and never automatic
+  zde pass get NAME [-counter N] [-show-secret]
+                         derive it. The master is typed at a prompt, never in
+                         an argument, and by default the password is printed
+                         nowhere at all - what comes back is that it derived,
+                         and under what. -show-secret puts it on this terminal
+                         and needs ZDE_PASS_SHOW_SECRET=1 as well: it is the
+                         development path until the trusted window can type a
+                         password into a field, and there is deliberately no
+                         way to put one on the clipboard
   zde keys               the whole keymap, one key per line (Mod+slash opens
                          this in a terminal)
   zde palette [NAME]     every action by name (Mod+semicolon); prints the list
