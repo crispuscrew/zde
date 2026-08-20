@@ -234,8 +234,15 @@ func satisfies(out []byte, req map[string]string, want map[string]int) bool {
 // Describe is the policy in one line, for a listing. No secret is involved: it
 // is the shape of a password and not one.
 func (p Policy) Describe() string {
-	allow := append([]string(nil), p.Allow...)
-	slices.Sort(allow)
+	// In classOrder, which is the order the alphabet is built in and the order
+	// the requirements below print in. Alphabetical would put the two halves of
+	// one line in two different orders.
+	var allow []string
+	for _, name := range classOrder {
+		if slices.Contains(p.Allow, name) {
+			allow = append(allow, name)
+		}
+	}
 	line := fmt.Sprintf("%d chars, %s", p.Length, strings.Join(allow, "+"))
 	if len(p.Require) > 0 {
 		var req []string

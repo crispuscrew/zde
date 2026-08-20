@@ -136,7 +136,7 @@ func TestTheAlphabetIsBuiltInOneOrder(t *testing.T) {
 // one, and this is the test that says so out loud.
 func TestThePolicyPrintsAsItsShape(t *testing.T) {
 	got := Policy{Length: 16, Allow: []string{Lower, Digit}, Require: map[string]int{Digit: 2}, Exclude: "0O"}.Describe()
-	for _, want := range []string{"16 chars", "digit+lower", "at least 2 digit", `not "0O"`} {
+	for _, want := range []string{"16 chars", "lower+digit", "at least 2 digit", `not "0O"`} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the policy reads %q, which does not say %q", got, want)
 		}
