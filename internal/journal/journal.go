@@ -234,6 +234,16 @@ type entry struct {
 	// drawn - and one field answering both would make a journal from a newer zde
 	// replay a mode name into the chrome.
 	Zen bool `json:"zen,omitempty"`
+	// Guest is the desk guest mode is standing on, on a "guest" entry, and it
+	// takes Mode with it: what was in force before guest silenced the session is
+	// what guest gives back, so the pair has to survive together or the session
+	// comes back from a guest in the wrong mode (internal/zded, guest.go).
+	//
+	// Its own field rather than Desk, which every other kind uses for a desk
+	// this session went to or came from. Guest's desk is the one it may not
+	// leave, and a reader that had to know which kinds meant which by the kind
+	// name is a reader that will get one wrong.
+	Guest string `json:"guest,omitempty"`
 }
 
 const (
@@ -248,6 +258,7 @@ const (
 	kindMode     = "mode"     // what arrivals are allowed to do (internal/attn)
 	kindBorrowed = "borrowed" // the desk whose declared mode is in force, and the mode it displaced
 	kindZen      = "zen"      // chrome hidden, or shown again (internal/zded, zen.go)
+	kindGuest    = "guest"    // the machine is somebody else's for now, and the one desk they have
 )
 
 // State is what the journal remembers. It is a value: callers get a copy and
@@ -284,6 +295,26 @@ type State struct {
 	// home-manager switch, so a toggle it kept would be one the person set and
 	// the machine forgot, with a bar back on the screen and no key pressed.
 	Zen bool
+	// Guest is the guest session, if one is open (internal/zded, guest.go). Here
+	// and not in the daemon's memory, which is the one place it differs from
+	// panic: panic's hold is deliberately forgotten by a restart so that nothing
+	// on disk records that you pressed it, and a guest session forgotten by a
+	// restart is a machine that quietly hands every desk back to whoever is
+	// sitting at it. A line saying a guest was here is a line worth writing.
+	Guest Guest
+}
+
+// Guest is a guest session: the one desk it may stand on, and the mode it
+// displaced. The zero value is nobody being handed anything, which is the
+// ordinary session.
+type Guest struct {
+	// Desk is the desk the machine was handed over on. It is the whole of
+	// whether guest mode is holding: empty is off, and a name is on.
+	Desk string
+	// Mode is the attn mode from before guest silenced the session, and what
+	// goes back when the guest session ends. Kept as a string for the reason
+	// Mode is: the journal has no opinion about which modes exist.
+	Mode string
 }
 
 // Borrowed is a desk's attn policy in force. The zero value is nobody having
@@ -616,6 +647,11 @@ func (j *Journal) apply(e entry) {
 		j.state.Mode = e.Mode
 	case kindZen:
 		j.state.Zen = e.Zen
+	case kindGuest:
+		// An empty desk is the real state "nobody is being handed anything"
+		// rather than a torn line: it is how a guest session ends, and skipping
+		// it would leave the file claiming a guest is still at the keyboard.
+		j.state.Guest = Guest{Desk: e.Guest, Mode: e.Mode}
 	case kindBorrowed:
 		// An empty desk is the real state "nobody has it" rather than a torn
 		// line: it is how a mode chosen by hand ends the loan (internal/zded,
@@ -690,6 +726,7 @@ func (j *Journal) State() State {
 		Mode:       j.state.Mode,
 		Borrowed:   j.state.Borrowed,
 		Zen:        j.state.Zen,
+		Guest:      j.state.Guest,
 		Queue:      append([]Item(nil), j.state.Queue...),
 	}
 	for d, byMonitor := range j.state.LastActive {
@@ -743,6 +780,24 @@ func (j *Journal) Zen() bool {
 // would put the bar back and leave the borders gone at the next replay.
 func (j *Journal) SetZen(on bool) error {
 	return j.record(entry{Kind: kindZen, Zen: on})
+}
+
+// Guest is the guest session, if one is open. Its own method for the reason
+// Mode is: every desk switch and every clipboard copy asks it, so it is read
+// far more often than anything else here, and one pair of strings is not a
+// reason to copy a session's worth of desk positions.
+func (j *Journal) Guest() Guest {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.state.Guest
+}
+
+// SetGuest opens or closes a guest session. Both directions are written, the
+// way zen's are and for a sharper version of the same reason: a journal that
+// recorded only the opening would come back from every restart with the
+// machine still somebody else's.
+func (j *Journal) SetGuest(g Guest) error {
+	return j.record(entry{Kind: kindGuest, Guest: g.Desk, Mode: g.Mode})
 }
 
 // Borrowed is which desk's declared mode is in force, and the mode it
@@ -1051,6 +1106,17 @@ func (j *Journal) compactLocked() error {
 	// off is what a file that has never been told already replays as.
 	if j.state.Zen {
 		if err := write(entry{Kind: kindZen, Zen: true}); err != nil {
+			return err
+		}
+	}
+	// And the guest session, or a compaction would hand every desk back to
+	// whoever is at the keyboard - the restriction gone, the mode still quiet
+	// and nothing anywhere saying why. Only the open state is written: a closed
+	// one is what a file that has never been told already replays as.
+	if j.state.Guest.Desk != "" {
+		if err := write(entry{
+			Kind: kindGuest, Guest: j.state.Guest.Desk, Mode: j.state.Guest.Mode,
+		}); err != nil {
 			return err
 		}
 	}

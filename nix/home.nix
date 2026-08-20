@@ -233,6 +233,44 @@ in
       '';
     };
 
+    guest.desk = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      example = "haven";
+      description = ''
+        The desk `desk.guest` hands over, so that somebody borrowing this
+        machine gets that desk and nothing else. Prepare it the way you would
+        prepare a room: a browser, no project, nothing declared private.
+
+        While a guest session is open it is the only desk zde will switch to,
+        show in the picker or name in `zde desk list`; the notifications are
+        silenced and the popups already drawn are swept; the clipboard history
+        is suspended, so what was copied before is neither shown nor put back
+        and what the guest copies is never recorded at all; and the clipboard
+        history, the notification centre and the queue's verbs are refused. The
+        same verb again locks the screen, and everything comes back when you
+        unlock it - zde runs `zde.apps.lock` and waits for it to exit, which is
+        the only thing on this machine that ever sees a password.
+
+        The name of a desk, as a manifest declares it
+        (`~/.config/zde/desks/<name>.yaml`). Unset is the default, and it means
+        the verb refuses - the same answer panic gives with no decoy, for the
+        same reason: a session that silenced and restricted itself around the
+        desk your work is on is worse than one that says it did nothing. The
+        same refusal for a name that is not a desk any more, one declaring
+        `private: true`, a desks directory holding a manifest that will not
+        parse, and a machine with no `zde.apps.lock` - the last because the way
+        out of a guest session is this machine asking for a password, and a
+        session with no way out is one to refuse to enter.
+
+        What it is not is a login. It is a set of refusals inside zde, so
+        somebody with a terminal on the guest desk has a shell on your account:
+        niri's own overview, `niri msg`, a tty and your files are all outside
+        it. It is the answer to handing somebody your laptop to look something
+        up, and a second account is the answer to anything more than that.
+      '';
+    };
+
     ask.tiers = lib.mkOption {
       type = lib.types.attrsOf (lib.types.listOf lib.types.str);
       default = { };
@@ -481,6 +519,10 @@ in
       # same reason: a file that is there and says nothing is what lets the key
       # name the option to set instead of guessing at a missing file.
       "zde/panic.json".text = builtins.toJSON { decoy = cfg.panic.decoy; };
+
+      # And which desk gets handed over, on the same terms again: a file that is
+      # there and says nothing lets the verb name the option to set.
+      "zde/guest.json".text = builtins.toJSON { desk = cfg.guest.desk; };
     };
 
     # dynamic.kdl is the seam zded writes through, so home-manager seeds it and

@@ -55,21 +55,34 @@ func (s *Server) lockPreset() Response {
 	return resp
 }
 
-// canLock is whether this machine has a locker at all, asked without running
-// anything.
+// lockArgv is what this machine locks its screen with, resolved without running
+// it.
 //
 // The same table `zde system lock` resolves against and the same name, because
 // a second idea of what locks this screen is how a machine ends up with a key
-// that locks and a menu that does not (power.go, powerRun). What this cannot
-// see is a locker that is configured and fails when it starts: the lock is a
-// spawn, and zded learns only that it began.
-func (s *Server) canLock() error {
+// that locks and a menu that does not (power.go, powerRun). lock-preset only
+// wants to know there is one (see canLock); a guest session asks the same
+// question on the way in and then runs the answer on the way out, because that
+// program exiting is the only password anything in zde will ever see
+// (guest.go).
+func (s *Server) lockArgv() ([]string, error) {
 	all, err := apps.Load(apps.DefaultPath())
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if _, err := all.Argv("lock"); err != nil {
-		return fmt.Errorf("nothing to lock the screen with, so nothing was switched either: %w", err)
+	argv, err := all.Argv("lock")
+	if err != nil {
+		return nil, fmt.Errorf("nothing to lock the screen with: %w", err)
+	}
+	return argv, nil
+}
+
+// canLock is whether this machine has a locker at all, asked without running
+// anything. What it cannot see is a locker that is configured and fails when it
+// starts: the lock is a spawn, and zded learns only that it began.
+func (s *Server) canLock() error {
+	if _, err := s.lockArgv(); err != nil {
+		return fmt.Errorf("%w, so nothing was switched either", err)
 	}
 	return nil
 }

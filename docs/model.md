@@ -155,11 +155,12 @@ means no key, not no verb.
 It does not promise a verb either. `pause` has a registry row and no key, which
 is what this list does with an action that is coming: the palette carries it and
 says on the row that nothing is written behind it, and the manifest key
-`background: pause` is parsed and acts on nothing (section 5). `guest <name>` is
-the one below with neither - no registry, no daemon handler, no CLI - because it
-carries a desk name and an unbound parametric row is a name no surface can show,
-and because it is a security posture rather than a verb, which is 0.2's set to
-decide. Both stay in the table because this is the map and not the changelog.
+`background: pause` is parsed and acts on nothing (section 5). `guest` was the
+one below with neither - no registry, no daemon handler, no CLI - and the reason
+was the name it used to carry: an unbound parametric row is a name no surface
+can show. It has no name now (below), so it is a row like any other. `block`
+still has one: registered, unbound, unwritten. They stay in the table because
+this is the map and not the changelog.
 
 The two that name a desk are worth naming here too, because how the answer is
 given was the open question rather than whether the verb worked. `desk
@@ -173,9 +174,10 @@ without one. What that settled belongs in the keymap and not in a note here: a
 verb that takes a name wants a surface that offers the names, not a chord per
 name.
 
-Three of 0.2's security set are written. Two of them have no chord, which is the
-state above - a palette row and a CLI verb, and no key spent until usage asks
-for one - and panic has had `Mod+Shift+Escape` since before it did anything.
+Four of 0.2's security set are written. Three of them have no chord, which is
+the state above - a palette row and a CLI verb, and no key spent until usage
+asks for one - and panic has had `Mod+Shift+Escape` since before it did
+anything.
 `net.kill` is one action both ways, because a cut nobody at that keyboard can
 undo is a way to end a session rather than to protect one - and
 what it cuts is NetworkManager's networking switch, so the radios stay powered
@@ -205,6 +207,36 @@ the queue are as they were, which is principle 3 ([`vision.md`](vision.md)) and
 also the honest limit: this is the key for somebody walking past, and `lock` is
 the key for leaving the room.
 
+`guest` is the third thing that moment can be: somebody is going to sit at this
+machine and use it. It reads its desk from `zde.guest.desk` for panic's reason -
+a desk name typed while they are standing there is a name to get wrong - and it
+asks the same three questions of it, plus one panic never has to: whether this
+machine can lock its screen at all, because a session with no way out is one to
+refuse to enter. While a guest session holds, no switch this daemon drives
+leaves that desk, the picker and `desk list` name only that desk, the
+notifications are silenced and the cards already drawn are swept, the clipboard
+history is neither recorded into nor shown nor put back, the notification centre
+is refused, and the queue is answered empty rather than refused, because the bar
+asks for it on a clock. None of it erases anything: the clipboard entries, the
+queue and the notification history are all whole when it ends. Unlike panic it
+is written down, in the journal, so a zded restarted mid-session comes back with
+the machine still handed over rather than giving every desk back to whoever is
+sitting at it - and a record saying a guest was here is a record worth having,
+where one saying you panicked is not.
+
+The way out is the only honest one zde has. There is no password in zde and no
+hash of one: the single thing on this machine that checks a password is the
+screen locker. So the same verb again runs `zde.apps.lock` and waits for it to
+exit, which is what a locker does once it has let somebody in, and the desks
+come back on the far side of that - a locker that will not start, or one that
+exits without letting anybody in, leaves the session exactly as it was and the
+next press asks again. Nothing switches back: you unlock onto the guest desk,
+and `desk last` is where your work is. Refusing inside zded is not a locked
+screen and this does not pretend otherwise - a guest with a terminal on that
+desk has a shell on the account, so niri's overview, `niri msg`, a tty and the
+files are all outside it. It is `A9`, hand the PC to someone, and it is not a
+second user.
+
 `zen` is one verb over two mechanisms, and the split is niri's rather than a
 choice. The bar is zde's own layer-shell surface, so the shell unmaps it and the
 space it reserved goes back to the windows. The borders, the focus ring and the
@@ -216,7 +248,7 @@ shell being restarted, which every home-manager switch does.
 
 | Group | Actions |
 |---|---|
-| desk | `switcher`, `nav-down`/`nav-up` (focus stacked window, else rotate desk), `switch <name>`, `next`, `prev`, `last`, `queue-jump`, `regulars`, `move-window-next`, `move-window-prev`, `move-window-to <name>`, `move-workspace-to <name>` (the whole workspace changes hands: how the regulars are made, and how work leaves them), `snapshot`, `reconcile`, `pause`, `panic` (one key both ways: the decoy desk `zde.panic.decoy` names, the output muted, the notifications silenced - and the same key gives all three back), `block`, `guest <name>`, `zen` (hide the bar, the borders and the gaps, on every screen; hides chrome and no information, so what may pop up is still attn's to decide) |
+| desk | `switcher`, `nav-down`/`nav-up` (focus stacked window, else rotate desk), `switch <name>`, `next`, `prev`, `last`, `queue-jump`, `regulars`, `move-window-next`, `move-window-prev`, `move-window-to <name>`, `move-workspace-to <name>` (the whole workspace changes hands: how the regulars are made, and how work leaves them), `snapshot`, `reconcile`, `pause`, `panic` (one key both ways: the decoy desk `zde.panic.decoy` names, the output muted, the notifications silenced - and the same key gives all three back), `block`, `guest` (hand the machine over: the desk `zde.guest.desk` names is the only one this session shows or lists, the popups are off, the clipboard history is suspended and your records are refused - and the same row locks the screen, which is what gives them back), `zen` (hide the bar, the borders and the gaps, on every screen; hides chrome and no information, so what may pop up is still attn's to decide) |
 | monitor | `focus <dir>`, `move-window <dir>`, `move-workspace <dir>` |
 | workspace | `next`/`prev` (band-clamped), `overview` |
 | window | `focus <dir>`, `move <dir>`, `resize`, `preset-width`, `consume`/`expel`, `float`, `fullscreen`, `close`, `capture-block`, `jump-to` (pick any open window and go to where it is; travels the hierarchy, and rearranges nothing) |
@@ -232,6 +264,14 @@ shell being restarted, which every home-manager switch does.
 | system | `lock`, `lock-preset` (switch BEFORE lock, to the desk `zde.lock.preset` names), `power`, `quiet` (toggle), `attn <mode>` (work / focus / quiet by name; the CLI has it, no key is free for it), `connections` (wifi, and the link you are on; `forget` drops a saved network), `bluetooth` (the radio, what is around it, and pairing; no key of its own, since a second chord for half of one surface is a key to remember for no reason), `calendar`, `wallpapers`, `brightness-up`/`brightness-dn`, `help`, `notif-center`, `notif-reach` (put the keyboard on the newest popup, which is the only way a popup ever takes it), `shortcut-grab` (native; hand the focused app zde's keys, or take them back - the one key an app holding a shortcuts inhibitor can never swallow), `doctor`, `report` (write the state snapshot down for a session that will not come up; needs `zde.debug`, and no key of its own - the day it is wanted there is nobody at the keyboard), `update`, `layout-switch` (native) |
 
 Launch placement: manifest pin first; else adoption (focused workspace,
-current scroll position, active desk); guest mode restricts launching to the
-guest desk. The trio: `jump` never starts, `jump-or-launch` starts if absent,
-`new-instance` always starts.
+current scroll position, active desk). The trio: `jump` never starts,
+`jump-or-launch` starts if absent, `new-instance` always starts.
+
+Guest mode restricts launching to the guest desk, and the mechanism is the
+sentence above rather than a refusal: launching never reaches zded at all -
+`zde app launch` resolves a name against `apps.json` and execs it - so what
+places the window is adoption, and a guest session is standing on one desk. The
+one thing that would override adoption is a manifest pin, which is a niri window
+rule naming another desk's workspace, and niri would open the window there and
+take the session with it. So those rules leave `dynamic.kdl` while a guest
+session holds and come back when it ends.

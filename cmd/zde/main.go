@@ -212,6 +212,11 @@ func run(args []string) error {
 		return lastDesk()
 	case len(args) == 2 && args[0] == "desk" && args[1] == "panic":
 		return deskPanic()
+	case len(args) == 2 && args[0] == "desk" && args[1] == "guest":
+		// Two words and never three. The desk is `zde.guest.desk`, decided
+		// before somebody is standing there, and this same form is what ends the
+		// session by locking the screen.
+		return deskGuest()
 	case len(args) == 2 && args[0] == "desk" && args[1] == "reconcile":
 		return reconcile()
 	case len(args) == 2 && args[0] == "desk" && args[1] == "apps":
@@ -425,6 +430,15 @@ func status() error {
 	}
 	fmt.Printf("zen        %s\n", hidden)
 	fmt.Printf("queue      %d waiting\n", st.Queued)
+	// And whether the machine is somebody else's for now, which is the answer
+	// to "why will this session not switch desks". Printed only when one is
+	// open, unlike the two above: an ordinary session is not in guest mode and a
+	// line saying so every time would be noise. Deliberately unlike panic, which
+	// says nothing anywhere - a guest session is one both people at the machine
+	// are supposed to know about.
+	if st.Guest != "" {
+		fmt.Printf("guest      %s is the only desk this session will show: `zde desk guest` locks the screen to end it\n", st.Guest)
+	}
 	if st.OnDesk != "" {
 		fmt.Printf("on desk    %s\n", st.OnDesk)
 	}
@@ -1909,6 +1923,30 @@ func deskPanic() error {
 	return nil
 }
 
+// deskGuest hands the machine over, and with a guest session open locks the
+// screen to end it.
+//
+// The same shape deskPanic has, and for the same reason: one verb both ways, so
+// the line printed is what says which way this one went. There is no note half
+// here - a guest session that could not be written down is a refusal rather
+// than a session with a gap in it (internal/zded, startGuest).
+func deskGuest() error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	var said string
+	if err := c.Call("desk.guest", &said); err != nil {
+		return err
+	}
+	fmt.Println(said)
+	if note := c.Note(); note != "" {
+		fmt.Fprintln(os.Stderr, note)
+	}
+	return nil
+}
+
 func reconcile() error {
 	c, err := zded.Dial()
 	if err != nil {
@@ -2146,6 +2184,15 @@ func usage() {
                          desk, the sound as it was, the mode as it was. It hides
                          a screen and forgets nothing: what arrived while it
                          held is in the notification center afterwards
+  zde desk guest         hand the machine over: the desk zde.guest.desk names is
+                         the only one this session will show or list, the
+                         clipboard history is suspended, nothing interrupts, and
+                         your queue and notification centre are not reachable
+                         from it. The same verb again locks the screen, and the
+                         rest comes back when you unlock. It is a set of
+                         refusals inside zde and not a login: somebody with a
+                         terminal on that desk is somebody with a shell on your
+                         account
   zde desk reconcile     make the workspace names true again
   zde desk snapshot [N]  write down the desk you are on, so you can ask for it
   zde desk apps [NAME]   what a desk declares: the address of each app, where

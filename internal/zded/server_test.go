@@ -188,6 +188,12 @@ func (f *fakeCompositor) ReloadConfig() error {
 	return nil
 }
 
+func (f *fakeCompositor) reloadCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reloads
+}
+
 func (f *fakeCompositor) reloadCalls() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()

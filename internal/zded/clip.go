@@ -234,6 +234,18 @@ func (s *Server) sweepClips(ctx context.Context) {
 // a log that fills at the speed of somebody working; what it does instead is
 // keep no entry, which is what a person sees as a copy that is not in the list.
 func (s *Server) take() {
+	if s.guestDesk() != "" {
+		// Suspended and not cleared, which is exactly what docs/vision.md,
+		// section 3 asks for and is the difference between the two halves of
+		// this. What you copied before the guest arrived is still in the ring,
+		// still expiring on its own clock, and is neither shown nor put back
+		// while they are here (guest.go, guestBarred). What they copy while they
+		// are here is never read at all, so there is nothing of theirs to keep,
+		// to leak into your history, or to decide what to do with afterwards -
+		// the same order-of-questions that keeps a hinted secret out of this
+		// daemon's heap, one step earlier.
+		return
+	}
 	tool := s.clipTool()
 	if tool == nil {
 		return

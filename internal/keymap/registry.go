@@ -192,14 +192,24 @@ var registry = map[string]Entry{
 	// carries the row and says nothing is written behind it, and no key is spent
 	// on it until something is.
 	//
-	// `guest <name>` from the same table is deliberately not here. It carries a
-	// desk name, and a parametric entry is listed only where a keymap fills the
-	// argument in (actions.go, Actions) - so an unbound one would be a name in
-	// this file that no surface can ever show and no key can reach. It is also
-	// the one row in the desk group that is a security posture rather than a verb
-	// (docs/glossary.md: an unlock limited to one desk), and 0.2 is where that set
-	// is decided. Nothing to register until it is.
 	"desk.pause": {Group: "desk", Desc: "pause this desk's apps, freeing what they hold", Spawn: []string{"zde", "desk", "pause"}},
+	// guest was registered here as `guest <name>` for as long as it was
+	// unwritten, and the name is what kept it out of this file: a parametric
+	// entry is listed only where a keymap fills the argument in (actions.go,
+	// Actions), so an unbound one is a row no surface can ever show. It has no
+	// name now - the desk handed over is `zde.guest.desk`, decided before
+	// anybody is standing there, the way the decoy and the lock preset are - so
+	// it is one row like any other.
+	//
+	// One verb both ways, like panic and the kill switch: with a session open it
+	// locks the screen, and the desks come back when you unlock (internal/zded,
+	// deskGuest). Deliberately not Unsuppressible, which panic and block are: a
+	// key that hands the machine over is not one that has to work while
+	// something on the screen is wrong, and the set that reaches past an
+	// application's keyboard grab is kept to the exceptions vision.md already
+	// names. Unbound for now, which is what lock-preset and net.kill are - a
+	// palette row and a CLI verb, and no chord spent until usage asks for one.
+	"desk.guest": {Group: "desk", Desc: "hand the machine over: one desk, no popups, no clipboard history - and the same row locks the screen to end it", Spawn: []string{"zde", "desk", "guest"}, written: true},
 
 	// monitor: niri natives. The window axis owns h/l, so monitors get their
 	// own pair of chords (keymap.yaml).

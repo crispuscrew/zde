@@ -178,6 +178,13 @@ type Status struct {
 	// mode is: with the bar gone, "why is there no bar" has one cheap answer,
 	// and the person asking it cannot read the bar to find out.
 	Zen bool `json:"zen"`
+	// Guest is the desk a guest session is standing on, empty when there is
+	// none (guest.go). Here because it changes what every desk key does, and
+	// "why will this machine not switch desks" otherwise has no answer on any
+	// surface. Deliberately unlike panic, which puts nothing anywhere: panic is
+	// hiding something from the room, and a guest session is one both people at
+	// the machine are supposed to know about.
+	Guest string `json:"guest,omitempty"`
 	// Zinc says whether layer 2's runner is on the session's PATH (docs/
 	// delivery.md). A zde machine without it can run nothing sandboxed, which
 	// is most of what a zde machine is for - and the session's PATH is not the
@@ -289,6 +296,18 @@ type Server struct {
 	// it is not holding. In memory on purpose: see panicHold.
 	sound     Sound
 	panicking *panicHold
+
+	// The guest side (guest.go). There is no field for whether a guest session
+	// is open: that lives in the journal, so a zded restart cannot hand the
+	// desks back. What is here is the one lock screen a guest session may have
+	// out at a time, and how it is run.
+	//
+	// lockAndWait is a field for the reason launch and spawn are: what it starts
+	// is the machine's screen locker, and a test must be able to drive it
+	// exiting - which is what ends a guest session - without a lock screen on
+	// the machine running the test.
+	guestLocking bool
+	lockAndWait  func(argv []string) error
 
 	// The network side (net.go). openLink is a field for the same reason launch
 	// is: the tests need a manager without a system bus under them, and the
@@ -959,6 +978,14 @@ func (s *Server) handle(conn net.Conn) {
 		// forgeable with one byte, by a flood that then chose which of the
 		// session's connections was dropped (events.go, touch).
 		k.touch()
+		// The guest gate, for the methods below that this loop answers itself
+		// and Dispatch never sees - `clip.history <id>` in particular, which is
+		// the verb that puts what you copied back on the clipboard (guest.go,
+		// guestBarred).
+		if why := s.guestRefuses(req); why != "" {
+			k.reply(Response{Error: why})
+			continue
+		}
 		if req.Method == MethodEvents {
 			// The connection stays a connection: it keeps answering requests,
 			// and events arrive on it as well. A client that wanted a second
@@ -1074,6 +1101,13 @@ func allowPeer(conn net.Conn) (int32, error) {
 // Dispatch answers one request. Exported so the methods can be tested without
 // a socket in the way.
 func (s *Server) Dispatch(req Request) Response {
+	// The guest gate, before the verb is looked at, because what it refuses it
+	// refuses whatever this daemon would otherwise have done with it (guest.go).
+	// Asked here and again on the connection loop, which answers three methods
+	// itself and never reaches this one (see handle).
+	if why := s.guestRefuses(req); why != "" {
+		return Response{Error: why}
+	}
 	switch req.Method {
 	case "status":
 		return ok(s.status())
@@ -1256,7 +1290,10 @@ func (s *Server) Dispatch(req Request) Response {
 		if err != nil {
 			return Response{Error: err.Error()}
 		}
-		return ok(m.DeskNames())
+		// Through the same cut the picker goes through, so that the one desk a
+		// guest session will name is the one desk it names everywhere (guest.go,
+		// guestOnly).
+		return ok(s.guestOnly(m.DeskNames()))
 	case "desk.switch":
 		if len(req.Args) != 1 {
 			return Response{Error: "desk.switch takes one desk name"}
@@ -1321,6 +1358,15 @@ func (s *Server) Dispatch(req Request) Response {
 		}
 		if s.jrn == nil {
 			return Response{Error: "no journal, so nothing is waiting"}
+		}
+		if s.guestDesk() != "" {
+			// Not refused, because this is what the bar asks for every two
+			// seconds and an error there is a message on the strip for as long
+			// as somebody borrows the machine. Emptied instead: the rows are one
+			// line each of who wrote to you and what about, they are nobody
+			// else's to read, and nothing is spent - the queue is whole again
+			// the moment the guest session ends (guest.go, guestBarred).
+			return ok([]journal.Item{})
 		}
 		// The queue on its own, not the whole of what the journal remembers cut
 		// down to it: this is the bar's question and it is asked every two
@@ -1395,6 +1441,17 @@ func (s *Server) Dispatch(req Request) Response {
 			return Response{Error: "desk.panic takes no arguments: the decoy is zde.panic.decoy in your home-manager config, and the same key comes back"}
 		}
 		return s.deskPanic()
+	case "desk.guest":
+		// No argument, and the desk is deliberately not one, for the reason
+		// panic's decoy is not: the desk somebody else is going to sit in front
+		// of is decided in advance and written down, not typed while they are
+		// standing there. One verb both ways - it opens a guest session, and
+		// with one open it locks the screen to end it (guest.go).
+		if len(req.Args) != 0 {
+			return Response{Error: "desk.guest takes no arguments: the desk is zde.guest.desk in your home-manager " +
+				"config, and the same verb locks the screen to end it"}
+		}
+		return s.deskGuest()
 	case "desk.next", "desk.prev":
 		if len(req.Args) != 0 {
 			return Response{Error: req.Method + " takes no arguments"}
@@ -2620,6 +2677,12 @@ func (s *Server) switchDesk(target string) Response { return s.switchFrom(target
 // one has to ask before it moves the window, because a moved window can be
 // what the answer is read off afterwards.
 func (s *Server) switchFrom(target, from string) Response {
+	// The one gate a guest session needs, and it is here rather than on each of
+	// the ten verbs that reach a switch (guest.go, guestKeeps). Before anything
+	// moves, so a refused switch is a session nothing has touched.
+	if why := s.guestKeeps(target); why != "" {
+		return Response{Error: why}
+	}
 	// The desk zde thinks you are on, read before anything moves. Not `from`
 	// below and not the compositor: ensureDeclared names this desk's workspaces
 	// into existence, one of them may be the focused one, and the watcher
@@ -2862,7 +2925,9 @@ func (s *Server) SyncRules() {
 	if err != nil {
 		return
 	}
-	if err := writeRules(dynamicPath(), dynamicKDL(s.zenState(), all)); err != nil {
+	// Through the guest cut, so a pinned app cannot open on a desk this session
+	// will not switch to (guest.go, guestPins).
+	if err := writeRules(dynamicPath(), dynamicKDL(s.zenState(), s.guestPins(all))); err != nil {
 		log.Printf("zded: writing niri's dynamic config: %v", err)
 	}
 }
@@ -2903,6 +2968,7 @@ func (s *Server) status() Status {
 	st.Notifications = s.watcher() != nil
 	st.Mode = string(s.mode())
 	st.Zen = s.zenState()
+	st.Guest = s.guestDesk()
 	// Looked up per call rather than remembered from startup. PATH points at
 	// profile directories whose contents change under a running daemon, and
 	// zded outlives the switch that installs zinc - so asking every time is
