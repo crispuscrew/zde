@@ -1644,6 +1644,83 @@ untestable.
   that nothing on disk records that you pressed it. Getting back from there is
   `Mod+Tab`, `Mod+Shift+m` and `Mod+q`, and the three are visible on the bar.
 
+### guest
+
+`zde desk guest`, or the palette row. Set `zde.guest.desk` in the home-manager
+config first, to a desk that exists and is not private, and prepare that desk
+the way you would prepare a room: a browser, no project. There is no chord; this
+is a verb you type or pick, like `lock-preset` and the net cut.
+
+Read what it does not do before you check what it does. Guest mode is a set of
+refusals inside zded, not a login: a guest with a terminal on that desk has a
+shell on your account, and niri's overview, `niri msg`, a tty, `sudo` and every
+file you own are outside all of it. It is the answer to "can I look something up
+on your laptop"; a second account is the answer to anything more.
+
+- **Hand it over.** The guest desk is up on every monitor, the bar says
+  `attn quiet`, and `zde status` says `guest haven`. That last line is
+  deliberate and is the opposite of panic, which puts nothing anywhere: both
+  people at this machine are supposed to know it is in guest mode.
+- **Try to leave it.** `Mod+Tab` offers one row. `Mod+Shift+Tab`, `Mod+r`,
+  `Mod+u`, `Mod+j`/`k` at the end of a column, `zde desk switch <anything>` and
+  `zde desk list` all answer with the same sentence naming the guest desk. So
+  does `Mod+Shift+Escape`: panic's decoy is a desk this session may not reach,
+  so it changes nothing at all rather than half-hiding something.
+- **Open something.** It lands on the guest desk even if a manifest pins that
+  app to another one - the pin leaves niri's `dynamic.kdl` while the session
+  holds, so adoption places the window. Check `~/.config/niri/dynamic.kdl`: only
+  the guest desk's rules are in it, and every desk's rules are back when the
+  session ends. This is the only half of guest that is niri's rather than
+  zded's, because launching never reaches zded at all.
+- **`Mod+v` and `Mod+n`** are refused, and say why. Copy something while the
+  guest session holds, end it, and press `Mod+v`: what you copied before you
+  handed the machine over is there and what the guest copied is not - suspended,
+  not cleared, and the guest's own copy was never read at all. The queue is the
+  same promise said differently: the bar shows nothing during the session and
+  everything on it is back afterwards.
+- **The ask panel.** There is no ask history in zde to clear: nothing is written
+  down, and the turns live in the window that is showing them (section 8). So
+  `Mod+a` and `Mod+Shift+a` still work during a guest session, and a panel they
+  open is empty. Two things follow that you should know before you hand the
+  machine over. Close an ask panel you already have open, because a window
+  somebody left on the screen is a window on the screen. And a question the
+  guest asks goes to your tier, which on the provider tier is your account and
+  your bill; unset `zde.ask.tiers` if that matters more than the lookup does.
+- **End it.** `zde desk guest` again. The screen locks; type your password; you
+  are back on the guest desk with everything else unlocked, and `Mod+Shift+Tab`
+  is where your work is. Nothing switches for you, deliberately: a desk brought
+  up in front of the lock screen is a desk a shoulder reads, which is the whole
+  lesson of `lock-preset` above.
+- **Press it twice while the lock screen is up.** The second press says the
+  screen is already locked rather than starting a second locker. Two lock
+  screens on one session is one of them holding a keyboard grab nobody can type
+  into.
+- **Log out and back in mid-session**, or `systemctl --user restart zded`.
+  Still guest mode: the desks are still refused and the bar still says quiet,
+  which is the opposite of panic and is the point - a session that forgot would
+  hand every desk back to whoever is sitting there. The lock screen's wait does
+  not survive the restart, so end it with the verb again.
+- **With `zde.guest.desk` unset** nothing at all happens - no switch, no
+  silence, no restriction - and the answer names the option to set. Same for a
+  desk that is gone, one declaring `private: true`, and a desks directory
+  holding a manifest that will not parse. The private one is the case worth
+  making by hand: a desk marked private is the one desk on the machine that
+  must never be the one handed over.
+- **With no locker at all** it refuses to start a guest session, which is the
+  one check panic does not have. Layer 1 defaults `zde.apps.lock` to swaylock,
+  so this takes `zde.apps.lock = lib.mkForce [ ]`. The way out of guest mode is
+  this machine asking for a password, and a state you cannot leave from the same
+  keyboard is a way to lose a session.
+- **On a machine whose locker is configured but broken** the session stays on
+  and says so, and the next press tries again. zde watches the locker exit -
+  that is what a locker does once it has accepted a password - so a locker that
+  crashes on start never gives the desks back. It also means zde never sees a
+  password and never checks one: what it can promise is that your desks came
+  back on the far side of your locker.
+- **Capture blocking is not part of this yet.** vision.md says private desks are
+  capture-blocked during guest mode, and nothing in this build blocks any
+  capture path.
+
 ## 12. Zen
 
 `Mod+Shift+z`: hide bar, borders, gaps; content only
@@ -1744,7 +1821,7 @@ Not bugs, do not report them:
   | `zde net status\|connect\|disconnect\|forget\|kill` | `zde pass`, `media`, `mode` |
   | `zde clip history [ID]`, `zde clip clear` | |
   | `zde system lock\|lock-preset\|quiet\|notif-center\|notif-reach\|connections\|bluetooth\|power` | `zde system calendar\|wallpapers` |
-  | every other `zde desk` verb: `list`, `switch`, `switcher`, `next`/`prev`/`last`, `apps`, `snapshot`, `reconcile`, `queue-jump`, `regulars`, `panic`, `move-window`, `move-window-to [NAME]`, `move-workspace-to [NAME]` (with no name they open the picker, which is what the two chords above spawn) | a manifest's `policies.zen`, `background: pause`, `on_enter`/`on_exit`, all parsed and read by nobody |
+  | every other `zde desk` verb: `list`, `switch`, `switcher`, `next`/`prev`/`last`, `apps`, `snapshot`, `reconcile`, `queue-jump`, `regulars`, `panic`, `guest`, `move-window`, `move-window-to [NAME]`, `move-workspace-to [NAME]` (with no name they open the picker, which is what the two chords above spawn) | a manifest's `policies.zen`, `background: pause`, `on_enter`/`on_exit`, all parsed and read by nobody |
   | a manifest's `policies.attn`: entering the desk puts the session in the mode it declares | |
   | the niri natives: columns, monitors, fullscreen, float, close, overview, consume/expel, layout switch | |
 

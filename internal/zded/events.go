@@ -804,6 +804,9 @@ func (s *Server) deskPicker(kind string) Response {
 	if kind != EventPicker {
 		names = withRegulars(names)
 	}
+	// One desk unlocked and the rest behind a password (docs/glossary.md), made
+	// visible rather than only enforced (guest.go, guestOnly).
+	names = s.guestOnly(names)
 	if len(names) == 0 {
 		// A fresh login, before anything is named. Advice rather than a bare
 		// refusal, because this is the one time somebody sees it.

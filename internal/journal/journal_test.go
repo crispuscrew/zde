@@ -1628,3 +1628,47 @@ func TestAFloodLeavesAJournalThatCompactsToSomethingADiskCanHold(t *testing.T) {
 		t.Errorf("%d arrivals and none of them was refused, so nothing here is capping anything", flood)
 	}
 }
+
+// A guest session survives a restart and a compaction, and it is the one piece
+// of state here where forgetting is a security failure rather than an
+// inconvenience: a zded that came back having forgotten one would hand every
+// desk on the machine to whoever is sitting at it, with the mode still quiet
+// and nothing anywhere saying why.
+//
+// The mode it displaced travels with it, or the session comes back from a guest
+// silent with nothing to give the silence back to.
+//
+// Both directions, because a closed session is a state somebody arrived at by
+// typing a password. A journal that recorded only the opening would put the
+// machine back into guest mode at the next login.
+//
+// The mutation: drop the kindGuest branch from compactLocked. The reopen below
+// passes and this one fails, which is the compaction that happens to fall
+// during a guest session.
+func TestAGuestSessionSurvivesReopenAndCompaction(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "j.jsonl")
+	j := open(t, path)
+	if err := j.SetGuest(Guest{Desk: "haven", Mode: "focus"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Compact(); err != nil {
+		t.Fatal(err)
+	}
+	j.Close()
+
+	back := open(t, path)
+	if got := back.Guest(); got.Desk != "haven" || got.Mode != "focus" {
+		t.Errorf("a guest session on haven that displaced focus came back as %+v", got)
+	}
+	if err := back.SetGuest(Guest{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := back.Compact(); err != nil {
+		t.Fatal(err)
+	}
+	back.Close()
+
+	if got := open(t, path).Guest(); got.Desk != "" {
+		t.Errorf("the guest session ended and a compacted journal still says it is on %q", got.Desk)
+	}
+}

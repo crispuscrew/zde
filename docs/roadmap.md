@@ -188,19 +188,30 @@ blocks 0.2:
     the shell to own.
 - modes via the input-layer daemon + device remap profiles.
 - security set: guest, panic + decoy, lock-preset, capture-block,
-  `net.kill`. Three have landed, and zen came out of this set early and is in
+  `net.kill`. Four have landed, and zen came out of this set early and is in
   0.1: it hides chrome and no information, so nothing in it was a security
   posture to decide. `net.kill` is NetworkManager's networking
   switch, one action both ways, drawn on the bar while it holds; `lock-preset`
   switches to `zde.lock.preset` and then locks, and locks anyway when that desk
   is unset, gone or private; `panic` switches to `zde.panic.decoy`, mutes the
   output and silences the notifications, gives all three back on the same key,
-  and refuses without moving anything when that desk is unset, gone or private
-  ([`model.md`](model.md), section 6). The panic-lock variant
-  ([`vision.md`](vision.md), section 3) is not written and has no row: it is a
-  second decision - what the lock screen shows, and whether the way back needs
-  a password - and it belongs with `guest`, which is the other half of that
-  question.
+  and refuses without moving anything when that desk is unset, gone or private;
+  `guest` hands one desk over and refuses every other desk and every surface
+  that draws your records until the machine's own locker has let somebody back
+  in ([`model.md`](model.md), section 6). Capture-block is what is left, and it
+  is also the half of `guest` that is not written: private desks are meant to be
+  capture-blocked while a guest session holds, and nothing in this build blocks
+  any capture path.
+- The panic-lock variant ([`vision.md`](vision.md), section 3) is still not
+  written and still has no row, and `guest` sharpened rather than settled it.
+  What guest established is that zde can wait for the machine's locker and treat
+  its exit as a password having been accepted, which is the mechanism panic-lock
+  would need. What it did not answer is the part that made this a separate
+  decision in the first place: panic keeps its hold in memory so that nothing on
+  disk records that you pressed it, and a hold that has to outlive a lock screen
+  is a hold that has to be written down. That is the same trade guest made in
+  the other direction, and it is a decision to make on purpose rather than as a
+  footnote to either.
 
 ## 0.3 - Comfort and ops
 
