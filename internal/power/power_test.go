@@ -29,42 +29,20 @@ func inhibitorRefusal() error {
 	}
 }
 
-// logind puts everything an inhibitor covers in one colon-separated field, so
-// the reading of that field is what decides which key a browser holding sleep
-// is allowed to stop.
-//
-// Wrong in one direction, a suspend is refused with nothing on the screen about
-// the thing that refused it; wrong in the other, a reboot carries a warning
-// about something that was never going to stop it - and a warning that is not
-// true is one people learn to press through, which is the habit the whole
-// confirmation exists not to build.
-func TestAnInhibitorOnSleepStopsASuspendAndNotAReboot(t *testing.T) {
-	audio := Block{What: "sleep", Who: "chromium", Why: "Playing audio"}
-	if !audio.Stands(Suspend) {
-		t.Error("something holding sleep does not stand in the way of a suspend")
-	}
-	for _, w := range []What{Reboot, PowerOff, Logout} {
-		if audio.Stands(w) {
-			t.Errorf("something holding sleep reads as standing in the way of a %s", w)
+func TestOnlyShutdownInhibitorsStandInTheWayOfMachinePower(t *testing.T) {
+	shutdown := Block{What: "sleep:shutdown", Who: "packagekit"}
+	for _, action := range []What{Reboot, PowerOff} {
+		if !shutdown.Stands(action) {
+			t.Errorf("sleep:shutdown does not stand in the way of %s", action)
 		}
 	}
-
-	// One inhibitor can hold both, which is what the colon is for.
-	both := Block{What: "sleep:shutdown", Who: "packagekit"}
-	for _, w := range []What{Suspend, Reboot, PowerOff} {
-		if !both.Stands(w) {
-			t.Errorf("sleep:shutdown does not stand in the way of a %s", w)
+	for _, action := range []What{Reboot, PowerOff, Logout} {
+		if (Block{What: "sleep"}).Stands(action) {
+			t.Errorf("sleep reads as standing in the way of %s", action)
 		}
 	}
-	// And logind's other two, which are about lids and power buttons and have
-	// nothing to say about a key somebody pressed.
-	if idle := (Block{What: "idle:handle-lid-switch"}); idle.Stands(Suspend) || idle.Stands(PowerOff) {
-		t.Error("an idle inhibitor reads as standing in the way of a power action")
-	}
-	// A log out is inhibited by nothing: logind has no inhibitor for ending a
-	// session, so a warning here could never come true.
-	if both.Stands(Logout) {
-		t.Error("a log out reads as inhibitable, and logind has no such inhibitor")
+	if shutdown.Stands(Logout) {
+		t.Error("logout reads as inhibited, but logind has no such inhibitor")
 	}
 }
 
@@ -88,15 +66,15 @@ func TestASleepInhibitorAndAnIdleInhibitorAreDifferentQuestions(t *testing.T) {
 	if !idle.HoldsIdle() {
 		t.Error("an inhibitor on idle does not read as holding the screen awake")
 	}
-	if idle.Stands(Suspend) || idle.Stands(Reboot) || idle.Stands(PowerOff) {
+	if idle.Stands(Reboot) || idle.Stands(PowerOff) {
 		t.Error("an idle inhibitor reads as standing in the way of a power action")
 	}
 
 	// The colon is a list and one inhibitor can be both, which is what logind's
 	// own vocabulary allows and what a browser playing a video actually takes.
-	both := Block{What: "idle:sleep", Who: "firefox"}
-	if !both.HoldsIdle() || !both.Stands(Suspend) {
-		t.Error("idle:sleep is not read as holding both")
+	both := Block{What: "idle:shutdown", Who: "packagekit"}
+	if !both.HoldsIdle() || !both.Stands(Reboot) {
+		t.Error("idle:shutdown is not read as both an idle hold and a reboot block")
 	}
 	// And a substring is not a member. "idlewild" would be a different word.
 	if (Block{What: "idlewild"}).HoldsIdle() {
@@ -133,17 +111,14 @@ func TestHoldingIdleIsEveryIdleInhibitorAndOnlyThose(t *testing.T) {
 
 // The refusal is the whole point of this surface, and there are two of them.
 //
-// logind's own, for a block inhibitor, arrives as "Operation denied due to
-// active block inhibitor" and names neither the program nor the reason it gave.
-// If this regresses, a suspend that never happens is explained by a sentence
-// with nothing in it, and the thing to close is not on the screen.
+// logind's own block-inhibitor refusal names neither the program nor its reason.
 func TestAnInhibitorRefusalNamesTheProgramHoldingIt(t *testing.T) {
-	held := State{Blocks: []Block{{What: "sleep", Who: "chromium", Why: "Playing audio"}}}
-	err := Because(Suspend, held, inhibitorRefusal())
+	held := State{Blocks: []Block{{What: "shutdown", Who: "packagekit", Why: "Installing updates"}}}
+	err := Because(Reboot, held, inhibitorRefusal())
 	if err == nil {
-		t.Fatal("a refused suspend came back as no error at all")
+		t.Fatal("a refused reboot came back as no error at all")
 	}
-	for _, want := range []string{"chromium", "Playing audio"} {
+	for _, want := range []string{"packagekit", "Installing updates"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal is %q, and it has to name %q", err, want)
 		}
@@ -152,12 +127,12 @@ func TestAnInhibitorRefusalNamesTheProgramHoldingIt(t *testing.T) {
 	// The same refusal with nothing on this side to point at - the lock was
 	// taken between the two reads, or the inhibitors could not be read. Still
 	// said as the refusal it is rather than as the D-Bus name it arrived as.
-	err = Because(Suspend, State{}, inhibitorRefusal())
+	err = Because(Reboot, State{}, inhibitorRefusal())
 	if err == nil || strings.Contains(err.Error(), "BlockedByInhibitorLock") {
 		t.Errorf("refusal is %v, want it said as a refusal and not as a bus name", err)
 	}
 	if !strings.Contains(err.Error(), "holding") {
-		t.Errorf("refusal is %q, and it has to say something is holding the suspend off", err)
+		t.Errorf("refusal is %q, and it has to say something is holding the reboot off", err)
 	}
 
 	// And systemd v257's spelling of the same short-circuit, which is a plain
@@ -168,22 +143,22 @@ func TestAnInhibitorRefusalNamesTheProgramHoldingIt(t *testing.T) {
 		Name: "org.freedesktop.DBus.Error.AccessDenied",
 		Body: []any{"Access denied due to active block inhibitor"},
 	}
-	err = Because(Suspend, held, old)
-	if !strings.Contains(err.Error(), "chromium") {
+	err = Because(Reboot, held, old)
+	if !strings.Contains(err.Error(), "packagekit") {
 		t.Errorf("refusal is %q, and on v257 that access-denied is the inhibitor", err)
 	}
 	if strings.Contains(err.Error(), "password") {
-		t.Errorf("refusal is %q, and no password gets a browser to stop playing audio", err)
+		t.Errorf("refusal is %q, and no password releases a block inhibitor", err)
 	}
 	// With nothing holding this verb, the same name is polkit's own no and is
 	// said as one - a sleep inhibitor is not why a reboot was denied, and there
 	// is no inhibitor at all to tell somebody about.
-	err = Because(Reboot, held, old)
+	err = Because(Reboot, State{}, old)
 	if !strings.Contains(err.Error(), "administrator") {
 		t.Errorf("refusal is %q, and with nothing holding a reboot that access-denied is polkit's", err)
 	}
-	if strings.Contains(err.Error(), "chromium") || strings.Contains(err.Error(), "holding") {
-		t.Errorf("refusal is %q, and something holding sleep is not in the way of a reboot", err)
+	if strings.Contains(err.Error(), "packagekit") || strings.Contains(err.Error(), "holding") {
+		t.Errorf("refusal is %q, and no inhibitor was reported on the second read", err)
 	}
 }
 
@@ -220,11 +195,7 @@ func TestAPolkitRefusalNamesWhoElseIsHereAndNotAnInhibitor(t *testing.T) {
 	}
 }
 
-// Everything but those two is logind's own account of what went wrong, and it
-// is better than any summary of it: a machine with no swap refuses a hibernate
-// in its own words, and a bus that has gone says so. If this regresses, a real
-// fault is reported as an authorisation problem and somebody goes looking for a
-// password.
+// Everything but those two is logind's own account of what went wrong.
 //
 // The case worth having here is a D-Bus error with a different name, because
 // that is the one a translation reaches for by accident: errorName answers ""
@@ -233,33 +204,33 @@ func TestAPolkitRefusalNamesWhoElseIsHereAndNotAnInhibitor(t *testing.T) {
 func TestAnythingThatIsNotOneOfThoseTwoKeepsLogindsOwnWords(t *testing.T) {
 	// logind's own name for a verb this machine cannot do, off the same bus and
 	// out of the same namespace as the inhibitor refusal.
-	noSwap := dbus.Error{
-		Name: "org.freedesktop.login1.SleepVerbNotSupported",
-		Body: []any{"Sleep verb 'suspend' not supported"},
+	inProgress := dbus.Error{
+		Name: "org.freedesktop.login1.OperationInProgress",
+		Body: []any{"reboot already in progress"},
 	}
 	// Compared by what it says rather than with errors.Is: a dbus.Error holds a
 	// slice, so it is not comparable, and errors.Is against one is a check that
 	// can only ever answer false.
-	got := Because(Suspend, State{Blocks: []Block{{What: "sleep", Who: "chromium"}}}, noSwap)
-	if got.Error() != noSwap.Error() {
-		t.Errorf("Because turned %q into %q", noSwap, got)
+	got := Because(Reboot, State{Blocks: []Block{{What: "shutdown", Who: "packagekit"}}}, inProgress)
+	if got.Error() != inProgress.Error() {
+		t.Errorf("Because turned %q into %q", inProgress, got)
 	}
-	if strings.Contains(got.Error(), "chromium") {
+	if strings.Contains(got.Error(), "packagekit") {
 		t.Errorf("a fault that is not a refusal was explained as %q", got)
 	}
 
 	// And polkit's other name for no, which zde does translate, so that the
 	// line above is about the name and not about the type.
 	denied := dbus.Error{Name: "org.freedesktop.DBus.Error.AccessDenied", Body: []any{"Access denied"}}
-	if got := Because(Suspend, State{}, denied); got.Error() == denied.Error() {
+	if got := Because(Reboot, State{}, denied); got.Error() == denied.Error() {
 		t.Errorf("polkit's AccessDenied came back untranslated as %q", got)
 	}
 
 	plain := errors.New("connection closed by user")
-	if got := Because(Suspend, State{}, plain); !errors.Is(got, plain) {
+	if got := Because(Reboot, State{}, plain); !errors.Is(got, plain) {
 		t.Errorf("Because turned %v into %v", plain, got)
 	}
-	if got := Because(Suspend, State{}, nil); got != nil {
+	if got := Because(Reboot, State{}, nil); got != nil {
 		t.Errorf("Because made an error out of nothing: %v", got)
 	}
 }
@@ -294,7 +265,7 @@ func TestASecondSessionOfYourOwnIsNotSomebodyElse(t *testing.T) {
 
 // And a session and not merely a session. logind walks the sessions and takes
 // only the classes SESSION_CLASS_IS_INHIBITOR_LIKE names - user, user-early,
-// user-light, user-early-light (src/login/logind-session.h, systemd v258) -
+// user-light, user-early-light (src/login/logind-session.h, systemd v260.2) -
 // when it decides whether a reboot needs the second authorisation, so a display
 // manager's greeter and a lingering user's manager session are not people at
 // this machine.

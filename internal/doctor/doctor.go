@@ -330,14 +330,14 @@ func podman(s Session) Check {
 	return Check{OK, "podman", "rootless"}
 }
 
-// units are what a login starts. A unit that is not active is a warning and
+// units are what a ZDE login installs or starts. A unit that is not active is a warning and
 // never a failure: a daemon started by hand answers just as well, which is
 // what the tests and anybody debugging this do, so the state is context for
 // the lines above rather than a verdict of its own.
 //
 // One exception: an optional unit that is inactive is reported and not warned
-// about, because that word cannot be told from one nothing installed (see
-// Unit.Optional). Every other state of it reads as any other unit's.
+// about, because inactivity is its ordinary state until its option or event
+// applies (see Unit.Optional). Every other state reads as any other unit's.
 func units(s Session) []Check {
 	out := make([]Check, 0, len(s.Units))
 	for _, u := range s.Units {
@@ -347,8 +347,7 @@ func units(s Session) []Check {
 		case u.State == "active":
 			out = append(out, Check{OK, "unit", u.Name + " active"})
 		case u.Optional && u.State == "inactive":
-			out = append(out, Check{OK, "unit", u.Name + " inactive: it is installed only where zde.debug is on, " +
-				"and systemd says the same word for a unit that is not there as for one that has not run"})
+			out = append(out, Check{OK, "unit", u.Name + " inactive: expected until " + u.Option})
 		default:
 			out = append(out, Check{Warn, "unit", u.Name + " " + u.State})
 		}
@@ -490,17 +489,15 @@ func (d Desks) askedOf() string {
 	return " - asked of " + byApps + ", since no " + byZcr + " is on PATH"
 }
 
-// logind is whether the four verbs a power menu is made of would work on this
-// machine: a log out, a suspend, a reboot and a power off, which are
-// TerminateSession, Suspend, Reboot and PowerOff on
-// org.freedesktop.login1.Manager.
+// logind is whether the three enabled logind verbs would work on this machine:
+// log out, reboot and power off. Suspend is deliberately unavailable in v0.1.
 //
 // Warnings, never failures. A session with no logind is a session somebody can
 // still work in - it locks, and every key but one still does what it did - and
 // doctor's exit status has to keep meaning "this machine is missing something
 // it was promised". A container has no logind and is not broken.
 //
-// One line when all four would work, and one per thing that would not
+// One line when all three would work, and one per thing that would not
 // otherwise. That is the shape the rest of this report uses and for the same
 // reason: what fixes one of these is per verb - a polkit rule, an inhibitor to
 // go and stop - and a count would send somebody looking for which.
@@ -512,7 +509,7 @@ func logind(s Session) []Check {
 		// name" is a fact; a machine that cannot be told to go is what somebody
 		// is standing in front of.
 		return []Check{{Warn, "logind", "nothing owns " + logindName +
-			", so nothing can log out, suspend, reboot or power off this machine: a power menu, where there is one, could only lock"}}
+			", so nothing can log out, reboot or power off this machine: a power menu, where there is one, could only lock"}}
 	case l.Err != nil:
 		// The middle state every other check here has. A question that could not
 		// be put has no answer, and the two-second bound above it means the
@@ -522,7 +519,7 @@ func logind(s Session) []Check {
 		// inventing a fault. So it says what it could not do and hands over the
 		// question by hand, the way the desk apps check does.
 		return []Check{{Warn, "logind", "not known: " + l.Err.Error() +
-			" - so whether this session may log out, suspend, reboot or power off was never asked, and `loginctl show-session` puts the same question by hand"}}
+			" - so whether this session may log out, reboot or power off was never asked, and `loginctl show-session` puts the same question by hand"}}
 	}
 	var out []Check
 	for _, c := range l.Can {
@@ -558,29 +555,31 @@ func logind(s Session) []Check {
 	}
 	if len(out) == 0 {
 		// The aside is there because this check landed before the thing that
-		// uses it, and a line about four verbs nothing presses would otherwise
+		// uses it, and a line about three verbs nothing presses would otherwise
 		// read as a check about nothing.
-		return []Check{{OK, "logind", "session " + l.Session + " is what a log out would end, and suspend, " +
-			"reboot and power off are this session's to use - what a power menu asks for, on a build that has one"}}
+		return []Check{{OK, "logind", "session " + l.Session + " is what a log out would end, and reboot and power off " +
+			"are this session's to use - what a power menu asks for; suspend is deliberately unavailable in ZDE v0.1"}}
 	}
 	return out
 }
 
-// unseen is the half of this question nothing on this machine can answer, said
-// wherever the answer is drawn.
+// unseen is the half of the display-power question nothing on this machine can
+// answer, said wherever the answer is drawn.
 //
 // It is spelled out rather than summarised because the summary is the mistake:
 // "nothing is holding your screen awake" is what somebody will take away from a
-// clean line here, and that is a claim about two mechanisms when only one of
-// them was asked. The other one is the more likely of the two to be in use and
-// the easier of the two for an app to reach.
+// clean line here, and that is a claim about two mechanisms when only one was
+// asked. This does not qualify the strict lock: its Hypridle listener explicitly
+// ignores both mechanisms.
 const unseen = "a Wayland app holding zwp_idle_inhibit_manager_v1 never reaches logind and is invisible to " +
 	"every interface zde has: niri hands that global to sandboxed clients unfiltered, honours it while the " +
-	"surface is merely visible rather than focused, and exposes no way to read it back (docs/roadmap.md, the " +
-	"idle inhibitor; docs/verify.md, section 11)"
+	"surface is merely visible rather than focused, and exposes no way to read it back. ZDE's strict 180-second " +
+	"lock ignores idle inhibitors; conditional display power-off still honours them (docs/roadmap.md, the idle " +
+	"inhibitor; docs/verify.md, section 11)"
 
-// idle is whether anything is holding this session's idle timers off, which is
-// whether a screen that would blank, suspend or lock on its own is going to.
+// idle is whether anything is holding ordinary idle policy off. ZDE's strict
+// lock is deliberately outside that answer; conditional display power-off is
+// not.
 //
 // It is the check most at risk of being read as more than it is, so what it can
 // see is on every line it prints. logind's inhibitor table is the whole of the
@@ -636,7 +635,7 @@ func idle(s Session) []Check {
 				"an inhibitor's name is the command line of whatever took it and its reason is that "+
 				"program's own prose, so neither is written into a file meant to leave this machine - "+
 				"`systemd-inhibit --list`, or `zde doctor` on the machine itself, is where the names "+
-				"are. Nothing that acts on this session going idle will fire until they let go",
+				"are. Inhibited idle actions such as display power-off wait until they let go; ZDE's strict lock does not",
 			len(l.Holds))})
 		return append(out, Check{Warn, "idle", "and there may be more than logind can see: " + unseen})
 	}
@@ -653,7 +652,7 @@ func idle(s Session) []Check {
 			break
 		}
 		out = append(out, Check{Warn, "idle", holder(h) +
-			" - so nothing that acts on this session going idle will fire until it lets go"})
+			" - so inhibited idle actions such as display power-off wait until it lets go; ZDE's strict lock does not"})
 	}
 	// Last, because it qualifies the list above rather than any one row of it:
 	// what is named is what logind knows, and there is no way to find out

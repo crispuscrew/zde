@@ -265,26 +265,39 @@ var registry = map[string]Entry{
 
 	// capture: screenshots and the replay clip.
 	//
-	// The screenshots are niri's own. They were `zde capture ...` here, which
-	// is a command nothing has written, so three bound keys did nothing at all
-	// while the compositor underneath them had been taking screenshots the
-	// whole time. What zde would add - a send-to, a desk-aware filename, the
-	// replay clip - is 0.2 work, and none of it is a reason for Print to be
-	// dead until then. The day zde owns capture, these go back to being
-	// spawns and the keys keep working across the change.
+	// The day this comment said was coming has arrived: these were niri natives,
+	// because a `zde capture` nobody had written left three bound keys doing
+	// nothing while the compositor underneath them took screenshots the whole
+	// time. They are spawns again and the keys work across the change, which is
+	// what a native was holding them open for.
 	//
-	// niri's own defaults decide where a shot lands (screenshot-path) and put
-	// it on the clipboard either way, which is the behaviour anybody who has
-	// used niri already expects.
+	// For the window and the whole output, niri still takes the picture: what
+	// zde asks for is the same action with the file named on it, which is
+	// everything niri has no opinion about - 0600 instead of the umask, a name
+	// the next capture in the same second cannot overwrite, and a failure said
+	// out loud, since niri saves on a thread and answers "Handled" before it
+	// starts. The clipboard is unchanged, because niri puts the image there
+	// whatever else it does with it (internal/capture).
 	//
-	// None of the three is marked performs, and they are the only natives with
-	// no argument that are not. Over the IPC socket each takes a field that has
-	// no default and the bind does not carry, where the config parser fills it
-	// in - so niri 26.04 answers "error parsing request" to a bare Screenshot
-	// while Print works. The palette says so and points at the key.
-	"capture.shot-region": {Group: "capture", Desc: "screenshot a region (niri's picker)", Native: "screenshot"},
-	"capture.shot-window": {Group: "capture", Desc: "screenshot the focused window", Native: "screenshot-window"},
-	"capture.shot-full":   {Group: "capture", Desc: "screenshot the whole output", Native: "screenshot-screen"},
+	// The region does not go through niri at all, and that is the one thing here
+	// worth reading twice. niri's picker saves the frame that goes to the
+	// monitor, so a window carrying `block-out-from "screen-capture"` is in the
+	// file - while the other two black it out. zde takes the region through a
+	// selector and a screencopy client instead, which the same rule covers, and
+	// refuses rather than falling back when either is missing
+	// (internal/capture, region.go).
+	//
+	// send-to has no row, for the reason `guest <name>` has none: it carries a
+	// target that is this machine's own - a name from zde.apps, or the
+	// clipboard - and an unbound parametric row is a name no surface can show
+	// (docs/model.md, section 6). `zde capture send-to` is the whole of it.
+	"capture.shot-region": {Group: "capture", Desc: "screenshot a region (capture-block aware)", Spawn: []string{"zde", "capture", "shot-region"}, written: true},
+	"capture.shot-window": {Group: "capture", Desc: "screenshot the focused window", Spawn: []string{"zde", "capture", "shot-window"}, written: true},
+	"capture.shot-full":   {Group: "capture", Desc: "screenshot the whole output", Spawn: []string{"zde", "capture", "shot-full"}, written: true},
+	// The recorder is opt-in because it continuously sees the screen and spends
+	// an encoder. The verb still counts as written when it is off: it names the
+	// option that starts it rather than falling through to usage.
+	"capture.replay-clip": {Group: "capture", Desc: "write out the last seconds (needs a recorder holding them)", Spawn: []string{"zde", "capture", "replay-clip"}, written: true},
 
 	// media: through zde so the media target decides who plays
 	// (docs/vision.md, media targeting). The target auto-routes to the
@@ -353,6 +366,7 @@ var registry = map[string]Entry{
 	// the day it gets a chord, which is what this file does with desk.block.
 	"system.lock-preset": {Group: "system", Desc: "switch to the preset desk, then lock, so an unlock shows that desk and not your work", Spawn: []string{"zde", "system", "lock-preset"}, written: true, Unsuppressible: true},
 	"system.quiet":       {Group: "system", Desc: "toggle quiet (do not disturb)", Spawn: []string{"zde", "system", "quiet"}, written: true},
+	"system.film":        {Group: "system", Desc: "toggle Film for at most three hours: suppress automatic lock and display power-off", Spawn: []string{"zde", "system", "film", "toggle"}, written: true},
 	// The way back, and the general answer the named exceptions are not: it
 	// turns the focused surface's inhibitor off, so every other zde key works
 	// again, and a second press hands them back. Without it the protected set is
@@ -366,10 +380,10 @@ var registry = map[string]Entry{
 	// uninhibitable"). Written here anyway, because the property being niri's
 	// job is not a thing zde should have to remember it is relying on.
 	"system.shortcut-grab": {Group: "system", Desc: "toggle the focused app's keyboard grab: take zde's keys back from it, or hand them over", Native: "toggle-keyboard-shortcuts-inhibit", Unsuppressible: true, performs: true},
-	// power is one surface and five verbs, and the lock among them is the same
+	// power is one surface and five rows, and the lock among them is the same
 	// locker the key above runs: the row spawns `zde system lock` rather than
 	// growing a second idea of what locks this screen (internal/zded, powerRun).
-	"system.power": {Group: "system", Desc: "the power menu: lock, log out, suspend, reboot, power off", Spawn: []string{"zde", "system", "power"}, written: true},
+	"system.power": {Group: "system", Desc: "the power menu: lock, log out, unavailable suspend, reboot, power off", Spawn: []string{"zde", "system", "power"}, written: true},
 	// connections: the wifi networks and the link you are on. The description
 	// promised bluetooth too, and a cheatsheet line is a promise a person reads
 	// before pressing the key - pairing is a conversation of its own with its
@@ -388,8 +402,8 @@ var registry = map[string]Entry{
 	// keys work was itself one of the silent ones. It goes back to being a
 	// surface when the shell has one; the action does not change when it does.
 	"system.help":          {Group: "system", Desc: "the keymap, in a terminal", Spawn: []string{"zde", "app", "launch", "help"}, written: true},
-	"system.brightness-up": {Group: "system", Desc: "brightness up", Spawn: []string{"brightnessctl", "set", "5%+"}, Repeat: true, WhenLocked: true, written: true},
-	"system.brightness-dn": {Group: "system", Desc: "brightness down", Spawn: []string{"brightnessctl", "set", "5%-"}, Repeat: true, WhenLocked: true, written: true},
+	"system.brightness-up": {Group: "system", Desc: "brightness up", Spawn: []string{"brightnessctl", "--class=backlight", "set", "5%+"}, Repeat: true, WhenLocked: true, written: true},
+	"system.brightness-dn": {Group: "system", Desc: "brightness down", Spawn: []string{"brightnessctl", "--class=backlight", "set", "5%-"}, Repeat: true, WhenLocked: true, written: true},
 	"system.layout-switch": {Group: "system", Desc: "switch keyboard layout (language)", Native: "switch-layout \"next\""},
 	"system.notif-center":  {Group: "system", Desc: "the notification center", Spawn: []string{"zde", "system", "notif-center"}, written: true},
 	// The other half of a popup, and the reason there can be one at all. A

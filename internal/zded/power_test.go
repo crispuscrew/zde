@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/crispuscrew/zde/internal/apps"
 	"github.com/crispuscrew/zde/internal/attn"
 	"github.com/crispuscrew/zde/internal/power"
 )
@@ -26,8 +27,13 @@ type fakeLogind struct {
 	// half of these tests: what must not happen is a row that reports success
 	// having asked logind for nothing, or one that asks for it without being
 	// told to.
-	did   []power.What
-	doErr error
+	did          []power.What
+	doErr        error
+	locked       bool
+	lockedSticky bool
+	lockedErr    error
+	lockedReads  int
+	lockedErrAt  int
 }
 
 func (f *fakeLogind) State() (power.State, error) {
@@ -41,6 +47,26 @@ func (f *fakeLogind) Do(w power.What) error {
 	defer f.mu.Unlock()
 	f.did = append(f.did, w)
 	return f.doErr
+}
+
+func (f *fakeLogind) Locked() (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lockedReads++
+	if f.lockedErrAt > 0 && f.lockedReads >= f.lockedErrAt {
+		return false, f.lockedErr
+	}
+	locked := f.locked
+	if locked && !f.lockedSticky {
+		f.locked = false
+	}
+	return locked, f.lockedErr
+}
+
+func (f *fakeLogind) setLocked(locked bool) {
+	f.mu.Lock()
+	f.locked = locked
+	f.mu.Unlock()
 }
 
 func (f *fakeLogind) done() []power.What {
@@ -61,6 +87,10 @@ func powerServer(t *testing.T) (*Server, *fakeLogind, *spy) {
 	t.Helper()
 	withZdeOnPath(t)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if err := os.MkdirAll(filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "zde"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeJSON(t, apps.Path("apps.json"), map[string][]string{"lock": {os.Args[0]}})
 	f := &fakeCompositor{
 		m:       twoDesks(),
 		focused: "vshop.DP-1.code",
@@ -72,6 +102,19 @@ func powerServer(t *testing.T) (*Server, *fakeLogind, *spy) {
 	s.spawn = sp.run
 	l := &fakeLogind{}
 	withLogind(s, l, nil)
+	var lockerActive atomic.Bool
+	s.locker = lockerControl{
+		active: func() (bool, error) { return lockerActive.Load(), nil },
+		start: func() error {
+			if err := sp.run([]string{os.Args[0]}); err != nil {
+				return err
+			}
+			lockerActive.Store(true)
+			l.setLocked(true)
+			return nil
+		},
+		stop: func() error { lockerActive.Store(false); return nil },
+	}
 	return s, l, sp
 }
 
@@ -113,8 +156,8 @@ func TestTheLockRowRunsTheCommandTheLockKeyRuns(t *testing.T) {
 		t.Fatalf("locking from the power menu: %s", resp.Error)
 	}
 	got := sp.all()
-	if len(got) != 1 || strings.Join(got[0], " ") != "zde system lock" {
-		t.Fatalf("the lock row spawned %v, want what Mod+Ctrl+semicolon spawns", got)
+	if len(got) != 1 || strings.Join(got[0], " ") != os.Args[0] {
+		t.Fatalf("the lock row started %v, want this machine's configured locker", got)
 	}
 	if asked := l.done(); len(asked) != 0 {
 		t.Errorf("locking asked logind for %v, and locking a screen is not logind's", asked)
@@ -170,14 +213,9 @@ func TestPoweringOffNamesWhatIsAboutToBeLost(t *testing.T) {
 	}
 }
 
-// A power menu that reports success while nothing happened is worse than one
-// that says it was refused. logind refuses on the wire - an inhibitor holding
-// sleep, another person logged in, polkit wanting a password nothing here can
-// ask for - and that has to come back as a refusal with the words in it.
-func TestARefusedSuspendIsSaidAsRefusedRatherThanAsDone(t *testing.T) {
+// Suspend has one deliberate v0.1 boundary in the daemon, before logind.
+func TestSuspendIsUnavailableAtTheDaemonBoundary(t *testing.T) {
 	s, l, _ := powerServer(t)
-	l.doErr = errors.New("chromium is holding this off: Playing audio, and logind will not " +
-		"take a suspend past it without an administrator's password")
 
 	resp := s.Dispatch(Request{Method: "system.power", Args: []string{"suspend"}})
 	if resp.Error == "" {
@@ -186,43 +224,15 @@ func TestARefusedSuspendIsSaidAsRefusedRatherThanAsDone(t *testing.T) {
 	if len(resp.Ok) != 0 {
 		t.Errorf("a refused suspend also answered %s", resp.Ok)
 	}
-	if !strings.Contains(resp.Error, "chromium") {
-		t.Errorf("the refusal is %q, and it has to carry what logind said", resp.Error)
+	if !strings.Contains(resp.Error, "unavailable in ZDE v0.1") {
+		t.Errorf("the refusal is %q, want the versioned boundary", resp.Error)
 	}
-	if asked := l.done(); len(asked) != 1 || asked[0] != power.Suspend {
-		t.Errorf("logind was asked for %v, want one suspend", asked)
+	if asked := l.done(); len(asked) != 0 {
+		t.Errorf("unavailable suspend still asked logind for %v", asked)
 	}
-}
-
-// Suspend is the one row here that loses nothing, so it does not ask - until
-// something is holding sleep, when the question is the only place a person
-// finds out what is about to refuse it. If this regresses, either every suspend
-// costs a second keypress for nothing, or the one that is about to be refused
-// looks exactly like the ones that work.
-func TestSuspendAsksTwiceOnlyWhenSomethingIsHoldingSleep(t *testing.T) {
-	s, l, _ := powerServer(t)
-
-	quiet := choice(t, menu(t, s), "suspend")
-	if quiet.Confirm || len(quiet.Costs) != 0 {
-		t.Errorf("suspend = %+v on a machine where nothing is holding sleep", quiet)
-	}
-
-	l.state = power.State{Blocks: []power.Block{
-		{What: "sleep", Who: "chromium", Why: "Playing audio"},
-	}}
-	held := menu(t, s)
-	blocked := choice(t, held, "suspend")
-	if !blocked.Confirm {
-		t.Error("something is holding sleep and the suspend row still does not ask")
-	}
-	if said := strings.Join(blocked.Costs, "\n"); !strings.Contains(said, "chromium") ||
-		!strings.Contains(said, "Playing audio") {
-		t.Errorf("suspend says %q, and it has to name what is holding it", said)
-	}
-	// And it is not repeated onto rows it does not hold: a sleep inhibitor
-	// stops a suspend and has nothing to say about a reboot.
-	if said := strings.Join(choice(t, held, "reboot").Costs, "\n"); strings.Contains(said, "chromium") {
-		t.Errorf("the reboot row says %q about something that only holds sleep", said)
+	row := choice(t, menu(t, s), "suspend")
+	if row.Confirm || len(row.Costs) != 0 || !strings.Contains(row.Why, "unavailable in ZDE v0.1") {
+		t.Errorf("suspend row = %+v, want one unselectable versioned boundary", row)
 	}
 }
 
@@ -237,29 +247,29 @@ func TestSuspendAsksTwiceOnlyWhenSomethingIsHoldingSleep(t *testing.T) {
 func TestAnInhibitorCannotWriteToTheScreenItIsExplainedOn(t *testing.T) {
 	s, l, _ := powerServer(t)
 	l.state = power.State{Blocks: []power.Block{{
-		What: "sleep",
+		What: "shutdown",
 		Who:  "chromium\x1b[2J",
-		Why:  "Playing audio\n.   suspend  nothing is holding this off",
+		Why:  "Saving work\n.   reboot  nothing is holding this off",
 	}}}
 
-	said := strings.Join(choice(t, menu(t, s), "suspend").Costs, "\n")
+	said := strings.Join(choice(t, menu(t, s), "reboot").Costs, "\n")
 	for _, bad := range []string{"\x1b", "\n."} {
 		if strings.Contains(said, bad) {
 			t.Errorf("the cost line is %q, and it still carries %q", said, bad)
 		}
 	}
-	// Still says what is holding sleep, because a line that dropped the name
+	// Still says what is holding shutdown, because a line that dropped the name
 	// would trade one silence for another.
-	if !strings.Contains(said, "chromium") || !strings.Contains(said, "Playing audio") {
+	if !strings.Contains(said, "chromium") || !strings.Contains(said, "Saving work") {
 		t.Errorf("the cost line is %q, want what is holding it and why", said)
 	}
 }
 
-// A machine with nothing to ask still gets the menu, with the lock working and
-// the reason on the four rows that need logind. The alternative is a key that
+// A machine with nothing to ask still gets the menu, with every row explaining
+// that logind-dependent readiness or power cannot work. The alternative is a key that
 // draws nothing, which is the silent key this whole surface exists to be the
 // opposite of.
-func TestAMachineWithNoLogindStillLocksAndSaysWhyTheRestWillNot(t *testing.T) {
+func TestAMachineWithNoLogindRefusesAnUnverifiableLockAndSaysWhy(t *testing.T) {
 	s, _, sp := powerServer(t)
 	withLogind(s, nil, power.ErrNoLogind)
 
@@ -267,23 +277,26 @@ func TestAMachineWithNoLogindStillLocksAndSaysWhyTheRestWillNot(t *testing.T) {
 	if len(p.Choices) != 5 {
 		t.Fatalf("the menu has %d rows on a machine with no logind, want all five", len(p.Choices))
 	}
-	if lock := choice(t, p, "lock"); lock.Why != "" {
-		t.Errorf("the lock row says %q, and locking needs no logind", lock.Why)
+	if lock := choice(t, p, "lock"); !strings.Contains(lock.Why, "logind") {
+		t.Errorf("the lock row says %q about a lock whose readiness cannot be verified", lock.Why)
 	}
-	for _, name := range []string{"logout", "suspend", "reboot", "poweroff"} {
+	for _, name := range []string{"logout", "reboot", "poweroff"} {
 		if why := choice(t, p, name).Why; !strings.Contains(why, "logind") {
 			t.Errorf("%s says %q about a machine with no logind", name, why)
 		}
+	}
+	if why := choice(t, p, "suspend").Why; !strings.Contains(why, "unavailable in ZDE v0.1") {
+		t.Errorf("suspend says %q instead of the v0.1 boundary", why)
 	}
 
 	if resp := s.Dispatch(Request{Method: "system.power", Args: []string{"poweroff"}}); resp.Error == "" {
 		t.Error("powering off answered as done on a machine with no logind to ask")
 	}
-	if resp := s.Dispatch(Request{Method: "system.power", Args: []string{"lock"}}); resp.Error != "" {
-		t.Errorf("locking is refused for want of a logind: %s", resp.Error)
+	if resp := s.Dispatch(Request{Method: "system.power", Args: []string{"lock"}}); resp.Error == "" {
+		t.Error("locking answered as verified on a machine with no logind LockedHint")
 	}
-	if got := sp.all(); len(got) != 1 {
-		t.Errorf("the lock spawned %v on a machine with no logind", got)
+	if got := sp.all(); len(got) != 0 {
+		t.Errorf("the lock started %v before discovering readiness could not be observed", got)
 	}
 }
 
@@ -353,7 +366,14 @@ func TestAPowerActionNobodyHasIsRefusedByName(t *testing.T) {
 	// And every name the menu offers is one this answers, which is the half a
 	// spelling mistake in either place would break.
 	for _, c := range menu(t, s).Choices {
-		if resp := s.Dispatch(Request{Method: "system.power", Args: []string{c.Name}}); resp.Error != "" {
+		resp := s.Dispatch(Request{Method: "system.power", Args: []string{c.Name}})
+		if c.Name == "suspend" {
+			if !strings.Contains(resp.Error, "unavailable in ZDE v0.1") {
+				t.Errorf("the suspend row failed as %q", resp.Error)
+			}
+			continue
+		}
+		if resp.Error != "" {
 			t.Errorf("the menu offers %q and running it says %q", c.Name, resp.Error)
 		}
 	}

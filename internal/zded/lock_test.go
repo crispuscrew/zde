@@ -2,6 +2,7 @@ package zded
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,7 +30,7 @@ func lockServer(t *testing.T, preset string, desks map[string]string) (*Server, 
 	// What `zde system lock` resolves against, and the reason lockPreset can
 	// know there is something to lock with before it moves anything.
 	writeJSON(t, filepath.Join(cfg, "zde", "apps.json"), map[string][]string{
-		"lock": {"true"},
+		"lock": {os.Args[0]},
 	})
 	if preset != "" {
 		writeJSON(t, filepath.Join(cfg, "zde", "lock.json"), map[string]string{"preset": preset})
@@ -57,7 +58,21 @@ func lockServer(t *testing.T, preset string, desks map[string]string) (*Server, 
 	s := New("test", nil, f, manifest.Dir(dir))
 	t.Cleanup(func() { s.Close() })
 	sp := &spy{}
-	s.spawn = sp.run
+	logind := &fakeLogind{}
+	withLogind(s, logind, nil)
+	active := false
+	s.locker = lockerControl{
+		active: func() (bool, error) { return active, nil },
+		start: func() error {
+			if err := sp.run([]string{os.Args[0]}); err != nil {
+				return err
+			}
+			active = true
+			logind.setLocked(true)
+			return nil
+		},
+		stop: func() error { active = false; return nil },
+	}
 	return s, f, sp
 }
 
@@ -88,11 +103,12 @@ func TestTheDeskHasChangedBeforeTheLockerStarts(t *testing.T) {
 
 	var mu sync.Mutex
 	var focusedWhenLocked []string
-	s.spawn = func(argv []string) error {
+	originalStart := s.locker.start
+	s.locker.start = func() error {
 		mu.Lock()
-		defer mu.Unlock()
 		focusedWhenLocked = f.focusCalls()
-		return nil
+		mu.Unlock()
+		return originalStart()
 	}
 
 	resp := s.Dispatch(Request{Method: "system.lock-preset"})
@@ -119,8 +135,8 @@ func TestLockPresetRunsTheCommandTheLockKeyRuns(t *testing.T) {
 		t.Fatalf("system.lock-preset: %s", resp.Error)
 	}
 	got := sp.all()
-	if len(got) != 1 || strings.Join(got[0], " ") != "zde system lock" {
-		t.Fatalf("lock-preset spawned %v, want what the lock key spawns", got)
+	if len(got) != 1 || strings.Join(got[0], " ") != os.Args[0] {
+		t.Fatalf("lock-preset started %v, want this machine's configured locker", got)
 	}
 }
 
@@ -262,10 +278,7 @@ func TestTheNoteCannotCarryAnEscapeOutOfAFileSomebodyElseWrote(t *testing.T) {
 // changed and the screen is open.
 func TestWithNoLockerNothingIsSwitchedAndTheRefusalSaysSo(t *testing.T) {
 	s, f, sp := lockServer(t, "haven", nil)
-	cfg := os.Getenv("XDG_CONFIG_HOME")
-	writeJSON(t, filepath.Join(cfg, "zde", "apps.json"), map[string][]string{
-		"terminal": {"true"},
-	})
+	s.locker.active = func() (bool, error) { return false, errors.New("zde-lock.service was not found") }
 
 	resp := s.Dispatch(Request{Method: "system.lock-preset"})
 	if resp.Error == "" {

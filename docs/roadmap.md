@@ -19,19 +19,12 @@ attribution; asks 5-6 land with their consumers.
 Every line of that has landed, and a desk now starts what its manifest declares,
 pins each app to the workspace it named, and puts the session in the attn mode
 it asks for. Four things arrived beside the
-list rather than in it: the connections surface (`Mod+Shift+c`), which is 0.4's
-wifi TUI in the shape the shell wanted; the palette (`Mod+semicolon`), which is
-0.2's and came early because a good part of the cheatsheet is still silent and
-a palette is what says which part; bluetooth, as `zde system bluetooth`
-with nothing on a screen; and the power menu (`Mod+Shift+x`), which belongs
-here rather than in the laptop profile it was filed under - logging out of this
-desktop meant opening a terminal, which is not a thing to ship a phase on. It
-is lock, log out, suspend, reboot and power off, the three that end something
-asking first and saying what is about to be lost - the windows that close, the
-arrivals the queue never got, anybody else logged in. The lock is the same
-locker `zde system lock` runs, and the rest is logind's, so a refusal - an
-inhibitor holding sleep, a polkit that will not take the verb from this session
-- comes back as a refusal in words rather than as a key that did nothing.
+list rather than in it: the connections surface, the palette, Bluetooth and the
+power menu. Their shipped lock, idle, Film and no-suspend behavior now has one
+canonical description in [`model.md`](model.md#6-the-action-map) and one manual
+checklist in [`verify.md`](verify.md#11-the-screen-an-application-can-keep-awake).
+Automatic lid and desktop suspend remain v0.2 work; root keeps the administrative
+system boundary.
 
 The popup has landed since, and it is what turns the "actions" capability from a
 claim about reach into one about immediacy as well. A notification appears where
@@ -163,10 +156,20 @@ blocks 0.2:
 
 ## 0.2 - Daily driver
 
-- pass: derivation + pepper + counters, trusted window, type-out. The other lane
-  of the two-lane secrets (vision.md, principle 5); the clipboard's lane moved
-  into 0.1 and is above.
-- capture: shots, replay clip, send-to.
+- pass: deferred behind the [`vision.md`](vision.md) section 2 boundary:
+  Niri/Smithay must atomically validate the same eligible text input at commit
+  time; ZDE must approve a sole input-method owner or coexistence design. No
+  weaker fallback ships.
+- capture: shots, replay clip, send-to. All have landed. Replay is explicit
+  opt-in: one user service keeps 30 seconds of video encoded
+  in RAM, with no audio, and `zde capture replay-clip` waits for the muxer and
+  prints the file it actually closed. It uses the portal so niri's
+  `block-out-from "screen-capture"` remains true; direct KMS is deliberately not
+  a fallback. The pinned nixpkgs package predates the instance-scoped IPC that
+  makes that completion check possible, so layer 1 backports 6.0.1 by source
+  hash on the pinned package's dependency set rather than pulling in another
+  nixpkgs. What is still a real-machine check is the GPU encoder and the first
+  portal approval ([`verify.md`](verify.md), section 13).
 - media/audio: target (pick/next/pin) + bar widget, mixer widget, device
   switch, mic OSD.
 - launch surfaces: the palette (landed early, with 0.1's shell, running actions
@@ -241,14 +244,15 @@ blocks 0.2:
 - film desk: PipeWire limiter, luma-clamp shader, end-of-film sleep, ambient
   side monitors.
 - gaming desk: gamescope, auto-Passthrough + never-release set, replay.
-- laptop profile: battery/brightness, single-monitor degradation, workspace
+- laptop profile: battery/lid behavior, single-monitor degradation, workspace
   placement re-applied on dock/undock. Three halves of this came early and in
   different shapes - wifi as a shell surface on `Mod+Shift+c`, bluetooth as
   `zde system bluetooth` with no surface at all, and the power menu on
   `Mod+Shift+x`, which moved into 0.1 because a desktop you cannot log out of
   is not one you can use - so what is left here is folding bluetooth into that
-  surface, the lid and the battery thresholds, and the rest of what a laptop
-  is.
+  surface, battery thresholds, dock behavior, and the rest of what is genuinely
+  laptop-specific. NetworkManager, brightness permissions, and bluetooth radio
+  support are independent system options rather than part of this profile.
 - **Bringing a workspace home when niri cannot.** Re-placing workspaces on
   their home monitor after a dock is niri's, not zde's: it records the output
   each workspace was opened on and returns it there when that output comes
@@ -299,7 +303,8 @@ turned "when someone has hardware" into something anyone can do this evening.
   reachable enough for the moment you need it. Upstream may also close this: a
   confirmation dialog, or the filter the other thirteen already have, would
   make the whole question smaller.
-- the idle inhibitor, the second ungated global:
+- the idle inhibitor, the second ungated global, is still a visibility gap but
+  no longer a lock bypass:
   `IdleInhibitManagerState::new::<State>` is built with no
   `client_is_unrestricted` where twelve neighbours take it by name and a
   thirteenth inlines the same bit, so a sandboxed app can hold
@@ -309,27 +314,17 @@ turned "when someone has hardware" into something anyone can do this evening.
   is looking at keeps the session from ever going idle, with no interaction and
   nothing shown.
 
-  **zde cannot see it, and that is the finding.** niri exposes it nowhere: not
+  **zde cannot see it.** niri exposes it nowhere: not
   in `niri-ipc`'s `Request`, `Response` or `Event` (checked at 26.4.0 - the only
   hit for "inhibit" in 2109 lines is the keyboard-shortcuts action), not on the
   event stream, and its `org.freedesktop.ScreenSaver` has `Inhibit` with no
   getter. The computed bool goes to the idle notifier and stops.
 
-  So what shipped is the half that is observable, labelled as a half. logind's
-  own `idle` inhibitors are readable and always were - `system.idle` reads the
-  table the power menu already costs its rows from - and that is what the bar's
-  `idle held` counts and what `zde doctor` names. The two mechanisms do not
-  overlap: a Wayland inhibitor on a mapped surface moves nothing in
-  `ListInhibitors` and does not touch the session's `IdleHint`, measured rather
-  than assumed. Every place the reading is drawn says which half it is, because
-  a bar that implied it could see both would be worse than no bar at all.
-
-  What is open: whether anything anybody runs takes a Wayland one in practice
-  ([`verify.md`](verify.md), section 11), and what to do when the lock preset
-  lands in 0.3 - that is the release where this stops being an indicator and
-  starts being a way to keep a screen unlocked. Upstream adding the filter would
-  close it; so would any read-back at all, which is the smaller ask and the one
-  worth opening an issue for.
+  The strict-lock seam and its Hypridle 0.1.7 generation patch are now specified
+  in [`model.md`](model.md#6-the-action-map) and exercised in
+  [`verify.md`](verify.md#11-the-screen-an-application-can-keep-awake). The open
+  item is still visibility: a Wayland inhibitor moves nothing in logind's table,
+  so the bar and doctor cannot identify what postponed display power-off.
 - niri config: `nav.*` shelling to zded per keypress feeling instant, and the
   config driving a real compositor. The smoke test settles the static half -
   niri's own parser accepts the tree, its includes resolve, and every emitted
@@ -434,10 +429,11 @@ turned "when someone has hardware" into something anyone can do this evening.
   generated rules' own counters rather than guessing. What is left is netview,
   in 0.3.
 - NixOS: greetd reaching niri-session on real hardware (CI only evaluates the
-  host, it never boots it), rootless podman subuids, Quickshell from its
-  flake, kanata uinput permissions, NVIDIA with niri, and BlueZ's D-Bus policy
-  for a normal user calling `RegisterAgent` - if the session cannot register a
-  pairing agent, incoming pairings are refused.
+  host, it never boots it), rootless podman subuids, Quickshell from its flake,
+  kanata uinput permissions, NVIDIA with niri, and Bluetooth hardware. BlueZ's
+  AVRCP parser fix is backported, but release support is still blocked on
+  hardware tests: its D-Bus policy for a normal user calling `RegisterAgent`,
+  phone and headset pairing, PipeWire audio, and AVRCP controls.
 - laptop: power-profiles-daemon vs TLP on real battery life.
 
 ## Cross-cutting

@@ -34,13 +34,13 @@ func healthy() Session {
 			Notifications: true,
 			Zinc:          true,
 		},
-		// The three a login starts, in the state an ordinary machine has them:
-		// the two that always run, and the snapshot unit that is only installed
-		// where zde.debug is on (see loginUnits).
+		// The units a login installs, in the state an ordinary machine has them.
 		Units: []Unit{
 			{Name: "zded", State: "active"},
 			{Name: "zde-bar", State: "active"},
-			{Name: "zde-report", State: "inactive", Optional: true},
+			{Name: "zde-idle", State: "active"},
+			{Name: "zde-report", State: "inactive", Optional: true, Option: "zde.debug"},
+			{Name: "zde-replay", State: "inactive", Optional: true, Option: "zde.capture.replay.enable"},
 		},
 		Podman: Podman{Rootless: true},
 		Lock: Locker{
@@ -57,7 +57,6 @@ func healthy() Session {
 			// them, and the snapshot's half of that is asserted in report_test.
 			Named: true,
 			Can: []Can{
-				{What: "suspend", Answer: "yes"},
 				{What: "reboot", Answer: "yes"},
 				{What: "power off", Answer: "yes"},
 			},
@@ -110,7 +109,7 @@ func TestHealthySessionSaysSoOnEveryLine(t *testing.T) {
 func TestTheReportIsTheSameShapeEveryTime(t *testing.T) {
 	want := []string{
 		"zded", "compositor", "shell", "notify", "zinc", "podman",
-		"unit", "unit", "unit", "manifests", "desk apps", "locker", "logind", "idle", "journal",
+		"unit", "unit", "unit", "unit", "unit", "manifests", "desk apps", "locker", "logind", "idle", "journal",
 	}
 	var got []string
 	for _, c := range Judge(healthy()) {
@@ -596,8 +595,12 @@ func TestUnitsAreNeverAFailure(t *testing.T) {
 // asserted and not the list: for each unit that file installs, a machine where
 // it has failed has a warning naming it. The names only - what each unit is for
 // is the module's business.
-func TestAFailedUnitALoginStartsIsAWarningThatNamesIt(t *testing.T) {
+func TestAFailedUnitTheHomeModuleInstallsIsAWarningThatNamesIt(t *testing.T) {
 	for _, name := range unitsTheHomeModuleInstalls(t) {
+		if name == "zde-lock" {
+			// On demand and intentionally inactive until a lock request.
+			continue
+		}
 		s := healthy()
 		s.Units = nil
 		for _, u := range loginUnits {
@@ -605,7 +608,7 @@ func TestAFailedUnitALoginStartsIsAWarningThatNamesIt(t *testing.T) {
 			if u.Name == name {
 				state = "failed"
 			}
-			s.Units = append(s.Units, Unit{Name: u.Name, State: state, Optional: u.Optional})
+			s.Units = append(s.Units, Unit{Name: u.Name, State: state, Optional: u.Optional, Option: u.Option})
 		}
 		var found *Check
 		for _, c := range named(Judge(s), "unit") {
@@ -651,6 +654,13 @@ func TestAUnitOnlyDebugMachinesHaveIsNotAComplaintWhenItIsAbsent(t *testing.T) {
 	}
 }
 
+func TestReplayUnitNamesItsOwnOptInWhenAbsent(t *testing.T) {
+	c := unitNamed(t, Judge(healthy()), "zde-replay")
+	if c.Level != OK || !strings.Contains(c.Detail, "zde.capture.replay.enable") {
+		t.Errorf("an ordinary machine describes optional replay as %s", c)
+	}
+}
+
 // unitNamed is the one unit row about a given unit.
 func unitNamed(t *testing.T, r Report, name string) Check {
 	t.Helper()
@@ -687,7 +697,7 @@ func unitsTheHomeModuleInstalls(t *testing.T) []string {
 	}
 	if start < 0 {
 		t.Fatalf("%s no longer assigns systemd.user.services in one block, so this test cannot "+
-			"find the units a login starts and doctor's list is unchecked", path)
+			"find the units a login installs and doctor's list is unchecked", path)
 	}
 	indent := strings.Repeat(" ", len(lines[start])-len(strings.TrimLeft(lines[start], " "))+2)
 	name := regexp.MustCompile(`^` + indent + `([a-zA-Z][a-zA-Z0-9_-]*) = `)
@@ -751,7 +761,7 @@ func noZcr(t *testing.T) {
 }
 
 // withZcr puts a zcr on PATH that answers `where` for the apps named and
-// refuses everything else in zinc's own words (zinc 0.9.1, cmdWhere - it
+// refuses everything else in zinc's own words (zinc 0.10.1, cmdWhere - it
 // refuses a name it cannot load because the state and bus paths it prints come
 // out of that app's config).
 func withZcr(t *testing.T, defined ...string) {
@@ -972,11 +982,11 @@ func TestNoDesksAtAllIsNothingToReport(t *testing.T) {
 	}
 }
 
-// A machine with no logind cannot be told to go, and every one of the four
+// A machine with no logind cannot be told to go, and every enabled power verb
 // verbs a power menu is made of is logind's. Said once, as the consequence,
 // because "nobody owns the name" is a reading and a machine that will not shut
 // down is what somebody is standing in front of.
-func TestNoLogindIsOneWarningSayingNoneOfTheFourWouldWork(t *testing.T) {
+func TestNoLogindIsOneWarningSayingNoEnabledPowerVerbWouldWork(t *testing.T) {
 	s := healthy()
 	s.Power = Logind{Absent: true} // the bus answered: there is no logind here
 	c := only(t, Judge(s), "logind")
@@ -986,7 +996,7 @@ func TestNoLogindIsOneWarningSayingNoneOfTheFourWouldWork(t *testing.T) {
 	if !strings.Contains(c.Detail, logindName) {
 		t.Errorf("logind = %s, want the name nobody is on", c)
 	}
-	for _, verb := range []string{"log out", "suspend", "reboot", "power off"} {
+	for _, verb := range []string{"log out", "reboot", "power off"} {
 		if !strings.Contains(c.Detail, verb) {
 			t.Errorf("logind = %s, want it to name %q as one of what would not work", c, verb)
 		}
@@ -1006,10 +1016,9 @@ func TestNoLogindIsOneWarningSayingNoneOfTheFourWouldWork(t *testing.T) {
 // The line this check exists to word carefully.
 //
 // An empty inhibitor table is a true statement about logind and a false one
-// about the machine: the Wayland protocol never reaches that bus, so a clean
-// line here is not a promise the screen will lock. If the caveat goes, somebody
-// reads "nothing is holding this session awake" and believes it about a session
-// where a container is holding an inhibitor nothing can see.
+// about the machine: the Wayland protocol never reaches that bus. The caveat
+// must distinguish conditional display power-off from the strict lock, which
+// ignores both kinds of inhibitor.
 func TestACleanIdleLineSaysWhatItCouldNotSee(t *testing.T) {
 	c := only(t, Judge(healthy()), "idle")
 	if c.Level != OK {
@@ -1024,6 +1033,9 @@ func TestACleanIdleLineSaysWhatItCouldNotSee(t *testing.T) {
 		if !strings.Contains(c.Detail, want) {
 			t.Errorf("idle = %s, want it to carry %q", c, want)
 		}
+	}
+	if !strings.Contains(c.Detail, "strict 180-second lock ignores idle inhibitors") {
+		t.Errorf("idle = %s, want the strict-lock boundary", c)
 	}
 	// And it must not be the sentence a person would take away as a promise.
 	if strings.Contains(c.Detail, "nothing is holding this session awake") {
@@ -1196,7 +1208,8 @@ func TestAnIdleHoldersOwnWordsCannotReadAsZdesOwn(t *testing.T) {
 		}
 	}
 	// And it is still a warning, on a line that ends by saying what it costs.
-	if c.Level != Warn || !strings.Contains(c.Detail, "will fire until it lets go") {
+	if c.Level != Warn || !strings.Contains(c.Detail, "display power-off wait until it lets go") ||
+		!strings.Contains(c.Detail, "strict lock does not") {
 		t.Errorf("idle = %s, want a warning that says what a held idle timer costs", c)
 	}
 }
@@ -1354,7 +1367,6 @@ func TestALogindThatCouldNotBeAskedIsNotAMachineThatCannotBeToldToGo(t *testing.
 func TestAPolkitChallengeIsSaidAsARefusalAndNamesTheVerb(t *testing.T) {
 	s := healthy()
 	s.Power.Can = []Can{
-		{What: "suspend", Answer: "yes"},
 		{What: "reboot", Answer: "challenge"},
 		{What: "power off", Answer: "challenge"},
 	}
@@ -1375,11 +1387,6 @@ func TestAPolkitChallengeIsSaidAsARefusalAndNamesTheVerb(t *testing.T) {
 			t.Errorf("logind = %s, want where the rule that fixes it goes", c)
 		}
 	}
-	// And the verb that does work says nothing, because a report where every
-	// line is a warning is one nobody reads to the end.
-	if strings.Contains(r.String(), "suspend would") {
-		t.Errorf("a permitted verb got a line of its own:\n%s", r)
-	}
 	if r.Failed() != 0 {
 		t.Errorf("polkit refusing a reboot failed a check:\n%s", r)
 	}
@@ -1390,13 +1397,13 @@ func TestAPolkitChallengeIsSaidAsARefusalAndNamesTheVerb(t *testing.T) {
 // write, and the other is hardware.
 func TestAVerbTheMachineCannotDoIsNotSaidAsARefusal(t *testing.T) {
 	s := healthy()
-	s.Power.Can[0] = Can{What: "suspend", Answer: "na"}
+	s.Power.Can[0] = Can{What: "reboot", Answer: "na"}
 	c := only(t, Judge(s), "logind")
 	if c.Level != Warn || !strings.Contains(c.Detail, "not available on this machine") {
 		t.Errorf("logind = %s, want it separated from a refusal", c)
 	}
 	if strings.Contains(c.Detail, "polkit") {
-		t.Errorf("logind = %s, want no polkit advice about hardware that cannot suspend", c)
+		t.Errorf("logind = %s, want no polkit advice about hardware that cannot reboot", c)
 	}
 }
 
@@ -1423,7 +1430,7 @@ func TestALogOutWithNoSessionToEndSaysSoBeforeAnybodyPressesIt(t *testing.T) {
 
 // The healthy line names the session, because that is the reading a person
 // checks against `loginctl` when a log out ends the wrong thing - and it says
-// what the four verbs are for, since this check landed before the menu that
+// what the three enabled verbs are for, since this check landed before the menu that
 // presses them.
 func TestTheHealthyLogindLineNamesTheSessionALogOutWouldEnd(t *testing.T) {
 	c := only(t, Judge(healthy()), "logind")
@@ -1431,7 +1438,7 @@ func TestTheHealthyLogindLineNamesTheSessionALogOutWouldEnd(t *testing.T) {
 		t.Errorf("logind = %s, want the session id it would end", c)
 	}
 	if !strings.Contains(c.Detail, "power menu") {
-		t.Errorf("logind = %s, want what asks for these four", c)
+		t.Errorf("logind = %s, want what asks for these verbs", c)
 	}
 }
 
@@ -1547,7 +1554,6 @@ func privateBus(t *testing.T) string {
 // there when the probe has finished with them.
 type logindFake struct{ rows []inhibitor }
 
-func (*logindFake) CanSuspend() (string, *dbus.Error)  { return "yes", nil }
 func (*logindFake) CanReboot() (string, *dbus.Error)   { return "yes", nil }
 func (*logindFake) CanPowerOff() (string, *dbus.Error) { return "yes", nil }
 

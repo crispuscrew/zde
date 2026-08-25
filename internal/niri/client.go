@@ -134,7 +134,7 @@ func (c *Client) call(req any, what string) (json.RawMessage, error) {
 		return nil, fmt.Errorf("niri: %s: reply is not niri's: %w", what, err)
 	}
 	if rep.Err != nil {
-		return nil, fmt.Errorf("niri: %s: %s", what, *rep.Err)
+		return nil, refused(fmt.Sprintf("niri: %s: %s", what, *rep.Err))
 	}
 	if len(rep.Ok) == 0 {
 		return nil, fmt.Errorf("niri: %s: reply carried neither Ok nor Err", what)
@@ -170,7 +170,7 @@ func (c *Client) Action(action any, what string) error {
 	}
 	var handled string
 	if err := json.Unmarshal(okRaw, &handled); err != nil || handled != "Handled" {
-		return fmt.Errorf("niri: %s: not handled: %s", what, okRaw)
+		return refused(fmt.Sprintf("niri: %s: not handled: %s", what, okRaw))
 	}
 	return nil
 }
@@ -505,13 +505,7 @@ func (c *Client) FirstApps() (map[uint64]string, error) {
 // else afterwards. The channel closes when niri goes away, which is the signal
 // to reconnect.
 func (c *Client) Events() (<-chan string, error) {
-	if _, err := c.call("EventStream", "EventStream"); err != nil {
-		return nil, err
-	}
-	// No deadline from here on: an idle session is quiet for hours, and a
-	// stream that timed out because nothing happened would be a bug that
-	// looks like the compositor dying.
-	if err := c.conn.SetDeadline(time.Time{}); err != nil {
+	if err := c.subscribe(); err != nil {
 		return nil, err
 	}
 	out := make(chan string, 16)

@@ -38,9 +38,7 @@ type What string
 const (
 	// Logout ends this session and nothing else on the machine.
 	Logout What = "logout"
-	// Suspend is sleep, which is the one here that keeps the session.
-	Suspend What = "suspend"
-	Reboot  What = "reboot"
+	Reboot What = "reboot"
 	// PowerOff is off. logind spells the method PowerOff; the row says it in
 	// two words and the wire says it in one, so that a name can be typed at
 	// `zde system power` without quoting.
@@ -70,7 +68,7 @@ type Session struct {
 // decides what a reboot needs.
 //
 // logind's own rule, copied rather than invented: have_multiple_sessions
-// (src/login/logind-dbus.c, systemd v258) walks the sessions and takes only the
+// (src/login/logind-dbus.c, systemd v260.2) walks the sessions and takes only the
 // ones SESSION_CLASS_IS_INHIBITOR_LIKE names - user, user-early, user-light,
 // user-early-light (src/login/logind-session.h). A display manager's greeter
 // waiting on another vt, the manager session systemd starts for a lingering
@@ -108,23 +106,16 @@ type Block struct {
 // Stands reports whether this inhibitor stands in the way of that verb.
 //
 // The reading of logind's field belongs here because the vocabulary is
-// logind's: "sleep" covers suspend and hibernate, "shutdown" covers a reboot
-// and a power off, and both can be in the one field at once. A log out is
-// inhibited by neither - logind has no inhibitor for ending a session - so
-// nothing ever stands in its way, which is worth knowing before somebody adds
-// a warning that could never fire.
+// logind's: "shutdown" covers both reboot and power off. A log out is
+// inhibited by neither, so nothing ever stands in its way.
 func (b Block) Stands(w What) bool {
-	want := ""
 	switch w {
-	case Suspend:
-		want = "sleep"
 	case Reboot, PowerOff:
-		want = "shutdown"
 	default:
 		return false
 	}
 	for _, part := range strings.Split(b.What, ":") {
-		if part == want {
+		if part == "shutdown" {
 			return true
 		}
 	}
@@ -233,6 +224,9 @@ func (st State) HoldingIdle() []Block {
 type Manager interface {
 	// State is who is logged in and what is holding a power action off.
 	State() (State, error)
+	// Locked is logind's hint for this display session. Niri sets it only after
+	// the session-lock protocol has reached its fully locked state.
+	Locked() (bool, error)
 	// Do performs one. It answers when logind has taken the request, which for
 	// a reboot or a power off is before the machine is gone - so a refusal is
 	// something the caller can still show somebody.
@@ -256,7 +250,7 @@ var ErrNoLogind = errors.New("no logind on this machine")
 // The two are the ones that arrive naming nothing.
 //
 // A block inhibitor is the first, and it is not polkit's doing at all.
-// verify_shutdown_creds (src/login/logind-dbus.c, systemd v258) reads the
+// verify_shutdown_creds (src/login/logind-dbus.c, systemd v260.2) reads the
 // inhibitors itself, and a lock that is not block-weak ends the call there,
 // before polkit is asked about the ignore-inhibit action, with
 // BUS_ERROR_BLOCKED_BY_INHIBITOR_LOCK and the sentence "Operation denied due to
@@ -274,16 +268,16 @@ var ErrNoLogind = errors.New("no logind on this machine")
 // this arrives as an authorisation problem comes from.
 //
 // polkit is the second. zde asks non-interactively (see logind.go,
-// shutdownOrSleep) and a zde session has no polkit agent, so a refusal comes
+// shutdown) and a zde session has no polkit agent, so a refusal comes
 // back as a bare "interactive authorization required" with nothing in it about
 // which of the machine's reasons it was.
 //
 // It is worth knowing how rare that second one is on an ordinary desktop, since
 // it is easy to write a check for it that ends somebody's afternoon instead
 // (docs/verify.md, section 6). systemd's own policy gives allow_active "yes" to
-// reboot, power-off and suspend and to each of their -multiple-sessions
+// reboot and power-off and to each of their -multiple-sessions
 // variants (/usr/share/polkit-1/actions/org.freedesktop.login1.policy, systemd
-// 258), so the session in front of the screen is allowed all of those outright,
+// 260.2), so the session in front of the screen is allowed all of those outright,
 // other people logged in or not. What is refused is a session polkit does not
 // call active - a second one on another vt while somebody else's is in front,
 // one with no seat - where allow_inactive and allow_any are auth_admin_keep; a

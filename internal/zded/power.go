@@ -36,6 +36,10 @@ const EventPower = "power"
 // internal/power, because that package is logind and the lock is not.
 const powerLock = "lock"
 
+const powerSuspend = "suspend"
+
+var errSuspendUnavailable = errors.New("suspend is unavailable in ZDE v0.1; hardware suspend begins in v0.2")
+
 // PowerChoice is one row of the power menu: what it is called on the wire, what
 // it says on the screen, what it is about to cost, and whether it is asked
 // about twice.
@@ -50,9 +54,7 @@ type PowerChoice struct {
 	Label string `json:"label"`
 	Desc  string `json:"desc"`
 	// Confirm is whether this one is asked about before it happens. The three
-	// that end the session are; the lock and an unblocked suspend are not,
-	// because nothing is lost and a question in front of them is a question
-	// people learn to press through.
+	// that end the session are; the lock is not, because nothing is lost.
 	Confirm bool     `json:"confirm,omitempty"`
 	Costs   []string `json:"costs,omitempty"`
 	// Why is why this row would do nothing, in the same words the refusal uses
@@ -274,6 +276,7 @@ func (s *Server) powerChoices() []PowerChoice {
 		Name:  powerLock,
 		Label: "lock",
 		Desc:  "lock the screen, and leave everything running",
+		Why:   why,
 	}, {
 		Name:    string(power.Logout),
 		Label:   "log out",
@@ -282,12 +285,10 @@ func (s *Server) powerChoices() []PowerChoice {
 		Costs:   ending,
 		Why:     why,
 	}, {
-		Name:    string(power.Suspend),
-		Label:   "suspend",
-		Desc:    "sleep, and come back to this session",
-		Confirm: len(st.Blocking(power.Suspend)) > 0,
-		Costs:   held(st, power.Suspend),
-		Why:     why,
+		Name:  powerSuspend,
+		Label: "suspend",
+		Desc:  "hardware sleep starts in ZDE v0.2",
+		Why:   errSuspendUnavailable.Error(),
 	}, {
 		Name:    string(power.Reboot),
 		Label:   "reboot",
@@ -413,8 +414,8 @@ func others(st power.State) []string {
 }
 
 // held is what is holding this off, in the words the program gave logind. It is
-// the difference between a suspend that is refused for no visible reason and one
-// where a person can go and close the thing that is blocking it.
+// the difference between a power action that is refused for no visible reason
+// and one where a person can go and close the thing that is blocking it.
 //
 // In the program's words, and the program is any program: `systemd-inhibit
 // --who=... --why=...` takes two strings from whoever runs it, and every local
@@ -453,21 +454,16 @@ func held(st power.State, w power.What) []string {
 // well.
 func (s *Server) powerRun(name string) Response {
 	if name == powerLock {
-		// The lock is not logind's. It is running whatever this machine calls
-		// its locker, which `zde system lock` already resolves out of the apps
-		// table (cmd/zde, launch) - so this row runs the registry's own
-		// system.lock entry, which is the argv the key spawns and the argv the
-		// palette's row spawns. One path, because a second answer to "what locks
-		// this screen" is how a machine ends up with a menu that locks and a key
-		// that does not.
-		if resp := s.runAction("system.lock"); resp.Error != "" {
-			return resp
-		}
-		return ok("locking")
+		// The lock is not logind's. The key, palette and this row all reach this
+		// coordinator, so each verifies the same fresh LockedHint transition.
+		return s.lockScreen()
+	}
+	if name == powerSuspend {
+		return Response{Error: errSuspendUnavailable.Error()}
 	}
 	w := power.What(name)
 	switch w {
-	case power.Logout, power.Suspend, power.Reboot, power.PowerOff:
+	case power.Logout, power.Reboot, power.PowerOff:
 	default:
 		return Response{Error: "no power action called " + strconv.Quote(name) +
 			": `zde system power` lists them"}
@@ -494,8 +490,6 @@ func started(w power.What) string {
 	switch w {
 	case power.Logout:
 		return "logging out"
-	case power.Suspend:
-		return "suspending"
 	case power.Reboot:
 		return "rebooting"
 	default:

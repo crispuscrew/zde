@@ -202,29 +202,61 @@ func TestPaletteNamesTheProgramThatIsMissing(t *testing.T) {
 	}
 }
 
-// The three screenshots are the rows this is most worth being right about. The
-// key takes a screenshot, and niri refuses the same action asked for over the
-// socket - it wants a field the bind does not carry and the config parser fills
-// in. So the palette must not offer them, and must go on showing the key, which
-// is the thing that works. Marked live, this was the palette doing the exact
-// silent-key trick it exists to expose: pick "screenshot a region", watch the
-// surface close, and nothing happens.
-func TestPaletteWillNotClaimToTakeAScreenshot(t *testing.T) {
-	withCheatsheet(t, "capture\n  Mod+Print\tcapture.shot-full\tscreenshot the whole output\n")
+// A native whose action line carries an argument is the row this is most worth
+// being right about. The key makes the column narrower, and niri refuses the
+// same action over the socket: set-column-width wants a SizeChange and the line
+// spells the string "-10%". So the palette must not offer it, and must go on
+// showing the key, which is the thing that works. Marked live, this is the
+// palette doing the exact silent-key trick it exists to expose: pick the row,
+// watch the surface close, and nothing happens.
+//
+// The three screenshots used to be this test, for the neighbouring reason - a
+// field the bind carries and the socket has no default for. They are zde's own
+// spawns now (internal/keymap, capture), and the test below is what took their
+// place here.
+func TestPaletteWillNotClaimToRunANativeNiriRefuses(t *testing.T) {
+	withCheatsheet(t, "window\n  Mod+Ctrl+h\twindow.narrower\tmake the column narrower\n")
 	s, f, _ := paletteServer(t)
 
-	got := row(t, list(t, s), "capture.shot-full")
+	got := row(t, list(t, s), "window.narrower")
 	if got.Live {
-		t.Error("the palette offers a screenshot, and niri answers that request with an error")
+		t.Error("the palette offers a native niri answers with an error")
 	}
-	if got.Key != "Mod+Print" {
+	if got.Key != "Mod+Ctrl+h" {
 		t.Errorf("the row stopped teaching the key that does work: %+v", got)
 	}
-	if resp := s.Dispatch(Request{Method: "palette.run", Args: []string{"capture.shot-full"}}); resp.Error == "" {
-		t.Error("palette.run took a screenshot request niri would refuse")
+	if resp := s.Dispatch(Request{Method: "palette.run", Args: []string{"window.narrower"}}); resp.Error == "" {
+		t.Error("palette.run took a request niri would refuse")
 	}
 	if asked := f.performCalls(); len(asked) != 0 {
 		t.Errorf("niri was asked %v anyway", asked)
+	}
+}
+
+// And the other half of that change: the screenshots are reachable by name now.
+//
+// They were natives the palette had to refuse, so the one surface that answers
+// "what can this desktop do" listed three screenshots and said the key was the
+// only way to press them. They spawn zde, so the palette runs them like any
+// other row - and it must run them rather than perform them, because there is no
+// bare niri action to perform: the fields go on the wire from internal/capture.
+func TestPaletteRunsTheScreenshots(t *testing.T) {
+	withCheatsheet(t, "capture\n  Mod+Print\tcapture.shot-full\tscreenshot the whole output\n")
+	s, f, sp := paletteServer(t)
+
+	got := row(t, list(t, s), "capture.shot-full")
+	if !got.Live {
+		t.Errorf("the palette still says a screenshot cannot be run by name: %+v", got)
+	}
+	if resp := s.Dispatch(Request{Method: "palette.run", Args: []string{"capture.shot-full"}}); resp.Error != "" {
+		t.Errorf("palette.run capture.shot-full: %s", resp.Error)
+	}
+	started := sp.all()
+	if len(started) != 1 || started[0][len(started[0])-1] != "shot-full" {
+		t.Errorf("the palette started %v, want one zde capture shot-full", started)
+	}
+	if asked := f.performCalls(); len(asked) != 0 {
+		t.Errorf("niri was asked %v: a screenshot is not a niri action zde performs", asked)
 	}
 }
 

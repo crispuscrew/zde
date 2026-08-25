@@ -1,6 +1,6 @@
 // The power menu (docs/model.md, section 6: system.power). Mod+Shift+x asks
-// zded for the five things that end a session or a machine, and this appears
-// with them on it: lock, log out, suspend, reboot, power off.
+// zded for five rows: lock, log out, v0.1's unavailable suspend boundary,
+// reboot and power off.
 //
 // Picker.qml's shape rather than the palette's, because there is nothing to
 // type: five rows are a list you point at, and a text field would be a focused
@@ -10,7 +10,7 @@
 // things nobody can get back, so choosing one does not run it - it puts what is
 // about to be lost on the screen and waits for a y. The lines are zded's, not
 // this file's: how many windows close, what the notification center is holding
-// that the queue never got, who else is logged in, what is holding sleep. A
+// that the queue never got, and who else is logged in. A
 // confirmation that only asked "are you sure" would teach people to press
 // through it, which is the habit this surface exists not to build.
 //
@@ -143,9 +143,8 @@ PanelWindow {
 
     // A digit goes to that row and stops there. It is a way of moving and not a
     // way of running: choose() runs a row outright when it has nothing to
-    // confirm, so a digit wired to it made `1` lock the screen and `3` suspend
-    // the machine from one press - on the one surface built around no single
-    // keypress ending anything.
+    // confirm, so a digit wired to it made `1` lock the screen and could make a
+    // later row end the machine from one press.
     function moveTo(i) {
         if (i < 0 || i >= menu.rows.length || menu.asking !== "")
             return;
@@ -169,7 +168,7 @@ PanelWindow {
 
     // y, on a row that asked. Only ever the row that was asked about: the name
     // goes with the answer, so a list that changed underneath cannot turn a yes
-    // to a suspend into a yes to a power off.
+    // to one action into a yes to a power off.
     function confirm() {
         if (menu.asking === "")
             return;
@@ -195,7 +194,7 @@ PanelWindow {
     // What became of it, from the shell. Empty means it was taken, and the
     // surface has no more reason to be on the screen; anything else is zded's
     // own words about why nothing happened - a locker this machine does not
-    // have, an inhibitor holding sleep, another person logged in - which is the
+    // have, unavailable hardware sleep, another person logged in - which is the
     // half a keypress cannot say.
     function ran(error) {
         menu.running = false;

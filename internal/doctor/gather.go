@@ -143,9 +143,9 @@ const (
 )
 
 // Logind is systemd-logind on the system bus, and whether this session may use
-// it. It is the machine half of the power menu: lock, log out, suspend, reboot
-// and power off, of which the last four are logind's - TerminateSession,
-// Suspend, Reboot and PowerOff on org.freedesktop.login1.Manager.
+// it. It is the machine half of the power menu: log out, reboot and power off,
+// which are TerminateSession, Reboot and PowerOff on
+// org.freedesktop.login1.Manager. Suspend is deliberately unavailable in v0.1.
 //
 // It is checked whether or not there is a menu to press, and it landed before
 // there was one on purpose: "the power menu will refuse everything on this
@@ -165,8 +165,8 @@ type Logind struct {
 	// from a question it never got an answer to.
 	Err error
 	// Absent is the bus answering that nobody holds logind's name. That one is
-	// the verdict: there is no logind here, so none of the four verbs has
-	// anywhere to go, and it stands for all four at once.
+	// the verdict: there is no logind here, so none of the three verbs has
+	// anywhere to go, and it stands for all three at once.
 	Absent bool
 	// Session is the logind session a log out would end, and empty when logind
 	// can name none - which is a log out that has to refuse rather than guess at
@@ -174,8 +174,7 @@ type Logind struct {
 	Session string
 	// SessionErr is why logind could not be asked which session this is.
 	SessionErr error
-	// Can is one entry per verb logind has a question for, in the order the menu
-	// would list them.
+	// Can is one entry per enabled verb logind has a question for, in menu order.
 	Can []Can
 	// Holds is what logind says is holding this session's idle timers off: its
 	// own "idle" inhibitors, and nothing else. It is deliberately not called
@@ -233,7 +232,7 @@ type Hold struct {
 // authentication first).
 type Can struct {
 	// What is the verb as a person would say it, since that is what the line
-	// prints. The method behind it is CanSuspend, CanReboot, CanPowerOff.
+	// prints. The method behind it is CanReboot or CanPowerOff.
 	What   string
 	Answer string
 	Err    error
@@ -261,26 +260,33 @@ type Unit struct {
 	Name  string
 	State string // what `is-active` printed: active, inactive, failed, ...
 	Err   error  // systemctl could not be asked at all
-	// Optional is a unit only some machines install. `is-active` says
-	// "inactive" for a unit that was never written as well as for one that has
-	// not run, so absence cannot be told from idleness here and is not warned
-	// about. Failure still is (see units).
+	// Optional is a unit whose ordinary state may be inactive, either because an
+	// option does not install it or because an event has not started it. Failure
+	// still is a warning (see units).
 	Optional bool
+	// Option is what installs or starts an optional unit, so an inactive row says
+	// why that state is expected instead of blaming the wrong feature.
+	Option string
 }
 
-// loginUnits are the user units a zde login starts (nix/home.nix), and the list
-// doctor asks systemd about. zde-bar as well as zded, because a bar that is not
-// running is the difference between the picker and a list printed at a key.
-// zde-report because a snapshot unit that failed is otherwise reported by
-// nothing: the snapshot is what it failed to write.
+// loginUnits are the user units a zde login installs or starts (nix/home.nix),
+// and the list doctor asks systemd about. zde-bar as well as zded, because a bar
+// that is not running is the difference between the picker and a list printed
+// at a key. zde-idle owns the strict lock and display-power policy. Its lock
+// attempts are generation-bound, on-demand units that retry until resumed, so
+// they have no terminal state for doctor to diagnose. zde-report is included
+// because a snapshot unit that failed is otherwise reported by nothing.
 //
 // Checked against the home module rather than kept in step by hand
 // (doctor_test.go).
 var loginUnits = []Unit{
 	{Name: "zded"},
 	{Name: "zde-bar"},
+	{Name: "zde-idle"},
 	// Behind zde.debug, so most machines do not install it.
-	{Name: "zde-report", Optional: true},
+	{Name: "zde-report", Optional: true, Option: "zde.debug"},
+	// Behind the explicit continuous-capture opt-in (nix/home.nix).
+	{Name: "zde-replay", Optional: true, Option: "zde.capture.replay.enable"},
 }
 
 // Podman is whether rootless podman works for this user, which is what layer 2
@@ -382,7 +388,7 @@ func gather(a audience) Session {
 		s.Notify, s.NotifyErr = attn.Owner()
 	}
 	for _, u := range loginUnits {
-		s.Units = append(s.Units, unitState(u.Name, u.Optional))
+		s.Units = append(s.Units, unitState(u.Name, u.Optional, u.Option))
 	}
 	s.Podman = probePodman()
 	s.Lock = probeLocker()
@@ -555,7 +561,7 @@ func resolves(resolver string, all apps.Apps, app string, a audience) (refused, 
 	// `zcr where` is the question because zcr answers it only for an app it
 	// has: the state directory and the bus socket it prints come out of that
 	// app's own config, so it refuses a name it cannot load rather than
-	// guessing - `no app "x" defined (try: zc list)` (zinc 0.9.1, cmdWhere).
+	// guessing - `no app "x" defined (try: zc list)` (zinc 0.10.1, cmdWhere).
 	//
 	// The bare name and not app@instance. Whether an app is defined is a fact
 	// about the app, so the instance would only add ways for this to fail on
@@ -606,12 +612,12 @@ func ask(path string) (*zded.Status, error) {
 // unitState reads one unit. is-active exits non-zero for everything but
 // active and prints the state either way, so the word on stdout is the answer
 // and the exit status is not.
-func unitState(name string, optional bool) Unit {
+func unitState(name string, optional bool, option string) Unit {
 	out, err := run(probeTimeout, "systemctl", "--user", "is-active", name)
 	if state := strings.TrimSpace(out); state != "" {
-		return Unit{Name: name, State: state, Optional: optional}
+		return Unit{Name: name, State: state, Optional: optional, Option: option}
 	}
-	return Unit{Name: name, Err: err, Optional: optional}
+	return Unit{Name: name, Err: err, Optional: optional, Option: option}
 }
 
 // probePodman asks podman one field. `podman info` is what surfaces the way
@@ -686,11 +692,10 @@ const (
 // connect that comes first is bounded separately (internal/bus).
 const askFor = 2 * time.Second
 
-// probeLogind asks logind the four questions a power menu's four verbs turn
-// into. Three of them logind answers directly - CanSuspend, CanReboot,
-// CanPowerOff, which is polkit's verdict for this session rather than a guess
-// at one - and the fourth, a log out, is whether logind can name a session to
-// end at all.
+// probeLogind asks logind the three questions the enabled power verbs turn into.
+// It answers CanReboot and CanPowerOff directly, which is polkit's verdict for
+// this session rather than a guess at one; a log out asks whether logind can
+// name a session to end at all.
 //
 // A machine with no logind is answered rather than skipped: containers and
 // build sandboxes have none, and so does a session where the system bus is
@@ -719,7 +724,7 @@ func probeLogind(a audience) Logind {
 	}
 	if !owned {
 		// A bus that answered, about a machine that has no logind. What that
-		// means for the four verbs is doctor's to say (doctor.go, logind); what
+		// means for the three verbs is doctor's to say (doctor.go, logind); what
 		// is recorded here is that the question was put and came back.
 		return Logind{Absent: true}
 	}
@@ -731,7 +736,6 @@ func probeLogind(a audience) Logind {
 	// (locker), which is the one place on this machine that knows what locks
 	// this screen.
 	for _, verb := range []struct{ what, method string }{
-		{"suspend", "CanSuspend"},
 		{"reboot", "CanReboot"},
 		{"power off", "CanPowerOff"},
 	} {

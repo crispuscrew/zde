@@ -6,13 +6,13 @@ signing it) automates the first half of this; the runbook is what it automates.
 
 ## What is pinned
 
-Everything, in `flake.lock`. Two inputs decide what a machine runs:
+Everything, in `flake.lock`. Three inputs decide what a machine runs:
 
 | Input | Tracks | Moves when |
 |---|---|---|
 | `nixpkgs` | `nixos-26.05`, the current stable | you bump it |
 | `home-manager` | `release-26.05`, matched to nixpkgs | with nixpkgs |
-| `zinc` | a tag, `v0.9.1` | you edit the tag |
+| `zinc` | a tag, `v0.10.1` | you edit the tag |
 
 Nothing floats. `nixos-26.05` is a branch that receives backports, so the
 niri in it can change within the release - but a machine only sees any of it
@@ -25,6 +25,13 @@ decide about. `nix flake update zinc` on a tag re-resolves to the same commit,
 so moving it means editing the URL in `flake.nix` - and in
 `templates/host/flake.nix`, which is the pin a real machine actually has. It
 follows this repo's nixpkgs, so a machine has one and not two.
+
+Zinc 0.10.0 moves app definitions to schema v3. Before applying this update,
+migrate every file under `~/.config/zinc/apps`: set `SchemaVersion: 3`, replace
+the old audio booleans with `Playback`, `Microphone`, and `Monitor`, and express
+each `Configs` entry as a `BundlePath`, `InnerMount`, and optional `Writable`.
+Zinc rejects v2 and unknown keys rather than silently ignoring them; its 0.10.0
+changelog has the full migration and enforcement details.
 
 **zde does not yet offer what it asks for.** This repository has no tags, so
 `templates/host/flake.nix` pins zde to the `dev` branch - named there rather
@@ -51,6 +58,12 @@ Within the same releases, security and backport updates:
 nix flake update                 # every input
 nix flake update nixpkgs         # or just one
 ```
+
+BlueZ currently has one package-level exception: `nix/bluez.nix` appends the
+exact upstream AVRCP parser fix `bd898962` and its corrective follow-up
+`58088149`, with content hashes, for CVE-2026-75032. Keep them ordered and
+remove the override only after the pinned BlueZ source contains both commits;
+the follow-up repairs a premature length read introduced by the first patch.
 
 To a new NixOS release, twice a year: edit both URLs in `flake.nix` to the new
 release (`nixos-XX.YY` and `release-XX.YY`), then `nix flake update`. Seven

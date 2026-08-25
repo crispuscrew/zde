@@ -121,8 +121,7 @@ not spent rediscovering that.
 
 Apps (wherever they live) follow the same shape under `apps/<name>/`:
 
-- `<name>.yaml` - the app definition (schema v2, see
-  `../hyprzinc/common/domain/schema/schema.go`).
+- `<name>.yaml` - the Zinc app definition (`SchemaVersion: 3`).
 - `configs/` - files mounted into the container at the paths the app expects.
 - `<name>.png` - the app icon, shipped with the app so it resolves on any host
   (the containerized program is never installed on the host). zde registers these

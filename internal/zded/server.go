@@ -178,6 +178,8 @@ type Status struct {
 	// mode is: with the bar gone, "why is there no bar" has one cheap answer,
 	// and the person asking it cannot read the bar to find out.
 	Zen bool `json:"zen"`
+	// Film is the bounded idle-policy exception and its expiry.
+	Film Film `json:"film"`
 	// Zinc says whether layer 2's runner is on the session's PATH (docs/
 	// delivery.md). A zde machine without it can run nothing sandboxed, which
 	// is most of what a zde machine is for - and the session's PATH is not the
@@ -340,6 +342,28 @@ type Server struct {
 	// logins).
 	dialing *dial
 
+	// Locking is serialized so every successful call observes its own fresh
+	// false-to-true LockedHint transition (locker.go).
+	lockMu   sync.Mutex
+	locker   lockerControl
+	lockWait time.Duration
+
+	// Film is a bounded exception to automatic idle policy, never to an explicit
+	// lock (film.go). Its own lock keeps its timer callback out of the server lock.
+	filmMu     sync.Mutex
+	filmUntil  time.Time
+	filmTimer  *time.Timer
+	filmFor    time.Duration
+	filmRetry  time.Duration
+	filmPath   string
+	filmClosed bool
+	removeFilm func(string) error
+
+	// Injectable only so the declarative laptop marker can be tested without
+	// reading the host's /etc (idle_policy.go).
+	idleDisplayMu sync.Mutex
+	laptopPath    string
+
 	// The subprocess runs in flight: the tiers (ask.go) and the desk launches
 	// (startApps). A run is a subprocess in a process group of its own,
 	// deliberately, so that stopping it stops what it started - and that same
@@ -418,15 +442,21 @@ func New(version string, jrn *journal.Journal, compositor Compositor, desks Desk
 	}
 	runCtx, runStop := context.WithCancel(context.Background())
 	return &Server{
-		version:  version,
-		jrn:      jrn,
-		niri:     compositor,
-		desks:    desks,
-		launch:   zinc.Run,
-		spawn:    spawnDetached,
-		openLink: link.Open,
-		runCtx:   runCtx,
-		runStop:  runStop,
+		version:    version,
+		jrn:        jrn,
+		niri:       compositor,
+		desks:      desks,
+		launch:     zinc.Run,
+		spawn:      spawnDetached,
+		locker:     systemdLocker(),
+		lockWait:   lockReadyFor,
+		filmFor:    filmMaximum,
+		filmRetry:  filmRetryFor,
+		removeFilm: removeFilmState,
+		laptopPath: "/etc/zde/laptop",
+		openLink:   link.Open,
+		runCtx:     runCtx,
+		runStop:    runStop,
 		// Neither radio is dialled here: opening a system bus connection at
 		// startup would be zded doing that work on every machine, including the
 		// ones that have no radio and never asked for one (bluetooth.go, radio;
@@ -478,6 +508,9 @@ func (s *Server) Listen(path string) error {
 	s.mu.Lock()
 	s.ln = ln
 	s.mu.Unlock()
+	if err := s.restoreFilm(filepath.Join(filepath.Dir(path), "film.json")); err != nil {
+		log.Printf("zded: unsafe Film state; locking instead: %s", err)
+	}
 	return nil
 }
 
@@ -516,6 +549,7 @@ func (s *Server) Serve() error {
 // has to be able to end them too whichever way it got here.
 func (s *Server) Close() error {
 	s.closeRadio()
+	s.closeFilm()
 	// And the popup pump, once and never twice: Close is reached from a signal
 	// handler and from the ordinary way out, and closing a closed channel is a
 	// panic on the last line of a session. It is not under s.mu either, because
@@ -1163,6 +1197,11 @@ func (s *Server) Dispatch(req Request) Response {
 		default:
 			return Response{Error: "system.power takes one action name, or none to open the menu"}
 		}
+	case "system.lock":
+		if len(req.Args) != 0 {
+			return Response{Error: "system.lock takes no arguments"}
+		}
+		return s.lockScreen()
 	case "system.lock-preset":
 		// No argument, and the desk is deliberately not one. This is the key
 		// pressed on the way out of a room, and a desk name typed after it is a
@@ -1177,10 +1216,15 @@ func (s *Server) Dispatch(req Request) Response {
 		// hold from here. zde cannot drop somebody else's inhibitor and would
 		// not want a key that did - this is a reading, and the thing to do about
 		// it is to go and close what is holding it.
+		if len(req.Args) == 1 {
+			return s.idleAction(req.Args[0])
+		}
 		if len(req.Args) != 0 {
-			return Response{Error: "system.idle takes no arguments"}
+			return Response{Error: "system.idle takes one action, or no arguments to list logind idle holds"}
 		}
 		return s.idleHold()
+	case "system.film":
+		return s.film(req.Args)
 	case "net.status":
 		if len(req.Args) != 0 {
 			return Response{Error: "net.status takes no arguments"}
@@ -2903,6 +2947,7 @@ func (s *Server) status() Status {
 	st.Notifications = s.watcher() != nil
 	st.Mode = string(s.mode())
 	st.Zen = s.zenState()
+	st.Film = s.filmState()
 	// Looked up per call rather than remembered from startup. PATH points at
 	// profile directories whose contents change under a running daemon, and
 	// zded outlives the switch that installs zinc - so asking every time is

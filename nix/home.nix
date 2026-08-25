@@ -14,9 +14,17 @@ let
   zdeConfig = pkgs.callPackage ./zde-config.nix { };
   zdeTools = pkgs.callPackage ./zde.nix { };
 
+  replayRecorder = pkgs.callPackage ./replay.nix { };
+
+  hypridle = pkgs.callPackage ./hypridle.nix { };
+
+  lockCommand = pkgs.writeShellScript "zde-lock" ''
+    exec ${lib.escapeShellArgs cfg.apps.lock}
+  '';
+
   # Named once because two defaults want it: the terminal itself, and the help
   # key, which is a pager in a terminal.
-  defaultTerminal = [ (lib.getExe pkgs.foot) ];
+  defaultTerminal = [ (lib.getExe pkgs.kitty) ];
   zdeShell = pkgs.callPackage ./shell.nix { };
 
   # Whether anything under zde.niri.xkb was set. niri merges a later input
@@ -104,6 +112,24 @@ in
       '';
     };
 
+    capture.replay.enable = lib.mkEnableOption "the 30-second screen replay buffer" // {
+      description = ''
+        Keep the last 30 seconds of the screen encoded in RAM and make `zde
+        capture replay-clip` save them under ~/Videos/Replays.
+
+        This is off by default because enabling it continuously captures the
+        screen and spends a GPU encoder plus about 75 MiB of RAM at the fixed
+        20 Mbit/s ceiling. It records video only: sound and the microphone are
+        separate privacy decisions and are never enabled here.
+
+        Capture goes through Niri's portal, never direct KMS, so
+        `block-out-from "screen-capture"` remains in force. The first start may
+        open the portal's source chooser; the approved source is restored on
+        later sessions. Cancelling that chooser leaves the service stopped and
+        it does not restart into another prompt.
+      '';
+    };
+
     niri.xkb = {
       layout = lib.mkOption {
         type = lib.types.str;
@@ -136,10 +162,9 @@ in
       type = lib.types.attrsOf (lib.types.listOf lib.types.str);
       default = { };
       example = {
-        terminal = [ "alacritty" ];
+        terminal = [ "kitty" ];
         editor = [
-          "foot"
-          "-e"
+          "kitty"
           "hx"
         ];
       };
@@ -163,11 +188,11 @@ in
         it). Without --exec zcr prints the launch plan and exits, which from a
         keybind looks exactly like nothing happening.
 
-        No instance in that argv: zinc 0.8.1 addresses an instance as
-        `browser@work` and `zcr run` does not take one yet (`run --instance` is
-        0.8.2), so a desk manifest's instance is declared and not yet threaded
-        through a launch. `zde desk apps` prints the address and where zinc says
-        that instance keeps its state.
+        An instance goes in the address as `browser@work` (or in `--instance
+        work`). Desk launches do not use this fixed logical-name argv: zde joins
+        the app and instance from the manifest and gives that address to zcr.
+        `zde desk apps` prints the same address and where zinc says that instance
+        keeps its state.
 
         The defaults below are host commands because a machine has to be usable
         before it has any apps defined.
@@ -188,16 +213,22 @@ in
         where you are: `zde system lock` and `system.lock-preset` are then the
         same thing, said differently.
 
-        It never refuses to lock. A name that is unset, names a desk that is
-        gone, or names a desk declared `private: true` - which is the one desk
-        an unlock should not reveal - locks where you are and says which of
-        those it was, and so does a desks directory holding a manifest that will
-        not parse, since nothing can then say whether the preset is private. The
-        one case that refuses is a machine with no locker at
-        all - `zde.apps.lock`, which this module defaults to swaylock, so it
-        takes an override or a zde built by hand - and it refuses before
-        anything moves: a session walked off its desk and left unlocked is
-        worse than a key that does nothing.
+        A preset error never prevents the lock. A name that is unset, gone or
+        declared `private: true` - which is the one desk an unlock should not
+        reveal - locks where you are and says which case it was, and so does a
+        desks directory holding a manifest that will not parse. Lock readiness
+        itself can still refuse. A missing locker or unavailable or stale
+        `LockedHint` is found before anything moves; process exit or a missing
+        transition is reported after the attempted switch.
+      '';
+    };
+
+    idle.oled = lib.mkEnableOption "idle display power-off on an OLED desktop monitor" // {
+      description = ''
+        Allow Hypridle to power monitors off after five idle minutes even when
+        this machine has no laptop battery. Leave this off for ordinary desktop
+        panels; the system-layer `zde.laptop.enable` declaration enables the
+        same policy through its root-owned marker.
       '';
     };
 
@@ -357,8 +388,8 @@ in
   config = lib.mkIf cfg.enable {
     # A terminal, and the name the keymap uses for one. Defaults rather than
     # requirements: a desktop whose Mod+t does nothing is not one anybody can
-    # start using, and foot is small, starts without a GPU, and is what the live
-    # image and the tests already run. Name another and this stops being used.
+    # start using. Kitty is native Wayland, GPU-rendered, and carries the graphics
+    # protocol terminal applications use. Name another and this stops being used.
     zde.apps = {
       terminal = lib.mkDefault defaultTerminal;
       # No editor default, on purpose. Every other default here is a program
@@ -384,19 +415,14 @@ in
       #
       # A machine with an editor says so in one line:
       #
-      #   zde.apps.editor = [ "foot" "-e" "hx" ];
+      #   zde.apps.editor = [ "kitty" "hx" ];
       #   zde.apps.editor = [ "zcr" "run" "nvim" "--exec" ];  # when zinc has it
       # A machine that leaves the house needs this working on its first day,
       # and it is one of the few keys whose absence is discovered at the worst
-      # possible moment. swaylock because niri's own module already configures
-      # PAM for it (nixpkgs, programs/wayland/wayland-session.nix), so it can
-      # actually authenticate: a locker that cannot is a locker that locks you
-      # out rather than locking your screen.
+      # possible moment. Hyprlock is configured below; layer 0 provides its PAM
+      # service so it can authenticate rather than merely cover the screen.
       lock = lib.mkDefault [
-        (lib.getExe pkgs.swaylock)
-        "--daemonize"
-        "--ignore-empty-password"
-        "--show-failed-attempts"
+        (lib.getExe pkgs.hyprlock)
       ];
       # What Mod+slash opens. A key that shows you the keys has to draw
       # somewhere, and until the shell has a surface for it the somewhere is a
@@ -411,8 +437,8 @@ in
       # zde.apps.help too - `zde app list` prints both argvs side by side,
       # which is where that is noticed.
       #
-      # -e is how every terminal worth the name takes a command. The pager is
-      # pointed straight at the file `zde keys` prints rather than at
+      # Kitty takes the command after its own options. The pager is pointed
+      # straight at the file `zde keys` prints rather than at
       # `zde keys | less`, because a pipe needs a shell, and a shell inside a
       # default argv is a quoting problem waiting for somebody's terminal to be
       # the one that disagrees.
@@ -422,13 +448,61 @@ in
       help = lib.mkDefault (
         defaultTerminal
         ++ [
-          "-e"
           (lib.getExe pkgs.less)
           "-R"
           "${config.xdg.configHome}/zde/keymap.txt"
         ]
       );
     };
+
+    # One Kitty process is one niri window. There is no second layer of tabs or
+    # splits to manage, and no remote-control socket to cross the host/container
+    # boundary. Safe text and scrollback shortcuts are put back after clearing
+    # Kitty's window-management bindings.
+    programs.kitty = {
+      enable = true;
+      shellIntegration.mode = "disabled";
+      keybindings = {
+        "ctrl+shift+c" = "copy_to_clipboard";
+        "ctrl+shift+v" = "paste_from_clipboard";
+        "ctrl+shift+up" = "scroll_line_up";
+        "ctrl+shift+down" = "scroll_line_down";
+        "ctrl+shift+page_up" = "scroll_page_up";
+        "ctrl+shift+page_down" = "scroll_page_down";
+        "ctrl+shift+home" = "scroll_home";
+        "ctrl+shift+end" = "scroll_end";
+      };
+      settings = {
+        linux_display_server = "wayland";
+        allow_remote_control = false;
+        listen_on = "none";
+        allow_cloning = false;
+        clear_all_shortcuts = true;
+        enabled_layouts = "stack";
+        tab_bar_style = "hidden";
+        startup_session = "none";
+        confirm_os_window_close = 0;
+
+        # The terminal uses the same dark surface and status colours as ZDE's
+        # own shell. Theme changes stay declarative here; they do not need a
+        # Kitty control socket.
+        background = "#11121a";
+        foreground = "#c9ccd4";
+        cursor = "#e5a23d";
+        cursor_text_color = "#11121a";
+        selection_background = "#2a2c37";
+        selection_foreground = "#c9ccd4";
+        url_color = "#9aa0ac";
+        active_border_color = "#e5a23d";
+        inactive_border_color = "#2a2c37";
+        bell_border_color = "#e5484d";
+      };
+    };
+
+    # Zinc's terminal applications run their payload through this host Kitty.
+    # It is an executable, not a socket: Zinc remains the isolation boundary and
+    # no Kitty control channel is mounted into a container.
+    systemd.user.sessionVariables.ZINC_TERMINAL = lib.mkDefault (lib.getExe pkgs.kitty);
 
     # The niri config, and the binds it includes. Regenerated on every switch,
     # so keymap.yaml is the only place binds are edited (the file itself says
@@ -477,6 +551,80 @@ in
       # look at a missing file and guess.
       "zde/lock.json".text = builtins.toJSON { preset = cfg.lock.preset; };
 
+      # The system layer supplies the laptop declaration; this file is only the
+      # explicit desktop OLED override.
+      "zde/idle.json".text = builtins.toJSON { oled = cfg.idle.oled; };
+
+      "hypr/hyprlock.conf".text = ''
+        general {
+            hide_cursor = true
+        }
+
+        background {
+            monitor =
+            color = rgb(11121a)
+        }
+
+        label {
+            monitor =
+            text = Locked by ZDE
+            color = rgb(c9ccd4)
+            font_family = monospace
+            font_size = 16
+            position = 0, 90
+            halign = center
+            valign = center
+        }
+
+        label {
+            monitor =
+            text = $TIME
+            color = rgb(e5a23d)
+            font_family = monospace
+            font_size = 42
+            position = 0, 150
+            halign = center
+            valign = center
+        }
+
+        input-field {
+            monitor =
+            size = 420, 56
+            position = 0, 0
+            halign = center
+            valign = center
+            inner_color = rgb(1b1d27)
+            outer_color = rgb(2a2c37)
+            font_color = rgb(c9ccd4)
+            check_color = rgb(e5a23d)
+            fail_color = rgb(e5484d)
+            capslock_color = rgb(e5a23d)
+            outline_thickness = 2
+            dots_center = true
+            placeholder_text = Password
+            fail_text = $FAIL ($ATTEMPTS)
+        }
+      '';
+
+      "hypr/hypridle.conf".text = ''
+        general {
+            lock_cmd = ${zdeTools}/bin/zde system lock
+        }
+
+        listener {
+            timeout = 180
+            on-timeout = ${pkgs.coreutils}/bin/timeout --kill-after=1s 2s ${pkgs.systemd}/bin/systemctl --user --no-block start "zde-idle-lock@$HYPRIDLE_GENERATION.service"
+            on-resume = ${pkgs.coreutils}/bin/timeout --kill-after=1s 2s ${pkgs.systemd}/bin/systemctl --user --no-block stop 'zde-idle-lock@*.service'
+            ignore_inhibit = true
+        }
+
+        listener {
+            timeout = 300
+            on-timeout = ${pkgs.coreutils}/bin/timeout --kill-after=1s 2s ${zdeTools}/bin/zde system idle display-off
+            on-resume = ${pkgs.coreutils}/bin/timeout --kill-after=1s 2s ${zdeTools}/bin/zde system idle display-on
+        }
+      '';
+
       # And which desk panic hides behind, written on the same terms and for the
       # same reason: a file that is there and says nothing is what lets the key
       # name the option to set instead of guessing at a missing file.
@@ -513,8 +661,8 @@ in
     # which zde does not pin, package or install today.
     home.packages = [
       zdeTools # zded, zde
-      pkgs.foot # the default terminal, and what Mod+t runs unless told otherwise
-      pkgs.swaylock # the default screen lock (Mod+Ctrl+semicolon)
+      pkgs.hyprlock # the default screen lock (Mod+Ctrl+semicolon)
+      hypridle # strict input-idle lock and conditional display power-off
       pkgs.brightnessctl # system.brightness-up/dn
       pkgs.less # the pager Mod+slash reads the keymap in
       # wl-paste and wl-copy, which are how zded watches the clipboard and puts
@@ -523,12 +671,22 @@ in
       # Without them the daemon says so once in its log and the history stays
       # empty, and `zde clip history` says which of the two empty it is.
       pkgs.wl-clipboard
+      # The region capture (Mod+Shift+s): slurp draws the rectangle, grim takes
+      # the pixels through wlr-screencopy. niri has its own region picker and it
+      # is deliberately not used, because it saves the frame that goes to the
+      # monitor - so a window carrying `block-out-from "screen-capture"` is in
+      # the file, while every other capture path on this desktop blacks it out
+      # (internal/capture/region.go). Without these two `zde capture shot-region`
+      # refuses and says which is missing; it never falls back to the picker.
+      pkgs.grim
+      pkgs.slurp
       pkgs.wireplumber # wpctl, for audio.*
       # The bar runs from the store path in its unit, so this is not what
       # starts it. It is `qs log` and `qs list`, which are the only way to find
       # out why a bar is not on screen.
       pkgs.quickshell
-    ];
+    ]
+    ++ lib.optionals cfg.capture.replay.enable [ replayRecorder ];
 
     # One systemd.user.services block rather than an assignment per unit, which
     # is what statix asks for once there are three of them - the same rule
@@ -591,6 +749,106 @@ in
           # seconds, 1s spacing gave up at 5.
           Restart = "on-failure";
           RestartSec = 1;
+        };
+        Install.WantedBy = [ "graphical-session.target" ];
+      };
+
+      zde-idle = {
+        Unit = {
+          Description = "zde idle policy: lock, then conditionally power displays off";
+          Documentation = "https://github.com/crispuscrew/zde";
+          PartOf = [ "graphical-session.target" ];
+          After = [
+            "graphical-session.target"
+            "zded.service"
+          ];
+          Wants = [ "zded.service" ];
+        };
+        Service = {
+          ExecStart = "${lib.getExe hypridle}";
+          Restart = "on-failure";
+          RestartSec = 1;
+        };
+        Install.WantedBy = [ "graphical-session.target" ];
+      };
+
+      # The lock surface belongs to the user manager, not zded's cgroup, so a
+      # daemon restart cannot uncover the session.
+      zde-lock = lib.mkIf (cfg.apps.lock != [ ]) {
+        Unit = {
+          Description = "zde managed screen locker";
+          Documentation = "https://github.com/crispuscrew/zde";
+          PartOf = [ "graphical-session.target" ];
+          After = [ "graphical-session.target" ];
+        };
+        Service = {
+          Type = "exec";
+          ExecStart = "${lockCommand}";
+          TimeoutStopSec = 5;
+        };
+      };
+
+      # Hypridle names each source-ordered idle generation. Failed lock attempts
+      # keep retrying until the ordered resume callback stops every older one.
+      "zde-idle-lock@" = {
+        Unit = {
+          Description = "zde idle lock attempt for generation %i";
+          Documentation = "https://github.com/crispuscrew/zde";
+          PartOf = [ "graphical-session.target" ];
+          # StopPropagatedFrom is stop-only: restarting Hypridle tears an old
+          # generation down instead of restarting it after the new parent.
+          StopPropagatedFrom = [ "zde-idle.service" ];
+          After = [
+            "zde-idle.service"
+            "zded.service"
+          ];
+          Wants = [ "zded.service" ];
+          StartLimitIntervalSec = 0;
+        };
+        Service = {
+          Type = "oneshot";
+          ExecStart = "${zdeTools}/bin/zde system idle lock";
+          Restart = "on-failure";
+          RestartSec = 10;
+        };
+      };
+
+      # Replay is an explicit opt-in because this process continuously sees the
+      # screen and holds an encoder. Portal capture is the load-bearing choice:
+      # direct KMS bypasses niri's render target and with it capture-block.
+      zde-replay = lib.mkIf cfg.capture.replay.enable {
+        Unit = {
+          Description = "zde replay buffer: the last 30 seconds of the screen";
+          Documentation = "https://github.com/crispuscrew/zde";
+          PartOf = [ "graphical-session.target" ];
+          After = [ "graphical-session.target" ];
+        };
+        Service = {
+          ExecStartPre = "${pkgs.coreutils}/bin/mkdir -p %h/Videos/Replays";
+          ExecStart = lib.concatStringsSep " " [
+            "${replayRecorder}/bin/gpu-screen-recorder"
+            "-v no"
+            "-w portal"
+            "-restore-portal-session yes"
+            "-portal-session-token-filepath %h/.config/zde/replay-portal-token"
+            "-f 60"
+            "-r 30"
+            "-c mp4"
+            "-bm cbr"
+            "-q 20000"
+            "-exclude-metadata yes"
+            "-o %h/Videos/Replays"
+            "-ipc %t/zde-replay.sock"
+          ];
+          KillSignal = "SIGINT";
+          TimeoutStopSec = 10;
+          UMask = "0077";
+          Restart = "on-failure";
+          RestartPreventExitStatus = "60";
+          RestartSec = 1;
+          # GSR reserves exit 60 for declining the portal chooser, so that
+          # ordinary failures restart without reopening a chooser somebody
+          # explicitly dismissed.
         };
         Install.WantedBy = [ "graphical-session.target" ];
       };

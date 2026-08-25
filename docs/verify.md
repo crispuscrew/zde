@@ -133,11 +133,17 @@ is that the bar and the CLI call each of them absent instead of guessing.
 
 ### Then
 
-Boot the stick, log in at the greeter as **zde / zde**, and open a terminal
-with **Mod+Return** (Mod is the Super/Windows key). That bind belongs to the
-image, not to zde: every launch key in the keymap spawns a `zde` subcommand
-that lands with the shell, so without it the session has no way to type into
-it.
+Boot the stick, log in at the greeter as **zde / zde**, and open Kitty with
+**Mod+t** (Mod is the Super/Windows key). The live image keeps **Mod+Return** as
+a second route through the host-config seam; both open one Kitty surface in one
+niri window.
+
+Press **Ctrl+Shift+t** and **Ctrl+Shift+Enter** in Kitty: neither creates a tab
+or split, while **Ctrl+Shift+c** and **Ctrl+Shift+v** still copy and paste.
+`kitten icat --detect-support` reports the graphics protocol. `kitten @ ls`
+refuses, `systemctl --user show-environment` names `ZINC_TERMINAL` as Kitty, and
+`ss -xlpn` shows no Kitty control socket. Zinc gets an executable to host its
+terminal applications, never a control channel into that host process.
 
 If the session does not come up at all, Ctrl+Alt+F2 is a shell - the installer
 profile autologins `nixos` there with passwordless sudo, and greetd only takes
@@ -207,11 +213,14 @@ its units are where systemd looks; it never logs anybody in.
   the ones nobody has written yet marked as such rather than left to be found by
   pressing them. Between the two they are what to reach for when a key does
   nothing, and they are worth pressing before anything else on this list.
-- `Mod+Print` takes a screenshot and puts it on the clipboard. `Mod+Shift+s`
-  opens niri's region picker, `Mod+Ctrl+w` takes the focused window. They land
-  where niri's `screenshot-path` default puts them, `~/Pictures/Screenshots`,
-  and whether that directory gets created on a machine that has never had one
-  is the part only a real session answers.
+- `Mod+Print` takes a screenshot, `Mod+Ctrl+w` the focused window, `Mod+Shift+s`
+  a rectangle you drag. Each of the three prints the file it wrote, and they land
+  in `~/Pictures/Screenshots` - the same directory niri's own `screenshot-path`
+  default uses, so there is one place to look. zde makes that directory, which
+  niri does not do for a path it was handed, and whether it appears on a machine
+  that has never had one is the part only a real session answers. A custom
+  niri `screenshot-path` changes niri's native actions, not these ZDE-owned keys.
+  Section 13 is the rest of capture.
 
 ### When the screen is black
 
@@ -409,7 +418,9 @@ desk model is defined in terms of monitors (docs/model.md, invariant 1).
   on: two of the desk's workspaces are now sitting on one screen, and the one
   that gets focused last is the one you end up looking at.
 - **Close the lid with an external attached**, which is the same shape and the
-  one that actually happens. niri switches the laptop panel off by itself and
+  one that actually happens. The machine must stay awake in v0.1: every logind lid
+  handler is `ignore`, because direct suspend would bypass lock readiness. niri
+  switches the laptop panel off by itself and
   parks its workspaces on the external, but the panel keeps its connector and
   stays in `niri msg outputs` with `"logical": null`. zde reads that field and
   nothing else to decide what is a screen, so the names must **not** change:
@@ -888,9 +899,9 @@ show up in use.
   the same question on the machine you are sitting at, before you find out the
   hard way. Try it before you need it in a cafe.
 - **What logind would let this session do**, which is the other half of that and
-  the same kind of finding: a log out, a suspend, a reboot and a power off are
-  all logind's, and every way they refuse is invisible until somebody presses
-  the key.
+  the same kind of finding: log out, reboot and power off are logind's, and every
+  way they refuse is invisible until somebody presses the key. Suspend is not
+  asked: it is deliberately unavailable to non-root callers in v0.1.
 
   ```sh
   zde doctor | grep -E '^[a-z]+ +logind '
@@ -911,7 +922,7 @@ show up in use.
     and it must come back at once rather than sit there - this is the command
     somebody runs when something else has already gone wrong. Which of the two
     warnings it is worth reading: a bus that answered and has nobody on
-    logind's name says nothing can log out, suspend, reboot or power off this
+    logind's name says nothing can log out, reboot or power off this
     machine, and a bus that could not be reached or would not answer says `not
     known:` and the reading it came from. The second must not claim the first -
     a dial that ran out of its two seconds is a machine that is slow, not one
@@ -932,12 +943,13 @@ show up in use.
     session, a log out will refuse rather than end somebody else's, and that is
     the report.
 
-  Whether these four are worth a line each, or whether the whole thing wants to
+  Whether these three are worth a line each, or whether the whole thing wants to
   be one, is a question for a broken machine rather than for an argument here.
-- **The power menu**: `Mod+Shift+x`. Five rows - lock, log out, suspend, reboot,
-  power off - with `j`/`k`, the arrows or a digit to move, Enter to choose and
-  Escape to close. A digit moves to that row and stops there rather than running
-  it, which is why `1` does not lock the screen from under you. The three that
+- **The power menu**: `Mod+Shift+x`. Five rows - lock, log out, unavailable
+  suspend, reboot, power off - with `j`/`k`, the arrows or a digit to move,
+  Enter to choose and Escape to close. A digit moves to that row and stops there
+  rather than running it, which is why `1` does not lock the screen from under
+  you. The three that
   end something ask a second time and put what is about to be lost under the
   question: the windows that close, the arrivals the queue never got, anybody
   else logged in. **`y` or the space bar confirms and every other key backs
@@ -951,7 +963,15 @@ show up in use.
   argument.
   - **The lock row and `Mod+Ctrl+semicolon` lock the same way**, because both
     run whatever `zde.apps.lock` names. One of them working and the other not is
-    the report.
+    the report. `loginctl show-session "$XDG_SESSION_ID" -p LockedHint` must
+    change from `no` to `yes` before either command reports success. A missing
+    transition, Hyprlock exit, or four-second timeout must be a refusal. A
+    positively active but still unlocked locker is stopped after that timeout;
+    make systemd or the LockedHint read fail and the locker must be left alone,
+    because its readiness is unknown rather than false.
+    Once it succeeds, `systemctl --user restart zded` must leave the same
+    `zde-lock.service` PID active and a second lock request must answer `already
+    locked`; the locker belongs to the user manager, not the daemon's cgroup.
   - **Log out lands at the greeter**, and this is the item most worth doing
     first. zded ends the session by asking logind which session it is in, and
     the obvious answer does not work where zded runs: `user@.service` is outside
@@ -963,28 +983,16 @@ show up in use.
     `systemctl --user show-environment | grep XDG_SESSION_ID` says why. What it
     must never do is end somebody else's session, which is why it refuses rather
     than guessing.
-  - **A refusal has to read as a refusal.** Hold sleep off in a terminal, then
-    suspend from the menu:
-
-    ```sh
-    systemd-inhibit --what=sleep --why="testing zde" sleep 300 &
-    ```
-
-    The suspend row should start asking first, naming that inhibitor and the
-    reason it gave, and confirming should bring the refusal back onto the
-    surface still naming it. That refusal is logind's own and not polkit's: on
-    systemd 257 and later a block lock ends the call inside
-    `verify_shutdown_creds` before polkit is asked about the ignore-inhibit
-    action at all. 258 says so as `org.freedesktop.login1.BlockedByInhibitorLock`
-    and "Operation denied due to active block inhibitor"; 257 said the same
-    thing as a plain access-denied. Neither names the program or the reason, and
-    zde puts those back from `ListInhibitors`. `systemd-inhibit` takes a
-    `--mode=block` lock unless told otherwise and that is the kind that is
-    enforced; `--mode=block-weak` is deliberately not enforced against the user
-    who owns it, so a suspend that happens anyway is what to expect from *that*
-    one and is not this check. Here, a machine that suspends anyway is the
-    report, and so is a surface that closes with nothing happening - which is
-    the exact failure this menu is arranged around.
+  - **Suspend is a hard v0.1 boundary.** Its row is visibly unavailable and does
+    not open a confirmation. `zde system power suspend` must leave the machine
+    awake and print exactly `suspend is unavailable in ZDE v0.1; hardware
+    suspend begins in v0.2`. The refusal happens before a locker starts or
+    logind is called, and Film does not alter it. The generated logind settings
+    ignore every power, suspend, hibernate, lid and idle sleep action; the
+    root-owned `00-zde-no-sleep.rules` denies systemd 260.2's six suspend and
+    hibernate authorization IDs to every non-root caller. Root retains the
+    administrative boundary; do not exercise it unless this machine should
+    actually sleep.
   - **Somebody else logged in.** Log in as a second user on Ctrl+Alt+F3, come
     back to your own vt, and open the menu: reboot and power off should name
     them under the row, before anything is pressed. Read that line and press
@@ -1008,8 +1016,8 @@ show up in use.
     the report.
   - **With no shell**, which is a session somebody very much wants to log out
     of: `systemctl --user stop zde-bar`, then `zde system power` prints the five
-    rows with what each costs underneath, and `zde system power suspend` runs
-    one from there. That form does not ask again - the word is the answer.
+    rows with what each costs underneath. Enabled actions run directly from
+    their names; suspend prints the same v0.1 boundary without asking again.
   - **On a machine with no input devices** the surface is drivable over
     Quickshell's IPC, which is the only way to reach the second question without
     a keyboard:
@@ -1124,8 +1132,9 @@ saying so rather than guessing - and everything below is the other half.
 
 ### Wifi
 
-Needs a real access point. The VM leaves NetworkManager off on purpose, so none
-of this has met one.
+Needs a real access point. NetworkManager defaults on for every ZDE host through
+`zde.networking.enable`; the VM explicitly turns it off to protect its test
+network, so none of this has met one.
 
 - `Mod+Shift+c` lists what is in range - signal, whether it is locked, whether
   there is a saved profile - with the link you are on above it. Enter joins the
@@ -1151,10 +1160,15 @@ of this has met one.
 
 ### Bluetooth
 
-Needs an adapter, something to pair with, and the radio turned on:
-`zde.bluetooth.enable` on a desktop, or `zde.laptop.enable`, both off by
-default. There is no bluetooth in any surface - `zde system bluetooth` is the
-whole of it - so none of this is pressable from a key.
+Needs an adapter, something to pair with, and `zde.bluetooth.enable = true`.
+That option is independent of laptop mode and off by default; the radio still
+boots powered off until `zde system bluetooth power on`. There is no bluetooth
+in any surface - `zde system bluetooth` is the whole of it - so none of this is
+pressable from a key.
+
+The image carries BlueZ's two-part AVRCP parser fix, but that closes a security
+bug rather than these hardware checks. Bluetooth release support remains
+blocked until the phone, headset, PipeWire audio, and AVRCP cases below pass.
 
 - **A phone through `pair`**, confirming the six digits on both sides, and then
   `zde system bluetooth` reading it as paired and **not** trusted. Reconnect it
@@ -1165,6 +1179,9 @@ whole of it - so none of this is pressable from a key.
 - **A headset**, to find out how noisy authorising each service really is before
   somebody decides to trust it. This is the decision in the branch most likely
   to be reverted, and only a day with real hardware settles it.
+- **Headset media after pairing.** PipeWire must expose its audio profiles,
+  playback must reach the headset, and its AVRCP play/pause and volume controls
+  must reach the session without disconnecting bluetoothd.
 - **BlueZ's own D-Bus policy** for a normal user calling `RegisterAgent` on the
   reference host. If registration is refused there, incoming pairings are
   refused with it, and a machine nobody can pair to is the failure this asks
@@ -1449,10 +1466,11 @@ its refresh asks whether the surface has a scanout output, nothing more - so a
 container sitting on a workspace you are not looking at is enough. Nothing is
 asked and nothing is shown.
 
-zde cannot close this. niri exposes no knob, and the protocol is the protocol.
-What zde does instead is say it is happening, which is principle 4: whatever a
-keypress depends on is on the bar, and "your screen is not going to lock" is
-squarely that.
+ZDE cannot make the holder visible, but Hypridle 0.1.7 can keep it out of the
+lock decision. The 180-second listener's `ignore_inhibit = true` asks for raw
+input idle and therefore fires through Wayland, D-Bus and logind idle
+inhibitors. The five-minute display-power listener deliberately does not, so
+the diagnostic below still matters for a screen that will not blank.
 
 **The part to get right is what zde can actually see, because it is half.**
 
@@ -1471,7 +1489,8 @@ The two do not overlap, and that was measured rather than reasoned about: a
 client holding a real inhibitor on a mapped, visible surface for twelve seconds
 moved nothing in `systemd-inhibit --list` and left the session's `IdleHint`
 false throughout. So the bar's silence means "logind sees nothing", never
-"nothing is holding your screen".
+"nothing is postponing display power-off". It says nothing about the strict
+lock, which ignores both mechanisms.
 
 What only a session settles:
 
@@ -1501,7 +1520,8 @@ What only a session settles:
 - **The bar is silent when it cannot ask.** Stop logind's answer (or run the bar
   against a zded with no system bus) and the word must disappear rather than
   stay on the last thing it knew. A stale `idle held` is merely noise; a stale
-  blank is somebody walking away from an unlocked screen.
+  blank falsely claims no observable holder, though the strict lock remains
+  uninhibited either way.
 - **A holder writes both of its strings, and one of them is prose.** Every local
   account can run `systemd-inhibit --what=idle --mode=block --who=nothing
   --why="and nothing else: logind has nothing holding this session awake, and no
@@ -1515,12 +1535,31 @@ What only a session settles:
   two hundred, `zde doctor` printing six of them and counting the rest, and the
   five-second poll costing what it costs on an idle machine - the reply is a
   sample by construction (`internal/zded/idle.go`, `holdsMax`).
-- **What it is worth on a machine that does not lock on idle**, which today is
-  every zde machine: nothing auto-locks yet, so an idle hold currently costs
-  only whatever logind's own `IdleActionSec` would have done. `lock-preset` has
-  landed since this was written and does not change it - both locks are a key
-  somebody presses - so the release where this stops being an indicator and
-  starts being a hole is still the one where something locks on its own.
+- **Strict idle lock.** With no input for 180 seconds, Hypridle must lock even
+  while a Wayland idle inhibitor is mapped; its listener uses
+  `ignore_inhibit = true`. `zde system film on` is the named exception: the bar
+  says `FILM` and its expiry, and idle lock and display-off are suppressed. The
+  deadline survives `systemctl --user restart zded` without being extended. At
+  three hours it locks; if that lock fails, the bar says `FILM LOCK PENDING` and
+  the daemon retries instead of silently clearing Film. `film.json` contains one
+  `until` deadline; active and pending are derived from it. Force state removal
+  to fail and `Film off` must fail without cancelling the timer. Any later
+  verified explicit or idle lock must clear or disable an expired deadline, so
+  waiting past the retry interval after unlock produces no second lock.
+
+  An explicit lock is never suppressed. The five-minute display action runs
+  only when `/etc/zde/laptop` exists or `zde.idle.oled` is enabled. The patched
+  Hypridle 0.1.7 exports a source-ordered `HYPRIDLE_GENERATION` and waits for its
+  bounded callback; inspect `zde-idle-lock@GEN.service` to see `Restart=on-failure`
+  with no start limit. A failed lock must keep retrying while input remains idle.
+  Resume must stop every older generation promptly, and rapid timeout/resume
+  cycles must never leave an older unit able to lock after the resume. Upstream
+  v0.1.7's asynchronous child launch carries no generation, which is why the
+  local package patch is part of this claim rather than an optional hardening.
+  The headless VM builds that patch and exercises retry-generation teardown, but
+  it gives nested niri no input devices. It cannot deterministically produce an
+  actual timeout then input-resume callback pair; rapid callback ordering remains
+  a real-session check rather than a synthetic VM claim.
 
 ## 12. The security set
 
@@ -1557,9 +1596,9 @@ takes the session with it.
   still says `cut` when it comes back, for the same reason.
 - **An account that is not in the `networkmanager` group** gets polkit's refusal
   in words. A key that silently did nothing is the outcome this must not have.
-- **A machine with no NetworkManager at all** - any zde desktop, since layer 0
-  installs it only with `zde.laptop.enable` - refuses and says so, rather than
-  reporting a cut it did not make.
+- **A machine with no NetworkManager at all** - set
+  `zde.networking.enable = false` before rebuilding - refuses and says so,
+  rather than reporting a cut it did not make.
 
 ### lock-preset
 
@@ -1582,13 +1621,17 @@ first, to a desk that exists.
   preset is private would otherwise switch to one. `zde status` names the file
   too, and fixing it is what turns the preset back on.
 - **With no locker at all** it refuses, and nothing has moved. Layer 1 defaults
-  `zde.apps.lock` to swaylock, so this takes `zde.apps.lock = lib.mkForce [ ]`
+  `zde.apps.lock` to Hyprlock, so this takes `zde.apps.lock = lib.mkForce [ ]`
   or a zde built by hand. Check the desk really is where you left it: a session
   walked off its desk and left unlocked is worse than a key that did nothing.
-- **On a machine whose locker is configured but broken** it still switches and
-  still reports "locking". zded starts the locker and does not wait for it, so
-  a locker that exits immediately is a screen that did not lock - the same gap
-  `zde system lock` and the power menu's lock row have.
+- **With no readable logind `LockedHint`, or one already true**, it also refuses
+  before moving. Those are preflight failures, so check the desk stayed put.
+- **On a machine whose locker is configured but broken** it may already have
+  switched, because process start cannot be known before the switch. It must
+  still refuse: immediate exit and a missing false-to-true transition are never
+  reported as a lock. A positively active but unlocked process is stopped after
+  four seconds; an observation error leaves it running rather than turning an
+  unknown lock into an unlocked screen.
 
 ### panic and the decoy
 
@@ -1697,6 +1740,66 @@ this looks like to somebody using it.
   you in. That is the honest half, and it is the case where the printed line is
   the only feedback there is.
 
+## 13. capture
+
+Three keys and two verbs. The keys take a picture; `zde capture send-to` hands
+one onwards, and the opt-in replay service remembers the last 30 seconds.
+
+- **`Mod+Print`** prints a path and the file is there. It is
+  `~/Pictures/Screenshots/zde-<time>Z.png`, UTC, and `ls -l` says `-rw-------`:
+  a capture is a picture of whatever was on your screen, so it is yours and not
+  the umask's. The image is on the clipboard too - paste it somewhere.
+- **`Mod+Print` twice, fast.** Two files, the second one `-2`. This is the case
+  niri's own `screenshot-path` cannot do, since its name stops at the second.
+- **`Mod+Ctrl+w`** on a focused window: the window and not the screen.
+- **`Mod+Shift+s`** gives you a crosshair. Drag a rectangle: a file with that
+  rectangle in it, and the same rectangle on the clipboard. Press Escape
+  instead: one line saying nothing was captured, and **no file** left behind in
+  the directory - check, because an empty file under a name that reads like a
+  capture is what the next send-to would pick up.
+- **The region key is not niri's picker**, and this is the difference to look
+  for. niri's own `Mod+Shift+s` (before zde) snapped to windows and froze the
+  screen; this one is a plain drag on a live screen. That is the cost of the
+  next line, and it is the one thing here somebody might report as a regression.
+- **A blocked window is black in the region shot.** With
+  `block-out-from "screen-capture"` on a window - a niri window rule; add it
+  manually until per-window capture-block lands - drag a rectangle over that
+  window. It must come back solid black, the same as `Mod+Print` does. niri's
+  own picker shows it, deliberately, which is why zde does not use it. This is
+  the check that says the promise is kept.
+- **Nothing to select with.** `PATH= zde capture shot-region` refuses and names
+  `slurp`. What it must not do is take the shot another way.
+- **A directory nothing can write.** `chmod 500 ~/Pictures/Screenshots`, then
+  `Mod+Print`. One line saying so. Put it back with `chmod 700`. Left to niri
+  this is a warning in the compositor's log and a screenshot that silently did
+  not happen, which is the whole reason zde asks for the shot. An automatic shot
+  that niri never confirms may leave a hidden 0600 staging file for its writer,
+  but `send-to` never sees it or an incomplete PNG.
+- **`zde capture send-to clipboard`** with no path puts the newest capture back
+  on the clipboard. Then paste it.
+- **`zde capture send-to <name>`** opens it in whatever `zde.apps.<name>` is.
+  With a name this machine has none for, it lists what there is.
+- **A sandboxed target refuses.** If `zde.apps` names one whose argv starts
+  `zcr`, send-to says so and points at `clipboard`: a path on the host is not a
+  path inside a container. Zinc 0.10.1 can add a runtime mount while creating
+  one, but has no app argument or `zcr exec` for a generic file handoff.
+- **Replay is off unless asked for.** `zde capture replay-clip` on the default
+  configuration refuses and names `zde.capture.replay.enable`. Set that option
+  to true and rebuild. The first service start may open the portal chooser once;
+  choose the output the replay should hold.
+- **Save the buffer.** After 30 seconds, `zde capture replay-clip` prints one
+  path under `~/Videos/Replays`. The MP4 is non-empty, `ls -l` says
+  `-rw-------`, and a second call saves a second file while recording continues.
+- **The block reaches replay.** Put `block-out-from "screen-capture"` on a
+  window and save a replay containing it. The window is black in the MP4 and
+  normal on the physical screen. A direct-KMS recorder would fail this check;
+  zde uses only niri's portal path.
+- **No sound is captured.** The replay has video and no audio track. Audio and
+  the microphone are not implied by agreeing to continuous screen capture.
+- **Cancelling is final.** Stop the service, remove its saved portal choice, and
+  start it again. Cancel the chooser: `systemctl --user status zde-replay` stays
+  failed instead of reopening another chooser in a restart loop.
+
 ## Expected to be missing
 
 Not bugs, do not report them:
@@ -1735,7 +1838,7 @@ Not bugs, do not report them:
   | `Mod+g` (zinc's launcher), `Mod+Ctrl+semicolon` (lock) | |
   | `Mod+Ctrl+Escape` (takes the keyboard back off an app that grabbed it; niri's own action, so it works whatever zde has written) | |
   | `Mod+slash` (the keymap, in a pager) | |
-  | `Mod+Print`, `Mod+Shift+s`, `Mod+Ctrl+w` (screenshots) | |
+  | `Mod+Print`, `Mod+Shift+s`, `Mod+Ctrl+w` (screenshots), `zde capture send-to`, `zde capture replay-clip` when `zde.capture.replay.enable` is on | |
   | `Mod+Shift+Tab` (last desk), `Mod+Ctrl+Tab` (send the focused window to a desk you pick), `Mod+Ctrl+Shift+Tab` (send the whole workspace, which is how the regulars are made) | |
   | `Mod+period`/`comma`, `Mod+Shift+m`, `Mod+Ctrl+m` (volume, mute, mic) | |
   | `Mod+b`, `Mod+Shift+b` (brightness, on a machine with a backlight) | |
@@ -1759,10 +1862,13 @@ Not bugs, do not report them:
   `zde doctor` names it before you press anything (section 5).
 - **Modes** (`Mod+m`) and the leader sequences for panic and block. They wait
   on the input layer landing.
-- **Brightness** (`Mod+b`, `Mod+Shift+b`) needs your user in the `video` group,
-  which is what makes `brightnessctl`'s udev rules apply to the person pressing
-  the key. The host template puts it there; whether the backlight then moves on
-  your hardware is still one line either way.
+- **Brightness** (`Mod+b`, `Mod+Shift+b`) is independent of laptop mode and
+  defaults on through `zde.brightness.enable`. It needs your user in the `video`
+  group, which is what makes `brightnessctl`'s udev rules apply to the person
+  pressing the key; the host template puts it there. The command targets only
+  the `backlight` class, so hardware with no controllable display backlight
+  reports that no backlight devices are available instead of changing a
+  keyboard or status LED.
 - **The keyboard layout** is whatever niri defaults to until a host says
   otherwise, and `zde.niri.xkb.layout` and `zde.niri.xkb.options` are where it
   says so. Whether it should be taken from the system's console keymap instead
@@ -1785,7 +1891,7 @@ Not bugs, do not report them:
 - **An editor**, and this is the one distinction in `zde.apps` worth reading
   once rather than meeting three times. That option is the seam between the
   keymap's names and this machine's programs, and three of its names have
-  defaults that layer 1 also installs: `terminal` is foot, `lock` is swaylock,
+  defaults that layer 1 also installs: `terminal` is Kitty, `lock` is Hyprlock,
   `help` is the keymap in a pager. `editor` has none. The editor zde ships is a
   zinc container (`common/apps/nvim`), which is layer 2's to build and pin, and
   a second editor on the host to cover for it would be a package nobody asked
@@ -1796,7 +1902,7 @@ Not bugs, do not report them:
   ask. One line ends it, in the flake's `home-manager.users.<name>` block:
 
   ```nix
-  zde.apps.editor = [ "foot" "-e" "hx" ];              # a host program
+  zde.apps.editor = [ "kitty" "hx" ];                   # a host program
   zde.apps.editor = [ "zcr" "run" "nvim" "--exec" ];   # or a sandboxed one
   ```
 - **Bluetooth on a screen.** `shell/Bluetooth.qml` is a section that nothing

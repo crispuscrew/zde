@@ -60,6 +60,12 @@ ShellRoot {
     // daemon that knows why has gone away is a strip nobody can get back.
     property bool zen: false
     property bool zenKnown: false
+    // Film is the bounded exception to automatic lock and display power-off.
+    // Kept beside zen because both can force the strip to remain visible.
+    property bool film: false
+    property bool filmPending: false
+    property bool filmKnown: false
+    property string filmUntil: ""
     // What a panel actually came up as, reported back for the same reason the
     // count is: a strip of zero height, or one reserving nothing, is on the
     // screen as far as the compositor's layer list is concerned and invisible
@@ -245,9 +251,11 @@ ShellRoot {
                 // and two seconds of a bar that should not be there is two
                 // seconds of the toggle looking lost.
                 stream.write('{"method":"desk.zen"}\n');
+                stream.write('{"method":"system.film"}\n');
             } else {
                 root.modeKnown = false;
                 root.zenKnown = false;
+                root.filmKnown = false;
             }
         }
 
@@ -290,6 +298,13 @@ ShellRoot {
                 root.zenKnown = true;
                 return;
             }
+            if (msg.ok && msg.ok.film !== undefined) {
+                root.film = msg.ok.film === true;
+                root.filmPending = msg.ok.lockPending === true;
+                root.filmUntil = msg.ok.until ?? "";
+                root.filmKnown = true;
+                return;
+            }
             // A refusal, attributed to whichever surface is up that could
             // have earned one - a refusal swallowed is a key that did
             // nothing (docs/vision.md, principle 4). One arriving from
@@ -299,7 +314,7 @@ ShellRoot {
             // the keyboard while it asks.
             //
             // Then the three that wait on an answer: the palette, the power
-            // menu and the clipboard. `running` is the precise claim among
+                // menu and the clipboard. `running` is the precise claim among
             // these - a run really is in flight - where the other two are
             // only "up", so they go ahead of the loosest test here.
             //
@@ -330,9 +345,8 @@ ShellRoot {
                 if (palette.running)
                     palette.ran("");
                 // And the power menu, which waits for the same reason and
-                // needs it more: logind refuses a suspend an inhibitor is
-                // holding, and a surface that had already closed would make
-                // that indistinguishable from a machine that slept.
+                // needs it more: refusals include the v0.1 suspend boundary,
+                // and a surface that had already closed would swallow it.
                 if (powerMenu.running)
                     powerMenu.ran("");
                 // And the clipboard, which waits for the same reason: an entry
@@ -374,6 +388,8 @@ ShellRoot {
                 // is the only place this shell learns whether zen is on, so a
                 // dropped event costs a poll and never a wrong bar.
                 stream.write('{"method":"desk.zen"}\n');
+            else if (msg.event.kind === "film")
+                stream.write('{"method":"system.film"}\n');
             else if (msg.event.kind === "attn.hide")
                 root.hidePopups();
         }
@@ -451,6 +467,7 @@ ShellRoot {
             // this connection is busy (internal/zded, errSinkBusy). Asking is
             // what makes a bar that missed one come back on its own.
             stream.write('{"method":"desk.zen"}\n');
+            stream.write('{"method":"system.film"}\n');
         }
     }
 
@@ -724,9 +741,8 @@ ShellRoot {
         onDismissed: picker.hide()
 
         // A leader action runs the same command the key would, rather than the
-        // shell learning what locking is: `zde system lock` resolves the
-        // machine's locker through the same table Mod+t uses, and when that
-        // becomes zcr's job it changes in one place and not two.
+        // shell learning what locking is. `zde system lock` delegates readiness
+        // verification to zded, so this path cannot report only process start.
         onAction: name => {
             picker.hide();
             leader.command = ["zde", "system", name];
@@ -1180,9 +1196,9 @@ ShellRoot {
     PowerMenu {
         id: powerMenu
 
-        // The shell decides nothing here either: which locker this machine has
-        // and whether logind will take a suspend are zded's answers, on the
-        // same socket everything else uses. The surface is left up until one
+		// The shell decides nothing here either: which locker this machine has
+		// and which power verbs are available are zded's answers, on the same
+		// socket everything else uses. The surface is left up until one
         // comes back - see the parser above - because a refusal is the thing
         // this menu exists to be able to show.
         onChosen: name => {
@@ -1485,7 +1501,7 @@ ShellRoot {
             // `zenKnown` is what keeps the failure the right way round: a bar
             // that hid because zded stopped answering could not be brought back
             // by anything, since the only thing that could is zded.
-            visible: !root.zen || !root.zenKnown || micState.live
+            visible: !root.zen || !root.zenKnown || micState.live || root.film || root.filmPending || !root.filmKnown
 
             // qmllint enable uncreatable-type
 
@@ -1541,6 +1557,22 @@ ShellRoot {
                 // reminding of, and the other two are the answer to a question
                 // somebody is about to ask.
                 color: root.mode === "work" ? "#7a7f8a" : "#e5a23d"
+                font.pixelSize: 13
+                font.family: "monospace"
+                textFormat: Text.PlainText
+            }
+
+            Text {
+                id: filmMode
+
+                anchors.left: attnMode.right
+                anchors.leftMargin: 16
+                anchors.verticalCenter: parent.verticalCenter
+                visible: root.linked && root.filmKnown && (root.film || root.filmPending)
+
+                text: root.filmPending ? "FILM LOCK PENDING" : "FILM until " + Qt.formatTime(new Date(root.filmUntil), "HH:mm")
+                color: root.filmPending ? "#e5484d" : "#e5a23d"
+                font.bold: true
                 font.pixelSize: 13
                 font.family: "monospace"
                 textFormat: Text.PlainText

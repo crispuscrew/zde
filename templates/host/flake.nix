@@ -77,7 +77,7 @@
     # because it releases on its own schedule and an update to one should not
     # be an update to the other.
     zinc = {
-      url = "github:crispuscrew/zinc/v0.9.1";
+      url = "github:crispuscrew/zinc/v0.10.1";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -115,7 +115,12 @@
             system.configurationRevision = self.rev or self.dirtyRev or "dirty";
 
             zde.enable = true;
-            # zde.laptop.enable = true;   # battery, radios, the lid switch
+            # Networking and brightness default on for desktops and laptops.
+            # Disable either only when this host supplies another implementation.
+            # zde.networking.enable = false;
+            # zde.brightness.enable = false;
+            # zde.laptop.enable = true;     # battery, power profiles, lid behavior
+            # zde.bluetooth.enable = true;  # radio off at boot until explicitly powered
 
             # The state snapshot, for the failure with no terminal in it: the
             # session does not come up, the screen is black, and the only way
@@ -133,12 +138,12 @@
               # from the same flake input. Without this, home-manager
               # instantiates nixpkgs again from scratch, and an overlay, a patch
               # or `nixpkgs.config.allowUnfree` set in configuration.nix reaches
-              # the system and silently stops at layer 1's front door: foot,
-              # swaylock, quickshell, brightnessctl, less, wl-clipboard and
+              # the system and silently stops at layer 1's front door: Kitty,
+              # Hyprlock, Hypridle, quickshell, brightnessctl, less, wl-clipboard and
               # wireplumber all come out of the second evaluation, which never
               # saw any of it. Same flake input, two package sets, and only one
               # of them takes your instructions. It is a quiet failure - the
-              # build succeeds and you get a foot nobody patched.
+              # build succeeds and you get a Kitty nobody patched.
               #
               # What it costs: the `nixpkgs.*` options *inside* a home-manager
               # config stop existing, so a per-user overlay is no longer a thing

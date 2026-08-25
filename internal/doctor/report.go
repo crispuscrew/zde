@@ -265,7 +265,7 @@ somebody is going to paste this file into a bug report:
   - the names niri gives your monitors, and the names your desks and the apps
     they declare are written under
   - what ` + "`zde doctor`" + ` checks, which is a handful of names of programs on this
-    machine: the units a login starts and whether they are running, the program
+    machine: the session units ZDE installs and whether they are healthy, the program
     holding the notification name and its process id, the program configured to
     lock the screen, and the id logind gives this session
 

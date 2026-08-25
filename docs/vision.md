@@ -68,10 +68,16 @@ a region, or the current window. No history by default; never an agent (no
 tools, no files; one action hands off to a project agent). The local tier
 runs with no network; the provider tier's egress is its one API host.
 
-**pass** derives instead of storing: Argon2id(master, service, counter) plus
-a pepper file, encoded to site policy. Stored data: counters, site policies,
-the pepper - nothing secret but the pepper. Entry in the trusted window; the
-result is typed, never copied. No-network container.
+**pass** derives instead of storing with standard, versioned Spectre v3 in a separate
+GPL-3.0-or-later helper; it never silently adds a pepper or otherwise changes Spectre.
+The host desktop UID is trusted. The broker and helper keep secret memory locked and
+non-dumpable; secrets never enter argv, stdout, files, the clipboard, or a virtual
+keyboard. The broker inserts only through input-method-v2 when the active field
+declares a password or PIN purpose and `sensitive_data`. Same-UID processes are not
+isolated, and application-declared field metadata does not prove application identity.
+Implementation waits until Niri/Smithay atomically validates the same eligible text
+input at commit time and ZDE approves a sole input-method owner or coexistence design.
+No weaker fallback ships.
 
 **doctor** collects state (journals, `niri msg`, `zcr ps`, failed units),
 restarts the obvious, or opens an agent with the matching `runbooks/`
@@ -103,9 +109,6 @@ guesses. Owns the kill switch and the per-app cut.
   off, ask history cleared, clipboard history suspended.
 - **Panic**: decoy desk + mute + silence, one action. Panic-lock variant
   alongside.
-- **pass threat, honestly**: one leaked site password is an offline oracle
-  on the master. Argon2id makes the attack expensive; the pepper makes it
-  know-plus-have. Unrotatable legacy passwords are out of scope.
 
 ## 4. What zde asks of zinc
 
@@ -138,7 +141,7 @@ guesses. Owns the kill switch and the per-app cut.
 6. Counters on the generated nft rules plus netns enumeration, for netview.
    **Landed in 0.9.0** as `zcr net`, which is what netview (0.3) reads.
 
-All six are answered as of zinc 0.9.1. What is left is on this side.
+All six remain answered in zinc 0.10.1. What is left is on this side.
 
 ## 5. Scenario catalog
 

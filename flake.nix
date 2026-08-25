@@ -16,7 +16,7 @@
     # pins a different one, and two nixpkgs in a closure is a second copy of
     # everything for no benefit here.
     zinc = {
-      url = "github:crispuscrew/zinc/v0.9.1";
+      url = "github:crispuscrew/zinc/v0.10.1";
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
@@ -50,6 +50,7 @@
       zdeTools = pkgs: pkgs.callPackage ./nix/zde.nix { };
       zdeConfig = pkgs: pkgs.callPackage ./nix/zde-config.nix { };
       zdeShell = pkgs: pkgs.callPackage ./nix/shell.nix { };
+      zdeReplay = pkgs: pkgs.callPackage ./nix/replay.nix { };
 
       # The live image (nix/live.nix): both layers, the same modules a real
       # machine imports. Built once per system and shared by the two outputs
@@ -154,6 +155,13 @@
           # a check and not only a package because it is cheap and because
           # quickshell has none of its own (nix/shell.nix).
           zde-shell = zdeShell pkgs;
+          # The pinned recorder backport, built rather than only evaluated: its
+          # IPC binary is what turns a replay signal into a confirmed file.
+          zde-replay = zdeReplay pkgs;
+          # Build the configured override so its patches and upstream checks run.
+          zde-bluez = testHost.config.hardware.bluetooth.package;
+          # Compile the exact patched derivation configured by the home module.
+          zde-hypridle = pkgs.callPackage ./nix/hypridle.nix { };
           # Evaluation only: discarding the string context keeps the system
           # closure out of the build, so this costs an eval and nothing else.
           # It is what catches a bad option or a typo in nix/system.nix and

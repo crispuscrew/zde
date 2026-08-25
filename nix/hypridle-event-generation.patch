@@ -1,0 +1,56 @@
+diff --git a/src/core/Hypridle.cpp b/src/core/Hypridle.cpp
+index e46e947..11fd924 100644
+--- a/src/core/Hypridle.cpp
++++ b/src/core/Hypridle.cpp
+@@ -231,6 +231,21 @@ static void spawn(const std::string& args) {
+     Debug::log(LOG, "Process Created with pid {}", proc.pid());
+ }
+
++static void spawnIdle(const std::string& args, uint64_t generation) {
++    Debug::log(LOG, "Executing idle generation {}: {}", generation, args);
++
++    Hyprutils::OS::CProcess proc("/bin/sh", {"-c", args});
++    proc.addEnv("HYPRIDLE_GENERATION", std::to_string(generation));
++    if (!proc.runSync()) {
++        Debug::log(ERR, "Failed run idle generation {}: {}", generation, args);
++        return;
++    }
++    if (proc.exitCode() != 0)
++        Debug::log(ERR, "Idle generation {} exited {}: {}", generation, proc.exitCode(), proc.stdErr());
++    else
++        Debug::log(LOG, "Idle generation {} completed", generation);
++}
++
+ void CHypridle::onIdled(SIdleListener* pListener) {
+     Debug::log(LOG, "Idled: rule {:x}", (uintptr_t)pListener);
+     isIdled = true;
+@@ -246,7 +261,7 @@ void CHypridle::onIdled(SIdleListener* pListener) {
+     }
+
+     Debug::log(LOG, "Running {}", pListener->onTimeout);
+-    spawn(pListener->onTimeout);
++    spawnIdle(pListener->onTimeout, ++m_uIdleGeneration);
+ }
+
+ void CHypridle::onResumed(SIdleListener* pListener) {
+@@ -264,7 +279,7 @@ void CHypridle::onResumed(SIdleListener* pListener) {
+     }
+
+     Debug::log(LOG, "Running {}", pListener->onRestore);
+-    spawn(pListener->onRestore);
++    spawnIdle(pListener->onRestore, ++m_uIdleGeneration);
+ }
+
+ void CHypridle::onInhibit(bool lock) {
+diff --git a/src/core/Hypridle.hpp b/src/core/Hypridle.hpp
+index b982c3c..f590118 100644
+--- a/src/core/Hypridle.hpp
++++ b/src/core/Hypridle.hpp
+@@ -48,6 +48,7 @@ class CHypridle {
+     bool    isIdled         = false;
+     bool    m_isLocked      = false;
+     int64_t m_iInhibitLocks = 0;
++    uint64_t m_uIdleGeneration = 0;
+
+     enum {
+         SLEEP_INHIBIT_NONE,

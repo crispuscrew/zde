@@ -1,27 +1,19 @@
 # Your machine, not zde's. Everything zde needs is in the module the flake
 # imports; what is left here is what only you can know.
 _: {
+  # Passwords are set with passwd after installation. Keep users mutable so
+  # /etc/shadow survives rebuilds without putting a password or hash in the store.
+  users.mutableUsers = true;
+
   # The user zde runs as. The name has to match `user` in flake.nix.
   users.users.you = {
     isNormalUser = true;
     description = "you";
     extraGroups = [
       "wheel" # sudo
-      "video" # the brightness keys: brightnessctl's udev rules hand the
-      # backlight to this group, and layer 0 installs them
-      "networkmanager" # only does anything with zde.laptop.enable
+      "video" # brightnessctl's udev rules hand the backlight to this group
+      "networkmanager" # NetworkManager is on by default for every ZDE host
     ];
-
-    # Something to type at the greeter on the first boot, and change straight
-    # after with `passwd`. Without it the account is created locked: the
-    # greeter takes the name, refuses every password, and there is no session
-    # to fix it from.
-    #
-    # It is initial in the literal sense - it applies when the account is
-    # created and never again, so `passwd` sticks. Until you run it, this
-    # password sits in the world-readable nix store. Skip both by putting a
-    # hash here instead: `mkpasswd -m yescrypt` into initialHashedPassword.
-    initialPassword = "zde";
   };
 
   # Has to match `host` in flake.nix. They are two files because one is yours

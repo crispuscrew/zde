@@ -27,9 +27,9 @@ const (
 // bus question in zde gets (internal/link, askFor; internal/bt, askFor).
 //
 // It is a bound and not a guess: zded answers keybinds on one socket, a client
-// gives a call five seconds (internal/zded, Client.Call), and a bus call with
-// no deadline is a power menu that never opens because logind is waiting on a
-// disk. Two leaves room inside the caller's five for the reply to get back.
+// gives an ordinary call five seconds (internal/zded, Client.Call), and a bus
+// call with no deadline is a power menu that never opens because logind is
+// waiting on a disk. Two leaves room inside the caller's five for the reply.
 const askFor = 2 * time.Second
 
 // Logind is systemd-logind on the system bus.
@@ -151,7 +151,7 @@ type inhibitorRow struct {
 // Same round trip, wider struct.
 //
 // Nothing falls back to ListSessions if this is missing. ListSessionsEx is
-// systemd v256 and later, zde's own pin is 258 (flake.lock, nixos-26.05), and a
+// systemd v256 and later, zde's own pin is 260.2 (flake.lock, nixos-26.05), and a
 // fallback would have to count every session of another uid as a person - which
 // is the lie this call was chosen to stop telling, kept alive on the one kind of
 // machine where nobody would be looking for it. A logind too old to answer says
@@ -261,12 +261,10 @@ func (l *Logind) Do(w What) error {
 	switch w {
 	case Logout:
 		err = l.terminate(ctx)
-	case Suspend:
-		err = l.shutdownOrSleep(ctx, "Suspend")
 	case Reboot:
-		err = l.shutdownOrSleep(ctx, "Reboot")
+		err = l.shutdown(ctx, "Reboot")
 	case PowerOff:
-		err = l.shutdownOrSleep(ctx, "PowerOff")
+		err = l.shutdown(ctx, "PowerOff")
 	default:
 		return fmt.Errorf("logind has no %q", w)
 	}
@@ -280,9 +278,8 @@ func (l *Logind) Do(w What) error {
 	return Because(w, st, err)
 }
 
-// shutdownOrSleep is the three of these that are logind Manager methods of one
-// shape - Suspend, Reboot and PowerOff, each taking one boolean - and the false
-// is the whole reason they are one function. A log out is not among them: it is
+// shutdown is the two machine-ending logind Manager methods of one shape:
+// Reboot and PowerOff, each taking one boolean. A log out is not among them: it is
 // TerminateSession on this session's id, and it goes to terminate below.
 //
 // interactive=false asks polkit to answer now rather than to go looking for an
@@ -291,11 +288,11 @@ func (l *Logind) Do(w What) error {
 // keypress is waiting on - and then the key would be one that did nothing for
 // twenty seconds. A refusal that arrives is a refusal the surface can show.
 //
-// The boolean is also all it is: the legacy Suspend(b) methods map it to
+// The boolean is also all it is: these legacy methods map it to
 // SD_LOGIND_INTERACTIVE and nothing else (method_do_shutdown_or_sleep,
 // src/login/logind-dbus.c), so a block inhibitor is never skipped by this call
 // and comes back as its own refusal (power.go, Because).
-func (l *Logind) shutdownOrSleep(ctx context.Context, method string) error {
+func (l *Logind) shutdown(ctx context.Context, method string) error {
 	return l.call(ctx, mgrPath, mgrIface+"."+method, nil, false)
 }
 

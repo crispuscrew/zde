@@ -20,6 +20,7 @@ import (
 
 	"github.com/crispuscrew/zde/internal/keymap"
 	"github.com/crispuscrew/zde/internal/link"
+	"github.com/crispuscrew/zde/internal/niri"
 	"github.com/crispuscrew/zde/internal/zded"
 	"github.com/crispuscrew/zde/internal/zinc"
 )
@@ -263,6 +264,14 @@ func TestLiveActionsAreTheOnesZdeKnows(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", empty)
 	t.Setenv("XDG_CONFIG_HOME", empty)
 	t.Setenv("HOME", empty)
+	t.Setenv("PATH", empty)
+	// A niri socket that is not there, so that the capture verbs are run like
+	// every other row and stop at the dial. Inherited, this test is run from a
+	// niri session often enough to matter: `zde capture shot-region` would open
+	// the region picker over whatever the person was doing and wait a minute and
+	// a half for them to drag a rectangle, and the other two would photograph
+	// their screen into their own Pictures directory.
+	t.Setenv(niri.SocketEnv, filepath.Join(empty, "no-niri-here"))
 
 	// The keymap a machine gets, rendered as the file it gets: the actions that
 	// carry an argument exist only as binds, and `app.launch-at editor` is one
@@ -1162,5 +1171,80 @@ func TestNoLineOfTheDoctorReportIsOneNobodyChecked(t *testing.T) {
 	// what this machine has instead.
 	if !strings.Contains(out, "vshop names browser") || !strings.Contains(out, "gotcha") {
 		t.Errorf("the desk apps line no longer says what to fix:\n%s", out)
+	}
+}
+
+// The capture verbs are real verbs, which is a thing to pin here because the
+// binary is one dispatch: a verb it does not know prints usage to a stderr no
+// keypress has and exits, and from a bound key that is indistinguishable from a
+// key that did nothing. The three shots were exactly that for a while
+// (internal/keymap, capture).
+//
+// The socket is a path with nothing on it, so each of these gets as far as the
+// dial and no further. Nothing here photographs anything.
+func TestTheCaptureVerbsAreKnown(t *testing.T) {
+	quiet(t)
+	empty := t.TempDir()
+	t.Setenv("HOME", empty)
+	t.Setenv("PATH", empty)
+	t.Setenv(niri.SocketEnv, filepath.Join(empty, "no-niri-here"))
+
+	for _, verb := range [][]string{
+		{"capture", "shot-region"},
+		{"capture", "shot-window"},
+		{"capture", "shot-full"},
+		{"capture", "replay-clip"},
+	} {
+		err := run(verb)
+		if err == nil {
+			t.Errorf("`zde %s` reported success with no compositor and no recorder", strings.Join(verb, " "))
+			continue
+		}
+		if strings.Contains(err.Error(), "unknown command") {
+			t.Errorf("`zde %s` is a command nothing answers", strings.Join(verb, " "))
+		}
+	}
+}
+
+// send-to with no path means the newest capture zde took, which is what "and
+// send it" means a second after the key (docs/vision.md, W12). With one, that
+// file - so a person can send something from this morning.
+//
+// Neither form runs anything here: the machine has no zde.apps, so both stop at
+// the target. Which refusal comes back is what says whether the path was
+// resolved before or after, and that is the thing worth pinning.
+func TestSendToFindsTheNewestCaptureWhenNoPathIsGiven(t *testing.T) {
+	quiet(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	shots := filepath.Join(home, "Pictures", "Screenshots")
+
+	// Nothing captured yet: the refusal is about that and not about the target,
+	// because there is nothing to send whatever the target is.
+	err := run([]string{"capture", "send-to", "viewer"})
+	if err == nil || !strings.Contains(err.Error(), shots) {
+		t.Errorf("got %v, want a refusal naming %s", err, shots)
+	}
+
+	if err := os.MkdirAll(shots, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(shots, "zde-20260820T120000Z.png"),
+		[]byte("pixels\x00\x00\x00\x00IEND\xae\x42\x60\x82"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Now there is one, so the refusal moves on to the target this machine does
+	// not have - which is how this says the capture was found.
+	err = run([]string{"capture", "send-to", "viewer"})
+	if err == nil || !strings.Contains(err.Error(), "zde.apps") {
+		t.Errorf("got %v, want the refusal about what this machine can run", err)
+	}
+	// And the same with a path said out loud, which must not go looking for a
+	// newest anything.
+	err = run([]string{"capture", "send-to", "viewer", filepath.Join(shots, "zde-20260820T120000Z.png")})
+	if err == nil || !strings.Contains(err.Error(), "zde.apps") {
+		t.Errorf("got %v, want the refusal about what this machine can run", err)
 	}
 }

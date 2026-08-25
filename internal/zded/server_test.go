@@ -57,8 +57,11 @@ type fakeCompositor struct {
 	// performed is niri's own actions asked for, by name. The name is the thing
 	// worth keeping: it is a string all the way to the compositor, so a typo in
 	// one is invisible to Go.
-	performed []string
-	failOn    string
+	performed      []string
+	failOn         string
+	blockPerform   string
+	performStarted chan struct{}
+	performRelease chan struct{}
 	// reloads is how many times niri was asked to read its config again. What
 	// zen writes is a file, so this is the only observable difference between
 	// "now" and "within half a second" (zen.go).
@@ -170,10 +173,20 @@ func (f *fakeCompositor) FocusedOutput() (string, error) {
 // or does not.
 func (f *fakeCompositor) Perform(action string) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	if f.err != nil {
-		return f.err
+		err := f.err
+		f.mu.Unlock()
+		return err
 	}
+	block := action == f.blockPerform
+	started, release := f.performStarted, f.performRelease
+	f.mu.Unlock()
+	if block {
+		close(started)
+		<-release
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.performed = append(f.performed, action)
 	return nil
 }

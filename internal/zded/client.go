@@ -48,7 +48,16 @@ func (c *Client) Note() string { return c.note }
 
 // Call sends one request and decodes the reply into out.
 func (c *Client) Call(method string, out any, args ...string) error {
-	if err := c.conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+	wait := 5 * time.Second
+	// First-use bus discovery, LockedHint preflight and the four-second
+	// readiness window are sequential. Only calls that can start a locker need
+	// the larger envelope; every other key keeps the ordinary five-second bound.
+	if method == "system.lock" || method == "system.lock-preset" ||
+		(method == "system.idle" && len(args) == 1 && args[0] == "lock") ||
+		(method == "system.power" && len(args) == 1 && args[0] == "lock") {
+		wait = 15 * time.Second
+	}
+	if err := c.conn.SetDeadline(time.Now().Add(wait)); err != nil {
 		return err
 	}
 	line, err := json.Marshal(Request{Method: method, Args: args})

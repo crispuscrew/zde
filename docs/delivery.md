@@ -6,7 +6,7 @@ How zde reaches a machine. Frozen 2026-07-22.
 
 | Layer | Contains | Owned by |
 |---|---|---|
-| 0 system | kernel, drivers/firmware, modprobe options, podman + subuids, greetd, PipeWire, portals, kanata permissions, laptop hardware (power, radios), nix | `nix/system.nix` (NixOS) or `install.sh` (portable) |
+| 0 system | kernel, drivers/firmware, modprobe options, podman + subuids, greetd, PipeWire, portals, kanata permissions, networking, brightness permissions, bluetooth, laptop power, nix | `nix/system.nix` (NixOS) or `install.sh` (portable) |
 | 1 user env | niri config (generated keymap), zded, shell, zinc tools, fonts, theme | `nix/home.nix` - one module, shared by both paths |
 | 2 apps | zinc containers, app YAMLs, desk manifests | zinc's own flake, installed by layer 1; digest-pinned; provisioned by hand until something seeds it |
 
@@ -31,13 +31,13 @@ worked examples, and `zcr recheck` re-resolves a `SourceTag` and reports
 whether the digest moved. Neither is wired into zde. Nothing about zde's own update
 path (`update.md`) covers layer 2 yet.
 
-Laptop hardware (upower, power profiles, the network radio) is a toggle in the
-system module: `zde.laptop.enable`. The bluetooth radio has a switch of its
-own, `zde.bluetooth.enable`, off by default and turned on by the laptop one
-too, so a desktop can ask for bluetooth without taking a power daemon and
-NetworkManager with it. Desktops leave both off, which is a machine with no
-radio listening on its behalf; the 0.4 laptop profile (roadmap) builds the rest
-of its UIs on top of them in layer 1.
+Hardware concerns remain independent system switches. Networking and brightness
+default on; laptop support adds UPower, power profiles and safe lid defaults;
+Bluetooth remains opt-in and powered off at boot. The canonical v0.1 lock,
+idle, Film and no-suspend policy is in [`model.md`](model.md#6-the-action-map),
+with machine checks in [`verify.md`](verify.md#11-the-screen-an-application-can-keep-awake).
+The 0.4 laptop profile builds the remaining battery and dock behavior on those
+independent pieces.
 
 ## Reference platform: NixOS
 

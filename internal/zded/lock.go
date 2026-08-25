@@ -38,40 +38,13 @@ type lockConfig struct {
 // beside the answer, so the difference between "it switched" and "it locked
 // where you were" is readable rather than guessed at.
 //
-// The one thing that does stop it is having nothing to lock with, and that is
-// checked before anything moves. A machine with no locker configured would
-// otherwise be walked away from a desk and left unlocked on another one, which
-// is worse than the key doing nothing at all.
+// Locker resolution and the initial LockedHint reading happen before anything
+// moves. A machine that cannot begin a verifiable lock would otherwise be walked
+// away from a desk and left unlocked on another one, which is worse than the key
+// doing nothing at all. Process start and the final transition can still fail
+// after the switch; those cannot be known before it.
 func (s *Server) lockPreset() Response {
-	if err := s.canLock(); err != nil {
-		return Response{Error: err.Error()}
-	}
-	note := s.switchToPreset()
-	if resp := s.runAction("system.lock"); resp.Error != "" {
-		return resp
-	}
-	resp := ok("locking")
-	resp.Note = note
-	return resp
-}
-
-// canLock is whether this machine has a locker at all, asked without running
-// anything.
-//
-// The same table `zde system lock` resolves against and the same name, because
-// a second idea of what locks this screen is how a machine ends up with a key
-// that locks and a menu that does not (power.go, powerRun). What this cannot
-// see is a locker that is configured and fails when it starts: the lock is a
-// spawn, and zded learns only that it began.
-func (s *Server) canLock() error {
-	all, err := apps.Load(apps.DefaultPath())
-	if err != nil {
-		return err
-	}
-	if _, err := all.Argv("lock"); err != nil {
-		return fmt.Errorf("nothing to lock the screen with, so nothing was switched either: %w", err)
-	}
-	return nil
+	return s.lockScreenAfter(s.switchToPreset)
 }
 
 // switchToPreset moves to the configured desk, and answers with what it could

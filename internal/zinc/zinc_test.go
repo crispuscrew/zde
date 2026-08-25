@@ -69,14 +69,14 @@ func TestParseWhereRefusesHalfAnAnswer(t *testing.T) {
 // The wordings the refusal has to be recognised in.
 //
 // A table because this is a text match and text matches rot: zcr exits 1 for
-// this and for an image that would not build alike (v0.9.1,
+// this and for an image that would not build alike (v0.10.1,
 // container/runner/main.go), so the sentence is the whole of the evidence and
 // the only defence is being explicit about which sentences count. Every entry
-// here is either what zinc 0.9.1 prints or a rewording of it that keeps the
+// here is either what zinc 0.10.1 prints or a rewording of it that keeps the
 // phrase both of zinc's runners share.
 func TestZcrsRefusalToStartASecondCopyIsNotAFailure(t *testing.T) {
 	refusals := []string{
-		// v0.9.1 whole, as CombinedOutput hands it back: the sentence from
+		// v0.10.1 whole, as CombinedOutput hands it back: the sentence from
 		// container/runner/app/service.go, with the "zcr: " main puts in front.
 		"zcr: browser is already running; stop it first, or run another instance with browser@<instance>",
 		// An instance. The name in the sentence is the runtime one, because the

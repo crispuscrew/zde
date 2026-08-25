@@ -185,7 +185,34 @@ network did not break. `lock-preset` switches first and locks second, and the
 order is the whole of it; every way the switch can be unusable - no preset, a
 desk that is gone, a desk declared private, a file that will not parse - locks
 where you are and says so, because the one outcome worse than an unlock showing
-your work is a screen that did not lock.
+your work is a screen that did not lock. Layer 1 declares `zde-lock.service`
+from `zde.apps.lock`; the user manager owns the locker independently of zded. A
+lock is complete only after that unit is active and Niri changes this display
+session's logind `LockedHint` from false to true. A positive active-but-unlocked
+timeout is cleaned up; an indeterminate systemd or D-Bus observation is not a
+reason to stop a potentially working locker, and nothing rechecks it after the
+lock transition is observed. Hardware suspend is deliberately unavailable to
+desktop and other non-root callers in v0.1; root retains the administrative
+boundary, and the verified desktop path begins in v0.2.
+
+Hypridle 0.1.7 asks for an automatic lock after 180 seconds of input inactivity
+even when an application holds a Wayland idle inhibitor. Upstream launches each
+timeout and resume command asynchronously, so callback order alone cannot order
+the child processes. Layer 1 patches that version to export a monotonic
+`HYPRIDLE_GENERATION` and finish each bounded callback before dispatching the
+next. Each timeout starts `zde-idle-lock@GEN.service`, which retries for as long
+as that idle generation lasts; the ordered resume stops all older generations.
+This fixes ZDE's integration race but does not add generations to the Wayland
+protocol or make Wayland inhibitors observable.
+
+Film is the one explicit, visible exception. It persists one deadline, derives
+active versus lock-pending from the clock, suppresses automatic lock and display
+power-off for at most three hours, and never suppresses an explicit lock. Film
+off removes persisted state before cancelling its timer. Once any explicit or
+idle lock is verified, an expired Film deadline is cleared or atomically
+disabled so it cannot lock again after unlock. The five-minute display
+power-off applies only when a host declares `zde.laptop.enable` or
+`zde.idle.oled` is enabled.
 
 `panic` is the same three checks with the opposite answer, and the difference is
 worth reading twice: the same list of failures changes nothing at all. It is one
@@ -204,6 +231,74 @@ the mode you were in. It hides and erases nothing - the notification history and
 the queue are as they were, which is principle 3 ([`vision.md`](vision.md)) and
 also the honest limit: this is the key for somebody walking past, and `lock` is
 the key for leaving the room.
+
+The default terminal is Kitty, one process and one surface per niri window.
+Kitty's tabs, splits, cloning and remote control are disabled: niri owns window
+management, and Zinc is the isolation boundary. A Zinc app that needs a terminal
+gets the host Kitty executable through `ZINC_TERMINAL`, not a Kitty control
+socket. No control socket is created or mounted into a container. Kitty's native
+Wayland renderer and graphics protocol need no companion service, and its theme
+is written declaratively with the rest of layer 1; future live theme updates
+need a restricted ZDE interface before remote control can exist.
+
+`capture` is three keys over two mechanisms, and the split is not a preference
+either. niri renders every frame three times - the one that goes to the monitor,
+one for a screencast, one for any other capture - and `block-out-from` decides
+which of them a window is black in. `screen-capture` blacks it out of everything
+except the monitor's, so `screenshot-screen` and `screenshot-window` are covered
+and `shot-window` and `shot-full` are niri's own actions with the file named on
+them. niri's interactive picker saves the monitor's frame, deliberately, on the
+argument that somebody choosing a rectangle can see what they are choosing. That
+argument is not this desktop's: a window somebody blocked is blocked, and a key
+that photographs it anyway is a promise zde did not keep. So `shot-region` takes
+its rectangle from a selector and its pixels through wlr-screencopy, which the
+same rule covers - measured on a nested niri, where the region comes back solid
+black over a blocked window and shows it with the rule off. What that costs is
+two more programs on the host and a worse picker: no snapping to windows, no
+frozen screen, no keyboard. It does not fall back to niri's picker when they are
+missing, because a fallback is the hole reopening on the machine least likely to
+notice; it refuses and says which one to install.
+
+What zde adds to all three is the file. niri saves on a thread and answers the
+socket before that thread runs, so a directory it cannot write is a warning in
+its own log and a success on the wire - which from a keypress is the failure this
+project's rules name as the worst available, nothing on the screen and nothing
+said. The public name is claimed with `O_EXCL`, and niri writes into a hidden
+0600 staging file: a second shot in the same second gets a second name, a planted
+symlink is not followed, and a timeout cannot publish a fragment or let a late
+writer recreate the file with the session umask. Only niri's exact-path event
+and a complete PNG publish the staging file under the claimed name. A null event
+is ignored because niri broadcasts screenshot events and null names no request.
+
+`send-to` hands one of those to something else, and it is where capture meets the
+sandbox. A target is a name from `zde.apps`, resolved the way `app.launch`
+resolves one, with the path on the end. A target that is a zinc app is refused,
+because zinc 0.10.1 still has no generic file handoff - `zcr run -v` can mount a
+file only while creating a container, but takes no argument for the app, there
+is no `zcr exec`, and nothing adds a mount to one already up - so the alternative
+to the refusal is a launch that answers "unexpected argument" after the keypress
+is spent. The one channel that does cross is `clipboard`, which is the Wayland
+session's and not the container's, and it is how "screenshot to discord"
+([`vision.md`](vision.md), G2) is done.
+
+`replay-clip` is a third capture mechanism because the thing it asks for exists
+before the keypress. With `zde.capture.replay.enable`, one user service keeps 30
+seconds of portal video encoded in RAM at a 20 Mbit/s ceiling, about 75 MiB when
+full. It takes no audio: continuously recording sound or a microphone is a
+separate privacy decision. Portal capture is load-bearing rather than a
+convenience - direct KMS would go around niri's render target, while the portal
+keeps `block-out-from "screen-capture"` in force. The first start may ask which
+screen to share and later sessions restore that choice. Refusing the chooser
+stops the service; it does not restart into another interruption. The replay
+uses its own restore-token file, so another portal recording cannot replace its
+chosen source; other recorder failures restart under systemd's rate limit.
+
+The save is IPC rather than a signal. A signal can say only that it reached a
+process; `gsr-cli` answers after the muxer closes the MP4, with the path or the
+recorder's refusal, and `zde` checks that path is a non-empty regular file before
+printing it. The pinned nixpkgs has the signal-only 5.13.8, so layer 1 carries a
+source-hash-pinned 6.0.1 override on the same dependency set rather than adding a
+second nixpkgs tree for one program.
 
 `zen` is one verb over two mechanisms, and the split is niri's rather than a
 choice. The bar is zde's own layer-shell surface, so the shell unmaps it and the
@@ -224,12 +319,12 @@ shell being restarted, which every home-manager switch does.
 | ask | `oneshot`, `panel`, `escalate`, `local` |
 | pass | `open` (trusted secrets window; types into the focused field, never the clipboard), `type` (trusted window only) |
 | clip | `history`, `clear` |
-| capture | `shot-region`, `shot-window`, `shot-full`, `replay-clip`, `send-to <target>` |
+| capture | `shot-region` (a rectangle, and not through niri's own picker: see below), `shot-window`, `shot-full`, `replay-clip` (the last 30 seconds, when its explicit option is on), `send-to <target>` (a name from `zde.apps`, or `clipboard`) |
 | media | `play-pause`, `next`, `prev`, `panel`, `like`, `download`, `target-pick`, `target-next`, `target-pin` |
 | audio | `vol-up`, `vol-down`, `mute`, `app-vol`, `sink-switch`, `app-sink`, `mic-mute` |
 | net | `observe`, `kill` (global toggle, loud bar state: NetworkManager's networking switch off and back, radios left on), `app-cut <app>` |
 | modes | `menu` (pick a mode), `normal`, `window`, `kb-mouse`, `one-hand`, `passthrough` |
-| system | `lock`, `lock-preset` (switch BEFORE lock, to the desk `zde.lock.preset` names), `power`, `quiet` (toggle), `attn <mode>` (work / focus / quiet by name; the CLI has it, no key is free for it), `connections` (wifi, and the link you are on; `forget` drops a saved network), `bluetooth` (the radio, what is around it, and pairing; no key of its own, since a second chord for half of one surface is a key to remember for no reason), `calendar`, `wallpapers`, `brightness-up`/`brightness-dn`, `help`, `notif-center`, `notif-reach` (put the keyboard on the newest popup, which is the only way a popup ever takes it), `shortcut-grab` (native; hand the focused app zde's keys, or take them back - the one key an app holding a shortcuts inhibitor can never swallow), `doctor`, `report` (write the state snapshot down for a session that will not come up; needs `zde.debug`, and no key of its own - the day it is wanted there is nobody at the keyboard), `update`, `layout-switch` (native) |
+| system | `lock`, `lock-preset` (switch BEFORE lock, to the desk `zde.lock.preset` names), `film` (visible, three-hour idle exception), `power`, `quiet` (toggle), `attn <mode>` (work / focus / quiet by name; the CLI has it, no key is free for it), `connections` (wifi, and the link you are on; `forget` drops a saved network), `bluetooth` (the radio, what is around it, and pairing; no key of its own, since a second chord for half of one surface is a key to remember for no reason), `calendar`, `wallpapers`, `brightness-up`/`brightness-dn`, `help`, `notif-center`, `notif-reach` (put the keyboard on the newest popup, which is the only way a popup ever takes it), `shortcut-grab` (native; hand the focused app zde's keys, or take them back - the one key an app holding a shortcuts inhibitor can never swallow), `doctor`, `report` (write the state snapshot down for a session that will not come up; needs `zde.debug`, and no key of its own - the day it is wanted there is nobody at the keyboard), `update`, `layout-switch` (native) |
 
 Launch placement: manifest pin first; else adoption (focused workspace,
 current scroll position, active desk); guest mode restricts launching to the

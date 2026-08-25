@@ -28,7 +28,7 @@ func idleOf(t *testing.T, s *Server) Idle {
 // A machine that cannot answer and a machine where nothing is holding the
 // screen are the same empty strip, and only one of them is a fact. If these
 // collapse into each other the bar goes quiet on a session that has lost its
-// system bus and a person walks away from it believing the screen will lock.
+// system bus and a person expects display power-off that may remain inhibited.
 func TestALogindThatCannotAnswerIsNotAnEmptyIdleTable(t *testing.T) {
 	s, l, _ := powerServer(t)
 

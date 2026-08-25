@@ -31,6 +31,9 @@ input {
         tap
         natural-scroll
     }
+
+    // logind ignores the key in v0.1; do not let the compositor take it.
+    disable-power-key-handling
 }
 
 layout {

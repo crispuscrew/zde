@@ -125,7 +125,8 @@ type logindFake struct {
 	// telling those apart is the whole of Because.
 	fail map[string][2]string
 	// calls is every member that arrived, in order.
-	calls []string
+	calls  []string
+	locked bool
 }
 
 func (f *logindFake) record(member string) *dbus.Error {
@@ -196,7 +197,32 @@ func (f *logindFake) ListInhibitors() ([]exInhibitor, *dbus.Error) {
 	return append([]exInhibitor(nil), f.inhibitors...), nil
 }
 
-func (f *logindFake) Suspend(interactive bool) *dbus.Error  { return f.record("Suspend") }
+func (f *logindFake) GetSession(id string) (dbus.ObjectPath, *dbus.Error) {
+	if err := f.record("GetSession " + id); err != nil {
+		return "", err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, session := range f.sessions {
+		if session.ID == id {
+			return session.Path, nil
+		}
+	}
+	return "", dbus.NewError("org.freedesktop.login1.NoSuchSession", []any{"no such session"})
+}
+
+func (f *logindFake) Get(iface, property string) (dbus.Variant, *dbus.Error) {
+	if err := f.record("Get " + property); err != nil {
+		return dbus.Variant{}, err
+	}
+	if iface != sessIface || property != "LockedHint" {
+		return dbus.Variant{}, dbus.NewError("org.freedesktop.DBus.Error.UnknownProperty", nil)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return dbus.MakeVariant(f.locked), nil
+}
+
 func (f *logindFake) Reboot(interactive bool) *dbus.Error   { return f.record("Reboot") }
 func (f *logindFake) PowerOff(interactive bool) *dbus.Error { return f.record("PowerOff") }
 func (f *logindFake) TerminateSession(id string) *dbus.Error {
@@ -214,6 +240,9 @@ func serveLogind(t *testing.T, f *logindFake) *Logind {
 	}
 	t.Cleanup(func() { conn.Close() }) //nolint:errcheck // the test is over
 	if err := conn.Export(f, mgrPath, mgrIface); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Export(f, mine().Path, "org.freedesktop.DBus.Properties"); err != nil {
 		t.Fatal(err)
 	}
 	reply, err := conn.RequestName(service, dbus.NameFlagDoNotQueue)
@@ -289,36 +318,20 @@ func TestALogindThatStopsAnsweringCostsTwoSecondsAndNotTheKeypress(t *testing.T)
 	}
 }
 
-// The refusal a held inhibitor produces, end to end, off a real bus.
-//
-// systemd answers this one itself and before polkit is asked anything:
-// verify_shutdown_creds ends the call with
-// org.freedesktop.login1.BlockedByInhibitorLock and a sentence that names
-// neither the program holding the lock nor the reason it gave. Both are on
-// zde's side from ListInhibitors, so if this regresses a suspend that will
-// never happen is explained by "Operation denied due to active block
-// inhibitor", and the thing to close is not on the screen.
-func TestABlockInhibitorComesBackNamingWhatIsHoldingIt(t *testing.T) {
-	f := &logindFake{
-		sessions: []exSession{mine()},
-		inhibitors: []exInhibitor{
-			{What: "sleep", Who: "chromium", Why: "Playing audio", Mode: "block", UID: 1000, PID: 4321},
-		},
-	}
+func TestLockedReadsThisDisplaySessionsHint(t *testing.T) {
+	f := &logindFake{sessions: []exSession{mine()}}
 	l := serveLogind(t, f)
-	f.setFail("Suspend", blockedByInhibitorLock, "Operation denied due to active block inhibitor")
 
-	err := l.Do(Suspend)
-	if err == nil {
-		t.Fatal("a suspend logind refused came back as done")
+	locked, err := l.Locked()
+	if err != nil || locked {
+		t.Fatalf("Locked() = %v, %v before Niri locks", locked, err)
 	}
-	for _, want := range []string{"chromium", "Playing audio"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the refusal is %q, and it has to name %q: logind's own words name neither", err, want)
-		}
-	}
-	if !f.asked("Suspend") {
-		t.Error("nothing was asked of logind at all")
+	f.mu.Lock()
+	f.locked = true
+	f.mu.Unlock()
+	locked, err = l.Locked()
+	if err != nil || !locked {
+		t.Fatalf("Locked() = %v, %v after Niri locks", locked, err)
 	}
 }
 
@@ -389,9 +402,6 @@ func TestOnlyABlockInhibitorReachesTheMenu(t *testing.T) {
 	}
 	if len(st.Blocks) != 1 || st.Blocks[0].Who != "packagekit" {
 		t.Fatalf("the blocks are %+v, want only the one that is a block", st.Blocks)
-	}
-	if len(st.Blocking(Suspend)) != 0 {
-		t.Error("a delay inhibitor on sleep reads as standing in the way of a suspend")
 	}
 	if len(st.Blocking(Reboot)) != 1 {
 		t.Error("a block inhibitor on shutdown does not stand in the way of a reboot")

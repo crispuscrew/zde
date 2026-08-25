@@ -214,14 +214,14 @@ func TestActionsComeOutInOneOrder(t *testing.T) {
 // Which niri natives the palette may ask for over the socket, and which only a
 // key can do. Enumerated here and not derived, because it is a fact about niri
 // and nothing in Go can see it: an action line with an argument looks the same
-// whether niri wants a string or a type of its own, and `screenshot` looks
-// exactly like `close-window` while niri refuses one and takes the other.
+// whether niri wants a string or a type of its own.
 //
-// Derivation is what this replaced, and it got the three screenshots wrong -
-// the palette offered them, niri answered "error parsing request", and the key
-// worked the whole time. So the list lives in the test as well as in the
-// registry: changing which rows the palette offers takes two edits and a reason,
-// which is the point.
+// Derivation is what this replaced, and what it got wrong was the three
+// screenshots - the palette offered them, niri answered "error parsing request",
+// and the key worked the whole time. Those are zde's own now (registry.go,
+// capture), so the list here is the four size changes and the layout switch;
+// the rule they were the evidence for is the reason it is still a list.
+// Changing which rows the palette offers takes two edits and a reason.
 //
 // If this fails for a native somebody has just added, the question to answer is
 // whether `niri msg action <name>` works with nothing after it. If it does, mark
@@ -234,9 +234,6 @@ func TestOnlyTheNativesNiriTakesOverIPCAreMarked(t *testing.T) {
 		"window.shorter":       "set-window-height, same",
 		"window.taller":        "same",
 		"system.layout-switch": "switch-layout takes a LayoutSwitchTarget",
-		"capture.shot-region":  "Screenshot wants a field the bind does not carry; niri 26.04 refuses a bare one",
-		"capture.shot-window":  "ScreenshotWindow, same",
-		"capture.shot-full":    "ScreenshotScreen, same",
 	}
 	natives := 0
 	for id, e := range registry {
@@ -259,8 +256,8 @@ func TestOnlyTheNativesNiriTakesOverIPCAreMarked(t *testing.T) {
 	}
 	// The count, so that a native quietly disappearing does not leave this
 	// passing over a shorter list than the one it was written for.
-	if natives != 23 {
-		t.Errorf("the registry has %d natives and this list was written for 23", natives)
+	if natives != 20 {
+		t.Errorf("the registry has %d natives and this list was written for 20", natives)
 	}
 }
 

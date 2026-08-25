@@ -38,11 +38,13 @@
     # before you install.
     debug.enable = true;
 
-    # The laptop branch, which the smoke test deliberately leaves off (it would
-    # hand the VM's network to NetworkManager and make the test flaky). Real
-    # hardware is where it belongs anyway: battery, radios and the lid switch
-    # are exactly what a VM cannot answer for.
+    # Exercise every hardware-facing branch on the by-hand image. Networking
+    # and brightness are useful on desktops too and default on; bluetooth stays
+    # an explicit opt-in because an unrequested radio is needless exposure.
+    networking.enable = true;
+    brightness.enable = true;
     laptop.enable = true;
+    bluetooth.enable = true;
   };
 
   # A password, and the greeter left in the way on purpose. Autologin would be
@@ -104,7 +106,7 @@
   # or as XF86Tools" gets answered; notify-send is the well-behaved client to
   # compare a real one against. dbus-send comes with the bus itself.
   environment.systemPackages = [
-    pkgs.foot
+    pkgs.kitty
     pkgs.wev
     pkgs.libnotify
   ];
@@ -125,11 +127,8 @@
   # that resolves is not a nicety here.
   fonts.fontconfig.enable = lib.mkForce true;
 
-  # A terminal, and a key that opens it. Nothing in the keymap does yet: every
-  # launch bind spawns a zde subcommand that lands with the shell (roadmap
-  # 0.1), so a session on this image would come up with no way to type into
-  # it. Mod+Return is unbound in the keymap and is what every other compositor
-  # uses, so it clashes with nothing and needs no explaining.
+  # Mod+t opens the generated terminal default. The live image keeps the
+  # familiar Mod+Return as a second route and as a check of the host-config seam.
   #
   # This is the image's own bind and not zde's. It goes through the seam a
   # host has for exactly this: local.kdl, included after the generated binds.
@@ -161,7 +160,7 @@
 
     zde.niri.extraConfig = ''
       binds {
-          Mod+Return { spawn "foot"; }
+          Mod+Return { spawn "kitty"; }
       }
     '';
   };

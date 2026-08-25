@@ -30,8 +30,65 @@ let
   # that was right to fail. Under the name layer 1 actually configures, both
   # stay honest - the leader chain still ends in a file on disk, and doctor
   # still has its teeth.
-  fakeLocker = pkgs.writeShellScriptBin "swaylock" ''
-    exec ${pkgs.coreutils}/bin/touch /tmp/zde-locked
+  fakeLocker = pkgs.writeShellScriptBin "hyprlock" ''
+    printf '%s\n' "$@" > /tmp/zde-lock-argv
+    printf 'attempt\n' >> /tmp/zde-lock-attempts
+    if [ -e /tmp/zde-lock-fail ]; then
+      exit 1
+    fi
+    ${pkgs.coreutils}/bin/touch /tmp/zde-locked
+    set_locked_hint() {
+      local locked_hint session_leaf session_path session_reply set_reply
+      locked_hint=$1
+      if [ -z "''${XDG_SESSION_ID:-}" ]; then
+        echo "fake locker: XDG_SESSION_ID is missing" >&2
+        return 1
+      fi
+      if ! session_reply="$(${pkgs.systemd}/bin/busctl --system call \
+        org.freedesktop.login1 /org/freedesktop/login1 \
+        org.freedesktop.login1.Manager GetSession s "$XDG_SESSION_ID" 2>&1)"; then
+        echo "fake locker: GetSession($XDG_SESSION_ID) failed: $session_reply" >&2
+        return 1
+      fi
+
+      session_path=''${session_reply#'o "'}
+      session_path=''${session_path%'"'}
+      if [ "$session_reply" != "o \"$session_path\"" ]; then
+        echo "fake locker: invalid GetSession reply: $session_reply" >&2
+        return 1
+      fi
+      case "$session_path" in
+        /org/freedesktop/login1/session/*)
+          session_leaf=''${session_path#/org/freedesktop/login1/session/}
+          ;;
+        *)
+          echo "fake locker: invalid session object path: $session_path" >&2
+          return 1
+          ;;
+      esac
+      case "$session_leaf" in
+        "" | *[!A-Za-z0-9_]*)
+          echo "fake locker: invalid session object path: $session_path" >&2
+          return 1
+          ;;
+      esac
+
+      if ! set_reply="$(${pkgs.systemd}/bin/busctl --system call \
+        org.freedesktop.login1 "$session_path" \
+        org.freedesktop.login1.Session SetLockedHint b "$locked_hint" 2>&1)"; then
+        echo "fake locker: SetLockedHint($locked_hint) failed: $set_reply" >&2
+        return 1
+      fi
+      if [ -n "$set_reply" ]; then
+        echo "fake locker: unexpected SetLockedHint reply: $set_reply" >&2
+        return 1
+      fi
+    }
+    set_locked_hint true || exit 1
+    clear_hint() { set_locked_hint false; }
+    trap 'clear_hint; exit 0' TERM INT
+    trap clear_hint EXIT
+    while ${pkgs.coreutils}/bin/sleep 3600; do :; done
   '';
 
   # An ask tier that needs no network, no key and no model: it reads the
@@ -131,6 +188,51 @@ let
         # moving to it and taking niri's socket path with it.
         mgr=/run/user/$(id -u)
         sctl() { XDG_RUNTIME_DIR=$mgr systemctl --user "$@"; }
+
+        if [ -z "''${XDG_SESSION_ID:-}" ]; then
+          echo "the smoke login has no logind session for LockedHint or polkit"; exit 1
+        fi
+
+        # systemd 260.2 defines exactly these six IDs: hybrid and
+        # suspend-then-hibernate reuse hibernate's authorizations.
+        upstream=${pkgs.systemd}/share/polkit-1/actions/org.freedesktop.login1.policy
+        rule=/etc/polkit-1/rules.d/00-zde-no-sleep.rules
+        actions='org.freedesktop.login1.suspend
+        org.freedesktop.login1.suspend-multiple-sessions
+        org.freedesktop.login1.suspend-ignore-inhibit
+        org.freedesktop.login1.hibernate
+        org.freedesktop.login1.hibernate-multiple-sessions
+        org.freedesktop.login1.hibernate-ignore-inhibit'
+        upstream_actions=$(grep -oE 'org\.freedesktop\.login1\.(suspend|hibernate)(-[a-z-]+)?' "$upstream" | sort -u)
+        [ "$(printf '%s\n' "$upstream_actions" | grep -c .)" = 6 ] || {
+          echo "systemd's generated sleep action set is not the six this pin defines:"
+          printf '%s\n' "$upstream_actions"; exit 1
+        }
+        subject="$$,$(${pkgs.coreutils}/bin/cut -d ' ' -f 22 /proc/$$/stat),$(id -u)"
+        for action in $actions; do
+          printf '%s\n' "$upstream_actions" | grep -qxF "$action" || {
+            echo "systemd 260.2 no longer defines $action"; exit 1
+          }
+          grep -qF "\"$action\"" "$rule" || {
+            echo "$rule does not deny systemd's $action"; exit 1
+          }
+          set +e
+          ${pkgs.polkit}/bin/pkcheck --action-id "$action" --process "$subject" >/tmp/pkcheck-sleep.txt 2>&1
+          denied=$?
+          set -e
+          [ "$denied" = 1 ] || {
+            echo "noninteractive pkcheck for $action exited $denied, want explicit denial"
+            cat /tmp/pkcheck-sleep.txt; exit 1
+          }
+        done
+        [ "$(stat -c %U "$rule")" = root ] && [ ! -w "$rule" ] || {
+          echo "$rule is not a root-owned, read-only policy"; stat "$rule"; exit 1
+        }
+        grep -q 'disable-power-key-handling' ~/.config/niri/config.kdl
+        ! grep -q 'before_sleep_cmd' ~/.config/hypr/hypridle.conf
+        grep -q 'zde-idle-lock@\$HYPRIDLE_GENERATION.service' ~/.config/hypr/hypridle.conf
+        grep -q 'timeout --kill-after=1s 2s .*display-off' ~/.config/hypr/hypridle.conf
+        grep -q 'timeout --kill-after=1s 2s .*display-on' ~/.config/hypr/hypridle.conf
         # niri names its IPC socket after the Wayland display it opened, so the
         # display comes back out of the socket path. The bar needs it: it is a
         # Wayland client, where zded only needs the IPC socket.
@@ -148,7 +250,7 @@ let
           echo "niri's IPC socket is $NIRI_SOCKET but there is no wayland socket at $WAYLAND_DISPLAY:"
           ls -la "$XDG_RUNTIME_DIR"; exit 1
         fi
-        sctl import-environment NIRI_SOCKET WAYLAND_DISPLAY
+        sctl import-environment NIRI_SOCKET WAYLAND_DISPLAY XDG_SESSION_ID
         # This machine has no GPU and QtQuick defaults to wanting one. On real
         # hardware the bar gets the same renderer niri does; here it gets Qt's
         # software one, set on the manager rather than in the unit so that the
@@ -195,6 +297,104 @@ let
         # environment only after niri has put it there.
         XDG_RUNTIME_DIR=$mgr zde status 2>&1 | tee /tmp/unit-status.txt
         grep -qx 'compositor connected' /tmp/unit-status.txt
+        # Film survives a daemon restart, in a private, owner-controlled file.
+        XDG_RUNTIME_DIR=$mgr zde system film on | grep -q 'Film on until'
+        XDG_RUNTIME_DIR=$mgr zde status | grep -q '^film       on until '
+        [ "$(stat -c '%a %U' "$mgr/zde/film.json")" = '600 zde' ] || {
+          echo "Film state is not private and owner-controlled:"; stat "$mgr/zde/film.json"; exit 1
+        }
+        sctl restart zded.service
+        if ! waitfor 30 zded_up; then
+          echo "zded did not return after the Film restart check"; exit 1
+        fi
+        XDG_RUNTIME_DIR=$mgr zde status | grep -q '^film       on until '
+        XDG_RUNTIME_DIR=$mgr zde system film off | grep -qx 'Film off'
+
+        # The lock belongs to its declared user unit. Restarting zded neither
+        # kills it nor starts a duplicate against LockedHint=true.
+        rm -f /tmp/zde-lock-argv /tmp/zde-lock-attempts /tmp/zde-lock-fail /tmp/zde-locked
+        XDG_RUNTIME_DIR=$mgr zde system lock
+        lock_argv_want=$(printf '%s\n' 'space value' 'percent%value' 'dollar$value' "single'quote")
+        [ "$(cat /tmp/zde-lock-argv)" = "$lock_argv_want" ] || {
+          echo "zde.apps.lock argv changed:"; cat /tmp/zde-lock-argv; exit 1
+        }
+        lockpid=$(sctl show -p MainPID --value zde-lock.service)
+        [ "$lockpid" != 0 ] && sctl is-active --quiet zde-lock.service || {
+          echo "the verified locker has no active declared unit"; exit 1
+        }
+        sctl restart zded.service
+        if ! waitfor 30 zded_up; then
+          echo "zded did not return while the independent locker stayed up"; exit 1
+        fi
+        [ "$(sctl show -p MainPID --value zde-lock.service)" = "$lockpid" ]
+        XDG_RUNTIME_DIR=$mgr zde system lock
+        sctl stop zde-lock.service
+
+        # Each ordered idle generation gets an unlimited retry unit. Resume
+        # stops every older generation rather than leaving a terminal failure.
+        [ "$(sctl show -p Restart --value zde-idle-lock@1.service)" = on-failure ]
+        [ "$(sctl show -p StartLimitIntervalUSec --value zde-idle-lock@1.service)" = 0 ]
+        [ "$(sctl show -p StopPropagatedFrom --value zde-idle-lock@1.service)" = zde-idle.service ]
+        sctl show -p After --value zde-idle-lock@1.service | grep -qw zde-idle.service
+        sctl show -p After --value zde-idle-lock@1.service | grep -qw zded.service
+
+        # A failed idle lock retries, but the resume operation cancels that
+        # generation before a recovered locker can take the screen.
+        attempt_count() {
+          [ -e /tmp/zde-lock-attempts ] && wc -l < /tmp/zde-lock-attempts || printf '0\n'
+        }
+        sctl stop 'zde-idle-lock@*.service'
+        rm -f /tmp/zde-locked
+        touch /tmp/zde-lock-fail
+        retry_target=$(( $(attempt_count) + 2 ))
+        sctl --no-block start zde-idle-lock@9001.service
+        retried() { [ "$(attempt_count)" -ge "$retry_target" ]; }
+        if ! waitfor 25 retried; then
+          echo "a failed idle lock did not retry"; sctl status zde-idle-lock@9001.service || true; exit 1
+        fi
+        sctl stop 'zde-idle-lock@*.service'
+        [ "$(sctl show -p ActiveState --value zde-idle-lock@9001.service)" = inactive ]
+        rm -f /tmp/zde-lock-fail
+        resume_attempts=$(attempt_count)
+        sleep 12
+        [ "$(attempt_count)" = "$resume_attempts" ] && [ ! -e /tmp/zde-locked ] || {
+          echo "a resumed idle generation retried and locked"; exit 1
+        }
+
+        # Stop-only propagation ties pending retries to their Hypridle parent.
+        # Restart removes the old generation; only a new generation may lock.
+        touch /tmp/zde-lock-fail
+        parent_before=$(attempt_count)
+        sctl --no-block start zde-idle-lock@9002.service
+        parent_retrying() {
+          [ "$(attempt_count)" -gt "$parent_before" ] &&
+            [ "$(sctl show -p SubState --value zde-idle-lock@9002.service)" = auto-restart ]
+        }
+        if ! waitfor 15 parent_retrying; then
+          echo "the parent-cleanup instance never entered retry"; exit 1
+        fi
+        sctl restart zde-idle.service
+        [ "$(sctl show -p ActiveState --value zde-idle-lock@9002.service)" = inactive ] || {
+          echo "restarting Hypridle left its old retry generation active"; exit 1
+        }
+        rm -f /tmp/zde-lock-fail
+        parent_attempts=$(attempt_count)
+        sleep 12
+        [ "$(attempt_count)" = "$parent_attempts" ] && [ ! -e /tmp/zde-locked ] || {
+          echo "an old Hypridle generation locked after its parent restarted"; exit 1
+        }
+        sctl --no-block start zde-idle-lock@9003.service
+        new_generation_locked() {
+          [ -e /tmp/zde-locked ] && sctl is-active --quiet zde-lock.service &&
+            [ "$(sctl show -p ActiveState --value zde-idle-lock@9003.service)" = inactive ]
+        }
+        if ! waitfor 20 new_generation_locked; then
+          echo "a new idle generation did not lock after parent cleanup"; exit 1
+        fi
+        sctl stop zde-lock.service
+        # Nothing after this dedicated scenario waits for input-idle policy.
+        # Stop Hypridle so the long smoke run cannot lock itself at 180 seconds.
+        sctl stop zde-idle.service
 
         # The state snapshot, written by the unit the target pulled - which is
         # exactly what a login does on a real machine (zde.debug, nix/home.nix).
@@ -381,7 +581,7 @@ let
           journalctl --user -u zde-bar.service --no-pager | tail -25; exit 1
         fi
 
-        # No NetworkManager either (zde.laptop is off for this node), which the
+        # No NetworkManager either (zde.networking is off for this node), which the
         # bar has to say as a state of its own rather than as "no network":
         # this VM is perfectly online and simply has nothing to ask. Same
         # argument as the battery above, and the first tick may not have
@@ -693,7 +893,7 @@ let
           echo "the leader did not act: $(pickerq act lock)"; exit 1
         }
         # And the command ran: picker, shell, zde, the apps table, an exec. The
-        # locker on this machine is a touch rather than swaylock, because a VM
+        # locker on this machine only moves LockedHint rather than drawing, because a VM
         # with no input devices that locks itself cannot unlock itself - what is
         # asserted is the chain, and whether a real locker takes the screen is a
         # by-hand item (docs/verify.md).
@@ -703,6 +903,15 @@ let
         fi
         if ! waitfor 15 dismissed; then
           echo "the leader acted and the picker stayed on screen: $(pickerq state)"; exit 1
+        fi
+        sctl stop zde-lock.service
+        leader_unlocked() {
+          [ "$(${pkgs.systemd}/bin/loginctl show-session "$XDG_SESSION_ID" -p LockedHint --value)" = no ]
+        }
+        if ! waitfor 15 leader_unlocked; then
+          echo "stopping the leader's locker did not clear LockedHint" >&2
+          ${pkgs.systemd}/bin/loginctl show-session "$XDG_SESSION_ID" -p LockedHint >&2 || true
+          exit 1
         fi
 
         # Then open it again for the half that does choose.
@@ -1441,12 +1650,12 @@ let
             echo "doctor has no '$line' line:"; cat /tmp/doctor.txt; exit 1
           }
         done
-        # The locker is the line this command is most worth having: swaylock is
-        # what layer 1 configures and /etc/pam.d/swaylock is what lets it
+        # The locker is the line this command is most worth having: Hyprlock is
+        # what layer 1 configures and /etc/pam.d/hyprlock is what lets it
         # authenticate, so a machine where that file is not there locks and
         # never unlocks. The python half of this test asserts the file exists;
         # this asserts doctor is the thing that would notice if it stopped.
-        grep -q '/etc/pam.d/swaylock' /tmp/doctor.txt || {
+        grep -q '/etc/pam.d/hyprlock' /tmp/doctor.txt || {
           echo "doctor does not say what the screen lock would authenticate against:"
           cat /tmp/doctor.txt; exit 1
         }
@@ -1506,13 +1715,16 @@ let
           cat /tmp/doctor.txt; exit 1
         }
         # And whichever way it answered, it has to say what it could not see.
-        # This is the one line in the report a person could read as a promise
-        # that their screen will lock, and it is not one: the Wayland half of
-        # the mechanism is invisible to every interface zde has. A clean line
-        # with the caveat dropped is the failure worth catching from here,
-        # because nothing about it looks wrong.
+        # This line can only describe holders logind sees. The Wayland half is
+        # invisible, while the strict lock ignores both halves; display power
+        # does not. Dropping that boundary would turn a partial reading into an
+        # all-clear.
         grep -E '^(ok|warn) +idle ' /tmp/doctor.txt | grep -q 'zwp_idle_inhibit_manager_v1' || {
           echo "doctor's idle line does not say which half of the mechanism it could see:"
+          grep -E '^(ok|warn) +idle ' /tmp/doctor.txt; exit 1
+        }
+        grep -E '^(ok|warn) +idle ' /tmp/doctor.txt | grep -q 'strict 180-second lock ignores idle inhibitors' || {
+          echo "doctor's idle line does not distinguish display power from strict lock:"
           grep -E '^(ok|warn) +idle ' /tmp/doctor.txt; exit 1
         }
         # And the whole of it, not the front. The name above is 22 characters
@@ -1754,8 +1966,8 @@ let
         }
 
         # Bluetooth on a machine with no radio, which is this VM and every
-        # desktop that has not asked for one (zde.bluetooth.enable is off here,
-        # and so is zde.laptop). That is the case worth pinning: the verb has to
+        # desktop that has not asked for one (zde.bluetooth.enable is off here).
+        # That is the case worth pinning: the verb has to
         # say so and exit zero, rather than erroring, or hanging on a bus
         # nobody answers on. It goes through zded to bluetoothd and back, so a
         # daemon that blocked on the system bus would be caught here.
@@ -2370,6 +2582,8 @@ let
         echo "live compositor check passed"
   '';
 in
+assert pkgs.lib.versionAtLeast pkgs.podman.version "5.8.6";
+assert pkgs.lib.versionAtLeast pkgs.kitty.version "0.48.2";
 pkgs.testers.runNixOSTest {
   name = "zde-smoke";
 
@@ -2385,10 +2599,10 @@ pkgs.testers.runNixOSTest {
       ../zde-user.nix
     ];
 
-    # zde.laptop stays off here on purpose: it would hand the VM's network to
-    # NetworkManager and make anything network-shaped in this script flaky.
-    # nix/test-host.nix evaluates that branch instead.
+    # NetworkManager stays off so it cannot take over the VM's test network.
+    # nix/test-host.nix verifies that this opt-out survives laptop mode.
     zde.enable = true;
+    zde.networking.enable = false;
 
     # The state snapshot, on, so that both halves of it are exercised on a real
     # NixOS host: layer 0 making a directory per account, and the unit the
@@ -2400,6 +2614,12 @@ pkgs.testers.runNixOSTest {
     # Only so that shell_interact and a manual login work when debugging this
     # test; most assertions below run as root.
     users.users.zde.password = "zde";
+    # Shadow's su always uses the "su" PAM service, including with -l. Give
+    # that test login boundary pam_systemd and its real XDG_SESSION_ID.
+    security.pam.services.su.startSession = true;
+    # Host-side half of brightness control. The module supplies udev's group
+    # permissions; the host decides which account receives them.
+    users.users.zde.extraGroups = [ "video" ];
 
     # Somebody else on the machine, so that "the zde socket is private" can be
     # asserted by a user who is actually subject to it - root is not.
@@ -2433,8 +2653,15 @@ pkgs.testers.runNixOSTest {
       zde = {
         # The other half of zde.debug above: this is what writes.
         debug.enable = true;
+        capture.replay.enable = true;
 
-        apps.lock = [ "${fakeLocker}/bin/swaylock" ];
+        apps.lock = [
+          "${fakeLocker}/bin/hyprlock"
+          "space value"
+          "percent%value"
+          "dollar$value"
+          "single'quote"
+        ];
 
         # One ask tier and only one: the provider. The other two stay unset on
         # purpose, so that the live check can assert both halves - a tier that
@@ -2453,11 +2680,9 @@ pkgs.testers.runNixOSTest {
         };
 
         # A host's own binds, through the seam that exists for them: local.kdl,
-        # included after the generated ones. The live image (nix/live.nix) puts
-        # a terminal on a key this way, because nothing in the keymap can open
-        # one yet - so niri accepting a second binds block is load-bearing
-        # rather than incidental, and the niri validate below is what keeps it
-        # that way.
+        # included after the generated ones. The live image (nix/live.nix) keeps
+        # Mod+Return as a second Kitty route, so niri accepting a second binds
+        # block is load-bearing rather than incidental.
         #
         # This block also goes through nix/niri-local.nix on the way in, which
         # parses it at build time - and that does not make the check below
@@ -2469,10 +2694,14 @@ pkgs.testers.runNixOSTest {
         # can.
         niri.extraConfig = ''
           binds {
-              Mod+Return { spawn "foot"; }
+              Mod+Return { spawn "kitty"; }
           }
         '';
       };
+
+      # Generate the replay unit for assertions below without opening a portal
+      # chooser or requiring a hardware encoder in this GPU-less VM.
+      systemd.user.services.zde-replay.Install.WantedBy = pkgs.lib.mkForce [ ];
     };
 
     # cage hosts the nested niri; mesa's software rasteriser is what both of
@@ -2550,7 +2779,7 @@ pkgs.testers.runNixOSTest {
       #
       # Locking for real is a by-hand item (docs/verify.md): this VM has no
       # input devices, so anything that locked it could not unlock it.
-      machine.succeed("test -e /etc/pam.d/swaylock")
+      machine.succeed("test -e /etc/pam.d/hyprlock")
 
       # The backlight rules reached udev, which is the difference between the
       # brightness keys working and failing for everyone who is not root. They
@@ -2559,6 +2788,11 @@ pkgs.testers.runNixOSTest {
       # reads. Asserted on the file udev actually loads.
       machine.succeed("test -e /etc/udev/rules.d/90-brightnessctl.rules")
       machine.succeed("grep -q 'chgrp video' /etc/udev/rules.d/90-brightnessctl.rules")
+      machine.succeed("id -nG zde | tr ' ' '\\n' | grep -qx video")
+      machine.succeed("su -l zde -c 'command -v brightnessctl'")
+      # This VM has no display backlight. The exact class makes that an honest
+      # failure instead of selecting an unrelated LED brightness device.
+      machine.fail("su -l zde -c 'brightnessctl --class=backlight info'")
 
       # niri's user units reached systemd. This is what stands between a login
       # and a greeter that silently takes it straight back: niri-session starts
@@ -2655,6 +2889,9 @@ pkgs.testers.runNixOSTest {
       import json
       apps = json.loads(machine.succeed("cat /home/zde/.config/zde/apps.json"))
       assert "help" in apps, f"no help app, so Mod+slash opens nothing: {apps}"
+      assert apps["terminal"][0].endswith("/bin/kitty"), apps["terminal"]
+      assert apps["help"][0] == apps["terminal"][0], apps["help"]
+      assert apps["help"][1].endswith("/bin/less"), apps["help"]
       for name, argv in apps.items():
           machine.succeed(f"su -l zde -c 'test -x {argv[0]}'")
           # And behind a terminal's -e, which hides a second program: the line
@@ -2666,6 +2903,32 @@ pkgs.testers.runNixOSTest {
               inner = argv[argv.index("-e") + 1]
               machine.succeed(f"su -l zde -c 'command -v {inner}'")
 
+      kitty = machine.succeed("cat /home/zde/.config/kitty/kitty.conf")
+      for setting in (
+          "linux_display_server wayland",
+          "allow_remote_control no",
+          "listen_on none",
+          "allow_cloning no",
+          "clear_all_shortcuts yes",
+          "enabled_layouts stack",
+          "tab_bar_style hidden",
+          "confirm_os_window_close 0",
+          "background #11121a",
+          "foreground #c9ccd4",
+      ):
+          assert setting in kitty, f"Kitty is missing {setting!r}: {kitty}"
+      machine.succeed(
+          "grep -Rq '^ZINC_TERMINAL=.*/bin/kitty$' /home/zde/.config/environment.d"
+      )
+
+      replay = machine.succeed("cat /home/zde/.config/systemd/user/zde-replay.service")
+      for setting in (
+          "-portal-session-token-filepath %h/.config/zde/replay-portal-token",
+          "Restart=on-failure",
+          "RestartPreventExitStatus=60",
+      ):
+          assert setting in replay, f"replay service is missing {setting!r}: {replay}"
+
       # The keymap as a key shows it. `zde help` printed usage to a stderr no
       # keypress has, which on a desktop where most keys are silent made the one
       # key that says which keys work another silent one.
@@ -2674,13 +2937,24 @@ pkgs.testers.runNixOSTest {
       # Plain text, not the markdown cheatsheet: this one goes through a pager.
       assert "|" not in keys and "`" not in keys, keys
 
-      # Screenshots are niri's own actions rather than a `zde capture` nobody
-      # has written. Asserted in the generated binds because the check above
-      # cannot see it: those keys spawned `zde`, which is installed, and did
-      # nothing at all when pressed.
+      # Screenshots go through zde now so a failed asynchronous save is not a
+      # success on the key. Pin the three exact verbs: the executable check
+      # above sees only `zde` and cannot tell a real command from one that prints
+      # usage to a journal nobody is watching.
       binds = machine.succeed("cat /home/zde/.config/niri/binds.kdl")
-      for shot in ("{ screenshot; }", "{ screenshot-screen; }", "{ screenshot-window; }"):
-          assert shot in binds, f"no {shot} bind: {binds}"
+      for chord in ("Mod+b", "Mod+Shift+b", "XF86MonBrightnessDown", "XF86MonBrightnessUp"):
+          line = [l for l in binds.splitlines() if l.strip().startswith(chord + " ")]
+          assert len(line) == 1, f"{chord} is not one bind in the config: {binds}"
+          assert 'spawn "brightnessctl" "--class=backlight"' in line[0], line[0]
+      for chord, verb in (
+          ("Mod+Shift+s", "shot-region"),
+          ("Mod+Print", "shot-full"),
+          ("Mod+Ctrl+w", "shot-window"),
+      ):
+          line = [l for l in binds.splitlines() if l.strip().startswith(chord + " ")]
+          assert len(line) == 1, f"{chord} is not one bind in the config: {binds}"
+          want = f'{{ spawn "zde" "capture" "{verb}"; }}'
+          assert want in line[0], f"{chord} does not run {verb}: {line[0]}"
 
       # The keys a focused app cannot take. niri 26.04 hands
       # zwp_keyboard_shortcuts_inhibit_manager_v1 to every client, sandboxed or
@@ -2719,14 +2993,21 @@ pkgs.testers.runNixOSTest {
       machine.succeed(
           "test -L /home/zde/.config/systemd/user/graphical-session.target.wants/zded.service"
       )
+      machine.succeed(
+          "test -L /home/zde/.config/systemd/user/graphical-session.target.wants/zde-idle.service"
+      )
+      machine.succeed("su -l zde -c 'hypridle --version' | grep -q '0.1.7'")
+      machine.succeed("grep -q 'timeout = 180' /home/zde/.config/hypr/hypridle.conf")
+      machine.succeed("grep -q 'ignore_inhibit = true' /home/zde/.config/hypr/hypridle.conf")
+      machine.succeed("grep -q 'fail_color = rgb(e5484d)' /home/zde/.config/hypr/hyprlock.conf")
 
       # That is the precise-cause check, and on its own it is a weak one: a
       # unit can be wanted by the target and still be wrong in every way that
       # matters. Starting it the way a login does needs a compositor to import
       # an environment from, so it happens in the live check below, where there
       # is one. What this does is give the user manager the linger that check
-      # needs - su gives no session (the podman check at the end of this file
-      # leans on the same fact from the other side).
+      # needs. The test-only su PAM setting above gives each check a real
+      # logind session rather than an invented XDG_SESSION_ID.
       uid = machine.succeed("id -u zde").strip()
       machine.succeed("loginctl enable-linger zde")
       machine.wait_until_succeeds(f"systemctl is-active user@{uid}.service")
@@ -2762,10 +3043,13 @@ pkgs.testers.runNixOSTest {
 
       # A real compositor: zded and zde against niri itself, not a fake.
       machine.succeed("su -l zde -c ${liveCheck}", timeout=600)
+      machine.fail(
+          "journalctl -u polkit.service --no-pager | "
+          "grep -Ei '(error|failed).*(rules|00-zde-no-sleep)|(rules|00-zde-no-sleep).*(error|failed)'"
+      )
 
-      # Rootless podman, what zcr will run apps with. su gives no logind
-      # session, so this exercises podman's cgroupfs fallback rather than the
-      # systemd path a real login would take.
+      # Rootless podman, what zcr will run apps with, under the same PAM/logind
+      # session boundary as the live compositor check.
       machine.succeed("su -l zde -c 'podman info'")
     '';
 }

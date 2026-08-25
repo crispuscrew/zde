@@ -5,11 +5,13 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	// Aliased because this file already has a signal(): the bluetooth widget's
 	// column of dBm readings took the plain name first.
 	sig "os/signal"
@@ -23,11 +25,13 @@ import (
 	"github.com/crispuscrew/zde/internal/apps"
 	"github.com/crispuscrew/zde/internal/attn"
 	"github.com/crispuscrew/zde/internal/bt"
+	"github.com/crispuscrew/zde/internal/capture"
 	"github.com/crispuscrew/zde/internal/clip"
 	"github.com/crispuscrew/zde/internal/doctor"
 	"github.com/crispuscrew/zde/internal/journal"
 	"github.com/crispuscrew/zde/internal/keymap"
 	"github.com/crispuscrew/zde/internal/link"
+	"github.com/crispuscrew/zde/internal/niri"
 	"github.com/crispuscrew/zde/internal/zded"
 	"github.com/crispuscrew/zde/internal/zinc"
 )
@@ -69,12 +73,9 @@ func run(args []string) error {
 	case len(args) == 3 && args[0] == "app" && args[1] == "launch":
 		return launch(args[2])
 	case len(args) == 2 && args[0] == "system" && args[1] == "lock":
-		// The same resolution as any other launch: locking a screen is running
-		// a program, and which one a machine has is the machine's business.
-		if err := launch("lock"); err != nil {
-			return fmt.Errorf("nothing to lock the screen with: %w", err)
-		}
-		return nil
+		// zded verifies a fresh Niri/logind LockedHint transition before this
+		// returns. A direct exec could only say that the locker process started.
+		return call("system.lock")
 	case len(args) == 2 && args[0] == "system" && args[1] == "lock-preset":
 		// The daemon's, not this process's, because the switch has to have
 		// happened before the locker starts and only zded can move a desk
@@ -96,6 +97,12 @@ func run(args []string) error {
 		// Mod+q. A toggle rather than a mode name, because the key is for the
 		// moment somebody needs silence now: one press in, one press out.
 		return attnMode("attn.quiet")
+	case len(args) == 2 && args[0] == "system" && args[1] == "film":
+		return film("")
+	case len(args) == 3 && args[0] == "system" && args[1] == "film":
+		return film(args[2])
+	case len(args) == 3 && args[0] == "system" && args[1] == "idle":
+		return call("system.idle", args[2])
 	case len(args) == 2 && args[0] == "system" && args[1] == "notif-center":
 		return notifCenter()
 	case len(args) == 2 && args[0] == "system" && args[1] == "notif-reach":
@@ -147,6 +154,22 @@ func run(args []string) error {
 		return call("clip.history", args[2])
 	case len(args) == 2 && args[0] == "clip" && args[1] == "clear":
 		return clipClear()
+	case len(args) == 2 && args[0] == "capture" && args[1] == "shot-region":
+		return shotRegion()
+	case len(args) == 2 && args[0] == "capture" && args[1] == "shot-window":
+		return shot(capture.Window)
+	case len(args) == 2 && args[0] == "capture" && args[1] == "shot-full":
+		return shot(capture.Full)
+	case len(args) == 2 && args[0] == "capture" && args[1] == "replay-clip":
+		return replayClip()
+	case len(args) == 3 && args[0] == "capture" && args[1] == "send-to":
+		return sendTo(args[2], "")
+	case len(args) == 4 && args[0] == "capture" && args[1] == "send-to":
+		// The path from the line above, spent as it is read - the two arities
+		// half this CLI has. With none, the newest capture zde took, which is
+		// what "and send it" means a second after the key
+		// (docs/vision.md, W12).
+		return sendTo(args[2], args[3])
 	case len(args) == 2 && args[0] == "app" && args[1] == "list":
 		return appList()
 	case len(args) == 2 && args[0] == "desk" && args[1] == "switcher":
@@ -424,6 +447,13 @@ func status() error {
 		hidden = "on"
 	}
 	fmt.Printf("zen        %s\n", hidden)
+	if st.Film.Pending {
+		fmt.Println("film       lock pending")
+	} else if st.Film.Active {
+		fmt.Printf("film       on until %s\n", st.Film.Until)
+	} else {
+		fmt.Println("film       off")
+	}
 	fmt.Printf("queue      %d waiting\n", st.Queued)
 	if st.OnDesk != "" {
 		fmt.Printf("on desk    %s\n", st.OnDesk)
@@ -780,6 +810,30 @@ func zen(state string) error {
 		fmt.Println("zen on: content only")
 	} else {
 		fmt.Println("zen off")
+	}
+	return nil
+}
+
+func film(state string) error {
+	c, err := zded.Dial()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	var current zded.Film
+	var args []string
+	if state != "" {
+		args = []string{state}
+	}
+	if err := c.Call("system.film", &current, args...); err != nil {
+		return err
+	}
+	if current.Pending {
+		fmt.Println("Film expired: screen lock pending")
+	} else if current.Active {
+		fmt.Println("Film on until " + current.Until + ": idle lock and display power-off are suppressed")
+	} else {
+		fmt.Println("Film off")
 	}
 	return nil
 }
@@ -1492,6 +1546,110 @@ func clipClear() error {
 	return nil
 }
 
+// shot takes one of niri's two automatic screenshots and prints where it went.
+//
+// Straight to niri and not through zded, which is the same choice `zde doctor`
+// makes (internal/doctor, machine.go). A capture reads no desk state and writes
+// none, and the region below waits for as long as somebody takes to drag a
+// rectangle - a minute and a half of a daemon goroutine and of one connection's
+// budget is a minute and a half the rest of the session spends on that.
+//
+// The path goes to stdout, which is where the next thing wants it:
+//
+//	zde capture send-to imv "$(zde capture shot-region)"
+//
+// From a key that stdout is the journal, and the failure is what matters there:
+// niri answers "Handled" and writes the file on a thread, so a directory it
+// cannot write is a line in niri's log and a success on the socket
+// (internal/capture).
+func shot(k capture.Kind) error {
+	s, err := niri.DialShots()
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	path, err := capture.Shot(s, k, capture.Dir(), time.Now())
+	if err != nil {
+		return err
+	}
+	fmt.Println(path)
+	return nil
+}
+
+// shotRegion is the third one, and it does not touch niri at all: a selector
+// and a screencopy client, because niri's own region picker saves the frame
+// that goes to the monitor and a window blocked from capture is in it
+// (internal/capture, region.go).
+//
+// The clipboard is the one thing that costs. niri puts each of its own shots
+// there on the way past; grim does not, so this spends a wl-copy to keep
+// Mod+Shift+s behaving the way it did - and a clipboard that would not take it
+// is a line on stderr and not a lost capture, because the file is the capture
+// and it is already down.
+//
+// The context is this process's, cancelled on the way out, which is what stops
+// a selector left on the screen when somebody kills the key that started it.
+func shotRegion() error {
+	ctx, stop := sig.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	path, err := capture.RegionShot(ctx, capture.Dir())
+	if err != nil {
+		return err
+	}
+	fmt.Println(path)
+	if err := capture.Clip(path); err != nil {
+		fmt.Fprintln(os.Stderr, attn.Block("the capture is on the disk and not on the clipboard: "+err.Error()))
+	}
+	return nil
+}
+
+func replayClip() error {
+	path, err := capture.ReplayClip()
+	if err != nil {
+		return err
+	}
+	fmt.Println(path)
+	return nil
+}
+
+// sendTo hands a capture to something else. With no path, the newest one zde
+// took.
+//
+// It replaces this process rather than starting a child and waiting, for the
+// reason launch does: the key that spawned `zde` wants the viewer, not a `zde`
+// sitting behind one for as long as it lives. The clipboard is the exception,
+// because there is nothing to wait for - wl-copy forks to serve the selection
+// and returns.
+func sendTo(target, path string) error {
+	if path == "" {
+		newest, err := capture.Latest(capture.Dir())
+		if err != nil {
+			return err
+		}
+		path = newest
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	if target == capture.Clipboard {
+		return capture.Clip(abs)
+	}
+	all, err := apps.Load(apps.DefaultPath())
+	if err != nil {
+		return err
+	}
+	argv, err := capture.Argv(all, target, abs)
+	if err != nil {
+		return err
+	}
+	bin, err := exec.LookPath(argv[0])
+	if err != nil {
+		return fmt.Errorf("%s is configured to run %q, which is not there: %w", target, argv[0], err)
+	}
+	return syscall.Exec(bin, argv, os.Environ())
+}
+
 // palette asks for the palette. The same bargain as the desk switcher: with a
 // shell listening this prints nothing, and without one it prints the list, so
 // that the key does something on a session whose shell has died - and so that
@@ -1970,6 +2128,8 @@ func usage() {
   zde desk switcher      open the picker; prints the list when no shell is up
   zde app launch NAME    run what this machine calls that (Mod+t, Mod+e)
   zde system lock        lock the screen (Mod+Ctrl+semicolon)
+                         Returns only after the locker is still alive and Niri has
+                         changed this session's logind LockedHint to true
   zde system lock-preset switch to the preset desk, then lock, so that what an
                          unlock shows - and what a shoulder reads at the lock
                          screen - is that desk and not what you were doing. The
@@ -1977,20 +2137,26 @@ func usage() {
                          With none set, one naming a desk that is gone, or one
                          naming a desk declared private, it locks where you are
                          and says which of those it was
-  zde system power       the power menu (Mod+Shift+x): lock, log out, suspend,
-                         reboot, power off. Prints the five when no shell is
-                         up, each with what it is about to cost underneath -
+  zde system power       the power menu (Mod+Shift+x): lock, log out,
+                         unavailable suspend, reboot, power off. Prints the five
+                         when no shell is up, each with what it is about to cost
+                         underneath -
                          the windows that close, what the notification center
                          is holding that the queue never got, anybody else
-                         logged in here, and whatever is holding a suspend off
+                         logged in here, and whatever is holding an enabled
+                         action off
   zde system power NAME  run one of them, by the name in column one. The menu
                          is where the three that end things are asked about;
                          typing the word here is the answer, the same bargain
                          zde system bluetooth confirm makes. The lock runs the
-                         same locker zde system lock does, and the other four
-                         are logind's - so a refusal, an inhibitor holding
-                         sleep or a second person logged in, comes back as a
-                         refusal and not as silence
+                         same locker zde system lock does. Log out, reboot and
+                         power off are logind's, while suspend returns the
+                         explicit v0.1 boundary; refusals and inhibitors come
+                         back as words, not silence
+  zde system film [STATE]
+                         read Film or set on, off or toggle. On suppresses only
+                         automatic idle lock and display power-off, is shown on
+                         the bar, and expires into a lock after three hours
   zde system connections open the connections widget (Mod+Shift+c); prints the
                          link and what is in range when no shell is up -
                          signal, security, note, network - and says so plainly
@@ -2079,6 +2245,34 @@ func usage() {
                          an image or a file is a row saying so rather than
                          content
   zde clip clear         forget the history now rather than when it expires
+  zde capture shot-window|shot-full
+                         one screenshot (Mod+Ctrl+w, Mod+Print), and prints
+                         where it went. niri takes the picture and still puts
+                         it on the clipboard; what zde adds is the file - 0600
+                         rather than the umask, a name the next capture in the
+                         same second cannot land on, and a refusal when nothing
+                         was written, which niri reports only to its own log
+  zde capture shot-region
+                         drag a rectangle (Mod+Shift+s). Deliberately not
+                         niri's own picker: that one saves the frame that goes
+                         to the monitor, so a window blocked from capture would
+                         be in the file. This goes through slurp and grim,
+                         which the block does cover, and refuses rather than
+                         falling back when either is missing. Closing the
+                         selector without choosing is a refusal and no file
+  zde capture send-to TARGET [PATH]
+                         hand a capture to something else. With no path, the
+                         newest one zde took. TARGET is a name from zde.apps,
+                         or "clipboard" - which is the one that reaches an app
+                         in a container, since a sandboxed app sees the mounts
+                         its YAML declares and a path handed to it is a path
+                         that is not there
+  zde capture replay-clip
+                         save the last 30 seconds under ~/Videos/Replays and
+                         print the file. Off by default because the buffer
+                         continuously records the screen; enable it with
+                         zde.capture.replay.enable. Video only, through niri's
+                         portal so capture-block remains in force
   zde keys               the whole keymap, one key per line (Mod+slash opens
                          this in a terminal)
   zde palette [NAME]     every action by name (Mod+semicolon); prints the list

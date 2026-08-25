@@ -9,9 +9,9 @@ zde is early, and this is what "early" means in practice:
 
 - **Part of the cheatsheet is silent.** The desks, the queue, notifications and
   the centre that reads them, the bar, the picker, the palette, the wifi list,
-  screenshots, the clipboard history on `Mod+v` and a terminal work. pass,
-  media, the modes beyond Normal, the calendar, the wallpapers
-  and the power menu are keys that do nothing. `Mod+Shift+Escape` (panic) works
+  screenshots, the clipboard history on `Mod+v`, a terminal, locking, Film and
+  the power menu work. pass, media, the modes beyond Normal, the calendar and
+  the wallpapers are keys that do nothing. `Mod+Shift+Escape` (panic) works
   once a machine names a decoy desk in `zde.panic.decoy`; with none set it
   changes nothing at all, and `zde desk panic` in a terminal is where that
   refusal can be read. Three more do nothing until you say what they are:
@@ -75,26 +75,50 @@ Look before you cut. `lsblk` names the disks; the one you want is almost never
 the one the live image booted from.
 
 ```sh
-lsblk -o NAME,SIZE,MODEL,MOUNTPOINTS
+lsblk -p -o NAME,SIZE,MODEL,MOUNTPOINTS
 ```
 
 Then, for a disk you are giving entirely to zde - **this erases it**:
 
 ```sh
 sudo -i
-DISK=/dev/nvme0n1          # yours, from lsblk. Check it twice.
+DISK=""                    # Set this to the whole target disk from lsblk.
+: "${DISK:?set DISK from lsblk after checking it twice}"
+if [ ! -b "$DISK" ] || [ "$(lsblk -dnro TYPE "$DISK")" != "disk" ]; then
+  printf '%s\n' "DISK must name a whole block disk: $DISK" >&2
+  exit 1
+fi
+DISK_NAME=$(lsblk -dnro KNAME "$DISK")
 
 parted "$DISK" -- mklabel gpt
 parted "$DISK" -- mkpart ESP fat32 1MiB 1GiB
 parted "$DISK" -- set 1 esp on
 parted "$DISK" -- mkpart root ext4 1GiB 100%
 
-mkfs.fat -F32 -n BOOT "${DISK}p1"     # p1/p2 on nvme, 1/2 on sata
-mkfs.ext4 -L nixos "${DISK}p2"
+lsblk -p -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS "$DISK"
+BOOT_PARTITION=""          # Set this to the 1 GiB ESP shown above.
+ROOT_PARTITION=""          # Set this to the remaining partition shown above.
+: "${BOOT_PARTITION:?set BOOT_PARTITION from lsblk}"
+: "${ROOT_PARTITION:?set ROOT_PARTITION from lsblk}"
+[ "$BOOT_PARTITION" != "$ROOT_PARTITION" ] || {
+  printf '%s\n' "boot and root must be different partitions" >&2
+  exit 1
+}
+for PARTITION in "$BOOT_PARTITION" "$ROOT_PARTITION"; do
+  if [ ! -b "$PARTITION" ] ||
+    [ "$(lsblk -dnro TYPE "$PARTITION")" != "part" ] ||
+    [ "$(lsblk -dnro PKNAME "$PARTITION")" != "$DISK_NAME" ]; then
+    printf '%s\n' "$PARTITION must be a partition directly on $DISK" >&2
+    exit 1
+  fi
+done
 
-mount /dev/disk/by-label/nixos /mnt
+mkfs.fat -F32 -n BOOT "$BOOT_PARTITION"
+mkfs.ext4 -L nixos "$ROOT_PARTITION"
+
+mount "$ROOT_PARTITION" /mnt
 mkdir -p /mnt/boot
-mount /dev/disk/by-label/BOOT /mnt/boot
+mount "$BOOT_PARTITION" /mnt/boot
 ```
 
 Encryption, swap and a separate home are all reasonable and all out of scope
@@ -126,18 +150,24 @@ attribute rather than anything friendlier.
 
 While you are in those two files:
 
-- **The password.** The template ships `initialPassword = "zde"` so that the
-  first boot lets you in. It applies once, at account creation, and it sits in
-  the world-readable store until you change it. Change it with `passwd` on the
-  first login, or put a hash in `initialHashedPassword` now
-  (`mkpasswd -m yescrypt`) and never type the plain one at all.
+- **The password.** Leave passwords and hashes out of both files. The template
+  keeps users mutable, so section 3 can write the password only to the target's
+  `/etc/shadow`, and later rebuilds preserve it. Until then the account is
+  locked. Neither the plaintext nor its hash enters the Nix configuration or
+  the world-readable store.
 - **`video` is already in the groups**, which is what makes the brightness keys
   work.
-- **A laptop** wants `zde.laptop.enable = true` in the flake's module block:
-  battery, the network radio, bluetooth, and the lid switch. A desktop that
-  wants bluetooth and none of the rest says `zde.bluetooth.enable = true`
-  instead; both are off by default, because a radio nobody asked for is a
-  listening radio nobody asked for.
+- **Networking and brightness are already on** for desktop and laptop hosts.
+  Set `zde.networking.enable = false` or `zde.brightness.enable = false` only
+  when the host supplies another network or backlight implementation.
+- **A laptop** wants `zde.laptop.enable = true` for battery reporting, power
+  profiles, and the marker that enables conditional display power-off. Every
+  logind key, lid and idle sleep action is ignored in v0.1, and all six systemd
+  sleep authorizations are denied to non-root callers. ZDE's suspend row reports
+  that hardware suspend begins in v0.2; root retains administrative sleep.
+  Bluetooth is independent and off by default;
+  enable it explicitly with `zde.bluetooth.enable = true`. Its radio then stays
+  off at boot until explicitly powered.
 - **A second keyboard layout**, if you use one. `Mod+space` switches between
   them and has nothing to switch to until you say so. The niri config is layer
   1, so these two go in the flake's `home-manager.users.<name>` block, beside
@@ -157,12 +187,24 @@ While you are in those two files:
   a warning and carries on with its own defaults, and a session running niri's
   defaults has none of zde's keys in it.
 
+- **An OLED desktop monitor** can opt into five-minute idle display power-off
+  with `zde.idle.oled = true`. `zde.laptop.enable` creates the equivalent host
+  marker. This does not change the strict three-minute idle lock.
+
 ## 3. Install
 
 ```sh
 nixos-install --flake /mnt/etc/nixos#zdebox     # or your host name
+# Replace you with the account name you chose in section 2.
+nixos-enter --root /mnt -c 'passwd you'
 reboot
 ```
+
+`nixos-install` asks for a separate root password. Keep it as a recovery route:
+root can run `passwd you` from a text console, again replacing `you` with the
+chosen account name. If both passwords are lost, boot the live image, mount the
+existing root filesystem at `/mnt` without formatting it, and run the same
+`nixos-enter` command again.
 
 The first build downloads a compositor, a Qt runtime and the tools, so it is not
 quick on a hotel connection. It is also the last time it will be that slow.
@@ -186,7 +228,7 @@ editor is. It says so in one line, in the flake's `home-manager.users.<name>`
 block beside `zde.enable`:
 
 ```nix
-zde.apps.editor = [ "foot" "-e" "hx" ];             # a host program
+zde.apps.editor = [ "kitty" "hx" ];                  # a host program
 zde.apps.editor = [ "zcr" "run" "nvim" "--exec" ];  # or a sandboxed one
 ```
 
@@ -312,11 +354,11 @@ It will. In descending order of how much it hurts:
   compositor, whether a shell is listening (no shell is the whole diagnosis for
   a session where `Mod+Tab` prints a list instead of drawing a picker), who has
   the notification name when it is not zded, whether zinc is on this machine at
-  all, whether the units a login starts are up, which manifests it could not
+  all, whether installed session units are healthy, which manifests it could not
   read, which of your desks name an app nothing here can start (and which
   resolver said so - zcr where there is one, `zde.apps` otherwise), whether the
   screen lock could accept a password, and whether logind would let this session
-  log out, suspend, reboot or power off. The last two are the ones worth running
+  log out, reboot or power off. The last two are the ones worth running
   before you need them: a locker with no PAM service takes the screen and then
   refuses every password, and a power key that polkit refuses is one that does
   nothing at all. `warn` is a session you can work in and `fail` is not, so the

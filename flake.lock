@@ -7,11 +7,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1784350909,
-        "narHash": "sha256-ZWyzLbS1yKUTeFJLmdVuWNnHttL333/ldJbEE+KzCrM=",
+        "lastModified": 1787377438,
+        "narHash": "sha256-Sxu1NLTD/Ern6hFGLlZmtKCSct3YQXZI/lls8RE1XeM=",
         "owner": "nix-community",
         "repo": "home-manager",
-        "rev": "4ce190229c73d44536caa7072f6308fb2d8feeb3",
+        "rev": "65258d5c65a250189fde2e35f490d15e064c4c62",
         "type": "github"
       },
       "original": {
@@ -23,11 +23,11 @@
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1784856561,
-        "narHash": "sha256-J+Bx1Z6Oeoj2FgnBhRMKyUhhtDoOpTgXYaVLZpDjW4A=",
+        "lastModified": 1787525875,
+        "narHash": "sha256-sKbMlkDCBVmAjUVT94LwhVtET/YEMtZaFdn5UduWxz8=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "597283ad8aa0b331c788e97c4c262d58877074ef",
+        "rev": "a3b98866eecd08edac6e61a3081e69540a35020f",
         "type": "github"
       },
       "original": {
@@ -51,16 +51,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1785462414,
-        "narHash": "sha256-ltzUjlTbjRKoElXK85kBJ+6vt7Sk6PHm6Y6YARN2zP4=",
+        "lastModified": 1787452836,
+        "narHash": "sha256-1TwAg+EDlv5sOOJBMAjuWMDdHv3VasAukms+zXRJlz4=",
         "owner": "crispuscrew",
         "repo": "zinc",
-        "rev": "6b3aa9a3c3130eb0af2bbc52b5acc535912555ad",
+        "rev": "b522134470036e839dd588388f97cc4014117c64",
         "type": "github"
       },
       "original": {
         "owner": "crispuscrew",
-        "ref": "v0.9.1",
+        "ref": "v0.10.1",
         "repo": "zinc",
         "type": "github"
       }

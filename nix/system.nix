@@ -9,6 +9,7 @@
 }:
 let
   cfg = config.zde;
+  bluezPackage = pkgs.callPackage ./bluez.nix { };
 
   # The nixpkgs release zde is built and tested against. It moves with the
   # flake's own input, by hand, on a release bump (docs/update.md, Bumping) -
@@ -25,34 +26,26 @@ let
   # asking for the file at this path by name.
   debugDir = "/var/log/zde";
 
-  # One directory per account that could have a session, owned by that account.
-  #
-  # Per account rather than one shared directory because there is then nothing
-  # to configure and nothing to get wrong. A single directory has to be told
-  # whose it is, and an owner set to the wrong name is a snapshot that is
-  # silently never written - on the one machine where somebody deliberately
-  # turned this on for a failure they were expecting.
-  #
-  # isNormalUser is the filter: it is what a person logs in as, and it leaves
-  # out root, greeter and every system account, none of which starts a graphical
-  # session. An account that gains one later gets its directory on the next
-  # rebuild, which is when it gained the account.
-  #
-  # 0700 on each, so that one person's inventory of their own machine is not
-  # readable by another account on it - and 0755 on the parent, so that
-  # somebody who has mounted this disk somewhere else can list what is there
-  # without having to guess at names.
+  # One private directory per account that could have a graphical session.
   humans = lib.filterAttrs (_: u: u.isNormalUser) config.users.users;
 in
 {
+  imports = [ ./sleep-policy.nix ];
+
   options.zde = {
     enable = lib.mkEnableOption "the zde system layer";
-    laptop.enable = lib.mkEnableOption "laptop hardware support (battery, radios, brightness)";
+    laptop.enable = lib.mkEnableOption "laptop battery, power-profile, and lid support";
+    networking.enable = lib.mkEnableOption "NetworkManager networking" // {
+      default = true;
+    };
+    brightness.enable = lib.mkEnableOption "display backlight control" // {
+      default = true;
+    };
     # Its own switch, and off by default, because a radio is not free. A desktop
     # that gains a listening radio nobody asked for is an attack surface nobody
     # asked for - and `zde system bluetooth` says "adapter none" on a machine
     # without one rather than failing, so leaving it off costs nothing but the
-    # feature. The laptop profile turns it on as part of what a laptop is.
+    # feature.
     bluetooth.enable = lib.mkEnableOption "the bluetooth radio (zde system bluetooth)";
 
     debug.enable = lib.mkEnableOption "the state snapshot (${debugDir}, zde report)" // {
@@ -94,14 +87,7 @@ in
 
   config = lib.mkMerge [
     (lib.mkIf cfg.enable {
-      # Which nixpkgs is actually evaluating this. zde pins one in its own
-      # flake and that pin binds nothing here: a module is evaluated by
-      # whichever nixpkgs imports it, so a machine on unstable runs zde
-      # against unstable and zde's lock never gets a vote. That is fine, and
-      # untested, and the only bad version of it is the silent one - a
-      # renamed option or a moved niri surfaces three layers down as
-      # something inexplicable. The template (nix flake init -t
-      # github:crispuscrew/zde#host) is how to not be here.
+      # A module is evaluated by whichever nixpkgs imports it, not zde's pin.
       warnings = lib.optional (config.system.nixos.release != testedRelease) ''
         zde is tested against nixos-${testedRelease}, and this system is ${config.system.nixos.release}.
         Nothing is known to be broken; nothing is known to work either.
@@ -120,21 +106,11 @@ in
       # rtkit gives PipeWire realtime scheduling (crackle and underrun
       # protection under load); the rest of audio is in the services block.
       security.rtkit.enable = true;
+      # Hyprlock names this PAM service by its executable basename. Without it
+      # the screen can lock but no password can unlock it.
+      security.pam.services.hyprlock = { };
 
-      # One block rather than a services.* line per concern, which is what
-      # statix asks for once there are three of them.
       services = {
-        # The backlight, which is a permission and therefore layer 0's even
-        # though the binary that uses it is layer 1's. brightnessctl ships udev
-        # rules that chgrp the brightness file to `video` and make it group
-        # writable; installed with the package alone they go nowhere, because
-        # only services.udev.packages is read. Without them the brightness keys
-        # fail for the person actually pressing them, which is everyone.
-        #
-        # So a user who wants those keys belongs to `video`. That is the host's
-        # to say and not ours: the template says it (templates/host).
-        udev.packages = [ pkgs.brightnessctl ];
-
         # No graphical display manager: greetd on its own VT, tuigreet, then
         # niri-session, the systemd-integrated entry point niri ships. The
         # session reads ~/.config/niri/config.kdl, which layer 1 generates from
@@ -158,10 +134,9 @@ in
         };
       };
 
-      # Land with their roadmap phases (see docs/roadmap.md, verify list):
-      # - kanata + uinput/udev permissions
-      # - NVIDIA / firmware quirks via nixos-hardware
-      # - xwayland-satellite (the niri module leaves XWayland off)
+      # Carry the parser fix even while the radio remains opt-in below.
+      hardware.bluetooth.package = bluezPackage;
+
     })
 
     # Somewhere for the state snapshot to go, and nothing else. What writes it
@@ -184,45 +159,33 @@ in
       ++ lib.mapAttrsToList (name: u: "d ${debugDir}/${name} 0700 ${name} ${u.group} - -") humans;
     })
 
-    # Laptop hardware. The 0.4 laptop profile (battery widgets, wifi/bt TUIs,
-    # workspace placement re-applied on dock/undock) builds on these; the
-    # radios and power daemons are layer 0, the UIs are layer 1.
+    # Laptop-only hardware and the root-owned declaration layer 1 reads.
     (lib.mkIf (cfg.enable && cfg.laptop.enable) {
-      # Battery state for the shell; profile switching for power actions.
       services.upower.enable = true;
       services.power-profiles-daemon.enable = true;
-
-      # The network radio; nmtui and friends come with the user env. The
-      # bluetooth one has its own block below, because a desktop can want that
-      # without wanting NetworkManager.
-      networking.networkmanager.enable = true;
-
-      # Brightness and lid need nothing extra: brightnessctl goes through
-      # logind, and logind's default lid-switch action (suspend) is what we
-      # want.
+      environment.etc."zde/laptop".text = "";
     })
 
-    # The bluetooth radio. Its own block rather than a line inside the laptop
-    # one, so a desktop can ask for it without taking a power daemon and
-    # NetworkManager with it - and so a laptop keeps behaving exactly as it did,
-    # since the laptop profile is one of the two ways to be here.
-    #
+    # NetworkManager is useful on desktops and laptops, so it defaults on and
+    # can be disabled explicitly when a host supplies another network stack.
+    (lib.mkIf (cfg.enable && cfg.networking.enable) {
+      networking.networkmanager.enable = true;
+    })
+
+    # Layer 1 installs brightnessctl and binds the keys. Its udev rules must be
+    # loaded here to make backlight controls writable by the `video` group.
+    (lib.mkIf (cfg.enable && cfg.brightness.enable) {
+      services.udev.packages = [ pkgs.brightnessctl ];
+    })
+
     # bluetoothd is all this needs: zded speaks to it on the system bus and is
     # the session's pairing agent itself (internal/bt), so there is no applet,
     # no tray and no second daemon to install.
-    (lib.mkIf (cfg.enable && (cfg.laptop.enable || cfg.bluetooth.enable)) {
+    (lib.mkIf (cfg.enable && cfg.bluetooth.enable) {
       hardware.bluetooth.enable = true;
 
-      # And it comes up off. nixpkgs powers the radio on at boot by default,
-      # which quietly turns "this machine has the bluetooth verbs" into "this
-      # machine has a radio talking from the moment it starts", including while
-      # it sits at a login screen in a room full of strangers. `zde system
-      # bluetooth` says `powered no` and points at `power on`, so what this
-      # costs is one command on the days you want it - and a default nobody
-      # chose is not a decision.
-      #
-      # mkDefault, so a host that would rather have it up at boot says so
-      # without fighting this module.
+      # An installed but unused Bluetooth feature must not silently make the
+      # radio listen at boot. mkDefault still lets a host opt in.
       hardware.bluetooth.powerOnBoot = lib.mkDefault false;
     })
   ];

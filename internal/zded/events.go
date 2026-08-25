@@ -204,6 +204,9 @@ const EventClip = "clip"
 // screen should not wait for the next poll.
 const EventZen = "zen"
 
+// EventFilm nudges the shell to reread the bounded Film state.
+const EventFilm = "film"
+
 // MethodShown is how a listener says it did the thing: the token from the
 // event it acted on. Unsolicited ones are ignored, so this cannot be used to
 // make a key report success that never happened.

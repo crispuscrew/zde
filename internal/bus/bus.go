@@ -8,8 +8,8 @@
 // connection when the timeout lands.
 //
 // It matters because every one of these connects sits in a request path. zded
-// answers each keybind on one socket and a client gives a call five seconds
-// (internal/zded, Client.Call), so an unbounded connect against a bus that
+// answers each keybind on one socket and a client gives an ordinary call five
+// seconds (internal/zded, Client.Call), so an unbounded connect against a bus that
 // accepts and then says nothing is a keypress that never comes back, a lock
 // held for as long as that lasts, and a logout that hangs until systemd loses
 // patience with the session. That was measured, not imagined: one bluetooth

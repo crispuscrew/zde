@@ -1,6 +1,6 @@
-# zde app: Neovim (LazyVim, multi-language). Schema v2, ZincContainer.
+# zde app: Neovim (LazyVim, multi-language). Schema v3, ZincContainer.
 # Plugins/parsers/tools are baked at build time; the runtime is network-locked.
-SchemaVersion: 2
+SchemaVersion: 3
 Type: ZincContainer
 
 AppNameID: nvim
@@ -39,13 +39,10 @@ ImageMeta:
     - echo "a74740047e73b2b380d63a474282814063d10650cd6cc95efa16d1713c7e616c  /tmp/nvim.tar.gz" | sha256sum -c -
     - tar -C /opt -xzf /tmp/nvim.tar.gz
     - ln -s /opt/nvim-linux-x86_64/bin/nvim /usr/local/bin/nvim
-    # The three steps below need the LazyVim config to exist while the image is
-    # being built, and it does not. `configs/` is declared under Configs as a
-    # runtime mount, and zinc builds with an empty context - nothing copies it
-    # in first, whatever an earlier version of this comment claimed. So this
-    # app does not build as written: the sync steps run against no config.
-    # It waits on zinc enforcing config mounts (architecture.md, open issues),
-    # and nothing in zde launches an app yet either way.
+    # The three steps below need the LazyVim config while the image is built.
+    # Zinc 0.10 mounts the Configs files below at runtime, but still builds with
+    # an empty context, so this app does not build as written: the sync steps run
+    # against no config. Nothing in zde launches this definition yet either way.
     - runuser -u dev -- nvim --headless "+Lazy! sync" +qa
     - runuser -u dev -- nvim --headless "+TSUpdateSync" +qa
     - runuser -u dev -- nvim --headless "+MasonInstall gopls lua-language-server nixd bash-language-server basedpyright ruff clangd typescript-language-server html-lsp css-lsp marksman json-lsp yaml-language-server taplo dockerfile-language-server stylua shfmt shellcheck gofumpt goimports prettier clang-format markdownlint-cli2" +qa
@@ -55,8 +52,16 @@ DisplayMeta:
   DisableGpuAccess: true
 
 Configs:
-  - InnerMount: /home/dev/.config/nvim
-    Writable: false
+  - { BundlePath: nvim/.gitignore, InnerMount: /home/dev/.config/nvim/.gitignore }
+  - { BundlePath: nvim/init.lua, InnerMount: /home/dev/.config/nvim/init.lua }
+  - { BundlePath: nvim/lua/config/autocmds.lua, InnerMount: /home/dev/.config/nvim/lua/config/autocmds.lua }
+  - { BundlePath: nvim/lua/config/keymaps.lua, InnerMount: /home/dev/.config/nvim/lua/config/keymaps.lua }
+  - { BundlePath: nvim/lua/config/lazy.lua, InnerMount: /home/dev/.config/nvim/lua/config/lazy.lua }
+  - { BundlePath: nvim/lua/config/options.lua, InnerMount: /home/dev/.config/nvim/lua/config/options.lua }
+  - { BundlePath: nvim/lua/plugins/editing.lua, InnerMount: /home/dev/.config/nvim/lua/plugins/editing.lua }
+  - { BundlePath: nvim/lua/plugins/lsp.lua, InnerMount: /home/dev/.config/nvim/lua/plugins/lsp.lua }
+  - { BundlePath: nvim/lua/plugins/markdown.lua, InnerMount: /home/dev/.config/nvim/lua/plugins/markdown.lua }
+  - { BundlePath: nvim/lua/plugins/theme.lua, InnerMount: /home/dev/.config/nvim/lua/plugins/theme.lua }
 
 # Code and state dirs are host paths of the invocation; attach them at runtime.
 Volumes: []

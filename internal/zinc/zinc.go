@@ -139,10 +139,10 @@ const runGrace = 2 * time.Second
 // for the same reasons it has it (internal/zded/ask.go, askRun and killGroup).
 //
 // Nothing here asks first whether it is already running. zinc 0.9.1 made a
-// second launch refuse before it prepares anything - the release before it,
-// that second launch tore down the first - so asking would be a podman round
-// trip per app per desk switch to learn what the launch is about to tell us
-// anyway. What it tells us is ErrAlreadyRunning, classified here because here
+// second launch refuse before it prepares anything, and 0.10.1 keeps that
+// refusal while serialising concurrent launches - so asking would be a podman
+// round trip per app per desk switch to learn what the launch is about to tell
+// us anyway. What it tells us is ErrAlreadyRunning, classified here because here
 // is where zcr's own words still exist: the sentence is the whole of the
 // evidence, and by the time an error reaches a caller it has been through a
 // %s and there is nothing left to read.
@@ -200,7 +200,7 @@ func Run(ctx context.Context, address string) error {
 // alreadyRunning reads zcr's refusal to start a second copy out of what it
 // printed.
 //
-// Text, because zcr has no code to key on: at v0.9.1 its main prints
+// Text, because zcr has no code to key on: at v0.10.1 its main prints
 // "zcr: " and the error and exits 1 for every one of them, and the only other
 // status the binary has is `recheck`'s 2 for a tag that has moved
 // (container/runner/main.go). A status that says "one of the many things that
