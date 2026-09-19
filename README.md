@@ -89,6 +89,7 @@ not spent rediscovering that.
 
 ## Docs
 
+- [`docs/development.md`](docs/development.md) - code map, socket protocol and checks.
 - [`docs/vision.md`](docs/vision.md) - what zde is: principles, components,
   security model, the scenario catalog, what zde asks of zinc.
 - [`docs/model.md`](docs/model.md) - the spatial model (desks over niri) and

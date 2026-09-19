@@ -10,9 +10,26 @@
   runCommand,
   quickshell,
   qt6,
+  go,
 }:
+let
+  channelSource = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../shell
+      ../tests/shell
+      (lib.fileset.fileFilter (
+        file: lib.hasPrefix "request_channel" file.name && file.hasExt "go"
+      ) ../internal/zded)
+    ];
+  };
+in
 runCommand "zde-shell"
   {
+    nativeBuildInputs = [
+      go
+      quickshell
+    ];
     meta = {
       description = "The zde shell: the bar, in QML for Quickshell";
     };
@@ -36,6 +53,13 @@ runCommand "zde-shell"
       -I ${qt6.qtdeclarative}/lib/qt-6/qml \
       --max-warnings 0 \
       ${../shell}/*.qml
+
+    # Execute the real channel in Qt; missing Quickshell is a failure in this gate.
+    export HOME="$TMPDIR/channel-home" GOCACHE="$TMPDIR/go-cache"
+    export GOPROXY=off GOTOOLCHAIN=local GO111MODULE=off CGO_ENABLED=0
+    export ZDE_REQUIRE_QUICKSHELL=1
+    export ZDE_CHANNEL_FIXTURE=${channelSource}/tests/shell/RequestChannelTest.qml
+    go test -v ${channelSource}/internal/zded/request_channel*_test.go
 
     for f in ${../shell}/*.qml; do
       install -Dm444 "$f" "$out/share/zde/shell/$(basename "$f")"
