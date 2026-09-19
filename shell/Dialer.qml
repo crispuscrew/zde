@@ -1,46 +1,7 @@
-// One connection to zded, dialled again as many times as it takes.
-//
-// This is a workaround for a defect in quickshell 0.3.0, which is what
-// `Socket` is (src/io/socket.cpp in the quickshell source). Redialling the
-// obvious way - writing `connected = true` on a socket that is down - works
-// only while the dial before it failed in one particular way, and the first
-// time it does not, the bar goes blind until the session is restarted. The
-// mechanism, written down because it is somebody else's code and a workaround
-// whose reason is not recorded gets deleted as redundant:
-//
-//   Socket::connectPathSocket() puts the new QLocalSocket in `this->socket`
-//   before it calls connectToServer, so the pointer is set whether or not the
-//   dial works. Socket::onSocketError() logs the failure and emits `error`,
-//   and clears nothing. Socket::onSocketDisconnected() is the only thing that
-//   clears `this->socket`, and a socket that never connected never emits
-//   disconnected. Socket::setConnected(true) dials only
-//   `if (this->socket == nullptr)`.
-//
-// So a single dial into the moment when zded has deleted its socket and not
-// yet recreated it - which is every home-manager switch, because they all
-// restart zded.service - leaves a dead QLocalSocket behind a non-null pointer,
-// and every `connected = true` after it is a no-op. That dial is the last one
-// there will ever be: the bar keeps running, keeps answering its own IPC, and
-// never reaches the daemon again. CI caught it as PeerClosedError when zded
-// stopped, ServerNotFoundError when the redial hit the gap, and nothing after.
-//
-// Driving `connected` false and then true does not help, and that is worth
-// recording because it is the fix that suggests itself. setConnected(false)
-// calls QLocalSocket::disconnectFromServer(), which on Unix (qtbase,
-// qlocalsocket_unix.cpp) forwards to QAbstractSocket::disconnectFromHost(),
-// and that returns immediately for a socket in UnconnectedState - which is
-// exactly what a failed dial leaves behind, since
-// QLocalSocketPrivate::setErrorAndEmit() sets UnconnectedState and emits
-// errorOccurred and never disconnected. No disconnected signal means
-// onSocketDisconnected() still does not run, the pointer is still not cleared,
-// and quickshell's own `disconnecting` flag is left true for good into the
-// bargain, which poisons setPath as well.
-//
-// So this throws the socket object away and makes a new one. A pointer this
-// shell does not own and cannot inspect is then never something it has to
-// reason about: every dial starts from an object that has never dialled.
-// Destroying it takes the QLocalSocket with it, because Socket::setSocket()
-// parents the QLocalSocket to the Socket, so no descriptor is left behind.
+// Quickshell 0.3.0 leaves its internal socket set after a failed dial. Neither
+// connected=true nor toggling it false/true resets that pointer. Replacing the
+// Socket object is required to recover after a daemon restart; its child socket
+// is destroyed with it. Back off between attempts and ignore retired sockets.
 pragma ComponentBehavior: Bound
 
 import QtQuick
@@ -165,7 +126,10 @@ QtObject {
 
             path: dialer.path
             parser: SplitParser {
-                onRead: line => dialer.heard(line)
+                onRead: line => {
+                    if (dialed === dialer.sock)
+                        dialer.heard(line);
+                }
             }
             // Last, so that the path is set and the parser is in place before
             // this dials - which it does before the line below has run.
